@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.exoplatform.addons</groupId>
+    <artifactId>addons-exo-parent-pom</artifactId>
+    <version>19-M02</version>
+  </parent>
+  <groupId>org.exoplatform.addons.email-connector</groupId>
+  <artifactId>email-connector-parent</artifactId>
+  <version>7.1.x-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>eXo Email Connector - Parent POM</name>
+  <description>eXo Email Connector Addon</description>
+  <modules>
+    <module>email-connector-services</module>
+    <module>email-connector-webapps</module>
+    <module>email-connector-packaging</module>
+  </modules>
+  <scm>
+    <connection>scm:git:git://github.com/exoplatform/email-connector.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/exoplatform/email-connector.git</developerConnection>
+    <url>https://github.com/exoplatform/email-connector</url>
+    <tag>HEAD</tag>
+  </scm>
+  <properties>
+    <!-- 3rd party libraries versions -->
+    <org.exoplatform.commons-exo.version>7.1.x-SNAPSHOT</org.exoplatform.commons-exo.version>
+  
+    <!-- Sonar properties -->
+    <sonar.organization>exoplatform</sonar.organization>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <!-- Import versions from platform project -->
+      <dependency>
+        <groupId>org.exoplatform.commons-exo</groupId>
+        <artifactId>commons-exo</artifactId>
+        <version>${org.exoplatform.commons-exo.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!-- Current project artifacts -->
+
+      <dependency>
+        <groupId>${project.groupId}</groupId>
+        <artifactId>email-connector-services</artifactId>
+        <version>${project.version}</version>
+        <scope>provided</scope>
+      </dependency>
+	  
+      <dependency>
+        <groupId>${project.groupId}</groupId>
+        <artifactId>email-connector-services</artifactId>
+        <version>${project.version}</version>
+        <type>test-jar</type>
+      </dependency>
+
+      <dependency>
+        <groupId>${project.groupId}</groupId>
+        <artifactId>email-connector-webapps</artifactId>
+        <version>${project.version}</version>
+        <scope>provided</scope>
+        <type>war</type>
+      </dependency>
+
+      <dependency>
+        <groupId>${project.groupId}</groupId>
+        <artifactId>email-connector-packaging</artifactId>
+        <version>${project.version}</version>
+        <scope>provided</scope>
+        <type>war</type>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  
+  <!-- This profile is used to allow github action to build branches. The github action is used for sonar analysis -->
+  <profiles>
+    <profile>
+      <id>project-repositories</id>
+      <activation>
+        <property>
+          <name>!skip-project-repositories</name>
+        </property>
+      </activation>
+      <repositories>
+        <repository>
+          <snapshots>
+            <enabled>true</enabled>
+          </snapshots>
+          <id>repository.exoplatform.org</id>
+          <url>https://repository.exoplatform.org/public</url>
+        </repository>
+      </repositories>
+      <pluginRepositories>
+        <pluginRepository>
+          <snapshots>
+            <enabled>true</enabled>
+          </snapshots>
+          <id>repository.exoplatform.org</id>
+          <url>https://repository.exoplatform.org/public</url>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+</project>
