@@ -9,7 +9,7 @@
   </parent>
   <groupId>org.exoplatform.addons.email-connector</groupId>
   <artifactId>email-connector-parent</artifactId>
-  <version>7.1.x-SNAPSHOT</version>
+  <version>7.1.x-experience-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>eXo Email Connector - Parent POM</name>
   <description>eXo Email Connector Addon</description>
@@ -26,8 +26,8 @@
   </scm>
   <properties>
     <!-- 3rd party libraries versions -->
-    <io.meeds.social.version>7.1.x-exo-SNAPSHOT</io.meeds.social.version>
-    <addon.meeds.app-center.version>7.1.x-exo-SNAPSHOT</addon.meeds.app-center.version>
+    <io.meeds.social.version>7.1.x-experience-SNAPSHOT</io.meeds.social.version>
+    <addon.meeds.app-center.version>7.1.x-experience-SNAPSHOT</addon.meeds.app-center.version>
 	
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
