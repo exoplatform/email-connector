@@ -26,38 +26,28 @@
   </scm>
   <properties>
     <!-- 3rd party libraries versions -->
-    <org.exoplatform.commons-exo.version>7.1.x-experience-SNAPSHOT</org.exoplatform.commons-exo.version>
+    <io.meeds.social.version>7.1.x-experience-SNAPSHOT</io.meeds.social.version>
   
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
   </properties>
   <dependencyManagement>
     <dependencies>
-      <!-- Import versions from platform project -->
       <dependency>
-        <groupId>org.exoplatform.commons-exo</groupId>
-        <artifactId>commons-exo</artifactId>
-        <version>${org.exoplatform.commons-exo.version}</version>
+        <groupId>io.meeds.social</groupId>
+        <artifactId>social</artifactId>
+        <version>${io.meeds.social.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
 
       <!-- Current project artifacts -->
-
       <dependency>
         <groupId>${project.groupId}</groupId>
         <artifactId>email-connector-services</artifactId>
         <version>${project.version}</version>
         <scope>provided</scope>
       </dependency>
-	  
-      <dependency>
-        <groupId>${project.groupId}</groupId>
-        <artifactId>email-connector-services</artifactId>
-        <version>${project.version}</version>
-        <type>test-jar</type>
-      </dependency>
-
       <dependency>
         <groupId>${project.groupId}</groupId>
         <artifactId>email-connector-webapps</artifactId>
@@ -65,13 +55,12 @@
         <scope>provided</scope>
         <type>war</type>
       </dependency>
-
       <dependency>
         <groupId>${project.groupId}</groupId>
         <artifactId>email-connector-packaging</artifactId>
         <version>${project.version}</version>
         <scope>provided</scope>
-        <type>war</type>
+        <type>zip</type>
       </dependency>
     </dependencies>
   </dependencyManagement>
