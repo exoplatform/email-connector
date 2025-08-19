@@ -23,13 +23,8 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import io.meeds.spring.AvailableIntegration;
 import io.meeds.spring.kernel.PortalApplicationContextInitializer;
 
-@SpringBootApplication(scanBasePackages = {
-  EmailConnectorApplication.MODULE_NAME,
-  AvailableIntegration.KERNEL_MODULE,
-  AvailableIntegration.JPA_MODULE,
-  AvailableIntegration.LIQUIBASE_MODULE,
-  AvailableIntegration.WEB_MODULE,
-})
+@SpringBootApplication(scanBasePackages = { EmailConnectorApplication.MODULE_NAME, AvailableIntegration.KERNEL_MODULE,
+    AvailableIntegration.JPA_MODULE, AvailableIntegration.LIQUIBASE_MODULE, AvailableIntegration.WEB_MODULE, })
 @EnableJpaRepositories(basePackages = EmailConnectorApplication.MODULE_NAME)
 @PropertySource("classpath:application.properties")
 @PropertySource("classpath:application-common.properties")

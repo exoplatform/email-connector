@@ -22,5 +22,42 @@ export function activate(emailConnectorActive) {
     },
     credentials: 'include',
     method: 'PUT'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when activating email connector feature');
+    }
+  });
+}
+
+export function createEmailConnector(emailConnector) {
+  return fetch('/email-connector/rest/emailConnector', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(emailConnector),
+    method: 'POST'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when creating email connector');
+    }
+  });
+}
+
+export function getEmailConnectors() {
+  return fetch('/email-connector/rest/emailConnector', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting email connectors');
+    }
   });
 }
