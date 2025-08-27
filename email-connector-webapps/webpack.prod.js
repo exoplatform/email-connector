@@ -23,6 +23,7 @@ const config = {
     ]
   },
   entry: {
+    emailConnectorAdministration : './src/main/webapp/vue-apps/email-connector-administration/main.js',
   },
   output: {
     path: path.join(__dirname, 'target/email-connector/'),
@@ -32,10 +33,10 @@ const config = {
   plugins: [
     new ESLintPlugin({
       files: [
-        './src/main/webapp/vue-app/*.js',
-        './src/main/webapp/vue-app/*.vue',
-        './src/main/webapp/vue-app/**/*.js',
-        './src/main/webapp/vue-app/**/*.vue',
+        './src/main/webapp/vue-apps/*.js',
+        './src/main/webapp/vue-apps/*.vue',
+        './src/main/webapp/vue-apps/**/*.js',
+        './src/main/webapp/vue-apps/**/*.vue',
       ],
     }),
     new VueLoaderPlugin()
