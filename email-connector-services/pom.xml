@@ -8,7 +8,7 @@
   <artifactId>email-connector-services</artifactId>
   <name>eXo Email Connector - Services</name>
   <properties>
-    <exo.test.coverage.ratio>0.3</exo.test.coverage.ratio>
+    <exo.test.coverage.ratio>0.5</exo.test.coverage.ratio>
   </properties>
   <dependencies>
     <dependency>

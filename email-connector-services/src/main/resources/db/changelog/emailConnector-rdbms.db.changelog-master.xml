@@ -9,5 +9,35 @@
   <!-- Managing both DB that use sequences and db that use auto increment -->
   <property name="autoIncrement" value="true" dbms="mysql,mssql,h2,sybase,db2,hsqldb"/>
   <property name="autoIncrement" value="false" dbms="oracle,postgresql"/>
+  
+  <changeSet author="email-connector" id="1.0.0-0" dbms="oracle,postgresql,hsqldb">
+    <createSequence sequenceName="SEQ_EMAIL_CONNECTOR_ID" startValue="1"/>
+  </changeSet>
 
+  <changeSet author="email-connector" id="1.0.0-1">
+    <createTable tableName="EMAIL_CONNECTOR">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_CONNECTOR"/>
+      </column>
+      <column name="NAME" type="NVARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="IMAGE_FILE_ID" type="BIGINT">
+      </column>
+      <column name="ICON" type="NVARCHAR(500)">
+      </column>
+      <column name="IMAP_URL" type="NVARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="PORT" type="NVARCHAR(50)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ACTIVE" type="BOOLEAN">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8 COLLATE utf8_general_ci"/>
+    </modifySql>
+  </changeSet>
 </databaseChangeLog>
