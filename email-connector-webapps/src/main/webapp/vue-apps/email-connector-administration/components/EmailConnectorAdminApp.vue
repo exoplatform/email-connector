@@ -19,48 +19,43 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     role="main"
     id="emailConnectorAdministration"
     class="pa-5">
-    <h4 class="text-title mt-0 mb-8">
-      {{ $t("emailConnector.admin.title") }}
-    </h4>
-    <v-list-item class="px-0">
-      <v-list-item-action class="me-3 my-0">
-        <v-switch v-model="emailConnectorActive" @change="activate()" />
-      </v-list-item-action>
-      <v-list-item-content class="py-0">
-        <v-list-item-title class="subtitle-1 pt-2">
-          {{ $t("emailConnector.admin.activate.label") }}
-        </v-list-item-title>
-      </v-list-item-content>
-    </v-list-item>
-    <v-data-table
-      v-if="emailConnectorEnabled"
-      :headers="headers"
-      hide-default-footer 
-      disable-pagination
-      disable-filtering
-      disable-sort />
+    <email-connector-admin-header
+      :email-connector-active="emailConnectorActive"
+      :has-connectors="hasConnectors" 
+      @emailConnector-active="emailConnectorActive = $event" />
+    <email-connector-admin-list
+      :connectors="connectors"
+      class="mt-7"
+      v-if="emailConnectorActive" />
+    <email-connector-admin-footer :has-connectors="hasConnectors" />
+    <email-connector-admin-drawer @emailConnector-created="getEmailConnectors" />
   </v-app>
 </template>
 
 <script>
 export default {
   data: () => ({
-    headers: [],
     featureName: 'emailConnector',
     emailConnectorActive: null,
+    connectors: []
   }),
+  computed: {
+    hasConnectors() {
+      return this.connectors?.length > 0;
+    },
+    isDefault() {
+      return !this.emailConnector?.iconSrc && !this.emailConnector?.iconUrl;
+    },
+  },
   created() {
-    this.headers = [
-      { text: this.$t('emailConnector.admin.connectors.list.name'), align: 'center' },
-      { text: this.$t('emailConnector.admin.connectors.list.activate'), align: 'center' },
-      { text: this.$t('emailConnector.admin.connectors.list.actions'), align: 'center' }
-    ];
     this.$featureService.isFeatureEnabled(this.featureName)
       .then(enabled => this.emailConnectorActive = enabled);
+    this.getEmailConnectors();
   },
   methods: {
-    activate() {
-      this.$emailConnectorAdministrationService.activate(this.emailConnectorActive);
+    getEmailConnectors() {
+      this.$emailConnectorAdministrationService.getEmailConnectors()
+        .then(connectors => this.connectors = connectors);
     },
   }
 };

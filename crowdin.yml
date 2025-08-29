@@ -15,4 +15,13 @@
 # Files configuration
 #
 files: [
+  {
+    "source": "/email-connector-webapps/src/main/resources/locale/portlet/emailConnector/emailConnectorAdministration_en.properties",
+    "translation": "%original_path%/%file_name%!_%locale_with_underscore%.%file_extension%",
+    "translation_replace": { YML_CROWDIN_LANGUAGES_ARG },
+    "dest": "hub/email__connector/emailConnectorAdministration.properties",
+    "update_option": "update_as_unapproved",
+    "escape_special_characters": 0,
+    "escape_quotes": 0,
+  },
 ]
