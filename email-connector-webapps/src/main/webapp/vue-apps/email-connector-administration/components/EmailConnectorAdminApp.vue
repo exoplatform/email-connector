@@ -28,7 +28,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="mt-7"
       v-if="emailConnectorActive" />
     <email-connector-admin-footer :has-connectors="hasConnectors" />
-    <email-connector-admin-drawer @emailConnector-created="getEmailConnectors" />
+    <email-connector-admin-drawer @emailConnector-saved="getEmailConnectors" />
   </v-app>
 </template>
 

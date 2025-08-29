@@ -21,6 +21,7 @@ package org.exoplatform.emailConnector.rest;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -115,6 +116,15 @@ public class EmailConnectorRestTest {
                                                                        .content(asJsonString(emailConnector()))
                                                                        .contentType(MediaType.APPLICATION_JSON)
                                                                        .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
+  void updateEmailConnector() throws Exception {
+    ResultActions response = mockMvc.perform(put(EMAIL_CONNECTOR_PATH).with(testAdminUser())
+                                                                      .content(asJsonString(emailConnector()))
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
   }
 

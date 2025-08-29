@@ -67,6 +67,28 @@ public class EmailConnectorStorage {
     return fromEntity(emailConnectorEntity);
   }
 
+  public void updateEmailConnector(EmailConnector emailConnector) {
+    Long emailConnectorId = emailConnector.getId();
+    EmailConnectorEntity storedEmailConnectorEntity = emailConnectorDAO.findById(emailConnectorId).orElseThrow();
+    Long oldImageFileId = storedEmailConnectorEntity.getImageFileId();
+
+    boolean imageRemoved = (emailConnector.getImageFileId() == null || emailConnector.getImageFileId() == 0)
+        && oldImageFileId != null && oldImageFileId > 0;
+    emailConnector.setImageFileId(oldImageFileId);
+    if (imageRemoved) {
+      emailConnector.setImageFileId(null);
+      // Cleanup old useless image
+      fileService.deleteFile(oldImageFileId);
+    }
+    if (StringUtils.isNotBlank(emailConnector.getImageUploadId())) {
+      Long imageFileId = saveImageFileItem(oldImageFileId, emailConnector.getImageUploadId());
+      emailConnector.setImageFileId(imageFileId);
+    }
+
+    EmailConnectorEntity emailConnectorEntity = toEntity(emailConnector);
+    emailConnectorDAO.save(emailConnectorEntity);
+  }
+
   public EmailConnector getEmailConnector(long emailConnectorId) {
     EmailConnectorEntity emailConnectorEntity = emailConnectorDAO.findById(emailConnectorId).orElse(null);
     return fromEntity(emailConnectorEntity);
