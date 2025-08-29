@@ -40,7 +40,7 @@ export function init() {
   exoi18n.loadLanguageAsync(lang, url).then(i18n => {
     // init Vue app when locale ressources are ready
     Vue.createApp({
-      template: `<email-connector-administration-app id="${appId}" />`,
+      template: `<email-connector-admin-app id="${appId}" />`,
       vuetify,
       i18n
     }, `#${appId}`, 'Email Connector Administration');
