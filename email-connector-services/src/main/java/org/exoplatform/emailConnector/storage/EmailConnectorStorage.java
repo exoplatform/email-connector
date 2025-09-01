@@ -25,6 +25,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.utils.IOUtil;
@@ -44,6 +45,8 @@ import lombok.SneakyThrows;
 public class EmailConnectorStorage {
 
   public static final String NAME_SPACE = "emailConnector";
+  
+  public static final Long   DEFAULT_LAST_MODIFIED               = System.currentTimeMillis();
 
   @Autowired
   private EmailConnectorDAO  emailConnectorDAO;
@@ -65,6 +68,28 @@ public class EmailConnectorStorage {
     }
     emailConnectorEntity = emailConnectorDAO.save(emailConnectorEntity);
     return fromEntity(emailConnectorEntity);
+  }
+
+  public void updateEmailConnector(EmailConnector emailConnector) {
+    Long emailConnectorId = emailConnector.getId();
+    EmailConnectorEntity storedEmailConnectorEntity = emailConnectorDAO.findById(emailConnectorId).orElseThrow();
+    Long oldImageFileId = storedEmailConnectorEntity.getImageFileId();
+
+    boolean imageRemoved = (emailConnector.getImageFileId() == null || emailConnector.getImageFileId() == 0)
+        && oldImageFileId != null && oldImageFileId > 0;
+    emailConnector.setImageFileId(oldImageFileId);
+    if (imageRemoved) {
+      emailConnector.setImageFileId(null);
+      // Cleanup old useless image
+      fileService.deleteFile(oldImageFileId);
+    }
+    if (StringUtils.isNotBlank(emailConnector.getImageUploadId())) {
+      Long imageFileId = saveImageFileItem(oldImageFileId, emailConnector.getImageUploadId());
+      emailConnector.setImageFileId(imageFileId);
+    }
+
+    EmailConnectorEntity emailConnectorEntity = toEntity(emailConnector);
+    emailConnectorDAO.save(emailConnectorEntity);
   }
 
   public EmailConnector getEmailConnector(long emailConnectorId) {
@@ -97,10 +122,17 @@ public class EmailConnectorStorage {
     if (emailConnectorEntity == null) {
       return null;
     } else {
+      long imageLastModified = DEFAULT_LAST_MODIFIED;
+      if (emailConnectorEntity.getImageFileId() != null && emailConnectorEntity.getImageFileId() > 0) {
+        FileInfo fileInfo = fileService.getFileInfo(emailConnectorEntity.getImageFileId());
+        if (fileInfo != null && fileInfo.getUpdatedDate() != null) {
+          imageLastModified = fileInfo.getUpdatedDate().getTime();
+        }
+      }
       EmailConnector emailConnector = new EmailConnector(emailConnectorEntity.getId(),
                                                          emailConnectorEntity.getName(),
                                                          getImageUrl(emailConnectorEntity.getImageFileId(),
-                                                                     emailConnectorEntity.getId()),
+                                                                     emailConnectorEntity.getId(), imageLastModified),
                                                          emailConnectorEntity.getImageFileId(),
                                                          emailConnectorEntity.getIcon(),
                                                          emailConnectorEntity.getImapUrl(),
@@ -132,11 +164,11 @@ public class EmailConnectorStorage {
     return fileItem == null || fileItem.getFileInfo() == null ? null : fileItem.getFileInfo().getId();
   }
 
-  private String getImageUrl(Long imageFileId, Long id) {
+  private String getImageUrl(Long imageFileId, Long id, long imageLastModified) {
     if (imageFileId == null || imageFileId.longValue() == 0) {
       return null;
     } else {
-      return String.format("/email-connector/rest/emailConnector/illustration/%s", id);
+      return String.format("/email-connector/rest/emailConnector/illustration/%s?v=%s", id, imageLastModified);
     }
   }
 }

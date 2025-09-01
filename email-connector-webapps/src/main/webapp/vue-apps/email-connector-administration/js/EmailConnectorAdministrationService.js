@@ -46,6 +46,21 @@ export function createEmailConnector(emailConnector) {
   });
 }
 
+export function updateEmailConnector(emailConnector) {
+  return fetch('/email-connector/rest/emailConnector', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify(emailConnector),
+    method: 'PUT'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating email connector');
+    }
+  });
+}
+
 export function getEmailConnectors() {
   return fetch('/email-connector/rest/emailConnector', {
     headers: {
