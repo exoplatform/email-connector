@@ -24,7 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     :allow-expand="!$root.isMobile"
     @closed="close">
     <template #title>
-      <span>{{ $t('emailConnector.admin.connectors.drawer.title') }}</span>
+      <span>{{ drawerTitle }}</span>
     </template>
     <template v-if="drawer" #content>
       <form
@@ -97,10 +97,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $t('emailConnector.admin.connectors.drawer.cancel') }}
         </v-btn>
         <v-btn
-          :disabled="addDisabled"
-          @click="createConnector"
+          :disabled="disabled"
+          @click="saveConnector"
           class="btn btn-primary ms-5 me-5">
-          {{ $t('emailConnector.admin.connectors.drawer.add') }}
+          {{ drawerButtonLabel }}
         </v-btn>
       </div>
     </template>
@@ -119,9 +119,17 @@ export default {
     name() {
       return this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
     },
-    addDisabled() {
+    disabled() {
       return !this.emailConnector.name || !this.emailConnector.imapUrl || !this.emailConnector.port;
     },
+    drawerTitle() {
+      return this.emailConnector.id && `${this.emailConnector.name} ${this.$t('emailConnector.admin.connectors.drawer.edit.title')}`
+        || this.$t('emailConnector.admin.connectors.drawer.add.title');
+    },
+    drawerButtonLabel() {
+      return this.emailConnector.id && this.$t('emailConnector.admin.connectors.drawer.save')
+        || this.$t('emailConnector.admin.connectors.drawer.add');
+    }
   },
   watch: {
     name(newVal) {
@@ -131,35 +139,60 @@ export default {
     }
   },
   created() {
-    this.$root.$on('open-add-email-connector-drawer', this.open);
+    this.$root.$on('open-email-connector-drawer', this.open);
   },
   methods: {
-    open() {
+    async open(emailConnector) {
       this.$refs.drawer.open();
+      if (emailConnector) {
+        this.emailConnector = { ...emailConnector };
+        this.emailConnectorNameTranslations = await this.$translationService.getTranslations('emailConnector', emailConnector.id, 'name');
+        this.emailConnector.name = this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
+      }
     },
     close() {
       this.emailConnectorNameTranslations = {};
       this.emailConnector.icon = null;
       this.emailConnector.imapUrl = '';
+      this.emailConnector.id = '';
       this.emailConnector.port = '';
       this.emailConnector.imageUploadId = null;
+      this.emailConnector.imageUrl = null;
       this.$refs.drawer.close();
     },
     resetImage() {
       this.emailConnector.imageUrl = null;
       this.emailConnector.imageFileId = null;
     },
-    async createConnector() {
+    async saveConnector() {
       this.loading = true;
+      const isNew = !this.emailConnector.id;
+      let emailConnector = this.emailConnector;
       try {
         this.emailConnector.icon = this.emailConnector.icon || 'fa-envelope';
-        const emailConnector = await this.$emailConnectorAdministrationService.createEmailConnector(this.emailConnector);
+        this.emailConnector.name = this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
+        if (isNew) {
+          emailConnector = await this.$emailConnectorAdministrationService.createEmailConnector(this.emailConnector);
+        }
+        else {
+          await this.$emailConnectorAdministrationService.updateEmailConnector(this.emailConnector);
+        }
         await this.$translationService.saveTranslations('emailConnector',  emailConnector.id, 'name', this.emailConnectorNameTranslations);
-        this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.add.success'), 'success');
-        this.$emit('emailConnector-created');
+        if (isNew) {
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.add.success'), 'success');
+        }
+        else {
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.edit.success'), 'success');
+        }
+        this.$emit('emailConnector-saved');
         this.close();
       } catch (e) {
-        this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.add.error'), 'error');
+        if (isNew) {
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.add.error'), 'error');
+        }
+        else {
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.edit.error'), 'error');
+        } 
       } finally {
         this.loading = false;
       }

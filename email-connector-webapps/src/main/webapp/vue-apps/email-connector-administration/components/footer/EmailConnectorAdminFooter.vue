@@ -20,7 +20,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="!hasConnectors"
       :aria-label="$t('emailConnector.admin.connectors.addConnector')"
       class="btn btn-primary text-truncate mb-3"
-      @click="$root.$emit('open-add-email-connector-drawer')">
+      @click="$root.$emit('open-email-connector-drawer')">
       <v-icon
         size="16">
         fa-plus

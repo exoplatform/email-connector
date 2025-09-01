@@ -80,6 +80,11 @@ export default {
       { text: this.$t('emailConnector.admin.connectors.list.activate'), align: 'center', value: 'active' },
       { text: this.$t('emailConnector.admin.connectors.list.actions'), align: 'center', value: 'actions' }
     ];
+  },
+  methods: {
+    editItem(item) {
+      this.$root.$emit('open-email-connector-drawer', item);
+    },
   }
 };
 </script>
