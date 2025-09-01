@@ -78,6 +78,19 @@ public class EmailConnectorServiceTest {
   }
 
   @Test
+  @SneakyThrows
+  void updateEmailConnector() {
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.updateEmailConnector(null, TEST_USER));
+    EmailConnector emailConnector = emailConnector(null);
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.updateEmailConnector(emailConnector, TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    emailConnectorService.createEmailConnector(emailConnector, TEST_USER);
+    verify(emailConnectorStorage).createEmailConnector(emailConnector);
+  }
+
+  @Test
   void getEmailConnector() {
     emailConnectorService.getEmailConnector(1L);
     verify(emailConnectorStorage).getEmailConnector(1L);

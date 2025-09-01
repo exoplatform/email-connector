@@ -74,11 +74,29 @@ public class EmailConnectorService {
     if (emailConnector == null) {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
     }
-    
+
     if (!canEdit(username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_MESSAGE, username, emailConnector.getName()));
     }
     return emailConnectorStorage.createEmailConnector(emailConnector);
+  }
+
+  /**
+   * Update an existing email connector on datasource.
+   *
+   * @param emailConnector dto to update on store
+   * @param username username storing email connector
+   * @throws IllegalAccessException if user is not allowed to update email
+   *           connector
+   */
+  public void updateEmailConnector(EmailConnector emailConnector, String username) throws IllegalAccessException {
+    if (emailConnector == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_MESSAGE, username, emailConnector.getName()));
+    }
+    emailConnectorStorage.updateEmailConnector(emailConnector);
   }
 
   /**
