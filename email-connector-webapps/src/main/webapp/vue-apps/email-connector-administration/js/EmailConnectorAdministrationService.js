@@ -76,3 +76,17 @@ export function getEmailConnectors() {
     }
   });
 }
+
+export function deleteEmailConnector(emailConnectorId) {
+  return fetch(`/email-connector/rest/emailConnector/${emailConnectorId}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'DELETE'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when deleting email connector');
+    }
+  });
+}

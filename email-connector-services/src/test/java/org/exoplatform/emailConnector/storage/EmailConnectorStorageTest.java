@@ -29,7 +29,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
-import org.apache.commons.lang3.ArrayUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -73,6 +72,11 @@ public class EmailConnectorStorageTest {
       when(emailConnectorDAO.findAll()).thenReturn(Optional.of(entity).stream().collect(Collectors.toList()));
       return entity;
     });
+    doAnswer(invocation -> {
+      EmailConnectorEntity entity = invocation.getArgument(0);
+      when(emailConnectorDAO.findById(entity.getId())).thenReturn(Optional.empty());
+      return null;
+    }).when(emailConnectorDAO).delete(any());
   }
 
   @Test
@@ -100,6 +104,15 @@ public class EmailConnectorStorageTest {
     assertEquals("testNameUpdated", retrievedEmailConnector.getName());
     assertEquals("testImapUrlUpdated", retrievedEmailConnector.getImapUrl());
     assertEquals("testPortUpdated", retrievedEmailConnector.getPort());
+  }
+
+  @Test
+  void deleteEmailConnector() {
+    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
+    emailConnectorStorage.deleteEmailConnector(storedEmailConnector.getId());
+    EmailConnector retrievedEmailConnector = emailConnectorStorage.getEmailConnector(storedEmailConnector.getId());
+    assertNull(retrievedEmailConnector);
   }
 
   @Test

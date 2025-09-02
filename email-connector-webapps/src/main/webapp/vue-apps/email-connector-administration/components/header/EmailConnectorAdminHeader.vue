@@ -23,14 +23,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-list-item-content>
     <v-list-item-action class="my-0">
       <v-btn
-        height="24"
-        min-width="24"
+        min-width="36"
         v-if="hasConnectors"
         :aria-label="$t('emailConnector.admin.connectors.add')"
         class="btn btn-primary px-0"
         @click="$root.$emit('open-email-connector-drawer')">
         <v-icon
-          size="16">
+          size="18">
           fa-plus
         </v-icon>
       </v-btn>
