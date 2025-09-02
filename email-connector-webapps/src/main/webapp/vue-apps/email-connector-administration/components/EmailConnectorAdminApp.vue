@@ -27,8 +27,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :connectors="connectors"
       class="mt-7"
       v-if="emailConnectorActive" />
-    <email-connector-admin-footer :has-connectors="hasConnectors" />
-    <email-connector-admin-drawer @emailConnector-saved="getEmailConnectors" />
+    <email-connector-admin-footer v-if="emailConnectorActive && !hasConnectors" />
+    <email-connector-admin-drawer />
   </v-app>
 </template>
 
@@ -51,6 +51,9 @@ export default {
     this.$featureService.isFeatureEnabled(this.featureName)
       .then(enabled => this.emailConnectorActive = enabled);
     this.getEmailConnectors();
+    this.$root.$on('refresh-connectors-list', () => {
+      this.getEmailConnectors();
+    });
   },
   methods: {
     getEmailConnectors() {

@@ -184,7 +184,7 @@ export default {
         else {
           this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.edit.success'), 'success');
         }
-        this.$emit('emailConnector-saved');
+        this.$root.$emit('refresh-connectors-list');
         this.close();
       } catch (e) {
         if (isNew) {

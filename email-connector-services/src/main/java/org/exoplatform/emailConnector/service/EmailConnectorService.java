@@ -98,7 +98,29 @@ public class EmailConnectorService {
     }
     emailConnectorStorage.updateEmailConnector(emailConnector);
   }
-
+  
+  /**
+   * Delete an existing email connector on datasource.
+   *
+   * @param emailConnectorId technical identifier of email connector to be deleted
+   * @param username user currently deleting email connector
+   * @throws IllegalAccessException if user is not allowed to update email
+   *           connector
+   */
+  public void deleteEmailConnector(Long emailConnectorId, String username) throws IllegalAccessException {
+    if (emailConnectorId == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    EmailConnector storedEmailConnector = emailConnectorStorage.getEmailConnector(emailConnectorId);
+    if (storedEmailConnector == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_MESSAGE, username, storedEmailConnector.getName()));
+    }
+    emailConnectorStorage.deleteEmailConnector(emailConnectorId);
+  }
+  
   /**
    * Get an email connector by id
    *

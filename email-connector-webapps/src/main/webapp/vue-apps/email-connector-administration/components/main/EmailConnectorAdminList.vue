@@ -19,6 +19,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <v-data-table
       :headers="headers"
       :items="connectors"
+      :no-data-text="$t('emailConnector.admin.connectors.list.noConnector')"
       hide-default-footer 
       disable-pagination
       disable-filtering
@@ -54,11 +55,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           icon
           small
           color="error"
-          @click="deleteItem(item)">
+          @click="openDeleteConfirmDialog(item)">
           <v-icon size="20">fa-trash</v-icon>
         </v-btn>
       </template>
     </v-data-table>
+    <confirm-dialog
+      ref="deleteConfirmDialog"
+      :title="$t('emailConnector.admin.connectors.modal.delete.title')"
+      :message="$t('emailConnector.admin.connectors.modal.delete.message')"
+      :ok-label="$t('emailConnector.admin.connectors.modal.delete.confirmDelete')"
+      :cancel-label="$t('emailConnector.admin.connectors.modal.delete.cancelDelete')"
+      @ok="deleteEmailConnector"
+      @closed="emailConnectorToDelete = null" />
   </div>
 </template>
 
@@ -72,6 +81,7 @@ export default {
   },
   data: () => ({
     headers: [],
+    emailConnectorToDelete: null,
   }),
   created() {
     this.headers = [
@@ -84,6 +94,20 @@ export default {
   methods: {
     editItem(item) {
       this.$root.$emit('open-email-connector-drawer', item);
+    },
+    deleteEmailConnector() {
+      this.$emailConnectorAdministrationService.deleteEmailConnector(this.emailConnectorToDelete.id)
+        .then(() =>
+        {
+          this.$root.$emit('refresh-connectors-list');
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.delete.success'), 'success');
+          this.emailConnectorToDelete = null;
+        })
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.delete.error'), 'error'));
+    },
+    openDeleteConfirmDialog(item) {
+      this.emailConnectorToDelete = item;
+      this.$refs.deleteConfirmDialog.open();
     },
   }
 };

@@ -19,6 +19,7 @@
 package org.exoplatform.emailConnector.rest;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -125,6 +126,12 @@ public class EmailConnectorRestTest {
                                                                       .content(asJsonString(emailConnector()))
                                                                       .contentType(MediaType.APPLICATION_JSON)
                                                                       .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+  }
+  
+  @Test
+  void deleteEmailConnector() throws Exception {
+    ResultActions response = mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/1").with(testAdminUser()));
     response.andExpect(status().isOk());
   }
 

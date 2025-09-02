@@ -44,9 +44,9 @@ import lombok.SneakyThrows;
 @Component
 public class EmailConnectorStorage {
 
-  public static final String NAME_SPACE = "emailConnector";
-  
-  public static final Long   DEFAULT_LAST_MODIFIED               = System.currentTimeMillis();
+  public static final String NAME_SPACE            = "emailConnector";
+
+  public static final Long   DEFAULT_LAST_MODIFIED = System.currentTimeMillis();
 
   @Autowired
   private EmailConnectorDAO  emailConnectorDAO;
@@ -92,6 +92,15 @@ public class EmailConnectorStorage {
     emailConnectorDAO.save(emailConnectorEntity);
   }
 
+  public void deleteEmailConnector(Long emailConnectorId) {
+    EmailConnectorEntity emailConnectorEntity = emailConnectorDAO.findById(emailConnectorId).orElse(null);
+    if (emailConnectorEntity.getImageFileId() != null) {
+      // Cleanup old useless image
+      fileService.deleteFile(emailConnectorEntity.getImageFileId());
+    }
+    emailConnectorDAO.delete(emailConnectorEntity);
+  }
+
   public EmailConnector getEmailConnector(long emailConnectorId) {
     EmailConnectorEntity emailConnectorEntity = emailConnectorDAO.findById(emailConnectorId).orElse(null);
     return fromEntity(emailConnectorEntity);
@@ -132,7 +141,8 @@ public class EmailConnectorStorage {
       EmailConnector emailConnector = new EmailConnector(emailConnectorEntity.getId(),
                                                          emailConnectorEntity.getName(),
                                                          getImageUrl(emailConnectorEntity.getImageFileId(),
-                                                                     emailConnectorEntity.getId(), imageLastModified),
+                                                                     emailConnectorEntity.getId(),
+                                                                     imageLastModified),
                                                          emailConnectorEntity.getImageFileId(),
                                                          emailConnectorEntity.getIcon(),
                                                          emailConnectorEntity.getImapUrl(),
