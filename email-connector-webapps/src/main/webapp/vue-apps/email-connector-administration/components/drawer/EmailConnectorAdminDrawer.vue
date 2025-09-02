@@ -99,7 +99,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-btn
           :disabled="disabled"
           @click="saveConnector"
-          class="btn btn-primary ms-5 me-5">
+          class="btn btn-primary ms-5">
           {{ drawerButtonLabel }}
         </v-btn>
       </div>
@@ -123,7 +123,9 @@ export default {
       return !this.emailConnectorName || !this.emailConnector.imapUrl || !this.emailConnector.port;
     },
     drawerTitle() {
-      return this.emailConnector.id && `${this.emailConnector.name} ${this.$t('emailConnector.admin.connectors.drawer.edit.title')}`
+      return this.emailConnector.id && this.$t('emailConnector.admin.connectors.drawer.edit.title', {
+        0: this.emailConnector.name,
+      })
         || this.$t('emailConnector.admin.connectors.drawer.add.title');
     },
     drawerButtonLabel() {
@@ -179,7 +181,7 @@ export default {
         else {
           this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.drawer.edit.success'), 'success');
         }
-        this.$emit('emailConnector-saved');
+        this.$root.$emit('refresh-connectors-list');
         this.close();
       } catch (e) {
         if (isNew) {

@@ -19,6 +19,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <v-data-table
       :headers="headers"
       :items="connectors"
+      no-data-text=""
       hide-default-footer 
       disable-pagination
       disable-filtering
@@ -36,29 +37,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </span>
       </template>
       <template #[`item.active`]="{ item }">
-        <v-list-item class="justify-center">
-          <v-list-item-action class="my-0">
-            <v-switch v-model="item.active" @change="activateItem(item)" />
-          </v-list-item-action>
-        </v-list-item>
+        <div class="d-flex justify-center">
+          <v-switch
+            v-model="item.active"
+            @change="activateItem(item)"
+            class="ma-auto" />
+        </div>
       </template>
       <template #[`item.actions`]="{ item }">
         <v-btn
           icon
-          small
-          color="primary"
           @click="editItem(item)">
           <v-icon size="20">fa-edit</v-icon>
         </v-btn>
         <v-btn
           icon
-          small
           color="error"
-          @click="deleteItem(item)">
+          @click="openDeleteConfirmDialog(item)">
           <v-icon size="20">fa-trash</v-icon>
         </v-btn>
       </template>
     </v-data-table>
+    <confirm-dialog
+      ref="deleteConfirmDialog"
+      :title="$t('emailConnector.admin.connectors.modal.delete.title')"
+      :message="$t('emailConnector.admin.connectors.modal.delete.message')"
+      :ok-label="$t('emailConnector.admin.connectors.modal.delete.confirmDelete')"
+      :cancel-label="$t('emailConnector.admin.connectors.modal.delete.cancelDelete')"
+      @ok="deleteEmailConnector"
+      @closed="emailConnectorToDelete = null" />
   </div>
 </template>
 
@@ -72,18 +79,33 @@ export default {
   },
   data: () => ({
     headers: [],
+    emailConnectorToDelete: null,
   }),
   created() {
     this.headers = [
       { text: '', value: 'icon', width: '40px'},
       { text: this.$t('emailConnector.admin.connectors.list.name'), value: 'name' },
-      { text: this.$t('emailConnector.admin.connectors.list.activate'), align: 'center', value: 'active' },
-      { text: this.$t('emailConnector.admin.connectors.list.actions'), align: 'center', value: 'actions' }
+      { text: this.$t('emailConnector.admin.connectors.list.activate'), align: 'center', value: 'active', width: '80px' },
+      { text: this.$t('emailConnector.admin.connectors.list.actions'), align: 'center', value: 'actions',width: '80px' }
     ];
   },
   methods: {
     editItem(item) {
       this.$root.$emit('open-email-connector-drawer', item);
+    },
+    deleteEmailConnector() {
+      this.$emailConnectorAdministrationService.deleteEmailConnector(this.emailConnectorToDelete.id)
+        .then(() =>
+        {
+          this.$root.$emit('refresh-connectors-list');
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.delete.success'), 'success');
+          this.emailConnectorToDelete = null;
+        })
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.delete.error'), 'error'));
+    },
+    openDeleteConfirmDialog(item) {
+      this.emailConnectorToDelete = item;
+      this.$refs.deleteConfirmDialog.open();
     },
   }
 };
