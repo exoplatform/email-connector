@@ -15,42 +15,31 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-avatar
-    :height="iconSize"
-    :min-width="iconSize"
-    :width="iconSize"
-    class="d-flex justify-center align-center"
-    tile>
-    <v-img
-      v-if="iconUrl"
-      :src="iconUrl"
-      :max-height="iconSize"
-      :height="iconSize"
-      :max-width="iconSize"
-      contain
-      eager />
-    <v-icon
-      v-else
-      :size="iconSize"
-      class="icon-default-color">
-      {{ icon || 'fa-envelope' }}
-    </v-icon>
-  </v-avatar>
+  <v-list-item>
+    <email-connector-admin-icon
+      :image-url="activeEmailConnector.imageUrl"
+      :icon="activeEmailConnector.icon" 
+      class="me-5" />
+    <v-list-item-content>
+      <span>{{ activeEmailConnector.name }}</span>
+    </v-list-item-content>
+    <v-list-item-action class="ml-3">
+      <v-btn
+        class="btn"
+        @click="$root.$emit('open-user-setting-drawer', activeEmailConnector)">
+        {{ $t('UserSettings.emailConnector.connectors.drawer.connector.button.connect') }}
+      </v-btn>
+    </v-list-item-action>
+  </v-list-item>
 </template>
+
 <script>
 export default {
-  data: () => ({
-    iconSize: 40
-  }),
   props: {
-    iconUrl: {
-      type: String,
-      default: null,
+    activeEmailConnector: {
+      type: Object,
+      default: () => null,
     },
-    icon: {
-      type: String,
-      default: null,
-    },
-  },
+  }
 };
 </script>

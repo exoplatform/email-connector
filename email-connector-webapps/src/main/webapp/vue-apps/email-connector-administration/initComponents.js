@@ -17,7 +17,6 @@
 import EmailConnectorAdminApp from './components/EmailConnectorAdminApp.vue';
 import EmailConnectorAdminHeader from './components/header/EmailConnectorAdminHeader.vue';
 import EmailConnectorAdminList from './components/main/EmailConnectorAdminList.vue';
-import EmailConnectorAdminIcon from './components/main/EmailConnectorAdminIcon.vue';
 import EmailConnectorAdminDrawer from './components/drawer/EmailConnectorAdminDrawer.vue';
 import EmailConnectorAdminImageInput from './components/drawer/EmailConnectorAdminImageInput.vue';
 import EmailConnectorAdminFooter from './components/footer/EmailConnectorAdminFooter.vue';
@@ -28,8 +27,7 @@ const components = {
   'email-connector-admin-footer': EmailConnectorAdminFooter,
   'email-connector-admin-list': EmailConnectorAdminList,
   'email-connector-admin-drawer': EmailConnectorAdminDrawer,
-  'email-connector-admin-image-input': EmailConnectorAdminImageInput,
-  'email-connector-admin-icon': EmailConnectorAdminIcon,
+  'email-connector-admin-image-input': EmailConnectorAdminImageInput
 };
 
 for (const key in components) {

@@ -113,6 +113,13 @@ public class EmailConnectorStorage {
                                  .collect(Collectors.toList());
   }
 
+  public List<EmailConnector> getActiveEmailConnectors() {
+    List<EmailConnectorEntity> activeEmailConnectorEntities = emailConnectorDAO.findActiveEmailConnectors();
+    return activeEmailConnectorEntities.stream()
+                                       .map(emailConnectorEntity -> fromEntity(emailConnectorEntity))
+                                       .collect(Collectors.toList());
+  }
+
   private EmailConnectorEntity toEntity(EmailConnector emailConnector) {
     if (emailConnector == null) {
       return null;
@@ -148,6 +155,7 @@ public class EmailConnectorStorage {
                                                          emailConnectorEntity.getImapUrl(),
                                                          emailConnectorEntity.getPort(),
                                                          emailConnectorEntity.isActive(),
+                                                         null,
                                                          null);
       return emailConnector;
     }
