@@ -156,6 +156,7 @@ public class EmailConnectorStorage {
                                                          emailConnectorEntity.getPort(),
                                                          emailConnectorEntity.isActive(),
                                                          null,
+                                                         null,
                                                          null);
       return emailConnector;
     }

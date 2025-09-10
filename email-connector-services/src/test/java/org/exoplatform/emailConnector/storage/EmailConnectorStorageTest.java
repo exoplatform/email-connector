@@ -166,6 +166,6 @@ public class EmailConnectorStorageTest {
   }
 
   private EmailConnector emailConnector() {
-    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "testPort", false, false, null);
+    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "testPort", false, false, true, null);
   }
 }

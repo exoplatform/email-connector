@@ -132,6 +132,7 @@ export default {
         this.close();
         this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.success'), 'success');
         this.$root.$emit('close-user-setting-connectors-drawer');
+        this.$root.$emit('refresh-active-connectors-list');
         this.$root.$emit('refresh-user-email-setting');
       }).catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.error'), 'error')
       ).finally(() => this.loading = false);

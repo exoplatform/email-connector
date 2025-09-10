@@ -223,4 +223,20 @@ public class EmailConnectorRest {
   public UserEmailSetting getUserEmailSetting(HttpServletRequest request) {
     return emailConnectorService.getUserEmailSetting(request.getRemoteUser());
   }
+  
+  @DeleteMapping("/userEmailSetting")
+  @Secured("users")
+  @Operation(summary = "Deletes user email setting", method = "DELETE", description = "This will delete user email setting")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public void deleteUserEmailSetting(HttpServletRequest request) {
+    try {
+      emailConnectorService.deleteUserEmailSetting(request.getRemoteUser());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
 }
