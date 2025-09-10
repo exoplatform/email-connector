@@ -26,7 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item>
       <v-list-item>
         <v-list-item-content>
-          <v-list-item-title v-if="!userEmailSetting.emailConnectorId" class="text-subtitle">
+          <v-list-item-title v-if="!userEmailSetting.emailConnectorId">
             {{ $t('UserSettings.emailConnector.description') }}
           </v-list-item-title>
           <div v-else>
@@ -52,27 +52,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  data: () => ({
+  props: {
     userEmailSetting: {
-      emailConnectorId: '',
-      emailConnectorImageUrl: '',
-      emailConnectorIcon: '',
-      emailAddress: '',
-      emailPassword: ''
-    }
-  }),
-  created() {
-    this.getUserEmailSetting();
-    this.$root.$on('refresh-user-email-setting', () => {
-      this.getUserEmailSetting();
-    });
+      type: Object,
+      default: null,
+    },
   },
-  methods: {
-    getUserEmailSetting() {
-      this.$emailConnectorUserSettingService.getUserEmailSetting().then(userEmailSetting => {
-        this.userEmailSetting = userEmailSetting;
-      });
-    }
-  }
 };
 </script>

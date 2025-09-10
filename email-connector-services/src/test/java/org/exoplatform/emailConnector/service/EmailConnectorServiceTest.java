@@ -154,8 +154,8 @@ public class EmailConnectorServiceTest {
 
   @Test
   @SneakyThrows
-  void createUserEmailSetting() {
-    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.createUserEmailSetting(null, TEST_USER));
+  void setUserEmailSetting() {
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.setUserEmailSetting(null, TEST_USER));
     EmailConnector emailConnector = emailConnector();
     when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector);
     Session session = mock(Session.class);
@@ -166,7 +166,7 @@ public class EmailConnectorServiceTest {
     when(store.isConnected()).thenReturn(true);
     when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
     UserEmailSetting userEmailSetting = userEmailSetting();
-    emailConnectorService.createUserEmailSetting(userEmailSetting, TEST_USER);
+    emailConnectorService.setUserEmailSetting(userEmailSetting, TEST_USER);
     verify(store).connect(anyString(), anyInt(), anyString(), anyString());
     verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }

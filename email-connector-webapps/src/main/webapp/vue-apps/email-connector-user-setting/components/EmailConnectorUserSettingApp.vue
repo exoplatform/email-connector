@@ -19,8 +19,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-app
     role="main"
     id="emailConnectorUserSetting">
-    <email-connector-user-setting-body />
+    <email-connector-user-setting-body :user-email-setting="userEmailSetting" />
     <email-connector-user-setting-connectors-drawer />
-    <email-connector-user-setting-drawer />
+    <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
   </v-app>
 </template>
+
+<script>
+export default {
+  data: () => ({
+    userEmailSetting: {
+      emailConnectorId: '',
+      emailConnectorImageUrl: '',
+      emailConnectorIcon: '',
+      emailAddress: '',
+      emailPassword: ''
+    }
+  }),
+  created() {
+    this.getUserEmailSetting();
+    this.$root.$on('refresh-user-email-setting', () => {
+      this.getUserEmailSetting();
+    });
+  },
+  methods: {
+    getUserEmailSetting() {
+      this.$emailConnectorUserSettingService.getUserEmailSetting().then(userEmailSetting => {
+        this.userEmailSetting = userEmailSetting;
+      });
+    }
+  }
+};
+</script>

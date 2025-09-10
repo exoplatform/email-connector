@@ -195,18 +195,18 @@ public class EmailConnectorRest {
     }
   }
 
-  @PostMapping("/userEmailSetting")
+  @PutMapping("/userEmailSetting")
   @Secured("users")
-  @Operation(summary = "Creates user email setting", method = "POST", description = "This will create user email setting")
+  @Operation(summary = "Sets user email setting", method = "POST", description = "This will set user email setting")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void createUserEmailSetting(HttpServletRequest request, @RequestBody
+  public void setUserEmailSetting(HttpServletRequest request, @RequestBody
   UserEmailSetting userEmailSetting) {
     try {
-      emailConnectorService.createUserEmailSetting(userEmailSetting, request.getRemoteUser());
+      emailConnectorService.setUserEmailSetting(userEmailSetting, request.getRemoteUser());
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }

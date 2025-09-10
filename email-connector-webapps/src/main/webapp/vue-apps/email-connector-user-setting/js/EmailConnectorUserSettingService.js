@@ -31,17 +31,17 @@ export function getActiveEmailConnectors() {
   });
 }
 
-export function createUserEmailSetting(userEmailSetting) {
+export function setUserEmailSetting(userEmailSetting) {
   return fetch('/email-connector/rest/emailConnector/userEmailSetting', {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
     body: JSON.stringify(userEmailSetting),
-    method: 'POST'
+    method: 'PUT'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when creating user email setting');
+      throw new Error('Error when setting user email setting');
     }
   });
 }
