@@ -187,8 +187,14 @@ public class EmailConnectorServiceTest {
     verify(emailConnectorStorage).getEmailConnector(1L);
   }
 
+  @Test
+  void deleteUserEmailSetting() {
+    emailConnectorService.deleteUserEmailSetting(TEST_USER);
+    verify(settingService).remove(any(Context.class), any(Scope.class), anyString());
+  }
+
   private EmailConnector emailConnector() {
-    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "8000", false, false, "testUploadId");
+    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "8000", false, false, true, "testUploadId");
   }
 
   private UserEmailSetting userEmailSetting() {

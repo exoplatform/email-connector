@@ -61,3 +61,17 @@ export function getUserEmailSetting() {
     }
   });
 }
+
+export function deleteUserEmailSetting() {
+  return fetch('/email-connector/rest/emailConnector/userEmailSetting', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'DELETE'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when deleting user email setting');
+    }
+  });
+}
