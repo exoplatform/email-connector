@@ -25,10 +25,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-list-item-content>
     <v-list-item-action class="ml-3">
       <v-btn
+        v-if="activeEmailConnector.canConnect"
         class="btn"
-        @click="$root.$emit('open-user-setting-drawer', activeEmailConnector)">
-        {{ $t('UserSettings.emailConnector.connectors.drawer.connector.button.connect') }}
+        @click="connect()">
+        {{ connectButtonLabel }}
       </v-btn>
+      <v-tooltip
+        v-else
+        bottom>
+        <template #activator="{on, attrs}">
+          <div
+            v-on="on"
+            v-bind="attrs">
+            <v-btn
+              class="btn"
+              disabled
+              @click="connect()">
+              {{ connectButtonLabel }}
+            </v-btn>
+          </div>
+        </template>
+        <span>
+          {{ $t('UserSettings.emailConnector.connectors.drawer.connector.button.connect.tooltip') }}
+        </span>
+      </v-tooltip>
     </v-list-item-action>
   </v-list-item>
 </template>
@@ -40,6 +60,30 @@ export default {
       type: Object,
       default: () => null,
     },
+  },
+  computed: {
+    connectButtonLabel() {
+      return this.activeEmailConnector.userConnected
+        ? this.$t('UserSettings.emailConnector.connectors.drawer.connector.button.disconnect')
+        : this.$t('UserSettings.emailConnector.connectors.drawer.connector.button.connect');
+    },    
+  },
+  methods: {
+    connect() {
+      if (!this.activeEmailConnector.userConnected) {
+        this.$root.$emit('open-user-setting-drawer', this.activeEmailConnector);
+      }
+      else {
+        this.$emailConnectorUserSettingService.deleteUserEmailSetting()
+          .then(() =>
+          {
+            this.$root.$emit('refresh-active-connectors-list');
+            this.$root.$emit('refresh-user-email-setting');
+            this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.success'), 'success');
+          })
+          .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.error'), 'error'));
+      }
+    }
   }
 };
 </script>

@@ -158,6 +158,12 @@ public class EmailConnectorRestTest {
     ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/userEmailSetting").with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
+  
+  @Test
+  void deleteUserEmailSetting() throws Exception {
+    ResultActions response = mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/userEmailSetting").with(testSimpleUser()));
+    response.andExpect(status().isOk());
+  }
 
   private RequestPostProcessor testAdminUser() {
     return user(ADMIN_USER).password(TEST_PASSWORD).authorities(new SimpleGrantedAuthority("administrators"));
@@ -168,7 +174,7 @@ public class EmailConnectorRestTest {
   }
 
   private EmailConnector emailConnector() {
-    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "testPort", false, false, "testUploadId");
+    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "testPort", false, false, true, "testUploadId");
   }
 
   private UserEmailSetting userEmailSetting() {
