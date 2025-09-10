@@ -17,8 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <exo-drawer
     id="emailConnectorDrawer"
-    ref="drawer"
-    v-model="drawer"
+    ref="emailConnectorDrawer"
+    v-model="emailConnectorDrawer"
     :loading="loading"
     :right="!$vuetify.rtl"
     :allow-expand="!$root.isMobile"
@@ -26,9 +26,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template #title>
       <span>{{ drawerTitle }}</span>
     </template>
-    <template v-if="drawer" #content>
+    <template v-if="emailConnectorDrawer" #content>
       <form
-        ref="addConnectorForm"
+        ref="adminConnectorForm"
         class="mx-5 mt-5"
         @submit.stop.prevent="0">
         <div class="mb-3">
@@ -110,10 +110,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   data: () => ({
-    drawer: false,
+    emailConnectorDrawer: false,
     emailConnectorNameTranslations: {},
     loading: false,
-    emailConnector: {},
+    emailConnector: {
+      id: '',
+      name: '',
+      icon: '',
+      imapUrl: '',
+      port: '',
+      imageUploadId: null,
+      imageFileId: null,
+      imageUrl: null
+    }   
   }),
   computed: {
     emailConnectorName() {
@@ -138,24 +147,24 @@ export default {
   },
   methods: {
     async open(emailConnector) {
-      this.$refs.drawer.open();
       if (emailConnector) {
         this.emailConnector = { ...emailConnector };
         this.emailConnectorNameTranslations = await this.$translationService.getTranslations('emailConnector', emailConnector.id, 'name');
         this.emailConnector.name = this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
       }
+      this.$refs.emailConnectorDrawer.open();
     },
     close() {
       this.emailConnectorNameTranslations = {};
+      this.emailConnector.id = '';
       this.emailConnector.name = '';
       this.emailConnector.icon = null;
       this.emailConnector.imapUrl = '';
-      this.emailConnector.id = '';
       this.emailConnector.port = '';
       this.emailConnector.imageUploadId = null;
       this.emailConnector.imageFileId = null;
       this.emailConnector.imageUrl = null;
-      this.$refs.drawer.close();
+      this.$refs.emailConnectorDrawer.close();
     },
     resetImage() {
       this.emailConnector.imageUrl = null;

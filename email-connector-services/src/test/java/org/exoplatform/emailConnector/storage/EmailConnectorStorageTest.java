@@ -70,6 +70,10 @@ public class EmailConnectorStorageTest {
       }
       when(emailConnectorDAO.findById(ID)).thenReturn(Optional.of(entity));
       when(emailConnectorDAO.findAll()).thenReturn(Optional.of(entity).stream().collect(Collectors.toList()));
+      when(emailConnectorDAO.findActiveEmailConnectors()).thenReturn(Optional.of(entity)
+                                                                             .stream()
+                                                                             .filter(EmailConnectorEntity::isActive)
+                                                                             .collect(Collectors.toList()));
       return entity;
     });
     doAnswer(invocation -> {
@@ -82,7 +86,7 @@ public class EmailConnectorStorageTest {
   @Test
   void createEmailConnector() {
     assertThrows(IllegalArgumentException.class, () -> emailConnectorStorage.createEmailConnector(null));
-    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector emailConnector = emailConnector();
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
     assertNotNull(storedEmailConnector);
     assertNotNull(storedEmailConnector.getId());
@@ -91,7 +95,7 @@ public class EmailConnectorStorageTest {
 
   @Test
   void updateEmailConnector() {
-    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector emailConnector = emailConnector();
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
     storedEmailConnector.setName("testNameUpdated");
     storedEmailConnector.setImapUrl("testImapUrlUpdated");
@@ -108,7 +112,7 @@ public class EmailConnectorStorageTest {
 
   @Test
   void deleteEmailConnector() {
-    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector emailConnector = emailConnector();
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
     emailConnectorStorage.deleteEmailConnector(storedEmailConnector.getId());
     EmailConnector retrievedEmailConnector = emailConnectorStorage.getEmailConnector(storedEmailConnector.getId());
@@ -118,7 +122,7 @@ public class EmailConnectorStorageTest {
   @Test
   void getEmailConnector() {
     assertNull(emailConnectorStorage.getEmailConnector(1000l));
-    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector emailConnector = emailConnector();
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
     EmailConnector retrievedEmailConnector = emailConnectorStorage.getEmailConnector(storedEmailConnector.getId());
     assertNotNull(retrievedEmailConnector);
@@ -132,7 +136,7 @@ public class EmailConnectorStorageTest {
   void getEmailConnectors() {
     List<EmailConnector> retrievedEmailConnectorEntities = emailConnectorStorage.getEmailConnectors();
     assertEquals(0, retrievedEmailConnectorEntities.size());
-    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector emailConnector = emailConnector();
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
     retrievedEmailConnectorEntities = emailConnectorStorage.getEmailConnectors();
     assertNotNull(retrievedEmailConnectorEntities);
@@ -144,7 +148,24 @@ public class EmailConnectorStorageTest {
     assertEquals("testPort", retrievedEmailConnectorEntities.get(0).getPort());
   }
 
-  private EmailConnector emailConnector(Long id) {
-    return new EmailConnector(id, "testName", null, null, null, "testImapUrl", "testPort", false, null);
+  @Test
+  void getActiveEmailConnectors() {
+    List<EmailConnector> retrievedActiveEmailConnectorEntities = emailConnectorStorage.getActiveEmailConnectors();
+    assertEquals(0, retrievedActiveEmailConnectorEntities.size());
+    EmailConnector emailConnector1 = emailConnector();
+    emailConnectorStorage.createEmailConnector(emailConnector1);
+    retrievedActiveEmailConnectorEntities = emailConnectorStorage.getActiveEmailConnectors();
+    assertEquals(0, retrievedActiveEmailConnectorEntities.size());
+    EmailConnector emailConnector2 = emailConnector();
+    emailConnector2.setActive(true);
+    EmailConnector storedEmailConnector2 = emailConnectorStorage.createEmailConnector(emailConnector2);
+    retrievedActiveEmailConnectorEntities = emailConnectorStorage.getActiveEmailConnectors();
+    assertEquals(1, retrievedActiveEmailConnectorEntities.size());
+    assertNotNull(retrievedActiveEmailConnectorEntities.get(0));
+    assertEquals(storedEmailConnector2.getId(), retrievedActiveEmailConnectorEntities.get(0).getId());
+  }
+
+  private EmailConnector emailConnector() {
+    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "testPort", false, false, null);
   }
 }

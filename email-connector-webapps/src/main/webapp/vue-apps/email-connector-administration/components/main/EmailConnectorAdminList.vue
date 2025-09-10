@@ -27,7 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       dense>
       <template #[`item.icon`]="{ item }">
         <email-connector-admin-icon
-          :icon-url="item.imageUrl"
+          :image-url="item.imageUrl"
           :icon="item.icon"
           class="flex-grow-0 flex-shrink-0" />
       </template>
