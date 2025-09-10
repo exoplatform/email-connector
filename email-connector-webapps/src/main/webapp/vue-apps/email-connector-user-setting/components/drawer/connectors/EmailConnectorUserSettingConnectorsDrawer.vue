@@ -27,7 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span>{{ $t('UserSettings.emailConnector.connectors.drawer.title') }}</span>
     </template>
     <template v-if="userSettingConnectorsDrawer" #content>
-      <email-connector-user-setting-connectors-drawer-list class="ma-5" :active-email-connectors="activeEmailConnectors" />
+      <email-connector-user-setting-connectors-drawer-list class="ma-5 py-0" :active-email-connectors="activeEmailConnectors" />
     </template>
   </exo-drawer>
 </template>
