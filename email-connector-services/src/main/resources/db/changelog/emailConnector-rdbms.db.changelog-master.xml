@@ -32,8 +32,8 @@
       <column name="PORT" type="NVARCHAR(50)">
         <constraints nullable="false"/>
       </column>
-      <column name="ACTIVE" type="BOOLEAN">
-        <constraints nullable="false"/>
+      <column name="ACTIVE" type="BOOLEAN" defaultValueBoolean="true">
+        <constraints nullable="false" />
       </column>
     </createTable>
     <modifySql dbms="mysql">

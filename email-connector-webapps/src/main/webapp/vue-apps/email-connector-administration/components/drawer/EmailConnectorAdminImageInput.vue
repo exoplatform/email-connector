@@ -17,7 +17,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <div class="d-flex flex-nowrap align-center">
     <email-connector-admin-icon
-      :icon-url="iconUrl"
+      :image-url="iconUrl"
       :icon="icon"
       class="flex-grow-0 flex-shrink-0 me-4" />
     <font-icon-input

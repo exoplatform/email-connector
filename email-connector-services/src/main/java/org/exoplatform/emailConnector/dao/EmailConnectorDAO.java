@@ -16,12 +16,21 @@
  */
 package org.exoplatform.emailConnector.dao;
 
+import java.util.List;
+
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.entity.EmailConnectorEntity;
 
 @Component
 public interface EmailConnectorDAO extends JpaRepository<EmailConnectorEntity, Long> {
+
+  @Query("""
+      SELECT ec FROM EmailConnectorEntity ec
+      WHERE ec.active = TRUE
+      """)
+  List<EmailConnectorEntity> findActiveEmailConnectors();
 
 }

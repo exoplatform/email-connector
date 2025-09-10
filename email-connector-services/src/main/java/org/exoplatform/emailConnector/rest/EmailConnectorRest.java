@@ -38,6 +38,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -129,9 +130,9 @@ public class EmailConnectorRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "500", description = "Internal server error") })
   public void deleteEmailConnector(HttpServletRequest request,
-                                @Parameter(description = "Email connector technical id to delete", required = true)
-                                @PathVariable("emailConnectorId")
-                                Long emailConnectorId) {
+                                   @Parameter(description = "Email connector technical id to delete", required = true)
+                                   @PathVariable("emailConnectorId")
+                                   Long emailConnectorId) {
     try {
       emailConnectorService.deleteEmailConnector(emailConnectorId, request.getRemoteUser());
     } catch (IllegalAccessException e) {
@@ -142,8 +143,8 @@ public class EmailConnectorRest {
   }
 
   @GetMapping()
-  @Secured("users")
-  @Operation(summary = "Get email connectors", method = "POST", description = "This will get email connectors")
+  @Secured("administrators")
+  @Operation(summary = "Gets email connectors", method = "POST", description = "This will get email connectors")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -151,6 +152,18 @@ public class EmailConnectorRest {
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public List<EmailConnector> getEmailConnectors(HttpServletRequest request) {
     return emailConnectorService.getEmailConnectors(request.getLocale());
+  }
+
+  @GetMapping("/active")
+  @Secured("users")
+  @Operation(summary = "Gets active email connectors", method = "POST", description = "This will get active email connectors")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public List<EmailConnector> getActiveEmailConnectors(HttpServletRequest request) {
+    return emailConnectorService.getActiveEmailConnectors(request.getLocale(), request.getRemoteUser());
   }
 
   @GetMapping(path = "/illustration/{emailConnectorId}")
@@ -168,7 +181,6 @@ public class EmailConnectorRest {
     if (emailConnector == null) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND);
     }
-
     try {
       InputStream stream = emailConnectorService.getEmailConnectorImageInputStream(emailConnectorId);
       if (stream == null) {
@@ -181,5 +193,34 @@ public class EmailConnectorRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+  }
+
+  @PostMapping("/userEmailSetting")
+  @Secured("users")
+  @Operation(summary = "Creates user email setting", method = "POST", description = "This will create user email setting")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public void createUserEmailSetting(HttpServletRequest request, @RequestBody
+  UserEmailSetting userEmailSetting) {
+    try {
+      emailConnectorService.createUserEmailSetting(userEmailSetting, request.getRemoteUser());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  @GetMapping("/userEmailSetting")
+  @Secured("users")
+  @Operation(summary = "Gets user email setting", method = "GET", description = "This will get user email setting")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public UserEmailSetting getUserEmailSetting(HttpServletRequest request) {
+    return emailConnectorService.getUserEmailSetting(request.getRemoteUser());
   }
 }

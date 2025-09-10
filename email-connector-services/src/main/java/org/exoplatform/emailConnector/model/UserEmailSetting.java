@@ -23,34 +23,15 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class EmailConnector {
+public class UserEmailSetting {
 
-  private Long    id;
+  private String emailConnectorId;
 
-  private String  name;
+  private String emailConnectorImageUrl;
 
-  private String  imageUrl;
+  private String emailConnectorIcon;
 
-  private Long    imageFileId;
+  private String emailAddress;
 
-  private String  icon;
-
-  private String  imapUrl;
-
-  private String  port;
-
-  private boolean active = true;
-  
-  private Boolean userConnected;
-
-  private String  imageUploadId;
-
-  public EmailConnector(Long id, String name, Long imageFileId, String imapUrl, String port, boolean active) {
-    this.id = id;
-    this.name = name;
-    this.imageFileId = imageFileId;
-    this.imapUrl = imapUrl;
-    this.port = port;
-    this.active = active;
-  }
+  private String emailPassword;
 }

@@ -7,7 +7,7 @@
   
   <portlet>
     <description>Email Connector Administration portlet</description>
-    <portlet-name>emailConnectorAdministration</portlet-name>
+    <portlet-name>EmailConnectorAdministration</portlet-name>
     <display-name>Email Connector Administration</display-name>
     <portlet-class>org.exoplatform.commons.api.portlet.GenericDispatchedViewPortlet</portlet-class>
     <init-param>
@@ -34,5 +34,32 @@
       <role-name>admin</role-name>
       <role-link>admin</role-link>
     </security-role-ref>
+  </portlet>
+  
+  <portlet>
+    <description>Email Connector User Setting portlet</description>
+    <portlet-name>EmailConnectorUserSetting</portlet-name>
+    <display-name>Email Connector User Setting</display-name>
+    <portlet-class>org.exoplatform.commons.api.portlet.GenericDispatchedViewPortlet</portlet-class>
+    <init-param>
+      <name>portlet-view-dispatched-file-path</name>
+      <value>/html/emailConnectorUserSetting.html</value>
+    </init-param>
+    <init-param>
+      <name>preload.resource.bundles</name>
+      <value>locale.portlet.emailConnector.emailConnectorUserSetting</value>
+    </init-param>
+    <expiration-cache>-1</expiration-cache>
+    <cache-scope>PUBLIC</cache-scope>
+    <supports>
+      <mime-type>text/html</mime-type>
+    </supports>
+    <supported-locale>en</supported-locale>
+    <resource-bundle>locale.portlet.emailConnector.emailConnectorUserSetting</resource-bundle>
+    <portlet-info>
+      <title>Email Connector User Setting portlet for eXo Platform</title>
+      <short-title>email-connector-user-setting</short-title>
+      <keywords>email-connector-user-setting</keywords>
+    </portlet-info>
   </portlet>
 </portlet-app>

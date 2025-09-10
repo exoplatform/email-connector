@@ -18,29 +18,45 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Properties;
+
+import javax.mail.Session;
+import javax.mail.Store;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
+import org.exoplatform.web.security.codec.AbstractCodec;
+import org.exoplatform.web.security.codec.CodecInitializer;
+import org.exoplatform.commons.api.settings.SettingValue;
 
 import io.meeds.social.translation.service.TranslationService;
+import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { EmailConnectorService.class })
@@ -61,6 +77,12 @@ public class EmailConnectorServiceTest {
   @MockBean
   private EmailConnectorStorage emailConnectorStorage;
 
+  @MockBean
+  private SettingService        settingService;
+
+  @MockBean
+  private CodecInitializer      codecInitializer;
+
   @Autowired
   private EmailConnectorService emailConnectorService;
 
@@ -68,7 +90,7 @@ public class EmailConnectorServiceTest {
   @SneakyThrows
   void createEmailConnector() {
     assertThrows(IllegalArgumentException.class, () -> emailConnectorService.createEmailConnector(null, TEST_USER));
-    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector emailConnector = emailConnector();
     assertThrows(IllegalAccessException.class, () -> emailConnectorService.createEmailConnector(emailConnector, TEST_USER));
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
@@ -81,7 +103,7 @@ public class EmailConnectorServiceTest {
   @SneakyThrows
   void updateEmailConnector() {
     assertThrows(IllegalArgumentException.class, () -> emailConnectorService.updateEmailConnector(null, TEST_USER));
-    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector emailConnector = emailConnector();
     assertThrows(IllegalAccessException.class, () -> emailConnectorService.updateEmailConnector(emailConnector, TEST_USER));
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
@@ -89,14 +111,13 @@ public class EmailConnectorServiceTest {
     emailConnectorService.createEmailConnector(emailConnector, TEST_USER);
     verify(emailConnectorStorage).createEmailConnector(emailConnector);
   }
-  
-  
+
   @Test
   @SneakyThrows
   void deleteEmailConnector() {
     assertThrows(IllegalArgumentException.class, () -> emailConnectorService.deleteEmailConnector(null, TEST_USER));
     assertThrows(IllegalArgumentException.class, () -> emailConnectorService.deleteEmailConnector(1L, TEST_USER));
-    EmailConnector emailConnector = emailConnector(null);
+    EmailConnector emailConnector = emailConnector();
     when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector);
     assertThrows(IllegalAccessException.class, () -> emailConnectorService.deleteEmailConnector(1L, TEST_USER));
     Identity identity = mock(Identity.class);
@@ -105,7 +126,7 @@ public class EmailConnectorServiceTest {
     emailConnectorService.deleteEmailConnector(1L, TEST_USER);
     verify(emailConnectorStorage).deleteEmailConnector(1L);
   }
-  
+
   @Test
   void getEmailConnector() {
     emailConnectorService.getEmailConnector(1L);
@@ -122,7 +143,55 @@ public class EmailConnectorServiceTest {
     verify(translationService).getTranslationLabelOrDefault(anyString(), anyLong(), anyString(), any(Locale.class));
   }
 
-  private EmailConnector emailConnector(Long id) {
-    return new EmailConnector(id, "testName", null, null, null, "testImapUrl", "testPort", false, "testUploadId");
+  @Test
+  void getActiveEmailConnectors() {
+    Locale frLocale = mock(Locale.class);
+    List<EmailConnector> list = List.of(mock(EmailConnector.class));
+    when(emailConnectorStorage.getActiveEmailConnectors()).thenReturn(list);
+    emailConnectorService.getActiveEmailConnectors(frLocale, TEST_USER);
+    verify(emailConnectorStorage).getActiveEmailConnectors();
+  }
+
+  @Test
+  @SneakyThrows
+  void createUserEmailSetting() {
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.createUserEmailSetting(null, TEST_USER));
+    EmailConnector emailConnector = emailConnector();
+    when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector);
+    Session session = mock(Session.class);
+    MockedStatic<Session> mockedSession = mockStatic(Session.class);
+    mockedSession.when(() -> Session.getDefaultInstance(any(Properties.class))).thenReturn(session);
+    Store store = mock(Store.class);
+    when(session.getStore()).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    emailConnectorService.createUserEmailSetting(userEmailSetting, TEST_USER);
+    verify(store).connect(anyString(), anyInt(), anyString(), anyString());
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  @Test
+  void getUserEmailSetting() {
+    SettingValue userEmailSettingValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(userEmailSettingValue);
+    String userEmailObject =
+                           "{\"emailConnectorId\":\"1\",\"emailConnectorImageUrl\":null,\"emailConnectorIcon\":null,\"emailAddress\":\"testEmail\",\"emailPassword\":\"testPassword\"}";
+    when(userEmailSettingValue.getValue()).thenReturn(userEmailObject);
+    MockedStatic<JsonUtils> mockedJsonUtils = mockStatic(JsonUtils.class);
+    mockedJsonUtils.when(() -> JsonUtils.fromJsonString(userEmailObject, UserEmailSetting.class)).thenReturn(userEmailSetting());
+    EmailConnector emailConnector = emailConnector();
+    when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector);
+    emailConnectorService.getUserEmailSetting(TEST_USER);
+    verify(settingService).get(any(Context.class), any(Scope.class), anyString());
+    verify(emailConnectorStorage).getEmailConnector(1L);
+  }
+
+  private EmailConnector emailConnector() {
+    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "8000", false, false, "testUploadId");
+  }
+
+  private UserEmailSetting userEmailSetting() {
+    return new UserEmailSetting("1", null, null, "testEmail", "testPassword");
   }
 }
