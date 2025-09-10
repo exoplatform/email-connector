@@ -1,6 +1,6 @@
 const path = require('path');
 const ESLintPlugin = require('eslint-webpack-plugin');
-const { VueLoaderPlugin } = require('vue-loader')
+const { VueLoaderPlugin } = require('vue-loader');
 
 const config = {
   context: path.resolve(__dirname, '.'),
@@ -24,6 +24,8 @@ const config = {
   },
   entry: {
     emailConnectorAdministration : './src/main/webapp/vue-apps/email-connector-administration/main.js',
+    emailConnectorUserSetting : './src/main/webapp/vue-apps/email-connector-user-setting/main.js',
+    emailConnectorCommon : './src/main/webapp/vue-apps/email-connector-common/main.js',
   },
   output: {
     path: path.join(__dirname, 'target/email-connector/'),
