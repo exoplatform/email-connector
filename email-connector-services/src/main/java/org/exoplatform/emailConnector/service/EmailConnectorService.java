@@ -18,10 +18,8 @@ package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Properties;
 
 import javax.mail.MessagingException;
@@ -33,7 +31,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import org.exoplatform.commons.api.notification.model.UserSetting;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -201,6 +198,7 @@ public class EmailConnectorService {
                                                                             locale);
       emailConnector.setName(translatedName);
       emailConnector.setUserConnected(isEmailConnectorUserConnected(emailConnector.getId(), username));
+      emailConnector.setCanConnect(canConnect(emailConnector.getId(), username));
       return emailConnector;
     }).toList();
     return activeEmailConnectors;
@@ -260,17 +258,30 @@ public class EmailConnectorService {
    * @return stored {@link UserEmailSetting} in datasource
    */
   public UserEmailSetting getUserEmailSetting(String username) {
+    UserEmailSetting userEmailSetting = new UserEmailSetting();
     SettingValue<?> userEmailSettingValue = settingService.get(Context.USER.id(username),
                                                                EMAIL_CONNECTOR_SCOPE,
                                                                USER_EMAIL_SETTING_KEY);
-    UserEmailSetting userEmailSetting = null;
     if (userEmailSettingValue != null) {
-      userEmailSetting = JsonUtils.fromJsonString(userEmailSettingValue.getValue().toString(), UserEmailSetting.class);
-      EmailConnector emailConnector = getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-      userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
-      userEmailSetting.setEmailConnectorIcon((emailConnector.getIcon()));
+      UserEmailSetting storedUserEmailSetting = JsonUtils.fromJsonString(userEmailSettingValue.getValue().toString(),
+                                                                         UserEmailSetting.class);
+      EmailConnector emailConnector = getEmailConnector(Long.parseLong(storedUserEmailSetting.getEmailConnectorId()));
+      if (emailConnector != null && emailConnector.isActive()) {
+        userEmailSetting = storedUserEmailSetting;
+        userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
+        userEmailSetting.setEmailConnectorIcon((emailConnector.getIcon()));
+      }
     }
     return userEmailSetting;
+  }
+
+  /**
+   * Delete user email setting.
+   *
+   * @param username user making the operation
+   */
+  public void deleteUserEmailSetting(String username) {
+    settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
   }
 
   public boolean canEdit(String username) {
@@ -289,6 +300,12 @@ public class EmailConnectorService {
   private boolean isEmailConnectorUserConnected(Long emailConnectorId, String username) {
     return getUserEmailSetting(username) != null
         && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
+  }
+
+  private boolean canConnect(Long emailConnectorId, String username) {
+    return getUserEmailSetting(username).getEmailConnectorId() == null
+        || !getEmailConnector(Long.parseLong(getUserEmailSetting(username).getEmailConnectorId())).isActive()
+        || isEmailConnectorUserConnected(emailConnectorId, username);
   }
 
   private Store connect(UserEmailSetting userEmailSetting) {

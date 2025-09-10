@@ -42,6 +42,8 @@ public class EmailConnector {
   private boolean active = true;
   
   private Boolean userConnected;
+  
+  private Boolean canConnect;
 
   private String  imageUploadId;
 
