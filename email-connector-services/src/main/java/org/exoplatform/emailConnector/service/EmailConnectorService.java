@@ -227,12 +227,12 @@ public class EmailConnectorService {
   }
 
   /**
-   * Create user email setting.
+   * Set user email setting.
    *
-   * @param userEmailSetting userEmailSetting to create
+   * @param userEmailSetting userEmailSetting to set
    * @param username user making the operation
    */
-  public void createUserEmailSetting(UserEmailSetting userEmailSetting, String username) {
+  public void setUserEmailSetting(UserEmailSetting userEmailSetting, String username) {
     if (userEmailSetting == null) {
       throw new IllegalArgumentException(USER_SETTING_IS_MANDATORY_MESSAGE);
     }
@@ -268,6 +268,7 @@ public class EmailConnectorService {
       EmailConnector emailConnector = getEmailConnector(Long.parseLong(storedUserEmailSetting.getEmailConnectorId()));
       if (emailConnector != null && emailConnector.isActive()) {
         userEmailSetting = storedUserEmailSetting;
+        userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword()));
         userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
         userEmailSetting.setEmailConnectorIcon((emailConnector.getIcon()));
       }
@@ -345,7 +346,7 @@ public class EmailConnectorService {
     }
   }
 
-  private String decode(String password) {
+  private String decodePassword(String password) {
     try {
       return codecInitializer.getCodec().decode(password);
     } catch (TokenServiceInitializationException e) {

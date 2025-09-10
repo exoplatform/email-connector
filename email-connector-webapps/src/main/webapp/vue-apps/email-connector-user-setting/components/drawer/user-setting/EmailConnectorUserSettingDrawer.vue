@@ -37,7 +37,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ $t('UserSettings.emailConnector.userSetting.drawer.emailAddress') }}
             </v-list-item-title>
             <v-text-field
-              v-model="userEmailSetting.emailAddress"
+              v-model="emailSetting.emailAddress"
               :aria-label="$t('UserSettings.emailConnector.userSetting.drawer.emailAddress')"
               :placeholder="$t('UserSettings.emailConnector.userSetting.drawer.placeHolder.emailAddress')"
               class="pt-3"
@@ -53,7 +53,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ $t('UserSettings.emailConnector.userSetting.drawer.password') }}
             </v-list-item-title>
             <v-text-field
-              v-model="userEmailSetting.emailPassword"
+              v-model="emailSetting.emailPassword"
               :aria-label="$t('UserSettings.emailConnector.userSetting.drawer.password')"
               :placeholder="$t('UserSettings.emailConnector.userSetting.drawer.placeHolder.password')"
               class="pt-3"
@@ -89,12 +89,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
+  props: {
+    userEmailSetting: {
+      type: Object,
+      default: null,
+    },
+  },
   data: () => ({
     loading: false,
     userSettingDrawer: false,
     drawerTitle: '',
     showPassword: false,
-    userEmailSetting: {
+    emailSetting: {
       emailConnectorId: '',
       emailAddress: '',
       emailPassword: ''
@@ -102,7 +108,7 @@ export default {
   }),
   computed: {
     disabled() {
-      return !this.userEmailSetting.emailConnectorId || !this.userEmailSetting.emailAddress || !this.userEmailSetting.emailPassword;
+      return !this.emailSetting.emailConnectorId || !this.emailSetting.emailAddress || !this.emailSetting.emailPassword;
     }
   },
   created() {
@@ -110,16 +116,17 @@ export default {
   },
   methods: {
     open(emailConnector) {
-      this.userEmailSetting.emailConnectorId = emailConnector.id;
+      this.emailSetting = { ...this.userEmailSetting };
+      this.emailSetting.emailConnectorId = emailConnector.id;
       this.drawerTitle =  this.$t('UserSettings.emailConnector.userSetting.drawer.title', {
         0: emailConnector.name,
       });
       this.$refs.userSettingDrawer.open();
     },
     close() {
-      this.userEmailSetting.emailConnectorId = '';
-      this.userEmailSetting.emailAddress = '';
-      this.userEmailSetting.emailPassword = '';
+      this.emailSetting.emailConnectorId = '';
+      this.emailSetting.emailAddress = '';
+      this.emailSetting.emailPassword = '';
       this.$refs.userSettingDrawer.close();
     },
     togglePasswordVisibility() {
@@ -127,7 +134,7 @@ export default {
     },
     connect() {
       this.loading = true;
-      this.$emailConnectorUserSettingService.createUserEmailSetting(this.userEmailSetting).then(() =>
+      this.$emailConnectorUserSettingService.setUserEmailSetting(this.emailSetting).then(() =>
       {
         this.close();
         this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.success'), 'success');

@@ -52,27 +52,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  data: () => ({
+  props: {
     userEmailSetting: {
-      emailConnectorId: '',
-      emailConnectorImageUrl: '',
-      emailConnectorIcon: '',
-      emailAddress: '',
-      emailPassword: ''
-    }
-  }),
-  created() {
-    this.getUserEmailSetting();
-    this.$root.$on('refresh-user-email-setting', () => {
-      this.getUserEmailSetting();
-    });
+      type: Object,
+      default: null,
+    },
   },
-  methods: {
-    getUserEmailSetting() {
-      this.$emailConnectorUserSettingService.getUserEmailSetting().then(userEmailSetting => {
-        this.userEmailSetting = userEmailSetting;
-      });
-    }
-  }
 };
 </script>
