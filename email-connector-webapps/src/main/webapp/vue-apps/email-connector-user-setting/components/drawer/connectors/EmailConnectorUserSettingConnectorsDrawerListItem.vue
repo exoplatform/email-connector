@@ -20,10 +20,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :image-url="activeEmailConnector.imageUrl"
       :icon="activeEmailConnector.icon" 
       class="me-5" />
-    <v-list-item-content>
+    <v-list-item-content class="py-0">
       <span>{{ activeEmailConnector.name }}</span>
     </v-list-item-content>
-    <v-list-item-action class="ml-3">
+    <v-list-item-action class="my-0">
+      <v-btn
+        v-if="activeEmailConnector.userConnected"
+        @click="$root.$emit('open-user-setting-drawer', activeEmailConnector)"
+        icon>
+        <v-icon size="20">fa-edit</v-icon>
+      </v-btn>
+    </v-list-item-action>
+    <v-list-item-action class="ml-3 my-0">
       <v-btn
         v-if="activeEmailConnector.canConnect"
         class="btn"

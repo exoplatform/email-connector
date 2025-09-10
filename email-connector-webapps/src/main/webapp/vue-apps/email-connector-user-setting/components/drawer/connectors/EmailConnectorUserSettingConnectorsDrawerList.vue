@@ -21,7 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-for="activeEmailConnector in activeEmailConnectors"
       :key="activeEmailConnector.id"
       :active-email-connector="activeEmailConnector"
-      class="mb-8" />
+      class="mb-8 px-0" />
   </v-list>
 </template>
 
