@@ -14,38 +14,43 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
-
 <template>
-  <v-app
-    role="main"
-    id="emailConnectorUserSetting">
-    <email-connector-user-setting-body :user-email-setting="userEmailSetting" />
-    <email-connector-user-setting-connectors-drawer />
-    <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
-  </v-app>
+  <exo-drawer
+    id="emailBoxDrawer"
+    ref="emailBoxDrawer"
+    v-model="emailBoxDrawer"
+    :loading="loading"
+    :right="!$vuetify.rtl"
+    :allow-expand="!$root.isMobile"
+    @closed="close">
+    <template #title>
+      <span>{{ $t('emailConnector.mailBox.list.drawer.title') }}</span>
+    </template>
+    <template v-if="emailBoxDrawer" #content>
+    </template>
+    <template #footer>
+    </template>
+  </exo-drawer>
 </template>
 
 <script>
 export default {
-  data: () => ({
+  props: {
     userEmailSetting: {
-      emailConnectorId: '',
-      emailConnectorImageUrl: '',
-      emailConnectorIcon: '',
-      emailAddress: '',
-      emailPassword: ''
-    }
-  }),
+      type: Object,
+      default: null,
+    },
+  },
   created() {
-    this.getUserEmailSetting();
-    document.addEventListener('refresh-user-email-setting', this.getUserEmailSetting);
+    this.$root.$on('open-mail-box-drawer', this.open);
   },
   methods: {
-    getUserEmailSetting() {
-      this.$emailConnectorUserSettingService.getUserEmailSetting().then(userEmailSetting => {
-        this.userEmailSetting = userEmailSetting;
-      });
-    }
+    open() {
+      this.$refs.emailBoxDrawer.open();
+    },
+    close() {
+      this.$refs.emailBoxDrawer.close();
+    },
   }
 };
 </script>

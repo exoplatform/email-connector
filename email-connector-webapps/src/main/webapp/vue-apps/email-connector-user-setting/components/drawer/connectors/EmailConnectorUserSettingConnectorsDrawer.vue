@@ -42,9 +42,8 @@ export default {
     this.$root.$on('open-user-setting-connectors-drawer', this.open);
     this.$root.$on('close-user-setting-connectors-drawer', this.close);
     this.getActiveEmailConnectors();
-    this.$root.$on('refresh-active-connectors-list', () => {
-      this.getActiveEmailConnectors();
-    });
+
+    document.addEventListener('refresh-active-connectors-list', this.getActiveEmailConnectors);
   },
   methods: {
     open() {

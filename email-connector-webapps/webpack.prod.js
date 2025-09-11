@@ -26,6 +26,7 @@ const config = {
     emailConnectorAdministration : './src/main/webapp/vue-apps/email-connector-administration/main.js',
     emailConnectorUserSetting : './src/main/webapp/vue-apps/email-connector-user-setting/main.js',
     emailConnectorCommon : './src/main/webapp/vue-apps/email-connector-common/main.js',
+    emailConnectorMailBox: './src/main/webapp/vue-apps/email-connector-mail-box/main.js',
   },
   output: {
     path: path.join(__dirname, 'target/email-connector/'),
