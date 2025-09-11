@@ -61,7 +61,7 @@ export default {
     },
     close() {
       this.$refs.emailBoxDrawer.close();
-    },
+    }
   }
 };
 </script>

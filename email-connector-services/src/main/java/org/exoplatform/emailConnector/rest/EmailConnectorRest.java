@@ -36,7 +36,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
@@ -55,34 +54,30 @@ import jakarta.servlet.http.HttpServletRequest;
 @Tag(name = "/email-connector/rest/emailConnector", description = "Manages Email Connector")
 public class EmailConnectorRest {
 
-  public static final String    EMAIL_CONNECTOR_FEATURE = "emailConnector";
-
-  private static final Log      LOG                     = ExoLogger.getLogger(EmailConnectorRest.class);
-
-  @Autowired
-  private ExoFeatureService     featureService;
+  private static final Log      LOG = ExoLogger.getLogger(EmailConnectorRest.class);
 
   @Autowired
   private EmailConnectorService emailConnectorService;
 
   @PutMapping("activate/{isFeatureActive}")
   @Secured("administrators")
-  @Operation(summary = "Activate email connector feature", method = "PUT", description = "This will activate email connector feature")
+  @Operation(summary = "Activate email feature", method = "PUT", description = "This will activate email feature")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public ResponseEntity<String> activate(@Parameter(description = "Is feature active")
-  @PathVariable("isFeatureActive")
-  String isFeatureActive) {
+  public ResponseEntity<String> activate(HttpServletRequest request,
+                                         @Parameter(description = "Is feature active")
+                                         @PathVariable("isFeatureActive")
+                                         String isFeatureActive) {
     try {
-      boolean isFeatureActiveBool = Boolean.parseBoolean(isFeatureActive);
-      featureService.saveActiveFeature(EMAIL_CONNECTOR_FEATURE, isFeatureActiveBool);
+      emailConnectorService.activateEmailFeature(isFeatureActive, request.getRemoteUser());
       return ResponseEntity.ok().build();
-    } catch (Exception e) {
-      LOG.error("Error when enabling/disabling email connector feature", e);
-      return ResponseEntity.internalServerError().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 
@@ -223,7 +218,7 @@ public class EmailConnectorRest {
   public UserEmailSetting getUserEmailSetting(HttpServletRequest request) {
     return emailConnectorService.getUserEmailSetting(request.getRemoteUser());
   }
-  
+
   @DeleteMapping("/userEmailSetting")
   @Secured("users")
   @Operation(summary = "Deletes user email setting", method = "DELETE", description = "This will delete user email setting")

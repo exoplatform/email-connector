@@ -16,5 +16,10 @@
       <artifactId>social-component-service</artifactId>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>io.meeds.app-center</groupId>
+      <artifactId>app-center-services</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 </project>

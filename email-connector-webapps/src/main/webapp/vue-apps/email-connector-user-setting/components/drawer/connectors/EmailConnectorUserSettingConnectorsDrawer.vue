@@ -27,7 +27,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span>{{ $t('UserSettings.emailConnector.connectors.drawer.title') }}</span>
     </template>
     <template v-if="userSettingConnectorsDrawer" #content>
-      <email-connector-user-setting-connectors-drawer-list class="ma-5 py-0" :active-email-connectors="activeEmailConnectors" />
+      <email-connector-user-setting-connectors-drawer-list
+        v-if="hasActiveConnectors"
+        class="ma-5 py-0"
+        :active-email-connectors="activeEmailConnectors" />
+      <v-list-item v-else class="mx-5 px-0 mt-16 align-center">
+        <v-list-item-content>
+          <v-list-item-title class="text-wrap">
+            {{ $t('UserSettings.emailConnector.connectors.drawer.noActiveConnectors') }}
+          </v-list-item-title>
+        </v-list-item-content>
+      </v-list-item>
     </template>
   </exo-drawer>
 </template>
@@ -36,13 +46,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     userSettingConnectorsDrawer: false,
-    activeEmailConnectors: []
+    activeEmailConnectors: [],
   }),
+  computed: {
+    hasActiveConnectors() {
+      return this.activeEmailConnectors?.length > 0;
+    },
+  },
   created() {
+    this.getActiveEmailConnectors();
+    this.hideUserSetting();
     this.$root.$on('open-user-setting-connectors-drawer', this.open);
     this.$root.$on('close-user-setting-connectors-drawer', this.close);
-    this.getActiveEmailConnectors();
-
     document.addEventListener('refresh-active-connectors-list', this.getActiveEmailConnectors);
   },
   methods: {
@@ -56,7 +71,17 @@ export default {
       this.$emailConnectorUserSettingService.getActiveEmailConnectors()
         .then(connectors => this.activeEmailConnectors = connectors);
     },
-  
+    hideUserSetting() {
+      this.$featureService.isFeatureEnabled(this.featureName)
+        .then(enabled => {
+          this.emailFeatureActive = enabled;
+          const appEl = document.getElementById('emailConnectorUserSetting');
+          const portletContainer = appEl?.closest('.layout-application');
+          if (portletContainer && (!this.emailFeatureActive || this.activeEmailConnectors?.length === 0)) {
+            portletContainer.style.display = 'none';
+          }
+        });
+    }
   }
 };
 </script>
