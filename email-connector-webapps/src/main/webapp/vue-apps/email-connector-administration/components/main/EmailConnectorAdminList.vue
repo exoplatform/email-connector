@@ -29,7 +29,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-admin-icon
           :image-url="item.imageUrl"
           :icon="item.icon"
-          class="flex-grow-0 flex-shrink-0" />
+          class="flex-grow-0 flex-shrink-0 py-1" />
       </template>
       <template #[`item.name`]="{ item }">
         <span>
@@ -86,7 +86,7 @@ export default {
       { text: '', value: 'icon', width: '40px'},
       { text: this.$t('emailConnector.admin.connectors.list.name'), value: 'name' },
       { text: this.$t('emailConnector.admin.connectors.list.activate'), align: 'center', value: 'active', width: '80px' },
-      { text: this.$t('emailConnector.admin.connectors.list.actions'), align: 'center', value: 'actions',width: '80px' }
+      { text: this.$t('emailConnector.admin.connectors.list.actions'), align: 'center', value: 'actions', width: '80px' }
     ];
   },
   methods: {
