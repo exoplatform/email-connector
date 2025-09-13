@@ -33,4 +33,33 @@ files: [
     "escape_special_characters": 0,
     "escape_quotes": 0,
   },
+  {
+    "source": "/email-connector-webapps/src/main/resources/locale/portlet/emailConnector/emailConnectorMailBox_en.properties",
+    "translation": "%original_path%/%file_name%!_%locale_with_underscore%.%file_extension%",
+    "translation_replace": { YML_CROWDIN_LANGUAGES_ARG },
+    "dest": "hub/email__connector/emailConnectorMailBox.properties",
+    "update_option": "update_as_unapproved",
+    "escape_special_characters": 0,
+    "escape_quotes": 0,
+  },
+  {
+    "source" : "/email-connector-webapps/src/main/resources/locale/portlet/QuickActions_en.properties",
+
+    "translation" : "%original_path%/%file_name%!_%locale_with_underscore%.%file_extension%",
+    "translation_replace" : {YML_CROWDIN_LANGUAGES_ARG},
+    "dest" : "hub/email__connector/QuickActions.properties",
+    "update_option" : "update_as_unapproved",
+    "escape_special_characters": 0,
+    "escape_quotes" : 0,
+  },
+  {
+    "source" : "/email-connector-webapps/src/main/resources/locale/addon/appcenter_en.properties",
+
+    "translation" : "%original_path%/%file_name%!_%locale_with_underscore%.%file_extension%",
+    "translation_replace" : {YML_CROWDIN_LANGUAGES_ARG},
+    "dest" : "hub/email__connector/appcenter.properties",
+    "update_option" : "update_as_unapproved",
+    "escape_special_characters": 0,
+    "escape_quotes" : 0,
+  },
 ]

@@ -14,27 +14,14 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+import EmailConnectorMailBoxApp from './components/EmailConnectorMailBoxApp.vue';
+import EmailConnectorMailBoxDrawer from './components/drawer/EmailConnectorMailBoxDrawer.vue';
 
-import './initComponents.js';
+const components = {
+  'email-connector-mail-box-app': EmailConnectorMailBoxApp,
+  'email-connector-mail-box-drawer': EmailConnectorMailBoxDrawer,
+};
 
-Vue.use(Vuetify);
-const vuetify = new Vuetify(eXo.env.portal.vuetifyPreset);
-
-const appId = 'emailConnectorUserSetting';
-
-//getting language of the PLF
-const lang = eXo?.env?.portal?.language || 'en';
-
-//should expose the locale ressources as REST API
-const url = `/email-connector/i18n/locale.portlet.emailConnector.emailConnectorUserSetting?lang=${lang}`;
-
-export function init() {
-  exoi18n.loadLanguageAsync(lang, url).then(i18n => {
-    // init Vue app when locale ressources are ready
-    Vue.createApp({
-      template: `<email-connector-user-setting-app id="${appId}" />`,
-      vuetify,
-      i18n
-    }, `#${appId}`, 'Email Connector User Setting');
-  });
+for (const key in components) {
+  Vue.component(key, components[key]);
 }

@@ -34,7 +34,7 @@ const appId = 'emailConnectorAdministration';
 const lang = eXo?.env?.portal?.language || 'en';
 
 //should expose the locale ressources as REST API
-const url = `${eXo.env.portal.context}/${eXo.env.portal.rest}/i18n/bundle/locale.portlet.emailConnector.emailConnectorAdministration-${lang}.json`;
+const url = `/email-connector/i18n/locale.portlet.emailConnector.emailConnectorAdministration?lang=${lang}`;
 
 export function init() {
   exoi18n.loadLanguageAsync(lang, url).then(i18n => {
