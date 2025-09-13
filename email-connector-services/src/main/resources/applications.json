@@ -1,0 +1,27 @@
+{
+    "descriptors": [
+        {
+            "name": "email",
+            "overrideMode": "merge",
+            "override": false,
+            "enabled": true,
+            "application": {
+                "title": "E-mail",
+                "icon": "fa-envelope",
+                "type": "DRAWER",
+                "url": "email",
+                "mandatory": false,
+                "active": true,
+                "mobile": true,
+                "default": true,
+                "shortcut": "m",
+                "pwa": true,
+                "order": 40,
+                "permissions": [
+                    "*:/platform/users",
+                    "*:/platform/externals"
+                ]
+            }
+        }
+    ]
+}

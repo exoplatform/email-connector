@@ -16,18 +16,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <exo-drawer
-    id="userSettingConnectorsDrawer"
-    ref="userSettingConnectorsDrawer"
-    v-model="userSettingConnectorsDrawer"
+    id="emailBoxDrawer"
+    ref="emailBoxDrawer"
+    v-model="emailBoxDrawer"
     :loading="loading"
     :right="!$vuetify.rtl"
     :allow-expand="!$root.isMobile"
     @closed="close">
     <template #title>
-      <span>{{ $t('UserSettings.emailConnector.connectors.drawer.title') }}</span>
+      <span>{{ $t('emailConnector.mailBox.list.drawer.title') }}</span>
     </template>
-    <template v-if="userSettingConnectorsDrawer" #content>
-      <email-connector-user-setting-connectors-drawer-list class="ma-5 py-0" :active-email-connectors="activeEmailConnectors" />
+    <template v-if="emailBoxDrawer" #content>
+      <div class="d-flex flex-column align-center justify-center" style="margin-top:216px">
+        <email-connector-admin-icon
+          icon="far fa-envelope"
+          :icon-size="60" />
+        <div class="mt-5">
+          {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
+        </div>
+      </div>
+    </template>
+    <template #footer>
     </template>
   </exo-drawer>
 </template>
@@ -35,28 +44,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   data: () => ({
-    userSettingConnectorsDrawer: false,
-    activeEmailConnectors: []
+    emailBoxDrawer: false,
   }),
+  props: {
+    userEmailSetting: {
+      type: Object,
+      default: null,
+    },
+  },
   created() {
-    this.$root.$on('open-user-setting-connectors-drawer', this.open);
-    this.$root.$on('close-user-setting-connectors-drawer', this.close);
-    this.getActiveEmailConnectors();
-
-    document.addEventListener('refresh-active-connectors-list', this.getActiveEmailConnectors);
+    this.$root.$on('open-mail-box-drawer', this.open);
   },
   methods: {
     open() {
-      this.$refs.userSettingConnectorsDrawer.open();
+      this.$refs.emailBoxDrawer.open();
     },
     close() {
-      this.$refs.userSettingConnectorsDrawer.close();
+      this.$refs.emailBoxDrawer.close();
     },
-    getActiveEmailConnectors() {
-      this.$emailConnectorUserSettingService.getActiveEmailConnectors()
-        .then(connectors => this.activeEmailConnectors = connectors);
-    },
-  
   }
 };
 </script>
