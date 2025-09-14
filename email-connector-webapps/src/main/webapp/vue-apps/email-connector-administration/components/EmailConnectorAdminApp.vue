@@ -20,14 +20,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="emailConnectorAdministration"
     class="pa-5">
     <email-connector-admin-header
-      :email-connector-active="emailConnectorActive"
+      :email-feature-active="emailFeatureActive"
       :has-connectors="hasConnectors" 
-      @emailConnector-active="emailConnectorActive = $event" />
+      @emailFeature-active="emailFeatureActive = $event" />
     <email-connector-admin-list
       :connectors="connectors"
       class="mt-7"
-      v-if="emailConnectorActive" />
-    <email-connector-admin-footer v-if="emailConnectorActive && !hasConnectors" />
+      v-if="emailFeatureActive" />
+    <email-connector-admin-footer v-if="emailFeatureActive && !hasConnectors" />
     <email-connector-admin-drawer />
   </v-app>
 </template>
@@ -35,8 +35,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   data: () => ({
-    featureName: 'emailConnector',
-    emailConnectorActive: null,
+    featureName: 'email',
+    emailFeatureActive: null,
     connectors: []
   }),
   computed: {
@@ -49,7 +49,7 @@ export default {
   },
   created() {
     this.$featureService.isFeatureEnabled(this.featureName)
-      .then(enabled => this.emailConnectorActive = enabled);
+      .then(enabled => this.emailFeatureActive = enabled);
     this.getEmailConnectors();
     this.$root.$on('refresh-connectors-list', () => {
       this.getEmailConnectors();

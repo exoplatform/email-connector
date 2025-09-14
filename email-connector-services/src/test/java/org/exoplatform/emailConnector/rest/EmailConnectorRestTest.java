@@ -108,6 +108,12 @@ public class EmailConnectorRestTest {
   }
 
   @Test
+  void activate() throws Exception {
+    ResultActions response = mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/activate/true").with(testAdminUser()));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
   void createEmailConnector() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_CONNECTOR_PATH).with(testAdminUser())
                                                                        .content(asJsonString(emailConnector()))
@@ -158,7 +164,7 @@ public class EmailConnectorRestTest {
     ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/userEmailSetting").with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
-  
+
   @Test
   void deleteUserEmailSetting() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/userEmailSetting").with(testSimpleUser()));
