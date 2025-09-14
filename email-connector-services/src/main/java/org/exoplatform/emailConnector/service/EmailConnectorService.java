@@ -31,6 +31,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -49,6 +50,7 @@ import org.exoplatform.services.security.IdentityConstants;
 import org.exoplatform.web.security.codec.CodecInitializer;
 import org.exoplatform.web.security.security.TokenServiceInitializationException;
 
+import io.meeds.appcenter.service.ApplicationCenterService;
 import io.meeds.social.translation.service.TranslationService;
 import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
@@ -59,19 +61,26 @@ import lombok.SneakyThrows;
 @Service
 public class EmailConnectorService {
 
-  private static final String   EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE = "Email connector is mandatory";
+  public static final String    EMAIL_FEATURE                                = "email";
 
-  private static final String   USER_SETTING_IS_MANDATORY_MESSAGE    = "User setting is mandatory";
+  private static final String   EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
 
-  private static final String   USER_NOT_ALLOWED_MESSAGE             = "User %s is not allowed to save email connector : %s";
+  private static final String   FEATURE_ACTIVE_IS_MANDATORY_MESSAGE          = "Feature active is mandatory";
 
-  private static final String   EMAIL_CONNECTOR_NOT_FOUND_MESSAGE    = "Email connector with id %s doesn't exist";
+  private static final String   USER_SETTING_IS_MANDATORY_MESSAGE            = "User setting is mandatory";
 
-  private static final Scope    EMAIL_CONNECTOR_SCOPE                = Scope.APPLICATION.id("EMAIL_CONNECTOR_SCOPE");
+  private static final String   USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE =
+                                                                             "User %s is not allowed to save email connector : %s";
 
-  private static final String   USER_EMAIL_SETTING_KEY               = "userEmailSetting";
+  private static final String   USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE  = "User %s is not allowed to activate email feature";
 
-  private static final Log      LOG                                  = ExoLogger.getLogger(EmailConnectorService.class);
+  private static final String   EMAIL_CONNECTOR_NOT_FOUND_MESSAGE            = "Email connector with id %s doesn't exist";
+
+  private static final Scope    EMAIL_CONNECTOR_SCOPE                        = Scope.APPLICATION.id("EMAIL_CONNECTOR_SCOPE");
+
+  private static final String   USER_EMAIL_SETTING_KEY                       = "userEmailSetting";
+
+  private static final Log      LOG                                          = ExoLogger.getLogger(EmailConnectorService.class);
 
   @Autowired
   private UserACL               userAcl;
@@ -89,7 +98,32 @@ public class EmailConnectorService {
   private SettingService        settingService;
 
   @Autowired
+  ApplicationCenterService      applicationCenterService;
+
+  @Autowired
   private CodecInitializer      codecInitializer;
+
+  @Autowired
+  private ExoFeatureService     featureService;
+
+  /**
+   * Activate email feature.
+   *
+   * @param isFeatureActive A boolean flag that specifies whether the email
+   *          feature is active (true) or inactive (false)
+   */
+  public void activateEmailFeature(String isFeatureActive, String username) throws IllegalAccessException {
+    if (isFeatureActive == null) {
+      throw new IllegalArgumentException(FEATURE_ACTIVE_IS_MANDATORY_MESSAGE);
+    }
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE, username));
+    }
+    boolean isFeatureActiveBool = Boolean.parseBoolean(isFeatureActive);
+    featureService.saveActiveFeature(EMAIL_FEATURE, isFeatureActiveBool);
+    activateEmailApp();
+
+  }
 
   /**
    * Create new email connector that will be available for all users.
@@ -104,11 +138,15 @@ public class EmailConnectorService {
     if (emailConnector == null) {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
     }
-
     if (!canEdit(username)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_MESSAGE, username, emailConnector.getName()));
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE,
+                                                     username,
+                                                     emailConnector.getName()));
     }
-    return emailConnectorStorage.createEmailConnector(emailConnector);
+    EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
+    activateEmailApp();
+    return storedEmailConnector;
+
   }
 
   /**
@@ -124,7 +162,9 @@ public class EmailConnectorService {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
     }
     if (!canEdit(username)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_MESSAGE, username, emailConnector.getName()));
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE,
+                                                     username,
+                                                     emailConnector.getName()));
     }
     emailConnectorStorage.updateEmailConnector(emailConnector);
   }
@@ -147,9 +187,12 @@ public class EmailConnectorService {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
     }
     if (!canEdit(username)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_MESSAGE, username, storedEmailConnector.getName()));
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE,
+                                                     username,
+                                                     storedEmailConnector.getName()));
     }
     emailConnectorStorage.deleteEmailConnector(emailConnectorId);
+    activateEmailApp();
   }
 
   /**
@@ -289,18 +332,18 @@ public class EmailConnectorService {
     return StringUtils.isBlank(username) || userAcl.isAdministrator(getUserIdentity(username));
   }
 
-  @SneakyThrows
-  private Identity getUserIdentity(String username) {
-    if (StringUtils.isBlank(username)) {
-      return new Identity(IdentityConstants.ANONIM);
-    } else {
-      return userAcl.getUserIdentity(username);
-    }
-  }
-
-  private boolean isEmailConnectorUserConnected(Long emailConnectorId, String username) {
-    return getUserEmailSetting(username) != null
-        && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
+  private void activateEmailApp() {
+    applicationCenterService.getApplications(0, 0, null)
+                            .getApplications()
+                            .stream()
+                            .filter(application -> application.getUrl().equals(EMAIL_FEATURE))
+                            .findFirst()
+                            .ifPresent(application -> {
+                              boolean hasActiveConnector = !emailConnectorStorage.getActiveEmailConnectors().isEmpty();
+                              boolean featureEnabled = featureService.isActiveFeature(EMAIL_FEATURE);
+                              application.setActive(hasActiveConnector && featureEnabled);
+                              applicationCenterService.updateApplication(application);
+                            });
   }
 
   private boolean canConnect(Long emailConnectorId, String username) {
@@ -337,6 +380,15 @@ public class EmailConnectorService {
     return store;
   }
 
+  private String decodePassword(String password) {
+    try {
+      return codecInitializer.getCodec().decode(password);
+    } catch (TokenServiceInitializationException e) {
+      LOG.warn("Error when decoding password", e);
+      return null;
+    }
+  }
+
   private String encodePassword(String password) {
     try {
       return codecInitializer.getCodec().encode(password);
@@ -346,12 +398,16 @@ public class EmailConnectorService {
     }
   }
 
-  private String decodePassword(String password) {
-    try {
-      return codecInitializer.getCodec().decode(password);
-    } catch (TokenServiceInitializationException e) {
-      LOG.warn("Error when decoding password", e);
-      return null;
+  private Identity getUserIdentity(String username) {
+    if (StringUtils.isBlank(username)) {
+      return new Identity(IdentityConstants.ANONIM);
+    } else {
+      return userAcl.getUserIdentity(username);
     }
+  }
+
+  private boolean isEmailConnectorUserConnected(Long emailConnectorId, String username) {
+    return getUserEmailSetting(username) != null
+        && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
   }
 }

@@ -36,13 +36,14 @@ import javax.mail.Store;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 
+import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.services.FileService;
@@ -53,8 +54,9 @@ import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
 import org.exoplatform.web.security.codec.AbstractCodec;
 import org.exoplatform.web.security.codec.CodecInitializer;
-import org.exoplatform.commons.api.settings.SettingValue;
 
+import io.meeds.appcenter.model.ApplicationList;
+import io.meeds.appcenter.service.ApplicationCenterService;
 import io.meeds.social.translation.service.TranslationService;
 import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
@@ -63,28 +65,49 @@ import lombok.SneakyThrows;
 @ExtendWith(MockitoExtension.class)
 public class EmailConnectorServiceTest {
 
-  private static final String   TEST_USER = "testuser";
+  private static final String      TEST_USER = "testuser";
 
   @MockBean
-  private UserACL               userAcl;
+  private UserACL                  userAcl;
 
   @MockBean
-  private FileService           fileService;
+  private FileService              fileService;
 
   @MockBean
-  private TranslationService    translationService;
+  private TranslationService       translationService;
 
   @MockBean
-  private EmailConnectorStorage emailConnectorStorage;
+  private EmailConnectorStorage    emailConnectorStorage;
 
   @MockBean
-  private SettingService        settingService;
+  private SettingService           settingService;
 
   @MockBean
-  private CodecInitializer      codecInitializer;
+  private ApplicationCenterService applicationCenterService;
+
+  @MockBean
+  private CodecInitializer         codecInitializer;
+
+  @MockBean
+  private ExoFeatureService        featureService;
 
   @Autowired
-  private EmailConnectorService emailConnectorService;
+  private EmailConnectorService    emailConnectorService;
+
+  @Test
+  @SneakyThrows
+  void activateEmailFeature() {
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.activateEmailFeature(null, TEST_USER));
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.activateEmailFeature("true", TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    ApplicationList applicationList = mock(ApplicationList.class);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
+    emailConnectorService.activateEmailFeature("true", TEST_USER);
+    verify(featureService).saveActiveFeature(EmailConnectorService.EMAIL_FEATURE, true);
+    verify(applicationCenterService).getApplications(0, 0, null);
+  }
 
   @Test
   @SneakyThrows
@@ -95,8 +118,11 @@ public class EmailConnectorServiceTest {
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
+    ApplicationList applicationList = mock(ApplicationList.class);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
     emailConnectorService.createEmailConnector(emailConnector, TEST_USER);
     verify(emailConnectorStorage).createEmailConnector(emailConnector);
+    verify(applicationCenterService).getApplications(0, 0, null);
   }
 
   @Test
@@ -108,8 +134,8 @@ public class EmailConnectorServiceTest {
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
-    emailConnectorService.createEmailConnector(emailConnector, TEST_USER);
-    verify(emailConnectorStorage).createEmailConnector(emailConnector);
+    emailConnectorService.updateEmailConnector(emailConnector, TEST_USER);
+    verify(emailConnectorStorage).updateEmailConnector(emailConnector);
   }
 
   @Test
@@ -123,8 +149,11 @@ public class EmailConnectorServiceTest {
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
+    ApplicationList applicationList = mock(ApplicationList.class);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
     emailConnectorService.deleteEmailConnector(1L, TEST_USER);
     verify(emailConnectorStorage).deleteEmailConnector(1L);
+    verify(applicationCenterService).getApplications(0, 0, null);
   }
 
   @Test
