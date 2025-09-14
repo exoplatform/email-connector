@@ -27,7 +27,8 @@
   <properties>
     <!-- 3rd party libraries versions -->
     <io.meeds.social.version>7.1.x-experience-SNAPSHOT</io.meeds.social.version>
-  
+    <addon.meeds.app-center.version>7.1.x-experience-SNAPSHOT</addon.meeds.app-center.version>
+	
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
   </properties>
@@ -40,7 +41,13 @@
         <type>pom</type>
         <scope>import</scope>
       </dependency>
-
+	  <dependency>
+        <groupId>io.meeds.app-center</groupId>
+        <artifactId>app-center</artifactId>
+        <version>${addon.meeds.app-center.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <!-- Current project artifacts -->
       <dependency>
         <groupId>${project.groupId}</groupId>

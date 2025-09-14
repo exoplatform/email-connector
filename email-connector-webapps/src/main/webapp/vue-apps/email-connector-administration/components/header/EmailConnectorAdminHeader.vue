@@ -35,7 +35,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-btn>
     </v-list-item-action>
     <v-list-item-action class="ms-5 my-0">
-      <v-switch :input-value="emailConnectorActive" @change="activate" />
+      <v-switch :input-value="emailFeatureActive" @change="activate" />
     </v-list-item-action>
   </v-list-item>
 </template>
@@ -43,7 +43,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
-    emailConnectorActive: {
+    emailFeatureActive: {
       type: Boolean,
       default: false,
     },
@@ -55,7 +55,7 @@ export default {
   methods: {
     activate(value) {
       this.$emailConnectorAdministrationService.activate(value);
-      this.$emit('emailConnector-active', value);
+      this.$emit('emailFeature-active', value);
     },
   }
 };
