@@ -15,8 +15,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
  
-export function activate(emailConnectorActive) {
-  return fetch(`/email-connector/rest/emailConnector/activate/${emailConnectorActive}`, {
+export function activate(emailFeatureActive) {
+  return fetch(`/email-connector/rest/emailConnector/activate/${emailFeatureActive}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -24,7 +24,7 @@ export function activate(emailConnectorActive) {
     method: 'PUT'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when activating email connector feature');
+      throw new Error('Error when activating email feature');
     }
   });
 }

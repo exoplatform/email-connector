@@ -19,9 +19,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-app
     role="main"
     id="emailConnectorUserSetting">
-    <email-connector-user-setting-body :user-email-setting="userEmailSetting" />
-    <email-connector-user-setting-connectors-drawer />
-    <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
+    <template>
+      <email-connector-user-setting-body :user-email-setting="userEmailSetting" />
+      <email-connector-user-setting-connectors-drawer />
+      <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
+    </template>
   </v-app>
 </template>
 

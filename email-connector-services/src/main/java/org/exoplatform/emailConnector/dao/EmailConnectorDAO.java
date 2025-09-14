@@ -24,7 +24,6 @@ import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.entity.EmailConnectorEntity;
 
-@Component
 public interface EmailConnectorDAO extends JpaRepository<EmailConnectorEntity, Long> {
 
   @Query("""
