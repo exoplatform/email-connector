@@ -93,6 +93,19 @@ export default {
     editItem(item) {
       this.$root.$emit('open-email-connector-drawer', item);
     },
+    activateItem(item) {
+      this.$emailConnectorAdministrationService.activateEmailConnector(item.id, item.active)
+        .then(() =>
+        {
+          this.$root.$emit('refresh-connectors-list');
+          const successAlertMessage = item.active && 'emailConnector.admin.connectors.activate.success' || 'emailConnector.admin.connectors.deactivate.success';
+          this.$root.$emit('alert-message', this.$t(`${successAlertMessage}`), 'success');
+        })
+        .catch(() => {
+          const errorAlertMessage = item.active && 'emailConnector.admin.connectors.activate.error' || 'emailConnector.admin.connectors.deactivate.error';
+          this.$root.$emit('alert-message', this.$t(`${errorAlertMessage}`), 'error');
+        });
+    },
     deleteEmailConnector() {
       this.$emailConnectorAdministrationService.deleteEmailConnector(this.emailConnectorToDelete.id)
         .then(() =>

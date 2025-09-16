@@ -21,6 +21,7 @@ package org.exoplatform.emailConnector.rest;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -50,7 +51,6 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
-import org.exoplatform.commons.api.notification.model.UserSetting;
 import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -128,6 +128,12 @@ public class EmailConnectorRestTest {
                                                                       .content(asJsonString(emailConnector()))
                                                                       .contentType(MediaType.APPLICATION_JSON)
                                                                       .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+  }
+  
+  @Test
+  void activateEmailConnector() throws Exception {
+    ResultActions response = mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/1/true").with(testAdminUser()));
     response.andExpect(status().isOk());
   }
 
