@@ -170,6 +170,36 @@ public class EmailConnectorService {
   }
 
   /**
+   * Activate an existing email connector on datasource.
+   *
+   * @param emailConnectorId technical identifier of email connector to be
+   *          activated
+   * @param isEmailConnectorActive A boolean flag that specifies whether the
+   *          email connector is active (true) or inactive (false)
+   * @param username user currently activating email connector
+   * @throws IllegalAccessException if user is not allowed to activate an email
+   *           connector
+   */
+  public void activateEmailConnector(Long emailConnectorId,
+                                     String isEmailConnectorActive,
+                                     String username) throws IllegalAccessException {
+    if (emailConnectorId == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    EmailConnector storedEmailConnector = emailConnectorStorage.getEmailConnector(emailConnectorId);
+    if (storedEmailConnector == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE,
+                                                     username,
+                                                     storedEmailConnector.getName()));
+    }
+    emailConnectorStorage.activateEmailConnector(emailConnectorId, isEmailConnectorActive);
+    activateEmailApp();
+  }
+
+  /**
    * Delete an existing email connector on datasource.
    *
    * @param emailConnectorId technical identifier of email connector to be

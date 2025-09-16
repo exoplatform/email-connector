@@ -92,6 +92,12 @@ public class EmailConnectorStorage {
     emailConnectorDAO.save(emailConnectorEntity);
   }
 
+  public void activateEmailConnector(Long emailConnectorId, String isEmailConnectorActive) {
+    EmailConnectorEntity emailConnectorEntity = emailConnectorDAO.findById(emailConnectorId).orElse(null);
+    emailConnectorEntity.setActive(Boolean.parseBoolean(isEmailConnectorActive));
+    emailConnectorDAO.save(emailConnectorEntity);
+  }
+
   public void deleteEmailConnector(Long emailConnectorId) {
     EmailConnectorEntity emailConnectorEntity = emailConnectorDAO.findById(emailConnectorId).orElse(null);
     if (emailConnectorEntity.getImageFileId() != null) {
