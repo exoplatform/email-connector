@@ -111,9 +111,24 @@ public class EmailConnectorStorageTest {
   }
 
   @Test
+  void activateEmailConnector() {
+    EmailConnector emailConnector = emailConnector();
+    EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
+    assertNotNull(storedEmailConnector);
+    assertNotNull(storedEmailConnector.getId());
+    assertEquals(false, storedEmailConnector.isActive());
+    emailConnectorStorage.activateEmailConnector(storedEmailConnector.getId(), "true");
+    EmailConnector retrievedEmailConnector = emailConnectorStorage.getEmailConnector(storedEmailConnector.getId());
+    assertNotNull(retrievedEmailConnector);
+    assertEquals(true, retrievedEmailConnector.isActive());
+  }
+
+  @Test
   void deleteEmailConnector() {
     EmailConnector emailConnector = emailConnector();
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
+    assertNotNull(storedEmailConnector);
+    assertNotNull(storedEmailConnector.getId());
     emailConnectorStorage.deleteEmailConnector(storedEmailConnector.getId());
     EmailConnector retrievedEmailConnector = emailConnectorStorage.getEmailConnector(storedEmailConnector.getId());
     assertNull(retrievedEmailConnector);
