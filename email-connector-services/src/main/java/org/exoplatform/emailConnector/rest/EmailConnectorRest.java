@@ -28,6 +28,7 @@ import org.springframework.http.ResponseEntity.BodyBuilder;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -39,8 +40,6 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
-import org.exoplatform.services.log.ExoLogger;
-import org.exoplatform.services.log.Log;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -53,8 +52,6 @@ import jakarta.servlet.http.HttpServletRequest;
 @RequestMapping("/emailConnector")
 @Tag(name = "/email-connector/rest/emailConnector", description = "Manages Email Connector")
 public class EmailConnectorRest {
-
-  private static final Log      LOG = ExoLogger.getLogger(EmailConnectorRest.class);
 
   @Autowired
   private EmailConnectorService emailConnectorService;
@@ -119,7 +116,31 @@ public class EmailConnectorRest {
     }
   }
 
-  @DeleteMapping(path = "{emailConnectorId}")
+  @PatchMapping(path = "/{emailConnectorId}/{isEmailConnectorActive}")
+  @Secured("administrators")
+  @Operation(summary = "Activates email connector identified by its id", method = "PATCH", description = "This will activate or deactivate an existing email connector identified by its id")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public void activateEmailConnector(HttpServletRequest request,
+                                     @Parameter(description = "Email connector technical id to delete", required = true)
+                                     @PathVariable("emailConnectorId")
+                                     Long emailConnectorId,
+                                     @Parameter(description = "Is email connector active", required = true)
+                                     @PathVariable("isEmailConnectorActive")
+                                     String isEmailConnectorActive) {
+    try {
+      emailConnectorService.activateEmailConnector(emailConnectorId, isEmailConnectorActive, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  @DeleteMapping(path = "/{emailConnectorId}")
   @Secured("administrators")
   @Operation(summary = "Deletes an existing email connector identified by its id", method = "DELETE", description = "This will delete an existing email connector identified by its id")
   @ApiResponses(value = { @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
@@ -139,7 +160,7 @@ public class EmailConnectorRest {
 
   @GetMapping()
   @Secured("administrators")
-  @Operation(summary = "Gets email connectors", method = "POST", description = "This will get email connectors")
+  @Operation(summary = "Gets email connectors", method = "GET", description = "This will get email connectors")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -151,7 +172,7 @@ public class EmailConnectorRest {
 
   @GetMapping("/active")
   @Secured("users")
-  @Operation(summary = "Gets active email connectors", method = "POST", description = "This will get active email connectors")
+  @Operation(summary = "Gets active email connectors", method = "GET", description = "This will get active email connectors")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -192,7 +213,7 @@ public class EmailConnectorRest {
 
   @PutMapping("/userEmailSetting")
   @Secured("users")
-  @Operation(summary = "Sets user email setting", method = "POST", description = "This will set user email setting")
+  @Operation(summary = "Sets user email setting", method = "PUT", description = "This will set user email setting")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),

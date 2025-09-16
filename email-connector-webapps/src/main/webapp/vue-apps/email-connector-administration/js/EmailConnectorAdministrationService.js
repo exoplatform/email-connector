@@ -61,6 +61,20 @@ export function updateEmailConnector(emailConnector) {
   });
 }
 
+export function activateEmailConnector(emailConnectorId, emailConnectorActive) {
+  return fetch(`/email-connector/rest/emailConnector/${emailConnectorId}/${emailConnectorActive}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when activating email connector');
+    }
+  });
+}
+
 export function getEmailConnectors() {
   return fetch('/email-connector/rest/emailConnector', {
     headers: {
