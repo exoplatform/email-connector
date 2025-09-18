@@ -85,11 +85,13 @@ export default {
         this.$emailConnectorUserSettingService.deleteUserEmailSetting()
           .then(() =>
           {
-            this.$root.$emit('refresh-active-connectors-list');
-            this.$root.$emit('refresh-user-email-setting');
+            document.dispatchEvent(new CustomEvent('refresh-active-connectors-list'));
+            document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
             this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.success'), 'success');
           })
-          .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.error'), 'error'));
+          .catch(() => { 
+            this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.error'), 'error');
+          });
       }
     }
   }

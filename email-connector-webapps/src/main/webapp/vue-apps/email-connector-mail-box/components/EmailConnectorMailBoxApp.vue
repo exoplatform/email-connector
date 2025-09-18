@@ -18,10 +18,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <v-app
     role="main"
-    id="emailConnectorUserSetting">
-    <email-connector-user-setting-body :user-email-setting="userEmailSetting" />
+    id="emailConnectorMailBox">
     <email-connector-user-setting-connectors-drawer />
     <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
+    <email-connector-mail-box-drawer />
   </v-app>
 </template>
 
@@ -37,13 +37,18 @@ export default {
     }
   }),
   created() {
-    this.getUserEmailSetting();
-    document.addEventListener('refresh-user-email-setting', this.getUserEmailSetting);
+    document.addEventListener('quick-action-mailBox-drawer', this.openDrawer);
   },
   methods: {
-    getUserEmailSetting() {
+    openDrawer() {
       this.$emailConnectorUserSettingService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
+        if (this.userEmailSetting.emailConnectorId) {
+          this.$root.$emit('open-mail-box-drawer');
+        }
+        else {
+          this.$root.$emit('open-user-setting-connectors-drawer');
+        }
       });
     }
   }
