@@ -118,8 +118,11 @@ public class EmailConnectorServiceTest {
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
+    ApplicationList applicationList = mock(ApplicationList.class);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
     emailConnectorService.createEmailConnector(emailConnector, TEST_USER);
     verify(emailConnectorStorage).createEmailConnector(emailConnector);
+    verify(applicationCenterService).getApplications(0, 0, null);
   }
 
   @Test
@@ -131,8 +134,8 @@ public class EmailConnectorServiceTest {
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
-    emailConnectorService.createEmailConnector(emailConnector, TEST_USER);
-    verify(emailConnectorStorage).createEmailConnector(emailConnector);
+    emailConnectorService.updateEmailConnector(emailConnector, TEST_USER);
+    verify(emailConnectorStorage).updateEmailConnector(emailConnector);
   }
 
   @Test
@@ -146,8 +149,11 @@ public class EmailConnectorServiceTest {
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
+    ApplicationList applicationList = mock(ApplicationList.class);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
     emailConnectorService.activateEmailConnector(1L, "true", TEST_USER);
     verify(emailConnectorStorage).activateEmailConnector(1L, "true");
+    verify(applicationCenterService).getApplications(0, 0, null);
   }
 
   @Test
@@ -161,8 +167,11 @@ public class EmailConnectorServiceTest {
     Identity identity = mock(Identity.class);
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
+    ApplicationList applicationList = mock(ApplicationList.class);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
     emailConnectorService.deleteEmailConnector(1L, TEST_USER);
     verify(emailConnectorStorage).deleteEmailConnector(1L);
+    verify(applicationCenterService).getApplications(0, 0, null);
   }
 
   @Test

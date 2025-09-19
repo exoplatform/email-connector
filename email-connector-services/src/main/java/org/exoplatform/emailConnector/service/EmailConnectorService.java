@@ -121,14 +121,7 @@ public class EmailConnectorService {
     }
     boolean isFeatureActiveBool = Boolean.parseBoolean(isFeatureActive);
     featureService.saveActiveFeature(EMAIL_FEATURE, isFeatureActiveBool);
-    applicationCenterService.getApplications(0, 0, null)
-                            .getApplications()
-                            .stream()
-                            .filter(application -> application.getUrl().equals(EMAIL_FEATURE))
-                            .forEach(application -> {
-                              application.setActive(isFeatureActiveBool);
-                              applicationCenterService.updateApplication(application);
-                            });
+    activateEmailApp();
 
   }
 
@@ -150,7 +143,10 @@ public class EmailConnectorService {
                                                      username,
                                                      emailConnector.getName()));
     }
-    return emailConnectorStorage.createEmailConnector(emailConnector);
+    EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
+    activateEmailApp();
+    return storedEmailConnector;
+
   }
 
   /**
@@ -200,6 +196,7 @@ public class EmailConnectorService {
                                                      storedEmailConnector.getName()));
     }
     emailConnectorStorage.activateEmailConnector(emailConnectorId, isEmailConnectorActive);
+    activateEmailApp();
   }
 
   /**
@@ -225,6 +222,7 @@ public class EmailConnectorService {
                                                      storedEmailConnector.getName()));
     }
     emailConnectorStorage.deleteEmailConnector(emailConnectorId);
+    activateEmailApp();
   }
 
   /**
@@ -364,18 +362,18 @@ public class EmailConnectorService {
     return StringUtils.isBlank(username) || userAcl.isAdministrator(getUserIdentity(username));
   }
 
-  @SneakyThrows
-  private Identity getUserIdentity(String username) {
-    if (StringUtils.isBlank(username)) {
-      return new Identity(IdentityConstants.ANONIM);
-    } else {
-      return userAcl.getUserIdentity(username);
-    }
-  }
-
-  private boolean isEmailConnectorUserConnected(Long emailConnectorId, String username) {
-    return getUserEmailSetting(username) != null
-        && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
+  private void activateEmailApp() {
+    applicationCenterService.getApplications(0, 0, null)
+                            .getApplications()
+                            .stream()
+                            .filter(application -> application.getUrl().equals(EMAIL_FEATURE))
+                            .findFirst()
+                            .ifPresent(application -> {
+                              boolean hasActiveConnector = !emailConnectorStorage.getActiveEmailConnectors().isEmpty();
+                              boolean featureEnabled = featureService.isActiveFeature(EMAIL_FEATURE);
+                              application.setActive(hasActiveConnector && featureEnabled);
+                              applicationCenterService.updateApplication(application);
+                            });
   }
 
   private boolean canConnect(Long emailConnectorId, String username) {
@@ -412,6 +410,15 @@ public class EmailConnectorService {
     return store;
   }
 
+  private String decodePassword(String password) {
+    try {
+      return codecInitializer.getCodec().decode(password);
+    } catch (TokenServiceInitializationException e) {
+      LOG.warn("Error when decoding password", e);
+      return null;
+    }
+  }
+
   private String encodePassword(String password) {
     try {
       return codecInitializer.getCodec().encode(password);
@@ -421,12 +428,16 @@ public class EmailConnectorService {
     }
   }
 
-  private String decodePassword(String password) {
-    try {
-      return codecInitializer.getCodec().decode(password);
-    } catch (TokenServiceInitializationException e) {
-      LOG.warn("Error when decoding password", e);
-      return null;
+  private Identity getUserIdentity(String username) {
+    if (StringUtils.isBlank(username)) {
+      return new Identity(IdentityConstants.ANONIM);
+    } else {
+      return userAcl.getUserIdentity(username);
     }
+  }
+
+  private boolean isEmailConnectorUserConnected(Long emailConnectorId, String username) {
+    return getUserEmailSetting(username) != null
+        && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
   }
 }
