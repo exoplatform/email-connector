@@ -30,7 +30,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="d-flex flex-column align-center justify-center full-width full-height">
         <email-connector-admin-icon
           icon="far fa-envelope"
-          :icon-size="60" />
+          icon-class="tertiary--text"
+          icon-size="60" />
         <div class="mt-5">
           {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
         </div>
