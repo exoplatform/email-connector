@@ -41,7 +41,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-switch
             v-model="item.active"
             @change="activateItem(item)"
-            class="ma-auto" />
+            class="ma-0 pa-0" 
+            hide-details />
         </div>
       </template>
       <template #[`item.actions`]="{ item }">
