@@ -31,7 +31,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-admin-icon
           icon="far fa-envelope"
           :icon-size="60" />
-        <div class="mt-5">
+        <div class="mt-5 tertiary--text">
           {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
         </div>
       </div>
