@@ -31,7 +31,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <v-icon
       v-else
       :size="iconSize"
-      class="icon-default-color">
+      :class="iconClass">
       {{ icon || 'fa-envelope' }}
     </v-icon>
   </v-avatar>
@@ -50,6 +50,10 @@ export default {
     icon: {
       type: String,
       default: null,
+    },
+    iconClass: {
+      type: String,
+      default: 'icon-default-color',
     },
   },
 };

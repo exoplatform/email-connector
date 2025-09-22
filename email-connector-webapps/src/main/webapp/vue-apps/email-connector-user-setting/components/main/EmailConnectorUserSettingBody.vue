@@ -33,7 +33,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <email-connector-admin-icon
               :image-url="userEmailSetting.emailConnectorImageUrl"
               :icon="userEmailSetting.emailConnectorIcon"
-              :icon-size="24" 
+              icon-size="24" 
               class="me-3" />
             <span>{{ userEmailSetting.emailAddress }}</span>
           </div>
