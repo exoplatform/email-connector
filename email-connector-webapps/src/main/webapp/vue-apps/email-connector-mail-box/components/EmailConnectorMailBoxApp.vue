@@ -21,7 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="emailConnectorMailBox">
     <email-connector-user-setting-connectors-drawer />
     <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
-    <email-connector-mail-box-drawer />
+    <email-connector-mail-box-drawer :user-email-setting="userEmailSetting" />
   </v-app>
 </template>
 
@@ -41,7 +41,7 @@ export default {
   },
   methods: {
     openDrawer() {
-      this.$emailConnectorUserSettingService.getUserEmailSetting().then(userEmailSetting => {
+      this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
         if (this.userEmailSetting.emailConnectorId) {
           this.$root.$emit('open-mail-box-drawer');
