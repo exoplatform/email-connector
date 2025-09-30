@@ -36,15 +36,18 @@ export default {
       emailPassword: ''
     }
   }),
-  created() {
+  mounted() {
     document.addEventListener('quick-action-mailBox-drawer', this.openDrawer);
   },
+  beforeDestroy() {
+    document.removeEventListener('quick-action-mailBox-drawer', this.openDrawer);
+  },
   methods: {
-    openDrawer() {
+    openDrawer(event) {
       this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
         if (this.userEmailSetting.emailConnectorId) {
-          this.$root.$emit('open-mail-box-drawer');
+          this.$root.$emit('open-mail-box-drawer', event?.detail);
         }
         else {
           this.$root.$emit('open-user-setting-connectors-drawer');

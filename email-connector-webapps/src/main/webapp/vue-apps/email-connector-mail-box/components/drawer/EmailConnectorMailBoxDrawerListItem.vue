@@ -47,7 +47,8 @@ export default {
   },
   computed: {
     sentDate() {
-      return this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate);
+      const sentDate = this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate);
+      return sentDate === 'yesterday' && this.$t('emailConnector.mailBox.list.drawer.yesterday') || sentDate;
     },
   },
   methods: {

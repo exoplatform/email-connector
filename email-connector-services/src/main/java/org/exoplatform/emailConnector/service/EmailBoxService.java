@@ -16,12 +16,16 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import javax.mail.BodyPart;
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.MessagingException;
+import javax.mail.Part;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
 import javax.mail.internet.MimeMultipart;
@@ -34,6 +38,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.utils.EmailBoxUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -84,11 +89,12 @@ public class EmailBoxService {
     while (i >= 0 && count < maxEmails) {
       Message message = messages[i--];
       try {
+        String excerpt = EmailBoxUtils.getMessageContent(message, true);
         emailBoxStorage.createEmail(new Email(null,
                                               uidFolder.getUID(message),
                                               username,
                                               message.getSubject(),
-                                              getExcerpt(message),
+                                              excerpt,
                                               message.getFrom() != null
                                                   && message.getFrom()[0] != null ? message.getFrom()[0].toString() : "",
                                               message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate()));
@@ -127,36 +133,4 @@ public class EmailBoxService {
   public List<Email> getEmails(String username) {
     return emailBoxStorage.getEmails(username);
   }
-
-  @SneakyThrows
-  private String getExcerpt(Message message) {
-    String excerpt = "";
-    if (message.isMimeType("text/plain")) {
-      excerpt = message.getContent().toString();
-    } else if (message.isMimeType("multipart/*")) {
-      MimeMultipart mimeMultipart = (MimeMultipart) message.getContent();
-      excerpt = getTextFromMimeMultipart(mimeMultipart);
-    }
-    return excerpt.length() > 40 ? excerpt.substring(0, 40) + "..." : excerpt;
-  }
-
-  private static String getTextFromMimeMultipart(MimeMultipart mimeMultipart) throws Exception {
-    StringBuilder result = new StringBuilder();
-    int count = mimeMultipart.getCount();
-    for (int i = 0; i < count; i++) {
-      BodyPart bodyPart = mimeMultipart.getBodyPart(i);
-      if (bodyPart.isMimeType("text/plain")) {
-        result.append(bodyPart.getContent());
-        break;
-      } else if (bodyPart.isMimeType("text/html")) {
-        String html = (String) bodyPart.getContent();
-        String text = Jsoup.parse(html).text();
-        result.append(text);
-      } else if (bodyPart.getContent() instanceof MimeMultipart) {
-        result.append(getTextFromMimeMultipart((MimeMultipart) bodyPart.getContent()));
-      }
-    }
-    return result.toString();
-  }
-
 }
