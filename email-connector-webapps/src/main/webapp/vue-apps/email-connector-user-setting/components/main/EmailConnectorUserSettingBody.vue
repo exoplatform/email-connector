@@ -30,7 +30,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             {{ $t('UserSettings.emailConnector.description') }}
           </v-list-item-title>
           <div v-else>
-            <email-connector-admin-icon
+            <email-connector-icon
               :image-url="userEmailSetting.emailConnectorImageUrl"
               :icon="userEmailSetting.emailConnectorIcon"
               icon-size="24" 

@@ -198,11 +198,20 @@ public class EmailConnectorServiceTest {
     emailConnectorService.getActiveEmailConnectors(frLocale, TEST_USER);
     verify(emailConnectorStorage).getActiveEmailConnectors();
   }
-
+  
   @Test
   @SneakyThrows
   void setUserEmailSetting() {
-    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.setUserEmailSetting(null, TEST_USER));
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    emailConnectorService.setUserEmailSetting(userEmailSetting, TEST_USER);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void connectUserEmailSetting() {
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.connectUserEmailSetting(null, TEST_USER));
     EmailConnector emailConnector = emailConnector();
     when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector);
     Session session = mock(Session.class);
@@ -213,9 +222,8 @@ public class EmailConnectorServiceTest {
     when(store.isConnected()).thenReturn(true);
     when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
     UserEmailSetting userEmailSetting = userEmailSetting();
-    emailConnectorService.setUserEmailSetting(userEmailSetting, TEST_USER);
+    emailConnectorService.connectUserEmailSetting(userEmailSetting, TEST_USER);
     verify(store).connect(anyString(), anyInt(), anyString(), anyString());
-    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }
 
   @Test
@@ -245,6 +253,6 @@ public class EmailConnectorServiceTest {
   }
 
   private UserEmailSetting userEmailSetting() {
-    return new UserEmailSetting("1", null, null, "testEmail", "testPassword");
+    return new UserEmailSetting("1", null, null, "testEmail", "testPassword", null);
   }
 }

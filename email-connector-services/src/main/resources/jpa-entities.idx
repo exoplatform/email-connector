@@ -1,1 +1,2 @@
 org.exoplatform.emailConnector.entity.EmailConnectorEntity
+org.exoplatform.emailConnector.entity.EmailBoxEntity

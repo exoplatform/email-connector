@@ -25,13 +25,15 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class UserEmailSetting {
 
-  private String emailConnectorId;
+  private String     emailConnectorId;
 
-  private String emailConnectorImageUrl;
+  private String     emailConnectorImageUrl;
 
-  private String emailConnectorIcon;
+  private String     emailConnectorIcon;
 
-  private String emailAddress;
+  private String     emailAddress;
 
-  private String emailPassword;
+  private String     emailPassword;
+
+  private SyncStatus syncStatus;
 }

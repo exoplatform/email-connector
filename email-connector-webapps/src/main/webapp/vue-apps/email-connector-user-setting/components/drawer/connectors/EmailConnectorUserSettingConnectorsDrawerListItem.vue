@@ -16,7 +16,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-list-item>
-    <email-connector-admin-icon
+    <email-connector-icon
       :image-url="activeEmailConnector.imageUrl"
       :icon="activeEmailConnector.icon" 
       class="me-5" />

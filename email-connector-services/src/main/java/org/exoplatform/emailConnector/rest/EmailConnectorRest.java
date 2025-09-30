@@ -204,8 +204,6 @@ public class EmailConnectorRest {
       }
       BodyBuilder builder = ResponseEntity.ok();
       return builder.contentType(MediaType.IMAGE_PNG).body(new InputStreamResource(stream));
-    } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -219,10 +217,10 @@ public class EmailConnectorRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void setUserEmailSetting(HttpServletRequest request, @RequestBody
+  public void connectUserEmailSetting(HttpServletRequest request, @RequestBody
   UserEmailSetting userEmailSetting) {
     try {
-      emailConnectorService.setUserEmailSetting(userEmailSetting, request.getRemoteUser());
+      emailConnectorService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser());
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
