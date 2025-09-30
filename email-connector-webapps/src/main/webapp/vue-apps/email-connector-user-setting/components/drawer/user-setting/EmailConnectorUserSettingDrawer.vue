@@ -143,6 +143,7 @@ export default {
         document.dispatchEvent(new CustomEvent('refresh-active-connectors-list'));
         document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
         document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer'));
+        this.$emailConnectorCommonService.synchronize();
       }).catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.error'), 'error')
       ).finally(() => this.loading = false);
     }

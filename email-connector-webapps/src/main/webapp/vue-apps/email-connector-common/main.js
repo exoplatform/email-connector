@@ -17,10 +17,10 @@
 
 import './initComponents.js';
 
-import * as emailConnectorUserSettingService from './js/EmailConnectorUserSettingService.js';
+import * as emailConnectorCommonService from './js/EmailConnectorCommonService.js';
 
-if (!Vue.prototype.$emailConnectorUserSettingService) {
-  window.Object.defineProperty(Vue.prototype, '$emailConnectorUserSettingService', {
-    value: emailConnectorUserSettingService,
+if (!Vue.prototype.$emailConnectorCommonService) {
+  window.Object.defineProperty(Vue.prototype, '$emailConnectorCommonService', {
+    value: emailConnectorCommonService,
   });
 }

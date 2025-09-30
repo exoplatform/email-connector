@@ -26,7 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       disable-sort
       dense>
       <template #[`item.icon`]="{ item }">
-        <email-connector-admin-icon
+        <email-connector-icon
           :image-url="item.imageUrl"
           :icon="item.icon"
           class="flex-grow-0 flex-shrink-0 py-1" />

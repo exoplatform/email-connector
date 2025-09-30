@@ -15,37 +15,6 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-export function getActiveEmailConnectors() {
-  return fetch('/email-connector/rest/emailConnector/active', {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    method: 'GET'
-  }).then((resp) => {
-    if (resp?.ok) {
-      return resp.json();
-    } else {
-      throw new Error('Error when getting active email connectors');
-    }
-  });
-}
-
-export function setUserEmailSetting(userEmailSetting) {
-  return fetch('/email-connector/rest/emailConnector/userEmailSetting', {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    body: JSON.stringify(userEmailSetting),
-    method: 'PUT'
-  }).then((resp) => {
-    if (!resp?.ok) {
-      throw new Error('Error when setting user email setting');
-    }
-  });
-}
-
 export function getUserEmailSetting() {
   return fetch('/email-connector/rest/emailConnector/userEmailSetting', {
     headers: {
@@ -62,16 +31,16 @@ export function getUserEmailSetting() {
   });
 }
 
-export function deleteUserEmailSetting() {
-  return fetch('/email-connector/rest/emailConnector/userEmailSetting', {
+export function synchronize() {
+  return fetch('/email-connector/rest/emailBox/synchronize', {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
-    method: 'DELETE'
+    method: 'POST'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when deleting user email setting');
+      throw new Error('Error when synchronizing email box');
     }
   });
 }
