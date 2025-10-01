@@ -59,3 +59,17 @@ export function deleteUserEmailSetting() {
     }
   });
 }
+
+export function synchronize() {
+  return fetch('/email-connector/rest/emailBox/synchronize', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when synchronizing email box');
+    }
+  });
+}

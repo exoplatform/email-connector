@@ -15,26 +15,24 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <div>
-    <v-list-item class="mb-2 px-0">
-      <div class="py-0 flex-grow-1">
-        {{ email.sender }}
+  <v-hover v-slot="{ hover }">
+    <div :class="{'light-grey-background-color': hover}">
+      <div class="d-flex mb-2">
+        <div class="flex-grow-1">
+          {{ email.sender }}
+        </div>
+        <div class="text-subtitle">
+          {{ sentDate }}
+        </div>
       </div>
-      <div class="py-0 text-subtitle">
-        {{ sentDate }}
+      <div class="mb-1 text-subtitle-font-size">
+        {{ email.subject }}
       </div>
-    </v-list-item>
-    <v-list-item class="mb-1 px-0">
-      <v-list-item-content class="py-0">
-        <span>{{ email.subject }}</span>
-      </v-list-item-content>
-    </v-list-item>
-    <v-list-item class="px-0">
-      <v-list-item-content class="py-0 text-subtitle">
-        <span>{{ email.excerpt }}</span>
-      </v-list-item-content>
-    </v-list-item>
-  </div>
+      <div class="text-subtitle">
+        {{ email.excerpt }}
+      </div>
+    </div>
+  </v-hover>
 </template>
 
 <script>
@@ -47,7 +45,8 @@ export default {
   },
   computed: {
     sentDate() {
-      return this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate);
+      const sentDate = this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate);
+      return sentDate === 'yesterday' && this.$t('emailConnector.mailBox.list.drawer.yesterday') || sentDate;
     },
   },
   methods: {

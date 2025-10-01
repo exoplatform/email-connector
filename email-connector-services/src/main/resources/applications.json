@@ -11,7 +11,7 @@
                 "type": "DRAWER",
                 "url": "email",
                 "mandatory": false,
-                "active": true,
+                "active": false,
                 "mobile": true,
                 "default": true,
                 "shortcut": "m",
