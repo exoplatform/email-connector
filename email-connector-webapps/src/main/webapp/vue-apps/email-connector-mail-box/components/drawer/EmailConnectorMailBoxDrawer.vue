@@ -23,24 +23,38 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     :allow-expand="!$root.isMobile"
     @closed="close">
     <template #title>
-      <span class="me-4">{{ $t('emailConnector.mailBox.list.drawer.title') }}</span>
-      <v-progress-circular
-        v-if="loading"
-        size="20"
-        indeterminate />
+      <span class="me-3">{{ $t('emailConnector.mailBox.list.drawer.title') }}</span>
+      <v-tooltip
+        v-if="syncInProgress"
+        bottom>
+        <template #activator="{on, attrs}">
+          <v-progress-circular
+            v-on="on"
+            v-bind="attrs"
+            size="20"
+            color="primary"
+            indeterminate />
+        </template>
+        <span>
+          {{ $t('emailConnector.mailBox.list.drawer.sync.tooltip') }}
+        </span>
+      </v-tooltip>
     </template>
     <template v-if="emailBoxDrawer" #content>
-      <email-connector-mail-box-drawer-list
-        class="py-0 mt-3 ms-7 me-4"
-        v-if="hasEmails"
-        :emails="emails" /> 
-      <div class="d-flex flex-column align-center justify-center full-width full-height" v-else>               
-        <email-connector-icon
-          icon="far fa-envelope"
-          icon-class="tertiary--text"
-          icon-size="60" />
-        <div class="mt-5">
-          {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
+      <div
+        class="fill-height overflow-y-auto specific-scrollbar">
+        <email-connector-mail-box-drawer-list
+          class="py-0 mt-3 ms-7 me-4"
+          v-if="hasEmails"
+          :emails="emails" /> 
+        <div class="d-flex flex-column align-center justify-center full-width full-height" v-else>               
+          <email-connector-icon
+            icon="far fa-envelope"
+            icon-class="tertiary--text"
+            icon-size="60" />
+          <div class="mt-5">
+            {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
+          </div>
         </div>
       </div>
     </template>
@@ -53,7 +67,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     emailBoxDrawer: false,
-    emails: []
+    emails: [],
+    syncInProgress: false,
   }),
   props: {
     userEmailSetting: {
@@ -62,19 +77,19 @@ export default {
     },
   },
   created() {
-    this.$root.$on('open-mail-box-drawer', this.open);
+    this.$root.$on('open-mail-box-drawer', (loading) => {
+      this.open(loading); 
+    });
   },
   computed: {
     hasEmails() {
       return this.emails?.length > 0;
-    },
-    loading() {
-      return this.userEmailSetting?.syncStatus === 'IN_PROGRESS';
-    },
+    }
   },
   methods: {
-    async open() {
+    async open(loading) {
       this.emails = await this.$emailConnectorMailBoxService.getEmails();
+      this.syncInProgress = loading || this.userEmailSetting?.syncStatus === 'IN_PROGRESS';
       this.$refs.emailBoxDrawer.open();
     },
     close() {
