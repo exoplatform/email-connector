@@ -44,7 +44,7 @@ export default {
   },
   methods: {
     getUserEmailSetting() {
-      this.$emailConnectorUserSettingService.getUserEmailSetting().then(userEmailSetting => {
+      this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
       });
     }

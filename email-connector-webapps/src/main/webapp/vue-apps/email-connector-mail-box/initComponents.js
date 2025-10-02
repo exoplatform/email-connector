@@ -16,10 +16,14 @@
  */
 import EmailConnectorMailBoxApp from './components/EmailConnectorMailBoxApp.vue';
 import EmailConnectorMailBoxDrawer from './components/drawer/EmailConnectorMailBoxDrawer.vue';
+import EmailConnectorMailBoxDrawerList from './components/drawer/EmailConnectorMailBoxDrawerList.vue';
+import EmailConnectorMailBoxDrawerListItem from './components/drawer/EmailConnectorMailBoxDrawerListItem.vue';
 
 const components = {
   'email-connector-mail-box-app': EmailConnectorMailBoxApp,
   'email-connector-mail-box-drawer': EmailConnectorMailBoxDrawer,
+  'email-connector-mail-box-drawer-list': EmailConnectorMailBoxDrawerList,
+  'email-connector-mail-box-drawer-list-item': EmailConnectorMailBoxDrawerListItem,
 };
 
 for (const key in components) {

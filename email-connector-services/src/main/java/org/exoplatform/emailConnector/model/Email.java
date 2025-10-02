@@ -14,21 +14,30 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <gnu.org/licenses>.
  */
-package org.exoplatform.emailConnector.dao;
+package org.exoplatform.emailConnector.model;
 
-import java.util.List;
+import java.util.Date;
 
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-import org.exoplatform.emailConnector.entity.EmailConnectorEntity;
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class Email {
 
-public interface EmailConnectorDAO extends JpaRepository<EmailConnectorEntity, Long> {
+  private Long   id;
 
-  @Query("""
-      SELECT ec FROM EmailConnectorEntity ec
-      WHERE ec.active = TRUE
-      """)
-  List<EmailConnectorEntity> findActiveEmailConnectors();
+  private Long   mailRemoteId;
 
+  private String userId;
+
+  private String subject;
+
+  private String excerpt;
+
+  private String sender;
+
+  private Date   sentDate;
 }

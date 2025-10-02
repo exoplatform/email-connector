@@ -20,15 +20,17 @@ import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
-import org.exoplatform.emailConnector.entity.EmailConnectorEntity;
+import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 
-public interface EmailConnectorDAO extends JpaRepository<EmailConnectorEntity, Long> {
+public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   @Query("""
-      SELECT ec FROM EmailConnectorEntity ec
-      WHERE ec.active = TRUE
+      SELECT eb FROM EmailBoxEntity eb
+      WHERE eb.userId = :username ORDER BY eb.sentDate DESC
       """)
-  List<EmailConnectorEntity> findActiveEmailConnectors();
+  List<EmailBoxEntity> findEmailsByUser(@Param("username")
+  String username);
 
 }

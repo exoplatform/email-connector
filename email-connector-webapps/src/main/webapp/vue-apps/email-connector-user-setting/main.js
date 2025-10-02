@@ -17,6 +17,14 @@
 
 import './initComponents.js';
 
+import * as emailConnectorUserSettingService from './js/EmailConnectorUserSettingService.js';
+
+if (!Vue.prototype.$emailConnectorUserSettingService) {
+  window.Object.defineProperty(Vue.prototype, '$emailConnectorUserSettingService', {
+    value: emailConnectorUserSettingService,
+  });
+}
+
 Vue.use(Vuetify);
 const vuetify = new Vuetify(eXo.env.portal.vuetifyPreset);
 

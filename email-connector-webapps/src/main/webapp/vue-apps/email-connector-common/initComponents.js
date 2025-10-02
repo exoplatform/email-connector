@@ -14,10 +14,10 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-import EmailConnectorAdminIcon from './components/EmailConnectorAdminIcon.vue';
+import EmailConnectorIcon from './components/EmailConnectorIcon.vue';
 
 const components = {
-  'email-connector-admin-icon': EmailConnectorAdminIcon,
+  'email-connector-icon': EmailConnectorIcon,
 };
 
 for (const key in components) {
