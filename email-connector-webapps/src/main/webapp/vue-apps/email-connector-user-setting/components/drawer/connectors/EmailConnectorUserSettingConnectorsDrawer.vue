@@ -31,7 +31,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-if="hasActiveConnectors"
         class="ma-5 py-0"
         :active-email-connectors="activeEmailConnectors" />
-      <v-list-item v-else class="mx-5 px-0 full-height align-center">
+      <v-list-item v-else class="full-height align-center">
         <v-list-item-content>
           <v-list-item-title class="text-wrap">
             {{ $t('UserSettings.emailConnector.connectors.drawer.noActiveConnectors') }}

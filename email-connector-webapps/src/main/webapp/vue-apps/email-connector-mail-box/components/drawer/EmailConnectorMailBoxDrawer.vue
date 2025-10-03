@@ -45,15 +45,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-mail-box-drawer-list
           v-if="hasEmails"
           :emails="emails" /> 
-        <div class="d-flex flex-column align-center justify-center full-width full-height" v-else>               
-          <email-connector-icon
-            icon="far fa-envelope"
-            icon-class="tertiary--text"
-            icon-size="60" />
-          <div class="mt-5">
-            {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
-          </div>
-        </div>
+        <v-list-item v-else class="full-height align-center">
+          <v-list-item-content>
+            <email-connector-icon
+              icon="far fa-envelope"
+              icon-class="tertiary--text"
+              icon-size="60" />
+            <v-list-item-title class="text-wrap mt-5">
+              {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
+            </v-list-item-title>
+          </v-list-item-content>
+        </v-list-item>
       </div>
     </template>
     <template #footer>
