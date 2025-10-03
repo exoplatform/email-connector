@@ -90,10 +90,11 @@ public class EmailBoxService {
       Message message = messages[i--];
       try {
         String excerpt = EmailBoxUtils.getMessageContent(message, true);
+        String subject = message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..." : message.getSubject();
         emailBoxStorage.createEmail(new Email(null,
                                               uidFolder.getUID(message),
                                               username,
-                                              message.getSubject(),
+                                              subject,
                                               excerpt,
                                               message.getFrom() != null
                                                   && message.getFrom()[0] != null ? message.getFrom()[0].toString() : "",

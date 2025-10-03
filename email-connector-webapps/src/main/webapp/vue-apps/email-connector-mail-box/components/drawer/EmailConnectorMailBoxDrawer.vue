@@ -44,7 +44,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div
         class="fill-height overflow-y-auto specific-scrollbar">
         <email-connector-mail-box-drawer-list
-          class="py-0 mt-3 ms-7 me-4"
+          class="mt-3"
           v-if="hasEmails"
           :emails="emails" /> 
         <div class="d-flex flex-column align-center justify-center full-width full-height" v-else>               

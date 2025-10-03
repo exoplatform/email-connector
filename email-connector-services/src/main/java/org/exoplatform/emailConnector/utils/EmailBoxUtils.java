@@ -37,7 +37,7 @@ public class EmailBoxUtils {
 
     if (excerpt) {
       content = Jsoup.parse(content).text().trim();
-      return content.length() > 40 ? content.substring(0, 40) + "..." : content;
+      return content.length() > 50 ? content.substring(0, 50) + "..." : content;
     }
     return content;
   }
