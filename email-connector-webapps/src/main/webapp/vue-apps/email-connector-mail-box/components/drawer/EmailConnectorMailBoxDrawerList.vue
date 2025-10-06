@@ -16,13 +16,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 
 <template>
-  <v-list dense>
+  <div>
     <email-connector-mail-box-drawer-list-item
       v-for="email in emails"
       :key="email.id"
       :email="email"
-      class="mb-6 px-0" />
-  </v-list>
+      class="pt-3 pb-3 ps-7 pe-4" />
+  </div>
 </template>
 
 <script>

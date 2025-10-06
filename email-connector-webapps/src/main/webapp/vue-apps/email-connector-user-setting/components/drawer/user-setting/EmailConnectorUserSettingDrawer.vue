@@ -138,12 +138,14 @@ export default {
       this.$emailConnectorUserSettingService.setUserEmailSetting(this.emailSetting).then(() =>
       {
         this.close();
-        this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.success'), 'success');
         this.$root.$emit('close-user-setting-connectors-drawer');
         document.dispatchEvent(new CustomEvent('refresh-active-connectors-list'));
         document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
-        document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer'));
-        this.$emailConnectorCommonService.synchronize();
+        this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.success'), 'success');
+        this.$emailConnectorUserSettingService.synchronize();
+        document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer', {
+          detail: true
+        }));
       }).catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.error'), 'error')
       ).finally(() => this.loading = false);
     }

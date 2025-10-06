@@ -71,7 +71,9 @@ public class EmailBoxServiceTest {
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Message message1 = mock(Message.class);
+    when(message1.getSubject()).thenReturn("message1Subject");   
     Message message2 = mock(Message.class);
+    when(message2.getSubject()).thenReturn("message2Subject");
     Message[] messages = { message1, message2 };
     when(inbox.getMessages()).thenReturn(messages);
     emailBoxService.synchronize(TEST_USER);
