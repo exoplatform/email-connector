@@ -142,7 +142,6 @@ export default {
         document.dispatchEvent(new CustomEvent('refresh-active-connectors-list'));
         document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
         this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.drawer.connect.success'), 'success');
-        this.$emailConnectorUserSettingService.synchronize();
         document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer', {
           detail: true
         }));

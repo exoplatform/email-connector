@@ -130,7 +130,7 @@ public class EmailConnectorRestTest {
                                                                       .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
   }
-  
+
   @Test
   void activateEmailConnector() throws Exception {
     ResultActions response = mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/1/true").with(testAdminUser()));
@@ -190,7 +190,7 @@ public class EmailConnectorRestTest {
   }
 
   private UserEmailSetting userEmailSetting() {
-    return new UserEmailSetting("1", null, null, "testEmail", "testPassword", null);
+    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, null, null);
   }
 
   @SneakyThrows

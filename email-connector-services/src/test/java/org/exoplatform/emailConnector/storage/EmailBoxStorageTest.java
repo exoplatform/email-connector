@@ -59,7 +59,7 @@ public class EmailBoxStorageTest {
       if (entity.getId() == null) {
         entity.setId(ID);
       }
-      when(emailBoxDAO.findEmailsByUser("root")).thenReturn(Optional.of(entity)
+      when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Optional.of(entity)
                                                                     .stream()
                                                                     .filter(email -> email.getUserId().equals("root"))
                                                                     .collect(Collectors.toList()));

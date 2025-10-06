@@ -63,15 +63,16 @@ public class EmailBoxServiceTest {
   void synchronize() {
     UserEmailSetting userEmailSetting = mock(UserEmailSetting.class);
     when(emailConnectorService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(emailConnectorService.canConnect(userEmailSetting)).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
+    when(emailConnectorService.canConnect(userEmailSetting)).thenReturn(true);
+    when(userEmailSetting.getEmailSyncStatus()).thenReturn(null);
     Store store = mock(Store.class);
     when(emailConnectorService.connect(userEmailSetting)).thenReturn(store);
-    when(store.isConnected()).thenReturn(false);
-    assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
-    when(store.isConnected()).thenReturn(true);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Message message1 = mock(Message.class);
-    when(message1.getSubject()).thenReturn("message1Subject");   
+    when(message1.getSubject()).thenReturn("message1Subject");
     Message message2 = mock(Message.class);
     when(message2.getSubject()).thenReturn("message2Subject");
     Message[] messages = { message1, message2 };
@@ -80,15 +81,6 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, times(2)).createEmail(any(Email.class));
     verify(emailConnectorService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString());
 
-  }
-
-  @Test
-  @SneakyThrows
-  void markSynchronizeAsFailed() {
-    UserEmailSetting userEmailSetting = mock(UserEmailSetting.class);
-    when(emailConnectorService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
-    emailBoxService.markSynchronizeAsFailed(TEST_USER);
-    verify(emailConnectorService).setUserEmailSetting(any(UserEmailSetting.class), anyString());
   }
 
   @Test

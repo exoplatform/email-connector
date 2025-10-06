@@ -18,8 +18,6 @@ package org.exoplatform.emailConnector.rest;
 
 import java.util.List;
 
-import javax.mail.MessagingException;
-
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -61,8 +59,7 @@ public class EmailBoxRest {
       return ResponseEntity.ok().build();
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
-    } catch (Exception e) {
-      emailBoxService.markSynchronizeAsFailed(request.getRemoteUser());
+    } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }

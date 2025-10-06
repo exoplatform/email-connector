@@ -17,9 +17,13 @@ import org.exoplatform.services.log.Log;
 
 import lombok.SneakyThrows;
 
-public class EmailBoxUtils {
+public class EmailConnectorUtils {
 
-  private static final Log LOG = ExoLogger.getLogger(EmailBoxUtils.class);
+  public static final String EMAIL_BOX_SYNC_JOB_NAME = "EmailBoxSyncJob";
+
+  public static final String EMAIL_FEATURE           = "email";
+
+  private static final Log   LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
   @SneakyThrows
   public static String getMessageContent(Message message, boolean excerpt) {
@@ -77,4 +81,5 @@ public class EmailBoxUtils {
     }
     return result.toString();
   }
+
 }
