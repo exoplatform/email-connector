@@ -39,11 +39,21 @@ export function formatDateString(dateToFormat) {
   let options = {};
   const localeOfUser = eXo.env.portal.language.replace('_', '-');
   const differenceInDays = Math.abs(today.getTime() - resetDateToFormat.getTime()) / (24*60*60*1000);
-  if (differenceInDays < 7){ // In the same week
+  if (differenceInDays === 0) { // In today
+    options = {
+      hour: '2-digit', 
+      minute: '2-digit'
+    };
+    return new Date(dateToFormat).toLocaleTimeString(localeOfUser, options);
+  }
+  else if (differenceInDays === 1) { // In yesterday
+    return 'yesterday';
+  }
+  else if (differenceInDays < 7) { // In the same week
     options = {
       weekday: 'long'
     };
-    return new Date(resetDateToFormat).toLocaleDateString(localeOfUser, options);
+    return new Date(resetDateToFormat).toLocaleDateString(localeOfUser, options).replace(/^\p{L}/u, c => c.toUpperCase());
   } else if (differenceInDays < 31) {// In the last 31 days
     options = {
       weekday: 'short',
@@ -52,11 +62,11 @@ export function formatDateString(dateToFormat) {
       day: 'numeric',
     };
     return new Date(resetDateToFormat.getTime()).toLocaleDateString(localeOfUser, options);
-  } else {// Difference more than a month
+  } else {
     options = {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
     };
     return new Date(resetDateToFormat.getTime()).toLocaleDateString(localeOfUser, options);
   }

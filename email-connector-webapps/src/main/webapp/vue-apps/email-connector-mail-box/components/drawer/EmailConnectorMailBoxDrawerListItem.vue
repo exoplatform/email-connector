@@ -15,26 +15,28 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <div>
-    <v-list-item class="mb-2 px-0">
-      <div class="py-0 flex-grow-1">
-        {{ email.sender }}
-      </div>
-      <div class="py-0 text-subtitle">
-        {{ sentDate }}
-      </div>
-    </v-list-item>
-    <v-list-item class="mb-1 px-0">
-      <v-list-item-content class="py-0">
-        <span>{{ email.subject }}</span>
-      </v-list-item-content>
-    </v-list-item>
-    <v-list-item class="px-0">
-      <v-list-item-content class="py-0 text-subtitle">
-        <span>{{ email.excerpt }}</span>
-      </v-list-item-content>
-    </v-list-item>
-  </div>
+  <v-hover v-slot="{ hover }">
+    <v-list :class="{'light-grey-background-color': hover}">
+      <v-list-item
+        style="min-height: 0"
+        class="px-0 pb-2">
+        <v-list-item-content class="py-0">
+          <v-list-item-title v-text="email.sender" />
+        </v-list-item-content>
+        <v-list-item-action class="my-0">
+          <v-list-item-subtitle v-text="sentDate" />
+        </v-list-item-action>
+      </v-list-item>
+      <v-list-item
+        style="min-height: 0"
+        class="px-0">
+        <v-list-item-content class="py-0">
+          <v-list-item-subtitle class="mb-1 text-color" v-text="email.subject" />
+          <v-list-item-subtitle v-text="email.excerpt" />
+        </v-list-item-content>
+      </v-list-item>
+    </v-list>
+  </v-hover>
 </template>
 
 <script>
@@ -47,7 +49,8 @@ export default {
   },
   computed: {
     sentDate() {
-      return this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate);
+      const sentDate = this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate);
+      return sentDate === 'yesterday' && this.$t('emailConnector.mailBox.list.drawer.yesterday') || sentDate;
     },
   },
   methods: {
