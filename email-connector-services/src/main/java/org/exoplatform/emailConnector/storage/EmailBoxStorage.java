@@ -49,9 +49,18 @@ public class EmailBoxStorage {
     return fromEntity(emailBoxEntity);
   }
 
+  public Email getEmailByMailRemoteIdAndUserId(String userId, long mailRemoteId) {
+    EmailBoxEntity emailBoxEntity = emailBoxDao.findByUserIdAndMailRemoteId(userId, mailRemoteId);
+    return fromEntity(emailBoxEntity);
+  }
+
   public List<Email> getEmails(String username) {
-    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findEmailsByUser(username);
+    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdOrderBySentDateDesc(username);
     return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity)).collect(Collectors.toList());
+  }
+  
+  public void deleteEmails(List<Long> emailsIds) {
+    emailBoxDao.deleteEmailsByIds(emailsIds);
   }
 
   private EmailBoxEntity toEntity(Email email) {

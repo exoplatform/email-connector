@@ -23,21 +23,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @closed="close">
     <template #title>
       <span class="me-3">{{ $t('emailConnector.mailBox.list.drawer.title') }}</span>
-      <v-tooltip
+      <email-box-sync-loader
         v-if="syncInProgress"
-        bottom>
-        <template #activator="{on, attrs}">
-          <v-progress-circular
-            v-on="on"
-            v-bind="attrs"
-            size="20"
-            color="primary"
-            indeterminate />
-        </template>
-        <span>
-          {{ $t('emailConnector.mailBox.list.drawer.sync.tooltip') }}
-        </span>
-      </v-tooltip>
+        :label="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
+        icon-size="20" />
     </template>
     <template v-if="emailBoxDrawer" #content>
       <div
@@ -89,7 +78,7 @@ export default {
   methods: {
     async open(loading) {
       this.emails = await this.$emailConnectorMailBoxService.getEmails();
-      this.syncInProgress = loading || this.userEmailSetting?.syncStatus === 'IN_PROGRESS';
+      this.syncInProgress = loading || this.userEmailSetting?.emailSyncStatus === 'IN_PROGRESS';
       this.$refs.emailBoxDrawer.open();
     },
     close() {

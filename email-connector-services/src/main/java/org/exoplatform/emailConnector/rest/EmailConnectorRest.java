@@ -221,8 +221,10 @@ public class EmailConnectorRest {
   UserEmailSetting userEmailSetting) {
     try {
       emailConnectorService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser());
-    } catch (IllegalArgumentException e) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 

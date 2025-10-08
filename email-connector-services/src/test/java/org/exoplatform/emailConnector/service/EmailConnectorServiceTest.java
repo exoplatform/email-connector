@@ -50,10 +50,15 @@ import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
+import org.exoplatform.services.scheduler.JobInfo;
+import org.exoplatform.services.scheduler.JobSchedulerService;
+import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.services.security.Identity;
 import org.exoplatform.web.security.codec.AbstractCodec;
 import org.exoplatform.web.security.codec.CodecInitializer;
+import org.exoplatform.web.security.security.TokenServiceInitializationException;
 
 import io.meeds.appcenter.model.ApplicationList;
 import io.meeds.appcenter.service.ApplicationCenterService;
@@ -91,6 +96,9 @@ public class EmailConnectorServiceTest {
   @MockBean
   private ExoFeatureService        featureService;
 
+  @MockBean
+  private JobSchedulerService      jobSchedulerService;
+
   @Autowired
   private EmailConnectorService    emailConnectorService;
 
@@ -105,7 +113,7 @@ public class EmailConnectorServiceTest {
     ApplicationList applicationList = mock(ApplicationList.class);
     when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
     emailConnectorService.activateEmailFeature("true", TEST_USER);
-    verify(featureService).saveActiveFeature(EmailConnectorService.EMAIL_FEATURE, true);
+    verify(featureService).saveActiveFeature(EmailConnectorUtils.EMAIL_FEATURE, true);
     verify(applicationCenterService).getApplications(0, 0, null);
   }
 
@@ -198,7 +206,7 @@ public class EmailConnectorServiceTest {
     emailConnectorService.getActiveEmailConnectors(frLocale, TEST_USER);
     verify(emailConnectorStorage).getActiveEmailConnectors();
   }
-  
+
   @Test
   @SneakyThrows
   void setUserEmailSetting() {
@@ -211,7 +219,10 @@ public class EmailConnectorServiceTest {
   @Test
   @SneakyThrows
   void connectUserEmailSetting() {
-    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.connectUserEmailSetting(null, TEST_USER));
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.connectUserEmailSetting(null, TEST_USER));
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
     EmailConnector emailConnector = emailConnector();
     when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector);
     Session session = mock(Session.class);
@@ -221,13 +232,15 @@ public class EmailConnectorServiceTest {
     when(session.getStore()).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
-    UserEmailSetting userEmailSetting = userEmailSetting();
     emailConnectorService.connectUserEmailSetting(userEmailSetting, TEST_USER);
     verify(store).connect(anyString(), anyInt(), anyString(), anyString());
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+    verify(jobSchedulerService).removeJob(any(JobInfo.class));
+    verify(jobSchedulerService).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
   }
 
   @Test
-  void getUserEmailSetting() {
+  void getUserEmailSetting() throws TokenServiceInitializationException {
     SettingValue userEmailSettingValue = mock(SettingValue.class);
     when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(userEmailSettingValue);
     String userEmailObject =
@@ -237,6 +250,7 @@ public class EmailConnectorServiceTest {
     mockedJsonUtils.when(() -> JsonUtils.fromJsonString(userEmailObject, UserEmailSetting.class)).thenReturn(userEmailSetting());
     EmailConnector emailConnector = emailConnector();
     when(emailConnectorStorage.getEmailConnector(1L)).thenReturn(emailConnector);
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
     emailConnectorService.getUserEmailSetting(TEST_USER);
     verify(settingService).get(any(Context.class), any(Scope.class), anyString());
     verify(emailConnectorStorage).getEmailConnector(1L);
@@ -249,10 +263,10 @@ public class EmailConnectorServiceTest {
   }
 
   private EmailConnector emailConnector() {
-    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "8000", false, false, true, "testUploadId");
+    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "8000", true, false, true, "testUploadId");
   }
 
   private UserEmailSetting userEmailSetting() {
-    return new UserEmailSetting("1", null, null, "testEmail", "testPassword", null);
+    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, null, null);
   }
 }

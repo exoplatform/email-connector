@@ -39,7 +39,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </div>
         </v-list-item-content>
         <v-list-item-action>
+          <email-box-sync-loader
+            v-if="syncInProgress"
+            :label="$t('UserSettings.emailConnector.sync.tooltip')"
+            icon-size="20" />
           <v-btn
+            v-else
             icon
             @click="$root.$emit('open-user-setting-connectors-drawer')">
             <v-icon size="20">fa-edit</v-icon>
@@ -58,5 +63,10 @@ export default {
       default: null,
     },
   },
+  computed: {
+    syncInProgress() {
+      return this.userEmailSetting?.emailSyncStatus === 'IN_PROGRESS';
+    },
+  }
 };
 </script>
