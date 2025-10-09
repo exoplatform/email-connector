@@ -31,17 +31,29 @@ public class UserEmailSetting extends UserEmailSettingEntity {
 
   private String emailConnectorIcon;
 
+  private String emailConnectorName;
+
   public UserEmailSetting(String emailConnectorId,
                           String emailAddress,
                           String emailPassword,
-                          String emailBoxUserSyncPeriod,
+                          Integer emailBoxUserSyncPeriod,
                           SyncStatus emailSyncStatus,
                           int emailSyncFailedAttemps,
+                          Long lastEmailSyncStartDate,
                           String emailConnectorImageUrl,
-                          String emailConnectorIcon) {
-    super(emailConnectorId, emailAddress, emailPassword, emailBoxUserSyncPeriod, emailSyncStatus, emailSyncFailedAttemps);
+                          String emailConnectorIcon,
+                          String emailConnectorName) {
+    super(emailConnectorId,
+          emailAddress,
+          emailPassword,
+          emailBoxUserSyncPeriod,
+          emailSyncStatus,
+          emailSyncFailedAttemps,
+          lastEmailSyncStartDate);
     this.emailConnectorImageUrl = emailConnectorImageUrl;
     this.emailConnectorIcon = emailConnectorIcon;
+    this.emailConnectorName = emailConnectorName;
+
   }
 
 }

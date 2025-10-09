@@ -61,7 +61,7 @@ public class EmailBoxService {
    */
   public void synchronize(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = emailConnectorService.getUserEmailSetting(username);
-    if (!canSynchronize(userEmailSetting)) {
+    if (!canSynchronize(userEmailSetting, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
     }
     Store store = null;
@@ -76,9 +76,8 @@ public class EmailBoxService {
       UIDFolder uidFolder = (UIDFolder) inbox;
       Message[] messages = inbox.getMessages();
       int count = 0;
-      int maxEmails = Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
       int i = messages.length - 1;
-      while (i >= 0 && count < maxEmails) {
+      while (i >= 0 && count < EmailConnectorUtils.maxEmails) {
         Message message = messages[i--];
         try {
           String excerpt = EmailConnectorUtils.getMessageContent(message, true);
@@ -102,10 +101,10 @@ public class EmailBoxService {
         }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
-      cleanupOldEmails(username, maxEmails);
+      cleanupOldEmails(username, EmailConnectorUtils.maxEmails);
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
-      throw new IllegalStateException("Error when connecting store");
+      LOG.error("Error when user {} synchronization ", username, e);
     } finally {
       try {
         try {
@@ -144,10 +143,18 @@ public class EmailBoxService {
     emailBoxStorage.deleteEmails(emailsIdsToDelete);
   }
 
-  private boolean canSynchronize(UserEmailSetting userEmailSetting) {
-    return emailConnectorService.canConnect(userEmailSetting)
-        && !SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())
-        && !SyncStatus.BLOCKED.equals(userEmailSetting.getEmailSyncStatus());
+  private boolean canSynchronize(UserEmailSetting userEmailSetting, String username) {
+    if (!emailConnectorService.canConnect(userEmailSetting))
+      return false;
+    if (SyncStatus.BLOCKED.equals(userEmailSetting.getEmailSyncStatus()))
+      return false;
+    if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
+      long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate()
+          + EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
+      return System.currentTimeMillis() > nextAllowedSync;
+    }
+
+    return true;
   }
 
   private void cleanupOldEmails(String username, int maxEmails) {
@@ -169,6 +176,9 @@ public class EmailBoxService {
         syncStatus = SyncStatus.BLOCKED;
       }
       mailSyncFailedAttemps++;
+    }
+    if (syncStatus == SyncStatus.IN_PROGRESS) {
+      userEmailSetting.setLastEmailSyncStartDate(System.currentTimeMillis());
     }
     userEmailSetting.setEmailSyncFailedAttemps(mailSyncFailedAttemps);
     userEmailSetting.setEmailSyncStatus(syncStatus);
