@@ -12,6 +12,7 @@ import javax.mail.internet.MimeMultipart;
 
 import org.jsoup.Jsoup;
 
+import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -20,6 +21,9 @@ import lombok.SneakyThrows;
 public class EmailConnectorUtils {
 
   public static final String EMAIL_BOX_SYNC_JOB_NAME = "EmailBoxSyncJob";
+
+  public static final int    maxEmails               =
+                                       Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
 
   public static final String EMAIL_FEATURE           = "email";
 
@@ -44,6 +48,12 @@ public class EmailConnectorUtils {
       return content.length() > 50 ? content.substring(0, 50) + "..." : content;
     }
     return content;
+  }
+
+  public static int getEmailBoxUserSyncPeriod(UserEmailSetting userEmailSetting) {
+    return (userEmailSetting.getEmailBoxUserSyncPeriod() != null ? userEmailSetting.getEmailBoxUserSyncPeriod()
+                                                                 : Integer.parseInt(System.getProperty("email.connector.sync.user.minute.period",
+                                                                                                       "10")));
   }
 
   private static String safeGetContent(Part part) {

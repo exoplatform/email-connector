@@ -129,7 +129,7 @@ public class EmailConnectorService {
                                                                                     Integer.MAX_VALUE);
     for (Context context : contexts) {
       UserEmailSetting userEmailSetting = getUserEmailSetting(context.getId());
-      scheduleEmailBoxUserSyncJob(context.getId(), userEmailSetting.getEmailBoxUserSyncPeriod());
+      scheduleEmailBoxUserSyncJob(userEmailSetting, context.getId());
     }
   }
 
@@ -346,7 +346,7 @@ public class EmailConnectorService {
       store = connect(userEmailSetting);
       setUserEmailSetting(userEmailSetting, username);
       try {
-        scheduleEmailBoxUserSyncJob(username, userEmailSetting.getEmailBoxUserSyncPeriod());
+        scheduleEmailBoxUserSyncJob(userEmailSetting, username);
       } catch (Exception e) {
         LOG.warn("Error when scheduling email box user sync job", e);
       }
@@ -376,7 +376,8 @@ public class EmailConnectorService {
                                                                                userEmailSetting.getEmailPassword(),
                                                                                userEmailSetting.getEmailBoxUserSyncPeriod(),
                                                                                userEmailSetting.getEmailSyncStatus(),
-                                                                               userEmailSetting.getEmailSyncFailedAttemps());
+                                                                               userEmailSetting.getEmailSyncFailedAttemps(),
+                                                                               userEmailSetting.getLastEmailSyncStartDate());
     settingService.set(Context.USER.id(username),
                        EMAIL_CONNECTOR_SCOPE,
                        USER_EMAIL_SETTING_KEY,
@@ -403,6 +404,7 @@ public class EmailConnectorService {
       if (emailConnector != null) {
         userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
         userEmailSetting.setEmailConnectorIcon(emailConnector.getIcon());
+        userEmailSetting.setEmailConnectorName(emailConnector.getName());
       }
     }
     return userEmailSetting;
@@ -507,15 +509,16 @@ public class EmailConnectorService {
         && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
   }
 
-  private void scheduleEmailBoxUserSyncJob(String username, String emailBoxUserSyncPeriod) throws Exception {
+  private void scheduleEmailBoxUserSyncJob(UserEmailSetting userEmailSetting, String username) throws Exception {
     String emailBoxSyncJobName = username + EmailConnectorUtils.EMAIL_BOX_SYNC_JOB_NAME;
     JobInfo emailBoxSyncJobInfo = new JobInfo(emailBoxSyncJobName, EmailConnectorUtils.EMAIL_FEATURE, EmailBoxSyncJob.class);
     // Remove next email box sync job for the user
     jobSchedulerService.removeJob(emailBoxSyncJobInfo);
-    emailBoxUserSyncPeriod = emailBoxUserSyncPeriod != null ? emailBoxUserSyncPeriod
-                                                            : System.getProperty("email.connector.sync.user.minute.period", "10");
-    PeriodInfo periodInfo = new PeriodInfo(null, null, 0, Long.parseLong(emailBoxUserSyncPeriod) * 60000);
+    PeriodInfo periodInfo =
+                          new PeriodInfo(null, null, 0, EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000);
     jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
-    LOG.info("Email box sync for user: {} scheduled periodically every {} minutes", username, emailBoxUserSyncPeriod);
+    LOG.info("Email box sync for user: {} scheduled periodically every {} minutes",
+             username,
+             EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting));
   }
 }

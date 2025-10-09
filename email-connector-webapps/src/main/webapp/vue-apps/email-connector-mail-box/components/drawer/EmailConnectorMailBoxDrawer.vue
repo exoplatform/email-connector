@@ -31,20 +31,42 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="emailBoxDrawer" #content>
       <div
         class="fill-height overflow-y-auto specific-scrollbar">
-        <email-connector-mail-box-drawer-list
-          v-if="hasEmails"
-          :emails="emails" /> 
-        <v-list-item v-else class="full-height align-center">
+        <v-list-item v-if="syncBlocked" class="full-height align-center">
           <v-list-item-content>
-            <email-connector-icon
-              icon="far fa-envelope"
-              icon-class="tertiary--text"
-              icon-size="60" />
+            <v-icon
+              size="60"
+              class="orange--text text--darken-2">
+              fas fa-exclamation-triangle
+            </v-icon>
             <v-list-item-title class="text-wrap mt-5">
-              {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
+              {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.reconnect') }}
             </v-list-item-title>
+            <div class="mt-8">
+              <v-btn
+                @click="checkSetting"
+                class="btn btn-primary body-2">
+                {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.checkSetting') }}
+              </v-btn>
+            </div>
           </v-list-item-content>
         </v-list-item>
+        <template v-else>
+          <email-connector-mail-box-drawer-list
+            v-if="hasEmails"
+            :emails="emails" /> 
+          <v-list-item v-else class="full-height align-center">
+            <v-list-item-content>
+              <v-icon
+                size="60"
+                class="tertiary--text">
+                far fa-envelope
+              </v-icon>
+              <v-list-item-title class="text-wrap mt-5">
+                {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
+              </v-list-item-title>
+            </v-list-item-content>
+          </v-list-item>
+        </template>
       </div>
     </template>
     <template #footer>
@@ -73,7 +95,10 @@ export default {
   computed: {
     hasEmails() {
       return this.emails?.length > 0;
-    }
+    },
+    syncBlocked() {
+      return this.userEmailSetting?.emailSyncStatus === 'BLOCKED';
+    },
   },
   methods: {
     async open(loading) {
@@ -83,6 +108,9 @@ export default {
     },
     close() {
       this.$refs.emailBoxDrawer.close();
+    },
+    checkSetting() {
+      this.$root.$emit('open-user-setting-drawer');
     }
   }
 };
