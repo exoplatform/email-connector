@@ -15,9 +15,11 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 import EmailConnectorIcon from './components/EmailConnectorIcon.vue';
+import EmailBoxSyncLoader from './components/EmailBoxSyncLoader.vue';
 
 const components = {
   'email-connector-icon': EmailConnectorIcon,
+  'email-box-sync-loader': EmailBoxSyncLoader,
 };
 
 for (const key in components) {

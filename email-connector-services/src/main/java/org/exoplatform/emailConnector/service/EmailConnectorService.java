@@ -23,7 +23,6 @@ import java.util.Locale;
 import java.util.Properties;
 
 import javax.mail.MessagingException;
-import javax.mail.NoSuchProviderException;
 import javax.mail.Session;
 import javax.mail.Store;
 
@@ -38,13 +37,19 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
+import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.services.scheduler.JobInfo;
+import org.exoplatform.services.scheduler.JobSchedulerService;
+import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.services.security.Identity;
 import org.exoplatform.services.security.IdentityConstants;
 import org.exoplatform.web.security.codec.CodecInitializer;
@@ -53,34 +58,39 @@ import org.exoplatform.web.security.security.TokenServiceInitializationException
 import io.meeds.appcenter.service.ApplicationCenterService;
 import io.meeds.social.translation.service.TranslationService;
 import io.meeds.social.util.JsonUtils;
+import jakarta.annotation.PostConstruct;
 import lombok.SneakyThrows;
 
 /**
- * A Service to access and store email connectors
+ * A Service to manage email connectors
  */
 @Service
 public class EmailConnectorService {
 
-  public static final String    EMAIL_FEATURE                                = "email";
+  private static final String   EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE               = "Email connector is mandatory";
 
-  private static final String   EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
+  private static final String   FEATURE_ACTIVE_IS_MANDATORY_MESSAGE                = "Feature active is mandatory";
 
-  private static final String   FEATURE_ACTIVE_IS_MANDATORY_MESSAGE          = "Feature active is mandatory";
-
-  private static final String   USER_SETTING_IS_MANDATORY_MESSAGE            = "User setting is mandatory";
-
-  private static final String   USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE =
+  private static final String   USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE       =
                                                                              "User %s is not allowed to save email connector : %s";
 
-  private static final String   USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE  = "User %s is not allowed to activate email feature";
+  private static final String   USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE        =
+                                                                            "User %s is not allowed to activate email feature";
 
-  private static final String   EMAIL_CONNECTOR_NOT_FOUND_MESSAGE            = "Email connector with id %s doesn't exist";
+  private static final String   USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
+                                                                                   "User %s is not allowed to connect email setting";
 
-  private static final Scope    EMAIL_CONNECTOR_SCOPE                        = Scope.APPLICATION.id("EMAIL_CONNECTOR_SCOPE");
+  private static final String   EMAIL_CONNECTOR_NOT_FOUND_MESSAGE                  = "Email connector with id %s doesn't exist";
 
-  private static final String   USER_EMAIL_SETTING_KEY                       = "userEmailSetting";
+  private static final String   EMAIL_CONNECTOR_SCOPE_ID                           = "EMAIL_CONNECTOR_SCOPE";
 
-  private static final Log      LOG                                          = ExoLogger.getLogger(EmailConnectorService.class);
+  private static final Scope    EMAIL_CONNECTOR_SCOPE                              =
+                                                      Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
+
+  private static final String   USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
+
+  private static final Log      LOG                                                =
+                                    ExoLogger.getLogger(EmailConnectorService.class);
 
   @Autowired
   private UserACL               userAcl;
@@ -106,6 +116,23 @@ public class EmailConnectorService {
   @Autowired
   private ExoFeatureService     featureService;
 
+  @Autowired
+  private JobSchedulerService   jobSchedulerService;
+
+  @PostConstruct
+  public void initEmailBoxSyncJob() throws Exception {
+    List<Context> contexts = settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                    Scope.APPLICATION.getName(),
+                                                                                    EMAIL_CONNECTOR_SCOPE_ID,
+                                                                                    USER_EMAIL_SETTING_KEY,
+                                                                                    0,
+                                                                                    Integer.MAX_VALUE);
+    for (Context context : contexts) {
+      UserEmailSetting userEmailSetting = getUserEmailSetting(context.getId());
+      scheduleEmailBoxUserSyncJob(context.getId(), userEmailSetting.getEmailBoxUserSyncPeriod());
+    }
+  }
+
   /**
    * Activate email feature.
    *
@@ -123,7 +150,7 @@ public class EmailConnectorService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE, username));
     }
     boolean isFeatureActiveBool = Boolean.parseBoolean(isFeatureActive);
-    featureService.saveActiveFeature(EMAIL_FEATURE, isFeatureActiveBool);
+    featureService.saveActiveFeature(EmailConnectorUtils.EMAIL_FEATURE, isFeatureActiveBool);
     activateEmailApp();
 
   }
@@ -307,18 +334,31 @@ public class EmailConnectorService {
    *
    * @param userEmailSetting userEmailSetting to connect
    * @param username user connecting the user email setting
+   * @throws IllegalAccessException if user is not allowed to connect email
+   *           setting
    */
-  public void connectUserEmailSetting(UserEmailSetting userEmailSetting, String username) {
-    if (userEmailSetting == null) {
-      throw new IllegalArgumentException(USER_SETTING_IS_MANDATORY_MESSAGE);
+  public void connectUserEmailSetting(UserEmailSetting userEmailSetting, String username) throws IllegalAccessException {
+    if (!canConnect(userEmailSetting)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
     }
-    Store store = connect(userEmailSetting);
-    if (store != null && store.isConnected()) {
+    Store store = null;
+    try {
+      store = connect(userEmailSetting);
       setUserEmailSetting(userEmailSetting, username);
       try {
-        store.close();
-      } catch (MessagingException e) {
-        LOG.warn("Error when closing store", e.getMessage());
+        scheduleEmailBoxUserSyncJob(username, userEmailSetting.getEmailBoxUserSyncPeriod());
+      } catch (Exception e) {
+        LOG.warn("Error when scheduling email box user sync job", e);
+      }
+    } catch (MessagingException messagingException) {
+      throw new IllegalStateException("Error when connecting store", messagingException);
+    } finally {
+      try {
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing store", messagingException);
       }
     }
   }
@@ -331,10 +371,16 @@ public class EmailConnectorService {
    */
   public void setUserEmailSetting(UserEmailSetting userEmailSetting, String username) {
     userEmailSetting.setEmailPassword(encodePassword(userEmailSetting.getEmailPassword()));
+    UserEmailSettingEntity userEmailSettingEntity = new UserEmailSettingEntity(userEmailSetting.getEmailConnectorId(),
+                                                                               userEmailSetting.getEmailAddress(),
+                                                                               userEmailSetting.getEmailPassword(),
+                                                                               userEmailSetting.getEmailBoxUserSyncPeriod(),
+                                                                               userEmailSetting.getEmailSyncStatus(),
+                                                                               userEmailSetting.getEmailSyncFailedAttemps());
     settingService.set(Context.USER.id(username),
                        EMAIL_CONNECTOR_SCOPE,
                        USER_EMAIL_SETTING_KEY,
-                       SettingValue.create(JsonUtils.toJsonString(userEmailSetting)));
+                       SettingValue.create(JsonUtils.toJsonString(userEmailSettingEntity)));
   }
 
   /**
@@ -351,10 +397,10 @@ public class EmailConnectorService {
     if (userEmailSettingValue != null) {
       UserEmailSetting storedUserEmailSetting = JsonUtils.fromJsonString(userEmailSettingValue.getValue().toString(),
                                                                          UserEmailSetting.class);
-      EmailConnector emailConnector = getEmailConnector(Long.parseLong(storedUserEmailSetting.getEmailConnectorId()));
-      if (emailConnector != null && emailConnector.isActive()) {
-        userEmailSetting = storedUserEmailSetting;
-        userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword()));
+      userEmailSetting = storedUserEmailSetting;
+      userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword()));
+      EmailConnector emailConnector = getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+      if (emailConnector != null) {
         userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
         userEmailSetting.setEmailConnectorIcon(emailConnector.getIcon());
       }
@@ -387,43 +433,37 @@ public class EmailConnectorService {
    * @param userEmailSetting userEmailSetting used to connect
    * @return store user box connected store
    */
-  public Store connect(UserEmailSetting userEmailSetting) {
-    Store store = null;
-    if (userEmailSetting.getEmailConnectorId() != null) {
-      EmailConnector emailConnector = getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-      if (emailConnector != null) {
-        Properties props = new Properties();
-        props.setProperty("mail.imaps.ssl.enable", "true");
-        props.setProperty("mail.store.protocol", "imaps");
-        props.setProperty("mail.imaps.port", emailConnector.getPort());
-        // Connect to the server
-        Session session = Session.getDefaultInstance(props);
-        try {
-          store = session.getStore();
-          store.connect(emailConnector.getImapUrl(),
-                        Integer.parseInt(emailConnector.getPort()),
-                        userEmailSetting.getEmailAddress(),
-                        userEmailSetting.getEmailPassword());
-
-        } catch (NoSuchProviderException noSuchProviderException) {
-          throw new IllegalArgumentException("Invalid provider name", noSuchProviderException);
-        } catch (MessagingException messagingException) {
-          throw new IllegalStateException("Messaging exception", messagingException);
-        }
-      }
-    }
+  public Store connect(UserEmailSetting userEmailSetting) throws MessagingException {
+    EmailConnector emailConnector = getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    Properties props = new Properties();
+    props.setProperty("mail.imaps.ssl.enable", "true");
+    props.setProperty("mail.store.protocol", "imaps");
+    props.setProperty("mail.imaps.port", emailConnector.getPort());
+    // Connect to the server
+    Session session = Session.getDefaultInstance(props);
+    Store store = session.getStore();
+    store.connect(emailConnector.getImapUrl(),
+                  Integer.parseInt(emailConnector.getPort()),
+                  userEmailSetting.getEmailAddress(),
+                  userEmailSetting.getEmailPassword());
     return store;
+  }
+
+  public boolean canConnect(UserEmailSetting userEmailSetting) {
+    return featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE) && userEmailSetting.getEmailConnectorId() != null
+        && getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())) != null
+        && getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())).isActive();
   }
 
   private void activateEmailApp() {
     applicationCenterService.getApplications(0, 0, null)
                             .getApplications()
                             .stream()
-                            .filter(application -> application.getUrl().equals(EMAIL_FEATURE))
+                            .filter(application -> application.getUrl().equals(EmailConnectorUtils.EMAIL_FEATURE))
                             .findFirst()
                             .ifPresent(application -> {
                               boolean hasActiveConnector = !emailConnectorStorage.getActiveEmailConnectors().isEmpty();
-                              boolean featureEnabled = featureService.isActiveFeature(EMAIL_FEATURE);
+                              boolean featureEnabled = featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE);
                               application.setActive(hasActiveConnector && featureEnabled);
                               applicationCenterService.updateApplication(application);
                             });
@@ -431,6 +471,7 @@ public class EmailConnectorService {
 
   private boolean canConnect(Long emailConnectorId, String username) {
     return getUserEmailSetting(username).getEmailConnectorId() == null
+        || getEmailConnector(Long.parseLong(getUserEmailSetting(username).getEmailConnectorId())) == null
         || !getEmailConnector(Long.parseLong(getUserEmailSetting(username).getEmailConnectorId())).isActive()
         || isEmailConnectorUserConnected(emailConnectorId, username);
   }
@@ -464,5 +505,17 @@ public class EmailConnectorService {
   private boolean isEmailConnectorUserConnected(Long emailConnectorId, String username) {
     return getUserEmailSetting(username) != null
         && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
+  }
+
+  private void scheduleEmailBoxUserSyncJob(String username, String emailBoxUserSyncPeriod) throws Exception {
+    String emailBoxSyncJobName = username + EmailConnectorUtils.EMAIL_BOX_SYNC_JOB_NAME;
+    JobInfo emailBoxSyncJobInfo = new JobInfo(emailBoxSyncJobName, EmailConnectorUtils.EMAIL_FEATURE, EmailBoxSyncJob.class);
+    // Remove next email box sync job for the user
+    jobSchedulerService.removeJob(emailBoxSyncJobInfo);
+    emailBoxUserSyncPeriod = emailBoxUserSyncPeriod != null ? emailBoxUserSyncPeriod
+                                                            : System.getProperty("email.connector.sync.user.minute.period", "10");
+    PeriodInfo periodInfo = new PeriodInfo(null, null, 0, Long.parseLong(emailBoxUserSyncPeriod) * 60000);
+    jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
+    LOG.info("Email box sync for user: {} scheduled periodically every {} minutes", username, emailBoxUserSyncPeriod);
   }
 }

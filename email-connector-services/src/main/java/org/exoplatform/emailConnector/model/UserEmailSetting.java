@@ -16,24 +16,32 @@
  */
 package org.exoplatform.emailConnector.model;
 
-import lombok.AllArgsConstructor;
+import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
+
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 @Data
+@EqualsAndHashCode(callSuper = false)
 @NoArgsConstructor
-@AllArgsConstructor
-public class UserEmailSetting {
+public class UserEmailSetting extends UserEmailSettingEntity {
 
-  private String     emailConnectorId;
+  private String emailConnectorImageUrl;
 
-  private String     emailConnectorImageUrl;
+  private String emailConnectorIcon;
 
-  private String     emailConnectorIcon;
+  public UserEmailSetting(String emailConnectorId,
+                          String emailAddress,
+                          String emailPassword,
+                          String emailBoxUserSyncPeriod,
+                          SyncStatus emailSyncStatus,
+                          int emailSyncFailedAttemps,
+                          String emailConnectorImageUrl,
+                          String emailConnectorIcon) {
+    super(emailConnectorId, emailAddress, emailPassword, emailBoxUserSyncPeriod, emailSyncStatus, emailSyncFailedAttemps);
+    this.emailConnectorImageUrl = emailConnectorImageUrl;
+    this.emailConnectorIcon = emailConnectorIcon;
+  }
 
-  private String     emailAddress;
-
-  private String     emailPassword;
-
-  private SyncStatus syncStatus;
 }

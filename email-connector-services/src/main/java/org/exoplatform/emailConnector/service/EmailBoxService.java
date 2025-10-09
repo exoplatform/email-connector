@@ -16,21 +16,15 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.stream.Collectors;
 
-import javax.mail.BodyPart;
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.MessagingException;
-import javax.mail.Part;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
-import javax.mail.internet.MimeMultipart;
 
-import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -38,21 +32,19 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
-import org.exoplatform.emailConnector.utils.EmailBoxUtils;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
-import lombok.SneakyThrows;
-
 /**
- * A Service to access and store email box
+ * A Service to manage and synchronize email box
  */
 @Service
 public class EmailBoxService {
 
-  private static final String   USER_NOT_ALLOWED = "User %s is not allowed to synchronize email box";
+  private static final Log      LOG                                            = ExoLogger.getLogger(EmailBoxService.class);
 
-  private static final Log      LOG              = ExoLogger.getLogger(EmailBoxService.class);
+  private static final String   USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE = "User %s is not allowed to synchronize email";
 
   @Autowired
   private EmailConnectorService emailConnectorService;
@@ -65,64 +57,71 @@ public class EmailBoxService {
    *
    * @param username user of which email box will be synchronized
    * @throws IllegalAccessException if user is not allowed to synchronize email
-   *           box
-   * @throws MessagingException if email box synchronization occurs messaging
-   *           exception
+   *           connector
    */
-  public void synchronize(String username) throws IllegalAccessException, MessagingException {
+  public void synchronize(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = emailConnectorService.getUserEmailSetting(username);
-    Store store = emailConnectorService.connect(userEmailSetting);
-    if (store == null || !store.isConnected()) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED, username));
+    if (!canSynchronize(userEmailSetting)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
     }
-    userEmailSetting.setSyncStatus(SyncStatus.IN_PROGRESS);
-    emailConnectorService.setUserEmailSetting(userEmailSetting, username);
-    Folder inbox = store.getFolder("INBOX");
-    inbox.open(Folder.READ_ONLY);
+    Store store = null;
+    Folder inbox = null;
+    try {
+      store = emailConnectorService.connect(userEmailSetting);
+      updateEmailSyncStatus(username, SyncStatus.IN_PROGRESS);
+      inbox = store.getFolder("INBOX");
+      inbox.open(Folder.READ_ONLY);
 
-    // get a list of javamail messages as an array of messages
-    UIDFolder uidFolder = (UIDFolder) inbox;
-    Message[] messages = inbox.getMessages();
-    int count = 0;
-    int maxEmails = Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
-    int i = messages.length - 1;
-    while (i >= 0 && count < maxEmails) {
-      Message message = messages[i--];
+      // get a list of javamail messages as an array of messages
+      UIDFolder uidFolder = (UIDFolder) inbox;
+      Message[] messages = inbox.getMessages();
+      int count = 0;
+      int maxEmails = Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
+      int i = messages.length - 1;
+      while (i >= 0 && count < maxEmails) {
+        Message message = messages[i--];
+        try {
+          String excerpt = EmailConnectorUtils.getMessageContent(message, true);
+          String subject = message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..."
+                                                              : message.getSubject();
+          if (emailBoxStorage.getEmailByMailRemoteIdAndUserId(username, uidFolder.getUID(message)) != null) {
+            break;
+          }
+          emailBoxStorage.createEmail(new Email(null,
+                                                uidFolder.getUID(message),
+                                                username,
+                                                subject,
+                                                excerpt,
+                                                message.getFrom() != null
+                                                    && message.getFrom()[0] != null ? message.getFrom()[0].toString() : "",
+                                                message.getSentDate() != null ? message.getSentDate()
+                                                                              : message.getReceivedDate()));
+          count++;
+        } catch (Exception e) {
+          LOG.warn("Error when storing email", e);
+        }
+      }
+      updateEmailSyncStatus(username, SyncStatus.SUCCESS);
+      cleanupOldEmails(username, maxEmails);
+    } catch (Exception e) {
+      updateEmailSyncStatus(username, SyncStatus.FAILURE);
+      throw new IllegalStateException("Error when connecting store");
+    } finally {
       try {
-        String excerpt = EmailBoxUtils.getMessageContent(message, true);
-        String subject = message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..." : message.getSubject();
-        emailBoxStorage.createEmail(new Email(null,
-                                              uidFolder.getUID(message),
-                                              username,
-                                              subject,
-                                              excerpt,
-                                              message.getFrom() != null
-                                                  && message.getFrom()[0] != null ? message.getFrom()[0].toString() : "",
-                                              message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate()));
-        count++;
-      } catch (Exception e) {
-        LOG.warn("Error when storing email", e);
+        try {
+          if (inbox != null && inbox.isOpen()) {
+            inbox.close(false);
+          }
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing inbox", messagingException);
+        }
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing store", messagingException);
       }
     }
-    userEmailSetting = emailConnectorService.getUserEmailSetting(username);
-    userEmailSetting.setSyncStatus(SyncStatus.SUCCESS);
-    emailConnectorService.setUserEmailSetting(userEmailSetting, username);
-    try {
-      store.close();
-    } catch (MessagingException e) {
-      LOG.warn("Error when closing store", e.getMessage());
-    }
-  }
-
-  /**
-   * Mark user email box synchronization as failed
-   *
-   * @param username user of which email box synchronization is failed
-   */
-  public void markSynchronizeAsFailed(String username) {
-    UserEmailSetting userEmailSetting = emailConnectorService.getUserEmailSetting(username);
-    userEmailSetting.setSyncStatus(SyncStatus.FAILURE);
-    emailConnectorService.setUserEmailSetting(userEmailSetting, username);
   }
 
   /**
@@ -133,5 +132,46 @@ public class EmailBoxService {
    */
   public List<Email> getEmails(String username) {
     return emailBoxStorage.getEmails(username);
+  }
+
+  /**
+   * Delete emails.
+   *
+   * @param emails emails list to be deleted
+   */
+  public void deleteEmails(List<Email> emails) {
+    List<Long> emailsIdsToDelete = emails.stream().map(Email::getId).collect(Collectors.toList());
+    emailBoxStorage.deleteEmails(emailsIdsToDelete);
+  }
+
+  private boolean canSynchronize(UserEmailSetting userEmailSetting) {
+    return emailConnectorService.canConnect(userEmailSetting)
+        && !SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())
+        && !SyncStatus.BLOCKED.equals(userEmailSetting.getEmailSyncStatus());
+  }
+
+  private void cleanupOldEmails(String username, int maxEmails) {
+    List<Email> userEmails = getEmails(username);
+    if (userEmails.size() > maxEmails) {
+      List<Email> oldUserEmailsToCleanup = userEmails.subList(maxEmails, userEmails.size());
+      deleteEmails(oldUserEmailsToCleanup);
+    }
+  }
+
+  private void updateEmailSyncStatus(String username, SyncStatus syncStatus) {
+    UserEmailSetting userEmailSetting = emailConnectorService.getUserEmailSetting(username);
+    int mailSyncFailedAttemps = userEmailSetting.getEmailSyncFailedAttemps();
+    if (syncStatus == SyncStatus.SUCCESS) {
+      mailSyncFailedAttemps = 0;
+    }
+    if (syncStatus == SyncStatus.FAILURE) {
+      if (mailSyncFailedAttemps >= 2) {
+        syncStatus = SyncStatus.BLOCKED;
+      }
+      mailSyncFailedAttemps++;
+    }
+    userEmailSetting.setEmailSyncFailedAttemps(mailSyncFailedAttemps);
+    userEmailSetting.setEmailSyncStatus(syncStatus);
+    emailConnectorService.setUserEmailSetting(userEmailSetting, username);
   }
 }

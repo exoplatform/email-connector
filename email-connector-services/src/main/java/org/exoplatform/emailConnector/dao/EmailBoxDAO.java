@@ -19,18 +19,22 @@ package org.exoplatform.emailConnector.dao;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 
 public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
-  @Query("""
-      SELECT eb FROM EmailBoxEntity eb
-      WHERE eb.userId = :username ORDER BY eb.sentDate DESC
-      """)
-  List<EmailBoxEntity> findEmailsByUser(@Param("username")
-  String username);
+  List<EmailBoxEntity> findByUserIdOrderBySentDateDesc(String userId);
 
+  EmailBoxEntity findByUserIdAndMailRemoteId(String userId, long mailRemoteId);
+
+  @Transactional
+  @Modifying
+  @Query("DELETE FROM EmailBoxEntity eb WHERE eb.id IN :ids")
+  void deleteEmailsByIds(@Param("ids")
+  List<Long> ids);
 }
