@@ -118,9 +118,9 @@ export default {
     open(emailConnector) {
       this.emailSetting.emailAddress = this.userEmailSetting.emailAddress;
       this.emailSetting.emailPassword = this.userEmailSetting.emailPassword;
-      this.emailSetting.emailConnectorId = emailConnector.id;
+      this.emailSetting.emailConnectorId = emailConnector?.id || this.userEmailSetting.emailConnectorId;
       this.drawerTitle =  this.$t('UserSettings.emailConnector.userSetting.drawer.title', {
-        0: emailConnector.name,
+        0: emailConnector?.name || this.userEmailSetting.emailConnectorName,
       });
       this.$refs.userSettingDrawer.open();
     },

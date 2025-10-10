@@ -41,8 +41,6 @@ public class EmailBoxSyncJob implements Job {
       emailBoxService.synchronize(username);
     } catch (IllegalAccessException e) {
       LOG.warn("Synchronization is not allowed for user {} ", username);
-    } catch (IllegalStateException e) {
-      LOG.error("Error when user {} synchronization ", username, e);
     }
     LOG.info("End email box sync job for user: {}", username);
   }

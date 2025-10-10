@@ -33,9 +33,11 @@ public class UserEmailSettingEntity {
 
   private String     emailPassword;
 
-  private String     emailBoxUserSyncPeriod;
+  private Integer     emailBoxUserSyncPeriod;
 
   private SyncStatus emailSyncStatus;
   
   private int emailSyncFailedAttemps;
+  
+  private Long lastEmailSyncStartDate;
 }
