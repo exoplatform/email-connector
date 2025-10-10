@@ -190,7 +190,7 @@ public class EmailConnectorRestTest {
   }
 
   private UserEmailSetting userEmailSetting() {
-    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, null);
+    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, null, true);
   }
 
   @SneakyThrows
