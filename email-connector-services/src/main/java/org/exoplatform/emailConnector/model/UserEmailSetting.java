@@ -32,6 +32,8 @@ public class UserEmailSetting extends UserEmailSettingEntity {
   private String emailConnectorIcon;
 
   private String emailConnectorName;
+  
+  private boolean connected;
 
   public UserEmailSetting(String emailConnectorId,
                           String emailAddress,
@@ -42,7 +44,8 @@ public class UserEmailSetting extends UserEmailSettingEntity {
                           Long lastEmailSyncStartDate,
                           String emailConnectorImageUrl,
                           String emailConnectorIcon,
-                          String emailConnectorName) {
+                          String emailConnectorName,
+                          boolean connected) {
     super(emailConnectorId,
           emailAddress,
           emailPassword,
@@ -53,6 +56,7 @@ public class UserEmailSetting extends UserEmailSettingEntity {
     this.emailConnectorImageUrl = emailConnectorImageUrl;
     this.emailConnectorIcon = emailConnectorIcon;
     this.emailConnectorName = emailConnectorName;
+    this.connected = connected;
 
   }
 

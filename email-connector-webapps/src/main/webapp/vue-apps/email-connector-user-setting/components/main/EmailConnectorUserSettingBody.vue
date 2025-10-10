@@ -26,7 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item>
       <v-list-item>
         <v-list-item-content>
-          <v-list-item-title v-if="!userEmailSetting.emailConnectorId">
+          <v-list-item-title v-if="!userEmailSetting.connected">
             {{ $t('UserSettings.emailConnector.description') }}
           </v-list-item-title>
           <div v-else>

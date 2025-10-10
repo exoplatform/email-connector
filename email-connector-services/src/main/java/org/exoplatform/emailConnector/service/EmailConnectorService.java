@@ -406,6 +406,7 @@ public class EmailConnectorService {
         userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
         userEmailSetting.setEmailConnectorIcon(emailConnector.getIcon());
         userEmailSetting.setEmailConnectorName(emailConnector.getName());
+        userEmailSetting.setConnected(emailConnector.isActive());
       }
     }
     return userEmailSetting;
