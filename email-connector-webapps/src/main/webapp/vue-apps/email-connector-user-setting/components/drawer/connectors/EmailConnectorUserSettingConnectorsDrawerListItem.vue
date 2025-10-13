@@ -17,23 +17,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <v-list-item>
     <email-connector-icon
-      :image-url="activeEmailConnector.imageUrl"
-      :icon="activeEmailConnector.icon" 
+      :image-url="userEmailConnector.imageUrl"
+      :icon="userEmailConnector.icon" 
       class="me-5" />
     <v-list-item-content class="py-0">
-      <span>{{ activeEmailConnector.name }}</span>
+      <span>{{ userEmailConnector.name }}</span>
     </v-list-item-content>
     <v-list-item-action class="my-0">
       <v-btn
-        v-if="activeEmailConnector.userConnected"
-        @click="$root.$emit('open-user-setting-drawer', activeEmailConnector)"
+        v-if="userEmailConnector.userConnected"
+        @click="$root.$emit('open-user-setting-drawer', userEmailConnector)"
         icon>
         <v-icon size="20">fa-edit</v-icon>
       </v-btn>
     </v-list-item-action>
     <v-list-item-action class="ml-3 my-0">
       <v-btn
-        v-if="activeEmailConnector.canConnect"
+        v-if="userEmailConnector.canConnect"
         class="btn"
         @click="connect()">
         {{ connectButtonLabel }}
@@ -64,22 +64,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
-    activeEmailConnector: {
+    userEmailConnector: {
       type: Object,
       default: () => null,
     },
   },
   computed: {
     connectButtonLabel() {
-      return this.activeEmailConnector.userConnected
+      return this.userEmailConnector.userConnected
         ? this.$t('UserSettings.emailConnector.connectors.drawer.connector.button.disconnect')
         : this.$t('UserSettings.emailConnector.connectors.drawer.connector.button.connect');
     },    
   },
   methods: {
     connect() {
-      if (!this.activeEmailConnector.userConnected) {
-        this.$root.$emit('open-user-setting-drawer', this.activeEmailConnector);
+      if (!this.userEmailConnector.userConnected) {
+        this.$root.$emit('open-user-setting-drawer', this.userEmailConnector);
       }
       else {
         this.$emailConnectorUserSettingService.deleteUserEmailSetting()

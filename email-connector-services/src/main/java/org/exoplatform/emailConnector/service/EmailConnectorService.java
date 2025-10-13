@@ -20,11 +20,6 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.List;
 import java.util.Locale;
-import java.util.Properties;
-
-import javax.mail.MessagingException;
-import javax.mail.Session;
-import javax.mail.Store;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,31 +28,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
-import org.exoplatform.commons.api.settings.SettingService;
-import org.exoplatform.commons.api.settings.SettingValue;
-import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
-import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
-import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
-import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
+import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
-import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
-import org.exoplatform.services.log.ExoLogger;
-import org.exoplatform.services.log.Log;
 import org.exoplatform.services.security.Identity;
 import org.exoplatform.services.security.IdentityConstants;
-import org.exoplatform.web.security.codec.CodecInitializer;
-import org.exoplatform.web.security.security.TokenServiceInitializationException;
 
 import io.meeds.appcenter.service.ApplicationCenterService;
 import io.meeds.social.translation.service.TranslationService;
-import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
 
 /**
@@ -66,56 +50,41 @@ import lombok.SneakyThrows;
 @Service
 public class EmailConnectorService {
 
-  public static final String        EMAIL_CONNECTOR_SCOPE_ID                           = "EMAIL_CONNECTOR_SCOPE";
+  public static final String    EMAIL_CONNECTOR_SCOPE_ID                     = "EMAIL_CONNECTOR_SCOPE";
 
-  public static final Scope         EMAIL_CONNECTOR_SCOPE                              =
-                                                          Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
+  public static final Scope     EMAIL_CONNECTOR_SCOPE                        = Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
 
-  public static final String        USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
+  public static final String    USER_EMAIL_SETTING_KEY                       = "userEmailSetting";
 
-  private static final String       EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE               = "Email connector is mandatory";
+  private static final String   EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
 
-  private static final String       FEATURE_ACTIVE_IS_MANDATORY_MESSAGE                = "Feature active is mandatory";
+  private static final String   FEATURE_ACTIVE_IS_MANDATORY_MESSAGE          = "Feature active is mandatory";
 
-  private static final String       USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE       =
-                                                                                 "User %s is not allowed to save email connector : %s";
+  private static final String   USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE =
+                                                                             "User %s is not allowed to save email connector : %s";
 
-  private static final String       USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE        =
-                                                                                "User %s is not allowed to activate email feature";
+  private static final String   USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE  = "User %s is not allowed to activate email feature";
 
-  private static final String       USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
-                                                                                       "User %s is not allowed to connect email setting";
-
-  private static final String       EMAIL_CONNECTOR_NOT_FOUND_MESSAGE                  =
-                                                                      "Email connector with id %s doesn't exist";
-
-  private static final Log          LOG                                                =
-                                        ExoLogger.getLogger(EmailConnectorService.class);
+  private static final String   EMAIL_CONNECTOR_NOT_FOUND_MESSAGE            = "Email connector with id %s doesn't exist";
 
   @Autowired
-  private UserACL                   userAcl;
+  private UserACL               userAcl;
 
   @Autowired
-  private EmailConnectorStorage     emailConnectorStorage;
+  private TranslationService    translationService;
 
   @Autowired
-  private FileService               fileService;
+  ApplicationCenterService      applicationCenterService;
 
   @Autowired
-  private TranslationService        translationService;
+  private ExoFeatureService     featureService;
 
   @Autowired
-  private SettingService            settingService;
+  private EmailConnectorStorage emailConnectorStorage;
 
   @Autowired
-  ApplicationCenterService          applicationCenterService;
-
-  @Autowired
-  private CodecInitializer          codecInitializer;
-
-  @Autowired
-  private ExoFeatureService         featureService;
-
+  private FileService           fileService;
+  
   @Autowired
   private ApplicationEventPublisher eventPublisher;
 
@@ -128,15 +97,14 @@ public class EmailConnectorService {
    * @throws IllegalAccessException if user is not allowed to activate email
    *           feature
    */
-  public void activateEmailFeature(String isFeatureActive, String username) throws IllegalAccessException {
+  public void activateEmailFeature(Boolean isFeatureActive, String username) throws IllegalAccessException {
     if (isFeatureActive == null) {
       throw new IllegalArgumentException(FEATURE_ACTIVE_IS_MANDATORY_MESSAGE);
     }
     if (!canEdit(username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE, username));
     }
-    boolean isFeatureActiveBool = Boolean.parseBoolean(isFeatureActive);
-    featureService.saveActiveFeature(EmailConnectorUtils.EMAIL_FEATURE, isFeatureActiveBool);
+    featureService.saveActiveFeature(EmailConnectorUtils.EMAIL_FEATURE, isFeatureActive);
     activateEmailApp();
 
   }
@@ -197,7 +165,7 @@ public class EmailConnectorService {
    *           connector
    */
   public void activateEmailConnector(Long emailConnectorId,
-                                     String isEmailConnectorActive,
+                                     boolean isEmailConnectorActive,
                                      String username) throws IllegalAccessException {
     if (emailConnectorId == null) {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
@@ -224,6 +192,7 @@ public class EmailConnectorService {
    * @throws IllegalAccessException if user is not allowed to delete an email
    *           connector
    */
+  @Transactional
   public void deleteEmailConnector(Long emailConnectorId, String username) throws IllegalAccessException {
     if (emailConnectorId == null) {
       throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
@@ -239,6 +208,7 @@ public class EmailConnectorService {
     }
     emailConnectorStorage.deleteEmailConnector(emailConnectorId);
     activateEmailApp();
+    eventPublisher.publishEvent(new UserEmailSettingCleanupEvent(emailConnectorId));
   }
 
   /**
@@ -272,26 +242,12 @@ public class EmailConnectorService {
   }
 
   /**
-   * Get active email connectors that will be available for all users.
+   * Get active email connectors.
    *
-   * @param locale used language to retrieve email connector name
-   * @param username user getting active email connectors
-   * @return list of stored {@link EmailConnector} in datasource
+   * @return list of stored active {@link EmailConnector} in datasource
    */
-  public List<EmailConnector> getActiveEmailConnectors(Locale locale, String username) {
-    List<EmailConnector> activeEmailConnectors = emailConnectorStorage.getActiveEmailConnectors();
-    activeEmailConnectors = activeEmailConnectors.stream().map(emailConnector -> {
-      String translatedName =
-                            translationService.getTranslationLabelOrDefault(EmailConnectorTranslationPlugin.EMAIL_CONNECTOR_OBJECT_TYPE,
-                                                                            emailConnector.getId(),
-                                                                            "name",
-                                                                            locale);
-      emailConnector.setName(translatedName);
-      emailConnector.setUserConnected(isEmailConnectorUserConnected(emailConnector.getId(), username));
-      emailConnector.setCanConnect(canConnect(emailConnector.getId(), username));
-      return emailConnector;
-    }).toList();
-    return activeEmailConnectors;
+  public List<EmailConnector> getActiveEmailConnectors() {
+    return emailConnectorStorage.getActiveEmailConnectors();
   }
 
   /**
@@ -315,140 +271,16 @@ public class EmailConnectorService {
     return null;
   }
 
-  /**
-   * Connect user email setting.
-   *
-   * @param userEmailSetting userEmailSetting to connect
-   * @param username user connecting the user email setting
-   * @param broadcast broadcast event
-   * @throws IllegalAccessException if user is not allowed to connect email
-   *           setting
-   */
-  @Transactional
-  public void connectUserEmailSetting(UserEmailSetting userEmailSetting,
-                                      String username,
-                                      boolean broadcast) throws IllegalAccessException {
-    if (!canConnect(userEmailSetting)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
-    }
-    Store store = null;
-    try {
-      store = connect(userEmailSetting);
-      setUserEmailSetting(userEmailSetting, username, broadcast);
-      eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
-    } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
-    } finally {
-      try {
-        if (store != null && store.isConnected()) {
-          store.close();
-        }
-      } catch (MessagingException messagingException) {
-        LOG.warn("Error when closing store", messagingException);
-      }
-    }
-  }
-
-  /**
-   * Set user email setting.
-   *
-   * @param userEmailSetting userEmailSetting to set
-   * @param username user setting the user email setting
-   */
-  public void setUserEmailSetting(UserEmailSetting userEmailSetting, String username, boolean broadcast) {
-    userEmailSetting.setEmailPassword(encodePassword(userEmailSetting.getEmailPassword()));
-    UserEmailSettingEntity userEmailSettingEntity = new UserEmailSettingEntity(userEmailSetting.getEmailConnectorId(),
-                                                                               userEmailSetting.getEmailAddress(),
-                                                                               userEmailSetting.getEmailPassword(),
-                                                                               userEmailSetting.getEmailBoxUserSyncPeriod(),
-                                                                               userEmailSetting.getEmailSyncStatus(),
-                                                                               userEmailSetting.getEmailSyncFailedAttemps(),
-                                                                               userEmailSetting.getLastEmailSyncStartDate());
-    settingService.set(Context.USER.id(username),
-                       EMAIL_CONNECTOR_SCOPE,
-                       USER_EMAIL_SETTING_KEY,
-                       SettingValue.create(JsonUtils.toJsonString(userEmailSettingEntity)));
-    if (broadcast) {
-      eventPublisher.publishEvent(new EmailBoxCleanupEvent(username));
-    }
-  }
-
-  /**
-   * Get user email setting.
-   *
-   * @param username user getting user email setting
-   * @return stored {@link UserEmailSetting} in datasource
-   */
-  public UserEmailSetting getUserEmailSetting(String username) {
-    UserEmailSetting userEmailSetting = new UserEmailSetting();
-    SettingValue<?> userEmailSettingValue = settingService.get(Context.USER.id(username),
-                                                               EMAIL_CONNECTOR_SCOPE,
-                                                               USER_EMAIL_SETTING_KEY);
-    if (userEmailSettingValue != null) {
-      UserEmailSetting storedUserEmailSetting = JsonUtils.fromJsonString(userEmailSettingValue.getValue().toString(),
-                                                                         UserEmailSetting.class);
-      userEmailSetting = storedUserEmailSetting;
-      userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword()));
-      EmailConnector emailConnector = getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-      if (emailConnector != null) {
-        userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
-        userEmailSetting.setEmailConnectorIcon(emailConnector.getIcon());
-        userEmailSetting.setEmailConnectorName(emailConnector.getName());
-        userEmailSetting.setConnected(emailConnector.isActive());
-      }
-    }
-    return userEmailSetting;
-  }
-
-  /**
-   * Delete user email setting.
-   *
-   * @param username user deleting user email setting
-   */
-  @Transactional
-  public void deleteUserEmailSetting(String username) {
-    settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
-    eventPublisher.publishEvent(new EmailBoxCleanupEvent(username));
-  }
-
-  /**
-   * Check if user has edit rights.
-   *
-   * @param username user to check edit rights
-   * @return boolean value if user can edit or not
-   */
   public boolean canEdit(String username) {
     return StringUtils.isBlank(username) || userAcl.isAdministrator(getUserIdentity(username));
   }
 
-  /**
-   * Connect to user mail box.
-   *
-   * @param userEmailSetting userEmailSetting used to connect
-   * @return store user box connected store
-   */
-  public Store connect(UserEmailSetting userEmailSetting) throws MessagingException {
-    EmailConnector emailConnector = getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-    Properties props = new Properties();
-    props.setProperty("mail.imaps.ssl.enable", "true");
-    props.setProperty("mail.store.protocol", "imaps");
-    props.setProperty("mail.imaps.port", emailConnector.getPort());
-    props.put("mail.imap.connectiontimeout", "10000");
-    // Connect to the server
-    Session session = Session.getDefaultInstance(props);
-    Store store = session.getStore();
-    store.connect(emailConnector.getImapUrl(),
-                  Integer.parseInt(emailConnector.getPort()),
-                  userEmailSetting.getEmailAddress(),
-                  userEmailSetting.getEmailPassword());
-    return store;
-  }
-
-  public boolean canConnect(UserEmailSetting userEmailSetting) {
-    return featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE) && userEmailSetting.getEmailConnectorId() != null
-        && getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())) != null
-        && getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())).isActive();
+  private Identity getUserIdentity(String username) {
+    if (StringUtils.isBlank(username)) {
+      return new Identity(IdentityConstants.ANONIM);
+    } else {
+      return userAcl.getUserIdentity(username);
+    }
   }
 
   private void activateEmailApp() {
@@ -463,43 +295,5 @@ public class EmailConnectorService {
                               application.setActive(hasActiveConnector && featureEnabled);
                               applicationCenterService.updateApplication(application);
                             });
-  }
-
-  private boolean canConnect(Long emailConnectorId, String username) {
-    return getUserEmailSetting(username).getEmailConnectorId() == null
-        || getEmailConnector(Long.parseLong(getUserEmailSetting(username).getEmailConnectorId())) == null
-        || !getEmailConnector(Long.parseLong(getUserEmailSetting(username).getEmailConnectorId())).isActive()
-        || isEmailConnectorUserConnected(emailConnectorId, username);
-  }
-
-  private String decodePassword(String password) {
-    try {
-      return codecInitializer.getCodec().decode(password);
-    } catch (TokenServiceInitializationException e) {
-      LOG.warn("Error when decoding password", e);
-      return null;
-    }
-  }
-
-  private String encodePassword(String password) {
-    try {
-      return codecInitializer.getCodec().encode(password);
-    } catch (TokenServiceInitializationException e) {
-      LOG.warn("Error when encoding password", e);
-      return null;
-    }
-  }
-
-  private Identity getUserIdentity(String username) {
-    if (StringUtils.isBlank(username)) {
-      return new Identity(IdentityConstants.ANONIM);
-    } else {
-      return userAcl.getUserIdentity(username);
-    }
-  }
-
-  private boolean isEmailConnectorUserConnected(Long emailConnectorId, String username) {
-    return getUserEmailSetting(username) != null
-        && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
   }
 }

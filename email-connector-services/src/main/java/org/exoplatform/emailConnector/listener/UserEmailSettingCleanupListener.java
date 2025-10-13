@@ -16,22 +16,27 @@
  */
 package org.exoplatform.emailConnector.listener;
 
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
-import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
-import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
+import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 @Component
-public class EmailBoxCleanupListener {
+public class UserEmailSettingCleanupListener {
 
   @Autowired
-  private EmailBoxService emailBoxService;
+  private UserEmailSettingService userEmailSettingService;
 
   @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
-  public void handleEmailBoxCleanup(EmailBoxCleanupEvent event) {
-    emailBoxService.deleteUserEmails(event.getUsername());
+  public void handleUserEmailSettingCleanup(UserEmailSettingCleanupEvent event) {
+    List<String> users = userEmailSettingService.getUserEmailSettingsByEmailConnectorId(event.getEmailConnectorId());
+    for (String user : users) {
+      userEmailSettingService.deleteUserEmailSetting(user);
+    }
   }
 }

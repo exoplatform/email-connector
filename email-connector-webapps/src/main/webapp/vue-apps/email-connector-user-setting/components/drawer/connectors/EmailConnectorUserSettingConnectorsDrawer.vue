@@ -30,7 +30,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-user-setting-connectors-drawer-list
         v-if="hasActiveConnectors"
         class="ma-5 py-0"
-        :active-email-connectors="activeEmailConnectors" />
+        :user-email-connectors="userEmailConnectors" />
       <v-list-item v-else class="full-height align-center">
         <v-list-item-content>
           <v-list-item-title class="text-wrap">
@@ -47,18 +47,18 @@ export default {
   data: () => ({
     featureName: 'email',
     userSettingConnectorsDrawer: false,
-    activeEmailConnectors: [],
+    userEmailConnectors: [],
   }),
   computed: {
     hasActiveConnectors() {
-      return this.activeEmailConnectors?.length > 0;
+      return this.userEmailConnectors?.length > 0;
     },
   },
   created() {
     this.hideUserSetting();
     this.$root.$on('open-user-setting-connectors-drawer', this.open);
     this.$root.$on('close-user-setting-connectors-drawer', this.close);
-    document.addEventListener('refresh-active-connectors-list', this.getActiveEmailConnectors);
+    document.addEventListener('refresh-active-connectors-list', this.getUserEmailConnectors);
   },
   methods: {
     open() {
@@ -67,16 +67,16 @@ export default {
     close() {
       this.$refs.userSettingConnectorsDrawer.close();
     },
-    getActiveEmailConnectors() {
-      this.$emailConnectorUserSettingService.getActiveEmailConnectors()
-        .then(connectors => this.activeEmailConnectors = connectors);
+    getUserEmailConnectors() {
+      this.$emailConnectorUserSettingService.getUserEmailConnectors()
+        .then(connectors => this.userEmailConnectors = connectors);
     },
     async hideUserSetting() {
       const enabled = await this.$featureService.isFeatureEnabled(this.featureName);
       const appEl = document.getElementById('emailConnectorUserSetting');
       const portletContainer = appEl?.closest('.layout-application');
-      this.activeEmailConnectors = await this.$emailConnectorUserSettingService.getActiveEmailConnectors();
-      if (portletContainer && (!enabled || this.activeEmailConnectors?.length === 0)) {
+      this.userEmailConnectors = await this.$emailConnectorUserSettingService.getUserEmailConnectors();
+      if (portletContainer && (!enabled || this.userEmailConnectors?.length === 0)) {
         portletContainer.style.display = 'none';
       }
     }

@@ -15,8 +15,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-export function getActiveEmailConnectors() {
-  return fetch('/email-connector/rest/emailConnector/active', {
+export function getUserEmailConnectors() {
+  return fetch('/email-connector/rest/user-email-setting/connectors', {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -26,13 +26,13 @@ export function getActiveEmailConnectors() {
     if (resp?.ok) {
       return resp.json();
     } else {
-      throw new Error('Error when getting active email connectors');
+      throw new Error('Error when getting user email connectors');
     }
   });
 }
 
 export function setUserEmailSetting(userEmailSetting, broadcast) {
-  return fetch(`/email-connector/rest/emailConnector/userEmailSetting/${broadcast}`, {
+  return fetch(`/email-connector/rest/user-email-setting?broadcast=${broadcast}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -47,7 +47,7 @@ export function setUserEmailSetting(userEmailSetting, broadcast) {
 }
 
 export function deleteUserEmailSetting() {
-  return fetch('/email-connector/rest/emailConnector/userEmailSetting', {
+  return fetch('/email-connector/rest/user-email-setting', {
     headers: {
       'Content-Type': 'application/json'
     },

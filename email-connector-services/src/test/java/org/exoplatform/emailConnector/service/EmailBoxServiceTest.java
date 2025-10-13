@@ -16,15 +16,19 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import javax.mail.Folder;
 import javax.mail.Message;
@@ -42,7 +46,9 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.services.scheduler.JobInfo;
 import org.exoplatform.services.scheduler.JobSchedulerService;
+import org.exoplatform.services.scheduler.PeriodInfo;
 
 import lombok.SneakyThrows;
 
@@ -50,34 +56,35 @@ import lombok.SneakyThrows;
 @ExtendWith(MockitoExtension.class)
 public class EmailBoxServiceTest {
 
-  private static final String   TEST_USER = "testuser";
+  private static final String     TEST_USER = "testuser";
 
   @MockBean
-  private EmailConnectorService emailConnectorService;
+  private UserEmailSettingService userEmailSettingService;
 
   @MockBean
-  private EmailBoxStorage       emailBoxStorage;
+  private EmailBoxStorage         emailBoxStorage;
 
   @MockBean
-  private SettingService        settingService;
+  private SettingService          settingService;
 
   @MockBean
-  private JobSchedulerService   jobSchedulerService;
+  private JobSchedulerService     jobSchedulerService;
 
   @Autowired
-  private EmailBoxService       emailBoxService;
+  private EmailBoxService         emailBoxService;
 
   @Test
   @SneakyThrows
   void synchronize() {
     UserEmailSetting userEmailSetting = mock(UserEmailSetting.class);
-    when(emailConnectorService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
-    when(emailConnectorService.canConnect(userEmailSetting)).thenReturn(false);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSetting.getEmailConnectorId()).thenReturn("1");
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
-    when(emailConnectorService.canConnect(userEmailSetting)).thenReturn(true);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(userEmailSetting.getEmailSyncStatus()).thenReturn(null);
     Store store = mock(Store.class);
-    when(emailConnectorService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Message message1 = mock(Message.class);
@@ -88,8 +95,7 @@ public class EmailBoxServiceTest {
     when(inbox.getMessages()).thenReturn(messages);
     emailBoxService.synchronize(TEST_USER);
     verify(emailBoxStorage, times(2)).createEmail(any(Email.class));
-    verify(emailConnectorService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
-
+    verify(userEmailSettingService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
   }
 
   @Test
@@ -102,5 +108,24 @@ public class EmailBoxServiceTest {
   void deleteUserEmails() {
     emailBoxService.deleteUserEmails(TEST_USER);
     verify(emailBoxStorage).deleteUserEmails(TEST_USER);
+  }
+
+  @Test
+  void deleteEmails() {
+    List<Email> emails = new ArrayList<Email>();
+    emailBoxService.deleteEmails(emails);
+    verify(emailBoxStorage).deleteEmails(any(List.class));
+  }
+
+  @Test
+  void scheduleEmailBoxUserSyncJob() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    emailBoxService.scheduleEmailBoxUserSyncJob(TEST_USER);
+    verify(jobSchedulerService).removeJob(any(JobInfo.class));
+    verify(jobSchedulerService).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
+  }
+
+  private UserEmailSetting userEmailSetting() {
+    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, null, true);
   }
 }
