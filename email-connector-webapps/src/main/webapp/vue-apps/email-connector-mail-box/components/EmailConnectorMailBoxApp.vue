@@ -46,7 +46,7 @@ export default {
     openDrawer(event) {
       this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
-        if (this.userEmailSetting.emailConnectorId) {
+        if (this.userEmailSetting.connected) {
           this.$root.$emit('open-mail-box-drawer', event?.detail);
         }
         else {
