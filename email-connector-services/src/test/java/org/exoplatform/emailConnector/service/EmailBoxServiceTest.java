@@ -84,9 +84,14 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  @SneakyThrows
   void getEmails() {
     emailBoxService.getEmails(TEST_USER);
     verify(emailBoxStorage).getEmails(TEST_USER);
+  }
+
+  @Test
+  void deleteUserEmails() {
+    emailBoxService.deleteUserEmails(TEST_USER);
+    verify(emailBoxStorage).deleteUserEmails(TEST_USER);
   }
 }
