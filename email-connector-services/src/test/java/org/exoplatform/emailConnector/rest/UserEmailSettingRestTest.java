@@ -19,8 +19,9 @@
 package org.exoplatform.emailConnector.rest;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +33,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureWebMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.context.ContextConfiguration;
@@ -47,24 +49,26 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
-import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
 import jakarta.servlet.Filter;
+import lombok.SneakyThrows;
 
-@SpringBootTest(classes = { EmailBoxRest.class, PortalAuthenticationManager.class })
+@SpringBootTest(classes = { UserEmailSettingRest.class, PortalAuthenticationManager.class })
 @ContextConfiguration(classes = { WebSecurityConfiguration.class })
 @AutoConfigureWebMvc
 @AutoConfigureMockMvc(addFilters = false)
 @ExtendWith(MockitoExtension.class)
-public class EmailBoxRestTest {
+public class UserEmailSettingRestTest {
 
-  private static final String EMAIL_BOX_PATH = "/emails";     // NOSONAR
+  private static final String USER_EMAIL_SETTING_PATH = "/user-email-setting"; // NOSONAR
 
-  private static final String SIMPLE_USER    = "simple";
+  private static final String SIMPLE_USER             = "simple";
 
-  private static final String TEST_PASSWORD  = "testPassword";
+  private static final String TEST_PASSWORD           = "testPassword";
 
   static final ObjectMapper   OBJECT_MAPPER;
 
@@ -79,15 +83,15 @@ public class EmailBoxRestTest {
   }
 
   @MockBean
-  private EmailBoxService       emailBoxService;
+  private UserEmailSettingService userEmailSettingService;
 
   @Autowired
-  private SecurityFilterChain   filterChain;
+  private SecurityFilterChain     filterChain;
 
   @Autowired
-  private WebApplicationContext context;
+  private WebApplicationContext   context;
 
-  private MockMvc               mockMvc;
+  private MockMvc                 mockMvc;
 
   @BeforeEach
   void setup() {
@@ -95,18 +99,43 @@ public class EmailBoxRestTest {
   }
 
   @Test
-  void getUserEmails() throws Exception {
-    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH).with(testSimpleUser()));
+  void connectUserEmailSetting() throws Exception {
+    ResultActions response = mockMvc.perform(put(USER_EMAIL_SETTING_PATH
+        + "?broadcast=false").with(testSimpleUser())
+                             .content(asJsonString(userEmailSetting()))
+                             .contentType(MediaType.APPLICATION_JSON)
+                             .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
   }
 
   @Test
-  void synchronizeUserEmails() throws Exception {
-    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/synchronization").with(testSimpleUser()));
+  void deleteUserEmailSetting() throws Exception {
+    ResultActions response = mockMvc.perform(delete(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
+  void getUserEmailSetting() throws Exception {
+    ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
+  void getUserEmailConnectors() throws Exception {
+    ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
 
   private RequestPostProcessor testSimpleUser() {
     return user(SIMPLE_USER).password(TEST_PASSWORD).authorities(new SimpleGrantedAuthority("users"));
+  }
+
+  private UserEmailSetting userEmailSetting() {
+    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, null, true);
+  }
+
+  @SneakyThrows
+  public static String asJsonString(final Object obj) {
+    return OBJECT_MAPPER.writeValueAsString(obj);
   }
 }

@@ -38,31 +38,12 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
-@RequestMapping("/emailBox")
-@Tag(name = "/email-connector/rest/emailBox", description = "Manages Email Box")
+@RequestMapping("/emails")
+@Tag(name = "/email-connector/rest/emails", description = "Manages Email Box")
 public class EmailBoxRest {
 
   @Autowired
   private EmailBoxService emailBoxService;
-
-  @PostMapping("synchronize")
-  @Secured("users")
-  @Operation(summary = "Synchronize email box", method = "POST", description = "This will synchronize email box")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "403", description = "Forbidden"),
-      @ApiResponse(responseCode = "404", description = "Not found"),
-      @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public ResponseEntity<String> synchronize(HttpServletRequest request) {
-    try {
-      emailBoxService.synchronize(request.getRemoteUser());
-      return ResponseEntity.ok().build();
-    } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
-    } catch (IllegalStateException e) {
-      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
-    }
-  }
 
   @GetMapping()
   @Secured("users")
@@ -72,7 +53,26 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public List<Email> getEmails(HttpServletRequest request) {
+  public List<Email> getUserEmails(HttpServletRequest request) {
     return emailBoxService.getEmails(request.getRemoteUser());
+  }
+
+  @PostMapping("synchronization")
+  @Secured("users")
+  @Operation(summary = "Synchronize email box", method = "POST", description = "This will synchronize email box")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public ResponseEntity<String> synchronizeUserEmails(HttpServletRequest request) {
+    try {
+      emailBoxService.synchronize(request.getRemoteUser());
+      return ResponseEntity.ok().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
   }
 }

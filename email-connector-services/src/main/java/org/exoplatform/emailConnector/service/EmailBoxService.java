@@ -51,21 +51,21 @@ import jakarta.annotation.PostConstruct;
 @Service
 public class EmailBoxService {
 
-  private static final Log      LOG                                            = ExoLogger.getLogger(EmailBoxService.class);
+  private static final Log        LOG                                            = ExoLogger.getLogger(EmailBoxService.class);
 
-  private static final String   USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE = "User %s is not allowed to synchronize email";
-
-  @Autowired
-  private EmailConnectorService emailConnectorService;
+  private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE = "User %s is not allowed to synchronize email";
 
   @Autowired
-  private EmailBoxStorage       emailBoxStorage;
+  private UserEmailSettingService userEmailSettingService;
 
   @Autowired
-  private SettingService        settingService;
+  private EmailBoxStorage         emailBoxStorage;
 
   @Autowired
-  private JobSchedulerService   jobSchedulerService;
+  private SettingService          settingService;
+
+  @Autowired
+  private JobSchedulerService     jobSchedulerService;
 
   @PostConstruct
   public void initEmailBoxSyncJob() {
@@ -93,14 +93,14 @@ public class EmailBoxService {
    *           connector
    */
   public void synchronize(String username) throws IllegalAccessException {
-    UserEmailSetting userEmailSetting = emailConnectorService.getUserEmailSetting(username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (!canSynchronize(userEmailSetting, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
     }
     Store store = null;
     Folder inbox = null;
     try {
-      store = emailConnectorService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting);
       updateEmailSyncStatus(username, SyncStatus.IN_PROGRESS);
       inbox = store.getFolder("INBOX");
       inbox.open(Folder.READ_ONLY);
@@ -110,7 +110,7 @@ public class EmailBoxService {
       Message[] messages = inbox.getMessages();
       int count = 0;
       int i = messages.length - 1;
-      while (i >= 0 && count < EmailConnectorUtils.maxEmails) {
+      while (i >= 0 && count < EmailConnectorUtils.MAX_EMAILS) {
         Message message = messages[i--];
         try {
           String excerpt = EmailConnectorUtils.getMessageContent(message, true);
@@ -134,7 +134,7 @@ public class EmailBoxService {
         }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
-      cleanupOldEmails(username, EmailConnectorUtils.maxEmails);
+      cleanupOldEmails(username, EmailConnectorUtils.MAX_EMAILS);
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
@@ -192,7 +192,7 @@ public class EmailBoxService {
    *          scheduled
    */
   public void scheduleEmailBoxUserSyncJob(String username) throws Exception {
-    UserEmailSetting userEmailSetting = emailConnectorService.getUserEmailSetting(username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     String emailBoxSyncJobName = username + EmailConnectorUtils.EMAIL_BOX_SYNC_JOB_NAME;
     JobInfo emailBoxSyncJobInfo = new JobInfo(emailBoxSyncJobName, EmailConnectorUtils.EMAIL_FEATURE, EmailBoxSyncJob.class);
     // Remove next email box sync job for the user
@@ -203,16 +203,18 @@ public class EmailBoxService {
   }
 
   private boolean canSynchronize(UserEmailSetting userEmailSetting, String username) {
-    if (!emailConnectorService.canConnect(userEmailSetting))
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       return false;
-    if (SyncStatus.BLOCKED.equals(userEmailSetting.getEmailSyncStatus()))
+    }
+    if (SyncStatus.BLOCKED.equals(userEmailSetting.getEmailSyncStatus())) {
       return false;
+    }
     if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
       long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate()
           + EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
       return System.currentTimeMillis() > nextAllowedSync;
     }
-
     return true;
   }
 
@@ -225,7 +227,7 @@ public class EmailBoxService {
   }
 
   private void updateEmailSyncStatus(String username, SyncStatus syncStatus) {
-    UserEmailSetting userEmailSetting = emailConnectorService.getUserEmailSetting(username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     int mailSyncFailedAttemps = userEmailSetting.getEmailSyncFailedAttemps();
     if (syncStatus == SyncStatus.SUCCESS) {
       mailSyncFailedAttemps = 0;
@@ -241,6 +243,6 @@ public class EmailBoxService {
     }
     userEmailSetting.setEmailSyncFailedAttemps(mailSyncFailedAttemps);
     userEmailSetting.setEmailSyncStatus(syncStatus);
-    emailConnectorService.setUserEmailSetting(userEmailSetting, username, false);
+    userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
   }
 }

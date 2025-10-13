@@ -82,5 +82,4 @@ public class EmailConnectorTranslationPluginTest {
   void getSpaceId() {
     assertEquals(0l, emailConnectorTranslationPlugin.getSpaceId(EMAIL_CONNECTOR_ID));
   }
-
 }

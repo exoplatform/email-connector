@@ -16,7 +16,7 @@
  */
 
 export function getUserEmailSetting() {
-  return fetch('/email-connector/rest/emailConnector/userEmailSetting', {
+  return fetch('/email-connector/rest/user-email-setting', {
     headers: {
       'Content-Type': 'application/json'
     },
