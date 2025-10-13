@@ -32,6 +32,8 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   EmailBoxEntity findByUserIdAndMailRemoteId(String userId, long mailRemoteId);
 
+  void deleteByUserId(String userId);
+
   @Transactional
   @Modifying
   @Query("DELETE FROM EmailBoxEntity eb WHERE eb.id IN :ids")
