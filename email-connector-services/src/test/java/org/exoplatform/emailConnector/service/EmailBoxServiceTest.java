@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -37,9 +38,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 
+import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.services.scheduler.JobSchedulerService;
 
 import lombok.SneakyThrows;
 
@@ -54,6 +57,12 @@ public class EmailBoxServiceTest {
 
   @MockBean
   private EmailBoxStorage       emailBoxStorage;
+
+  @MockBean
+  private SettingService        settingService;
+
+  @MockBean
+  private JobSchedulerService   jobSchedulerService;
 
   @Autowired
   private EmailBoxService       emailBoxService;
@@ -79,7 +88,7 @@ public class EmailBoxServiceTest {
     when(inbox.getMessages()).thenReturn(messages);
     emailBoxService.synchronize(TEST_USER);
     verify(emailBoxStorage, times(2)).createEmail(any(Email.class));
-    verify(emailConnectorService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString());
+    verify(emailConnectorService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
 
   }
 

@@ -28,6 +28,10 @@ import javax.mail.UIDFolder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -35,6 +39,11 @@ import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.services.scheduler.JobInfo;
+import org.exoplatform.services.scheduler.JobSchedulerService;
+import org.exoplatform.services.scheduler.PeriodInfo;
+
+import jakarta.annotation.PostConstruct;
 
 /**
  * A Service to manage and synchronize email box
@@ -51,6 +60,25 @@ public class EmailBoxService {
 
   @Autowired
   private EmailBoxStorage       emailBoxStorage;
+  
+  @Autowired
+  private SettingService       settingService;
+  
+  @Autowired
+  private JobSchedulerService       jobSchedulerService;
+  
+  @PostConstruct
+  public void initEmailBoxSyncJob() throws Exception {
+    List<Context> contexts = settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                    Scope.APPLICATION.getName(),
+                                                                                    EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                                    EmailConnectorService.USER_EMAIL_SETTING_KEY,
+                                                                                    0,
+                                                                                    Integer.MAX_VALUE);
+    for (Context context : contexts) {
+      scheduleEmailBoxUserSyncJob(context.getId());
+    }
+  }
 
   /**
    * Synchronize user email box.
@@ -151,6 +179,25 @@ public class EmailBoxService {
     List<Long> emailsIdsToDelete = emails.stream().map(Email::getId).collect(Collectors.toList());
     emailBoxStorage.deleteEmails(emailsIdsToDelete);
   }
+  
+  /**
+   * Schedule email box user synchronization job
+   *
+   * @param username user for which email box synchronization job will be scheduled
+   */
+  public void scheduleEmailBoxUserSyncJob(String username) throws Exception {
+    UserEmailSetting userEmailSetting = emailConnectorService.getUserEmailSetting(username);
+    String emailBoxSyncJobName = username + EmailConnectorUtils.EMAIL_BOX_SYNC_JOB_NAME;
+    JobInfo emailBoxSyncJobInfo = new JobInfo(emailBoxSyncJobName, EmailConnectorUtils.EMAIL_FEATURE, EmailBoxSyncJob.class);
+    // Remove next email box sync job for the user
+    jobSchedulerService.removeJob(emailBoxSyncJobInfo);
+    PeriodInfo periodInfo =
+                          new PeriodInfo(null, null, 0, EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000);
+    jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
+    LOG.info("Email box sync for user: {} scheduled periodically every {} minutes",
+             username,
+             EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting));
+  }
 
   private boolean canSynchronize(UserEmailSetting userEmailSetting, String username) {
     if (!emailConnectorService.canConnect(userEmailSetting))
@@ -191,6 +238,6 @@ public class EmailBoxService {
     }
     userEmailSetting.setEmailSyncFailedAttemps(mailSyncFailedAttemps);
     userEmailSetting.setEmailSyncStatus(syncStatus);
-    emailConnectorService.setUserEmailSetting(userEmailSetting, username);
+    emailConnectorService.setUserEmailSetting(userEmailSetting, username, false);
   }
 }

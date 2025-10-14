@@ -53,7 +53,6 @@ import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.scheduler.JobInfo;
-import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.services.security.Identity;
 import org.exoplatform.web.security.codec.AbstractCodec;
@@ -95,9 +94,6 @@ public class EmailConnectorServiceTest {
 
   @MockBean
   private ExoFeatureService        featureService;
-
-  @MockBean
-  private JobSchedulerService      jobSchedulerService;
 
   @Autowired
   private EmailConnectorService    emailConnectorService;
@@ -212,7 +208,7 @@ public class EmailConnectorServiceTest {
   void setUserEmailSetting() {
     when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
     UserEmailSetting userEmailSetting = userEmailSetting();
-    emailConnectorService.setUserEmailSetting(userEmailSetting, TEST_USER);
+    emailConnectorService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
     verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }
 
@@ -220,7 +216,7 @@ public class EmailConnectorServiceTest {
   @SneakyThrows
   void connectUserEmailSetting() {
     when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(false);
-    assertThrows(IllegalAccessException.class, () -> emailConnectorService.connectUserEmailSetting(null, TEST_USER));
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.connectUserEmailSetting(null, TEST_USER, false));
     when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     EmailConnector emailConnector = emailConnector();
@@ -232,11 +228,9 @@ public class EmailConnectorServiceTest {
     when(session.getStore()).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
-    emailConnectorService.connectUserEmailSetting(userEmailSetting, TEST_USER);
+    emailConnectorService.connectUserEmailSetting(userEmailSetting, TEST_USER, false);
     verify(store).connect(anyString(), anyInt(), anyString(), anyString());
     verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
-    verify(jobSchedulerService).removeJob(any(JobInfo.class));
-    verify(jobSchedulerService).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
   }
 
   @Test

@@ -21,17 +21,25 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
-import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
+import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 
 @Component
-public class EmailBoxCleanupListener {
+public class EmailBoxSyncListener {
+
+  private static final Log LOG = ExoLogger.getLogger(EmailBoxSyncListener.class);
 
   @Autowired
-  private EmailBoxService emailBoxService;
+  private EmailBoxService  emailBoxService;
 
-  @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
-  public void handleEmailBoxCleanup(EmailBoxCleanupEvent event) {
-    emailBoxService.deleteUserEmails(event.getUsername());
+  @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+  public void handleEmailBoxSync(EmailBoxSyncEvent event) {
+    try {
+      emailBoxService.scheduleEmailBoxUserSyncJob(event.getUsername());
+    } catch (Exception e) {
+      LOG.warn("Error scheduling email box sync for user {}", event.getUsername(), e);
+    }
   }
 }
