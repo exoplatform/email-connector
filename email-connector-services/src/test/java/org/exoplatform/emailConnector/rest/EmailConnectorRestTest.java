@@ -158,7 +158,7 @@ public class EmailConnectorRestTest {
   @Test
   void setUserEmailSetting() throws Exception {
     ResultActions response = mockMvc.perform(put(EMAIL_CONNECTOR_PATH
-        + "/userEmailSetting").with(testSimpleUser())
+        + "/userEmailSetting/false").with(testSimpleUser())
                               .content(asJsonString(userEmailSetting()))
                               .contentType(MediaType.APPLICATION_JSON)
                               .accept(MediaType.APPLICATION_JSON));

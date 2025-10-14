@@ -31,8 +31,8 @@ export function getActiveEmailConnectors() {
   });
 }
 
-export function setUserEmailSetting(userEmailSetting) {
-  return fetch('/email-connector/rest/emailConnector/userEmailSetting', {
+export function setUserEmailSetting(userEmailSetting, broadcast) {
+  return fetch(`/email-connector/rest/emailConnector/userEmailSetting/${broadcast}`, {
     headers: {
       'Content-Type': 'application/json'
     },

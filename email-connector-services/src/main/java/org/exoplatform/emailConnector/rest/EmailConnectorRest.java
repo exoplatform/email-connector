@@ -209,7 +209,7 @@ public class EmailConnectorRest {
     }
   }
 
-  @PutMapping("/userEmailSetting")
+  @PutMapping("/userEmailSetting/{broadcast}")
   @Secured("users")
   @Operation(summary = "Sets user email setting", method = "PUT", description = "This will set user email setting")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -217,10 +217,14 @@ public class EmailConnectorRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void connectUserEmailSetting(HttpServletRequest request, @RequestBody
-  UserEmailSetting userEmailSetting) {
+  public void connectUserEmailSetting(HttpServletRequest request,
+                                      @Parameter(description = "Broadcast email box cleanup event", required = true)
+                                      @PathVariable("broadcast")
+                                      boolean broadcast,
+                                      @RequestBody
+                                      UserEmailSetting userEmailSetting) {
     try {
-      emailConnectorService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser());
+      emailConnectorService.connectUserEmailSetting(userEmailSetting, request.getRemoteUser(), broadcast);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {

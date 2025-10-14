@@ -109,6 +109,9 @@ export default {
   computed: {
     disabled() {
       return !this.emailSetting.emailConnectorId || !this.emailSetting.emailAddress || !this.emailSetting.emailPassword;
+    },
+    emailAddressModified() {
+      return this.userEmailSetting.emailConnectorId !== null && this.userEmailSetting.emailAddress !== this.emailSetting?.emailAddress;
     }
   },
   created() {
@@ -135,7 +138,7 @@ export default {
     },
     connect() {
       this.loading = true;
-      this.$emailConnectorUserSettingService.setUserEmailSetting(this.emailSetting).then(() =>
+      this.$emailConnectorUserSettingService.setUserEmailSetting(this.emailSetting, this.emailAddressModified).then(() =>
       {
         this.close();
         this.$root.$emit('close-user-setting-connectors-drawer');

@@ -12,11 +12,11 @@
 
 package org.exoplatform.emailConnector.event;
 
-public class UserEmailSettingDeletedEvent {
+public class EmailBoxCleanupEvent {
 
   private final String username;
 
-  public UserEmailSettingDeletedEvent(String username) {
+  public EmailBoxCleanupEvent(String username) {
     this.username = username;
   }
 
