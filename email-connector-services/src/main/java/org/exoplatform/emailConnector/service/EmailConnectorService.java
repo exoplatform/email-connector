@@ -40,8 +40,8 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
-import org.exoplatform.emailConnector.event.UserEmailSettingDeletedEvent;
-import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
+import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
+import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
@@ -50,9 +50,6 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
-import org.exoplatform.services.scheduler.JobInfo;
-import org.exoplatform.services.scheduler.JobSchedulerService;
-import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.services.security.Identity;
 import org.exoplatform.services.security.IdentityConstants;
 import org.exoplatform.web.security.codec.CodecInitializer;
@@ -61,7 +58,6 @@ import org.exoplatform.web.security.security.TokenServiceInitializationException
 import io.meeds.appcenter.service.ApplicationCenterService;
 import io.meeds.social.translation.service.TranslationService;
 import io.meeds.social.util.JsonUtils;
-import jakarta.annotation.PostConstruct;
 import lombok.SneakyThrows;
 
 /**
@@ -69,6 +65,13 @@ import lombok.SneakyThrows;
  */
 @Service
 public class EmailConnectorService {
+
+  public static final String        EMAIL_CONNECTOR_SCOPE_ID                           = "EMAIL_CONNECTOR_SCOPE";
+
+  public static final Scope         EMAIL_CONNECTOR_SCOPE                              =
+                                                          Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
+
+  public static final String        USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
 
   private static final String       EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE               = "Email connector is mandatory";
 
@@ -85,13 +88,6 @@ public class EmailConnectorService {
 
   private static final String       EMAIL_CONNECTOR_NOT_FOUND_MESSAGE                  =
                                                                       "Email connector with id %s doesn't exist";
-
-  private static final String       EMAIL_CONNECTOR_SCOPE_ID                           = "EMAIL_CONNECTOR_SCOPE";
-
-  private static final Scope        EMAIL_CONNECTOR_SCOPE                              =
-                                                          Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
-
-  private static final String       USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
 
   private static final Log          LOG                                                =
                                         ExoLogger.getLogger(EmailConnectorService.class);
@@ -121,24 +117,7 @@ public class EmailConnectorService {
   private ExoFeatureService         featureService;
 
   @Autowired
-  private JobSchedulerService       jobSchedulerService;
-
-  @Autowired
   private ApplicationEventPublisher eventPublisher;
-
-  @PostConstruct
-  public void initEmailBoxSyncJob() throws Exception {
-    List<Context> contexts = settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
-                                                                                    Scope.APPLICATION.getName(),
-                                                                                    EMAIL_CONNECTOR_SCOPE_ID,
-                                                                                    USER_EMAIL_SETTING_KEY,
-                                                                                    0,
-                                                                                    Integer.MAX_VALUE);
-    for (Context context : contexts) {
-      UserEmailSetting userEmailSetting = getUserEmailSetting(context.getId());
-      scheduleEmailBoxUserSyncJob(userEmailSetting, context.getId());
-    }
-  }
 
   /**
    * Activate email feature.
@@ -341,22 +320,22 @@ public class EmailConnectorService {
    *
    * @param userEmailSetting userEmailSetting to connect
    * @param username user connecting the user email setting
+   * @param broadcast broadcast event
    * @throws IllegalAccessException if user is not allowed to connect email
    *           setting
    */
-  public void connectUserEmailSetting(UserEmailSetting userEmailSetting, String username) throws IllegalAccessException {
+  @Transactional
+  public void connectUserEmailSetting(UserEmailSetting userEmailSetting,
+                                      String username,
+                                      boolean broadcast) throws IllegalAccessException {
     if (!canConnect(userEmailSetting)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
     }
     Store store = null;
     try {
       store = connect(userEmailSetting);
-      setUserEmailSetting(userEmailSetting, username);
-      try {
-        scheduleEmailBoxUserSyncJob(userEmailSetting, username);
-      } catch (Exception e) {
-        LOG.warn("Error when scheduling email box user sync job", e);
-      }
+      setUserEmailSetting(userEmailSetting, username, broadcast);
+      eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
       throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
@@ -377,7 +356,7 @@ public class EmailConnectorService {
    * @param userEmailSetting userEmailSetting to set
    * @param username user setting the user email setting
    */
-  public void setUserEmailSetting(UserEmailSetting userEmailSetting, String username) {
+  public void setUserEmailSetting(UserEmailSetting userEmailSetting, String username, boolean broadcast) {
     userEmailSetting.setEmailPassword(encodePassword(userEmailSetting.getEmailPassword()));
     UserEmailSettingEntity userEmailSettingEntity = new UserEmailSettingEntity(userEmailSetting.getEmailConnectorId(),
                                                                                userEmailSetting.getEmailAddress(),
@@ -390,6 +369,9 @@ public class EmailConnectorService {
                        EMAIL_CONNECTOR_SCOPE,
                        USER_EMAIL_SETTING_KEY,
                        SettingValue.create(JsonUtils.toJsonString(userEmailSettingEntity)));
+    if (broadcast) {
+      eventPublisher.publishEvent(new EmailBoxCleanupEvent(username));
+    }
   }
 
   /**
@@ -427,7 +409,7 @@ public class EmailConnectorService {
   @Transactional
   public void deleteUserEmailSetting(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
-    eventPublisher.publishEvent(new UserEmailSettingDeletedEvent(username));
+    eventPublisher.publishEvent(new EmailBoxCleanupEvent(username));
   }
 
   /**
@@ -519,18 +501,5 @@ public class EmailConnectorService {
   private boolean isEmailConnectorUserConnected(Long emailConnectorId, String username) {
     return getUserEmailSetting(username) != null
         && String.valueOf(emailConnectorId).equals(getUserEmailSetting(username).getEmailConnectorId());
-  }
-
-  private void scheduleEmailBoxUserSyncJob(UserEmailSetting userEmailSetting, String username) throws Exception {
-    String emailBoxSyncJobName = username + EmailConnectorUtils.EMAIL_BOX_SYNC_JOB_NAME;
-    JobInfo emailBoxSyncJobInfo = new JobInfo(emailBoxSyncJobName, EmailConnectorUtils.EMAIL_FEATURE, EmailBoxSyncJob.class);
-    // Remove next email box sync job for the user
-    jobSchedulerService.removeJob(emailBoxSyncJobInfo);
-    PeriodInfo periodInfo =
-                          new PeriodInfo(null, null, 0, EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000);
-    jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
-    LOG.info("Email box sync for user: {} scheduled periodically every {} minutes",
-             username,
-             EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting));
   }
 }
