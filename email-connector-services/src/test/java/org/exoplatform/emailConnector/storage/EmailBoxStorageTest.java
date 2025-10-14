@@ -21,8 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
@@ -60,11 +62,16 @@ public class EmailBoxStorageTest {
         entity.setId(ID);
       }
       when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Optional.of(entity)
-                                                                    .stream()
-                                                                    .filter(email -> email.getUserId().equals("root"))
-                                                                    .collect(Collectors.toList()));
+                                                                                   .stream()
+                                                                                   .filter(email -> email.getUserId()
+                                                                                                         .equals("root"))
+                                                                                   .collect(Collectors.toList()));
       return entity;
     });
+    doAnswer(invocation -> {
+      when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Collections.emptyList());
+      return null;
+    }).when(emailBoxDAO).deleteByUserId(any());
   }
 
   @Test
@@ -92,6 +99,18 @@ public class EmailBoxStorageTest {
     assertEquals("subject", retrievedEmailEntities.get(0).getSubject());
     assertEquals("excerpt", retrievedEmailEntities.get(0).getExcerpt());
     assertEquals("sender", retrievedEmailEntities.get(0).getSender());
+  }
+
+  @Test
+  void deletetUserEmails() {
+    Email email1 = email("root");
+    emailBoxStorage.createEmail(email1);
+    List<Email> retrievedEmailEntities = emailBoxStorage.getEmails("root");
+    assertNotNull(retrievedEmailEntities);
+    assertEquals(1, retrievedEmailEntities.size());
+    emailBoxStorage.deleteUserEmails("root");
+    retrievedEmailEntities = emailBoxStorage.getEmails("root");
+    assertEquals(0, retrievedEmailEntities.size());
   }
 
   private Email email(String username) {

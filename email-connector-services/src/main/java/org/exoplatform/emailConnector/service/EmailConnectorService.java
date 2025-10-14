@@ -28,7 +28,9 @@ import javax.mail.Store;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -38,6 +40,7 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
+import org.exoplatform.emailConnector.event.UserEmailSettingDeletedEvent;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -67,57 +70,61 @@ import lombok.SneakyThrows;
 @Service
 public class EmailConnectorService {
 
-  private static final String   EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE               = "Email connector is mandatory";
+  private static final String       EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE               = "Email connector is mandatory";
 
-  private static final String   FEATURE_ACTIVE_IS_MANDATORY_MESSAGE                = "Feature active is mandatory";
+  private static final String       FEATURE_ACTIVE_IS_MANDATORY_MESSAGE                = "Feature active is mandatory";
 
-  private static final String   USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE       =
-                                                                             "User %s is not allowed to save email connector : %s";
+  private static final String       USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE       =
+                                                                                 "User %s is not allowed to save email connector : %s";
 
-  private static final String   USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE        =
-                                                                            "User %s is not allowed to activate email feature";
+  private static final String       USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE        =
+                                                                                "User %s is not allowed to activate email feature";
 
-  private static final String   USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
-                                                                                   "User %s is not allowed to connect email setting";
+  private static final String       USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
+                                                                                       "User %s is not allowed to connect email setting";
 
-  private static final String   EMAIL_CONNECTOR_NOT_FOUND_MESSAGE                  = "Email connector with id %s doesn't exist";
+  private static final String       EMAIL_CONNECTOR_NOT_FOUND_MESSAGE                  =
+                                                                      "Email connector with id %s doesn't exist";
 
-  private static final String   EMAIL_CONNECTOR_SCOPE_ID                           = "EMAIL_CONNECTOR_SCOPE";
+  private static final String       EMAIL_CONNECTOR_SCOPE_ID                           = "EMAIL_CONNECTOR_SCOPE";
 
-  private static final Scope    EMAIL_CONNECTOR_SCOPE                              =
-                                                      Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
+  private static final Scope        EMAIL_CONNECTOR_SCOPE                              =
+                                                          Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
 
-  private static final String   USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
+  private static final String       USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
 
-  private static final Log      LOG                                                =
-                                    ExoLogger.getLogger(EmailConnectorService.class);
-
-  @Autowired
-  private UserACL               userAcl;
+  private static final Log          LOG                                                =
+                                        ExoLogger.getLogger(EmailConnectorService.class);
 
   @Autowired
-  private EmailConnectorStorage emailConnectorStorage;
+  private UserACL                   userAcl;
 
   @Autowired
-  private FileService           fileService;
+  private EmailConnectorStorage     emailConnectorStorage;
 
   @Autowired
-  private TranslationService    translationService;
+  private FileService               fileService;
 
   @Autowired
-  private SettingService        settingService;
+  private TranslationService        translationService;
 
   @Autowired
-  ApplicationCenterService      applicationCenterService;
+  private SettingService            settingService;
 
   @Autowired
-  private CodecInitializer      codecInitializer;
+  ApplicationCenterService          applicationCenterService;
 
   @Autowired
-  private ExoFeatureService     featureService;
+  private CodecInitializer          codecInitializer;
 
   @Autowired
-  private JobSchedulerService   jobSchedulerService;
+  private ExoFeatureService         featureService;
+
+  @Autowired
+  private JobSchedulerService       jobSchedulerService;
+
+  @Autowired
+  private ApplicationEventPublisher eventPublisher;
 
   @PostConstruct
   public void initEmailBoxSyncJob() throws Exception {
@@ -417,8 +424,10 @@ public class EmailConnectorService {
    *
    * @param username user deleting user email setting
    */
+  @Transactional
   public void deleteUserEmailSetting(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+    eventPublisher.publishEvent(new UserEmailSettingDeletedEvent(username));
   }
 
   /**

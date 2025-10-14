@@ -59,6 +59,10 @@ public class EmailBoxStorage {
     return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity)).collect(Collectors.toList());
   }
   
+  public void deleteUserEmails(String username) {
+    emailBoxDao.deleteByUserId(username);
+  }
+  
   public void deleteEmails(List<Long> emailsIds) {
     emailBoxDao.deleteEmailsByIds(emailsIds);
   }

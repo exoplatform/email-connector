@@ -132,6 +132,15 @@ public class EmailBoxService {
   public List<Email> getEmails(String username) {
     return emailBoxStorage.getEmails(username);
   }
+  
+  /**
+   * Delete user emails
+   *
+   * @param username user whose emails will be deleted
+   */
+  public void deleteUserEmails(String username) {
+    emailBoxStorage.deleteUserEmails(username);
+  }
 
   /**
    * Delete emails.
