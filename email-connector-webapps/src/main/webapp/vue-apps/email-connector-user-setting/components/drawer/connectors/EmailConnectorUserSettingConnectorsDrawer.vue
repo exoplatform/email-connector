@@ -54,11 +54,16 @@ export default {
       return this.userEmailConnectors?.length > 0;
     },
   },
+  mounted() {
+    document.addEventListener('refresh-active-connectors-list', this.getUserEmailConnectors);
+  },
+  beforeDestroy() {
+    document.removeEventListener('refresh-active-connectors-list', this.getUserEmailConnectors);
+  },
   created() {
     this.hideUserSetting();
     this.$root.$on('open-user-setting-connectors-drawer', this.open);
     this.$root.$on('close-user-setting-connectors-drawer', this.close);
-    document.addEventListener('refresh-active-connectors-list', this.getUserEmailConnectors);
   },
   methods: {
     open() {

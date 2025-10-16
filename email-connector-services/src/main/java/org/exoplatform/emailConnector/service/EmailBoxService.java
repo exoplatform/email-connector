@@ -33,6 +33,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -157,13 +158,15 @@ public class EmailBoxService {
   }
 
   /**
-   * Get user emails.
+   * Get user email box.
    *
    * @param username user getting user emails
    * @return list of stored {@link Email} in datasource
    */
-  public List<Email> getEmails(String username) {
-    return emailBoxStorage.getEmails(username);
+  public EmailBox getEmailBox(String username) {
+    List<Email> emails = emailBoxStorage.getEmails(username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    return new EmailBox(emails, userEmailSetting.getEmailSyncStatus());
   }
 
   /**
@@ -219,7 +222,7 @@ public class EmailBoxService {
   }
 
   private void cleanupOldEmails(String username, int maxEmails) {
-    List<Email> userEmails = getEmails(username);
+    List<Email> userEmails = getEmailBox(username).getEmails();
     if (userEmails.size() > maxEmails) {
       List<Email> oldUserEmailsToCleanup = userEmails.subList(maxEmails, userEmails.size());
       deleteEmails(oldUserEmailsToCleanup);

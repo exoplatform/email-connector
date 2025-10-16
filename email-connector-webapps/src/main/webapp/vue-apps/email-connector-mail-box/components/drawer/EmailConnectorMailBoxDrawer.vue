@@ -23,10 +23,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @closed="close">
     <template #title>
       <span class="me-3">{{ $t('emailConnector.mailBox.list.drawer.title') }}</span>
+    </template>
+    <template #titleIcons>
       <email-box-sync-loader
         v-if="syncInProgress"
-        :label="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
+        :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
+        loader-class="align-self-center me-2"
         icon-size="20" />
+      <v-tooltip
+        v-else 
+        bottom>
+        <template #activator="{on, attrs}">
+          <v-btn
+            v-on="on"
+            v-bind="attrs"
+            @click="synchronize()"
+            icon>
+            <v-icon size="20">fa-sync-alt</v-icon>
+          </v-btn>
+        </template>
+        <span>
+          {{ $t('emailConnector.mailBox.list.drawer.sync.tooltip') }}
+        </span>
+      </v-tooltip>
     </template>
     <template v-if="emailBoxDrawer" #content>
       <div
@@ -78,16 +97,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     emailBoxDrawer: false,
+    emailBox: null,
     emails: [],
     syncInProgress: false,
+    refreshInterval: null,
   }),
-  props: {
-    userEmailSetting: {
-      type: Object,
-      default: null,
-    },
-  },
   created() {
+    this.isRefreshing = false;
     this.$root.$on('open-mail-box-drawer', (loading) => {
       this.open(loading); 
     });
@@ -97,20 +113,64 @@ export default {
       return this.emails?.length > 0;
     },
     syncBlocked() {
-      return this.userEmailSetting?.emailSyncStatus === 'BLOCKED';
+      return this.emailBox?.emailSyncStatus === 'BLOCKED';
     },
   },
   methods: {
     async open(loading) {
-      this.emails = await this.$emailConnectorMailBoxService.getEmails();
-      this.syncInProgress = loading || this.userEmailSetting?.emailSyncStatus === 'IN_PROGRESS';
+      if (loading) {
+        this.syncInProgress = true;
+        await this.$nextTick();
+      }
+      await this.loadEmailBox();
       this.$refs.emailBoxDrawer.open();
+      if (this.syncInProgress) {
+        this.startAutoRefresh();
+      }
     },
     close() {
+      this.stopAutoRefresh();
+      document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.$refs.emailBoxDrawer.close();
     },
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
+    },
+    synchronize() {
+      this.syncInProgress = true;
+      this.$emailConnectorMailBoxService.synchronize();
+      this.startAutoRefresh();
+    },
+    async loadEmailBox() {
+      this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();
+      this.emails = this.emailBox.emails || [];
+      this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
+      if (!this.syncInProgress) {
+        this.stopAutoRefresh();
+      }
+    },
+    startAutoRefresh() {
+      if (this.refreshInterval) {
+        return;
+      }
+      this.isRefreshing = false;
+      this.refreshInterval = setInterval(async () => {
+        if (this.isRefreshing) {
+          return;
+        }
+        this.isRefreshing = true;
+        try {
+          await this.loadEmailBox();
+        } finally {
+          this.isRefreshing = false;
+        }
+      }, 1500);
+    },
+    stopAutoRefresh() {
+      if (this.refreshInterval) {
+        clearInterval(this.refreshInterval);
+        this.refreshInterval = null;
+      }
     }
   }
 };
