@@ -15,8 +15,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
  
-export function getEmails() {
-  return fetch('/email-connector/rest/emails', {
+export function getEmailBox() {
+  return fetch('/email-connector/rest/email-box', {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -26,13 +26,13 @@ export function getEmails() {
     if (resp?.ok) {
       return resp.json();
     } else {
-      throw new Error('Error when getting emails');
+      throw new Error('Error when getting email box');
     }
   });
 }
 
 export function synchronize() {
-  return fetch('/email-connector/rest/emails/synchronization', {
+  return fetch('/email-connector/rest/email-box/synchronization', {
     headers: {
       'Content-Type': 'application/json'
     },

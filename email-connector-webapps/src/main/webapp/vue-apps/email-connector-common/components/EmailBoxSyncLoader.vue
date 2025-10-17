@@ -23,7 +23,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-bind="attrs"
         size="20"
         color="primary"
-        indeterminate />
+        indeterminate 
+        :class="loaderClass" />
     </template>
     <span>
       {{ label }}
@@ -34,6 +35,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   props: {
     label: {
+      type: String,
+      default: null,
+    },
+    loaderClass: {
       type: String,
       default: null,
     }
