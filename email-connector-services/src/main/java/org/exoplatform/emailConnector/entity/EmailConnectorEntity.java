@@ -45,7 +45,7 @@ public class EmailConnectorEntity {
 
   @Column(name = "IMAGE_FILE_ID")
   private Long    imageFileId;
-  
+
   @Column(name = "ICON")
   private String  icon;
 

@@ -15,13 +15,13 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
  
-export function activate(emailFeatureActive) {
-  return fetch(`/email-connector/rest/emailConnector/activate/${emailFeatureActive}`, {
+export function activateEmailFeature(emailFeatureActive) {
+  return fetch(`/email-connector/rest/connectors/feature/activation?active=${emailFeatureActive}`, {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
-    method: 'PUT'
+    method: 'PATCH'
   }).then((resp) => {
     if (!resp?.ok) {
       throw new Error('Error when activating email feature');
@@ -30,7 +30,7 @@ export function activate(emailFeatureActive) {
 }
 
 export function createEmailConnector(emailConnector) {
-  return fetch('/email-connector/rest/emailConnector', {
+  return fetch('/email-connector/rest/connectors', {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -47,7 +47,7 @@ export function createEmailConnector(emailConnector) {
 }
 
 export function updateEmailConnector(emailConnector) {
-  return fetch('/email-connector/rest/emailConnector', {
+  return fetch('/email-connector/rest/connectors', {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -62,7 +62,7 @@ export function updateEmailConnector(emailConnector) {
 }
 
 export function activateEmailConnector(emailConnectorId, emailConnectorActive) {
-  return fetch(`/email-connector/rest/emailConnector/${emailConnectorId}/${emailConnectorActive}`, {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}?active=${emailConnectorActive}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -76,7 +76,7 @@ export function activateEmailConnector(emailConnectorId, emailConnectorActive) {
 }
 
 export function getEmailConnectors() {
-  return fetch('/email-connector/rest/emailConnector', {
+  return fetch('/email-connector/rest/connectors', {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -92,7 +92,7 @@ export function getEmailConnectors() {
 }
 
 export function deleteEmailConnector(emailConnectorId) {
-  return fetch(`/email-connector/rest/emailConnector/${emailConnectorId}`, {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}`, {
     headers: {
       'Content-Type': 'application/json'
     },

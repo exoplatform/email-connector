@@ -18,9 +18,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <v-list>
     <email-connector-user-setting-connectors-drawer-list-item
-      v-for="activeEmailConnector in activeEmailConnectors"
-      :key="activeEmailConnector.id"
-      :active-email-connector="activeEmailConnector"
+      v-for="userEmailConnector in userEmailConnectors"
+      :key="userEmailConnector.id"
+      :user-email-connector="userEmailConnector"
       class="mb-8 px-0" />
   </v-list>
 </template>
@@ -28,7 +28,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
-    activeEmailConnectors: {
+    userEmailConnectors: {
       type: Array,
       default: () => [],
     },

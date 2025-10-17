@@ -54,7 +54,7 @@ export default {
   },
   methods: {
     activate(value) {
-      this.$emailConnectorAdministrationService.activate(value);
+      this.$emailConnectorAdministrationService.activateEmailFeature(value);
       this.$emit('emailFeature-active', value);
     },
   }

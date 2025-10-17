@@ -18,6 +18,9 @@
 
 package org.exoplatform.emailConnector.rest;
 
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -25,6 +28,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.io.InputStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,9 +56,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
-import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.emailConnector.model.EmailConnector;
-import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -68,7 +71,7 @@ import lombok.SneakyThrows;
 @ExtendWith(MockitoExtension.class)
 public class EmailConnectorRestTest {
 
-  private static final String EMAIL_CONNECTOR_PATH = "/emailConnector"; // NOSONAR
+  private static final String EMAIL_CONNECTOR_PATH = "/connectors"; // NOSONAR
 
   private static final String SIMPLE_USER          = "simple";
 
@@ -91,9 +94,6 @@ public class EmailConnectorRestTest {
   @MockBean
   private EmailConnectorService emailConnectorService;
 
-  @MockBean
-  private ExoFeatureService     featureService;
-
   @Autowired
   private SecurityFilterChain   filterChain;
 
@@ -108,8 +108,9 @@ public class EmailConnectorRestTest {
   }
 
   @Test
-  void activate() throws Exception {
-    ResultActions response = mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/activate/true").with(testAdminUser()));
+  void activateEmailFeature() throws Exception {
+    ResultActions response =
+                           mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/feature/activation?active=true").with(testAdminUser()));
     response.andExpect(status().isOk());
   }
 
@@ -133,7 +134,7 @@ public class EmailConnectorRestTest {
 
   @Test
   void activateEmailConnector() throws Exception {
-    ResultActions response = mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/1/true").with(testAdminUser()));
+    ResultActions response = mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/1?active=true").with(testAdminUser()));
     response.andExpect(status().isOk());
   }
 
@@ -150,30 +151,10 @@ public class EmailConnectorRestTest {
   }
 
   @Test
-  void getActiveEmailConnectors() throws Exception {
-    ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/active").with(testSimpleUser()));
-    response.andExpect(status().isOk());
-  }
-
-  @Test
-  void setUserEmailSetting() throws Exception {
-    ResultActions response = mockMvc.perform(put(EMAIL_CONNECTOR_PATH
-        + "/userEmailSetting/false").with(testSimpleUser())
-                              .content(asJsonString(userEmailSetting()))
-                              .contentType(MediaType.APPLICATION_JSON)
-                              .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isOk());
-  }
-
-  @Test
-  void getUserEmailSetting() throws Exception {
-    ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/userEmailSetting").with(testSimpleUser()));
-    response.andExpect(status().isOk());
-  }
-
-  @Test
-  void deleteUserEmailSetting() throws Exception {
-    ResultActions response = mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/userEmailSetting").with(testSimpleUser()));
+  void getEmailConnectorIllustration() throws Exception {
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(mock(EmailConnector.class));
+    when(emailConnectorService.getEmailConnectorImageInputStream(anyLong())).thenReturn(mock(InputStream.class));
+    ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/1/illustration").with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
 
@@ -187,10 +168,6 @@ public class EmailConnectorRestTest {
 
   private EmailConnector emailConnector() {
     return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "testPort", false, false, true, "testUploadId");
-  }
-
-  private UserEmailSetting userEmailSetting() {
-    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, null, true);
   }
 
   @SneakyThrows

@@ -27,12 +27,12 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class UserEmailSetting extends UserEmailSettingEntity {
 
-  private String emailConnectorImageUrl;
+  private String  emailConnectorImageUrl;
 
-  private String emailConnectorIcon;
+  private String  emailConnectorIcon;
 
-  private String emailConnectorName;
-  
+  private String  emailConnectorName;
+
   private boolean connected;
 
   public UserEmailSetting(String emailConnectorId,

@@ -16,7 +16,7 @@
  */
  
 export function getEmails() {
-  return fetch('/email-connector/rest/emailBox', {
+  return fetch('/email-connector/rest/emails', {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -27,6 +27,20 @@ export function getEmails() {
       return resp.json();
     } else {
       throw new Error('Error when getting emails');
+    }
+  });
+}
+
+export function synchronize() {
+  return fetch('/email-connector/rest/emails/synchronization', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when synchronizing email box');
     }
   });
 }
@@ -70,18 +84,4 @@ export function formatDateString(dateToFormat) {
     };
     return new Date(resetDateToFormat.getTime()).toLocaleDateString(localeOfUser, options);
   }
-}
-
-export function synchronize() {
-  return fetch('/email-connector/rest/emailBox/synchronize', {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    method: 'POST'
-  }).then((resp) => {
-    if (!resp?.ok) {
-      throw new Error('Error when synchronizing email box');
-    }
-  });
 }

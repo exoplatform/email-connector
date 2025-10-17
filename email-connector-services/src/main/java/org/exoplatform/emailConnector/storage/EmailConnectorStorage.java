@@ -92,9 +92,9 @@ public class EmailConnectorStorage {
     emailConnectorDAO.save(emailConnectorEntity);
   }
 
-  public void activateEmailConnector(Long emailConnectorId, String isEmailConnectorActive) {
+  public void activateEmailConnector(Long emailConnectorId, boolean isEmailConnectorActive) {
     EmailConnectorEntity emailConnectorEntity = emailConnectorDAO.findById(emailConnectorId).orElse(null);
-    emailConnectorEntity.setActive(Boolean.parseBoolean(isEmailConnectorActive));
+    emailConnectorEntity.setActive(isEmailConnectorActive);
     emailConnectorDAO.save(emailConnectorEntity);
   }
 
@@ -193,7 +193,7 @@ public class EmailConnectorStorage {
     if (imageFileId == null || imageFileId.longValue() == 0) {
       return null;
     } else {
-      return String.format("/email-connector/rest/emailConnector/illustration/%s?v=%s", id, imageLastModified);
+      return String.format("/email-connector/rest/connectors/%s/illustration?v=%s", id, imageLastModified);
     }
   }
 }

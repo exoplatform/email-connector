@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import static org.junit.Assert.assertNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import org.apache.commons.lang3.ArrayUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -56,6 +58,7 @@ public class EmailBoxStorageTest {
 
   @BeforeEach
   void setup() {
+
     when(emailBoxDAO.save(any())).thenAnswer(invocation -> {
       EmailBoxEntity entity = invocation.getArgument(0);
       if (entity.getId() == null) {
@@ -66,12 +69,19 @@ public class EmailBoxStorageTest {
                                                                                    .filter(email -> email.getUserId()
                                                                                                          .equals("root"))
                                                                                    .collect(Collectors.toList()));
+      when(emailBoxDAO.findByUserIdAndMailRemoteId("root", 1212l)).thenReturn(entity);
       return entity;
     });
+
     doAnswer(invocation -> {
       when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Collections.emptyList());
       return null;
     }).when(emailBoxDAO).deleteByUserId(any());
+
+    doAnswer(invocation -> {
+      when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Collections.emptyList());
+      return null;
+    }).when(emailBoxDAO).deleteEmailsByIds(any());
   }
 
   @Test
@@ -82,6 +92,16 @@ public class EmailBoxStorageTest {
     assertNotNull(storedEmail);
     assertNotNull(storedEmail.getId());
     assertTrue(storedEmail.getId() > 0);
+  }
+
+  @Test
+  void getEmailByMailRemoteIdAndUserId() {
+    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId("root", 1L);
+    assertNull(retrievedEmail);
+    Email email1 = email("root");
+    emailBoxStorage.createEmail(email1);
+    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId("root", 1212l);
+    assertNotNull(retrievedEmail);
   }
 
   @Test
@@ -109,6 +129,19 @@ public class EmailBoxStorageTest {
     assertNotNull(retrievedEmailEntities);
     assertEquals(1, retrievedEmailEntities.size());
     emailBoxStorage.deleteUserEmails("root");
+    retrievedEmailEntities = emailBoxStorage.getEmails("root");
+    assertEquals(0, retrievedEmailEntities.size());
+  }
+
+  @Test
+  void deleteEmails() {
+    Email email1 = email("root");
+    Email storedEmail = emailBoxStorage.createEmail(email1);
+    List<Email> retrievedEmailEntities = emailBoxStorage.getEmails("root");
+    assertNotNull(retrievedEmailEntities);
+    assertEquals(1, retrievedEmailEntities.size());
+    List<Long> emailsIds = List.of(storedEmail.getId());
+    emailBoxStorage.deleteEmails(emailsIds);
     retrievedEmailEntities = emailBoxStorage.getEmails("root");
     assertEquals(0, retrievedEmailEntities.size());
   }
