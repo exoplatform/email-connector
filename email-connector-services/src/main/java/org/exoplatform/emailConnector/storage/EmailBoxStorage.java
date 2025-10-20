@@ -56,13 +56,13 @@ public class EmailBoxStorage {
 
   public List<Email> getEmails(String username) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdOrderBySentDateDesc(username);
-    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity)).collect(Collectors.toList());
+    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity)).toList();
   }
-  
+
   public void deleteUserEmails(String username) {
     emailBoxDao.deleteByUserId(username);
   }
-  
+
   public void deleteEmails(List<Long> emailsIds) {
     emailBoxDao.deleteEmailsByIds(emailsIds);
   }

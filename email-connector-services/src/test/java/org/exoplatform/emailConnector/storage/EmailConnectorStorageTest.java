@@ -69,11 +69,11 @@ public class EmailConnectorStorageTest {
         entity.setId(ID);
       }
       when(emailConnectorDAO.findById(ID)).thenReturn(Optional.of(entity));
-      when(emailConnectorDAO.findAll()).thenReturn(Optional.of(entity).stream().collect(Collectors.toList()));
+      when(emailConnectorDAO.findAll()).thenReturn(Optional.of(entity).stream().toList());
       when(emailConnectorDAO.findActiveEmailConnectors()).thenReturn(Optional.of(entity)
                                                                              .stream()
                                                                              .filter(EmailConnectorEntity::isActive)
-                                                                             .collect(Collectors.toList()));
+                                                                             .toList());
       return entity;
     });
     doAnswer(invocation -> {
