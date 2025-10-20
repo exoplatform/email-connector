@@ -68,7 +68,7 @@ public class EmailBoxStorageTest {
                                                                                    .stream()
                                                                                    .filter(email -> email.getUserId()
                                                                                                          .equals("root"))
-                                                                                   .collect(Collectors.toList()));
+                                                                                   .toList());
       when(emailBoxDAO.findByUserIdAndMailRemoteId("root", 1212l)).thenReturn(entity);
       return entity;
     });

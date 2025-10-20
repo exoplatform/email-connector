@@ -138,7 +138,10 @@ export default {
     },
     synchronize() {
       this.syncInProgress = true;
-      this.$emailConnectorMailBoxService.synchronize();
+      this.$emailConnectorMailBoxService.synchronize().then(() =>
+      {
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
+      });
       this.startAutoRefresh();
     },
     async loadEmailBox() {
@@ -164,7 +167,7 @@ export default {
         } finally {
           this.isRefreshing = false;
         }
-      }, 1500);
+      }, 2000); 
     },
     stopAutoRefresh() {
       if (this.refreshInterval) {

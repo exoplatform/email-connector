@@ -16,7 +16,10 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import javax.mail.Folder;
@@ -105,37 +108,18 @@ public class EmailBoxService {
       updateEmailSyncStatus(username, SyncStatus.IN_PROGRESS);
       inbox = store.getFolder("INBOX");
       inbox.open(Folder.READ_ONLY);
-
-      // get a list of javamail messages as an array of messages
       UIDFolder uidFolder = (UIDFolder) inbox;
-      Message[] messages = inbox.getMessages();
-      int count = 0;
-      int i = messages.length - 1;
-      while (i >= 0 && count < EmailConnectorUtils.MAX_EMAILS) {
-        Message message = messages[i--];
-        try {
-          String excerpt = EmailConnectorUtils.getMessageContent(message, true);
-          String subject = message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..."
-                                                              : message.getSubject();
-          if (emailBoxStorage.getEmailByMailRemoteIdAndUserId(username, uidFolder.getUID(message)) != null) {
-            break;
-          }
-          emailBoxStorage.createEmail(new Email(null,
-                                                uidFolder.getUID(message),
-                                                username,
-                                                subject,
-                                                excerpt,
-                                                message.getFrom() != null
-                                                    && message.getFrom()[0] != null ? message.getFrom()[0].toString() : "",
-                                                message.getSentDate() != null ? message.getSentDate()
-                                                                              : message.getReceivedDate()));
-          count++;
-        } catch (Exception e) {
-          LOG.warn("Error when storing email", e);
-        }
+      int totalMessages = inbox.getMessageCount();
+      if (totalMessages == 0) {
+        LOG.info("Inbox empty for user {}", username);
+        updateEmailSyncStatus(username, SyncStatus.SUCCESS);
+        return;
       }
+      int startIndex = Math.max(1, totalMessages - EmailConnectorUtils.MAX_EMAILS + 1);
+      Message[] serverMessages = inbox.getMessages(startIndex, totalMessages);
+      createEmails(uidFolder, serverMessages, username);
+      cleanupObsoleteEmails(uidFolder, serverMessages, username);
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
-      cleanupOldEmails(username, EmailConnectorUtils.MAX_EMAILS);
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
@@ -179,16 +163,6 @@ public class EmailBoxService {
   }
 
   /**
-   * Delete emails.
-   *
-   * @param emails emails list to be deleted
-   */
-  public void deleteEmails(List<Email> emails) {
-    List<Long> emailsIdsToDelete = emails.stream().map(Email::getId).collect(Collectors.toList());
-    emailBoxStorage.deleteEmails(emailsIdsToDelete);
-  }
-
-  /**
    * Schedule email box user synchronization job
    *
    * @param username user for which email box synchronization job will be
@@ -203,6 +177,37 @@ public class EmailBoxService {
     PeriodInfo periodInfo =
                           new PeriodInfo(null, null, 0, EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000);
     jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
+  }
+
+  private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException {
+    List<Message> serverSortedMessages = Arrays.stream(serverMessages).sorted(Comparator.comparingLong(msg -> {
+      try {
+        return uidFolder.getUID(msg);
+      } catch (MessagingException e) {
+        throw new RuntimeException(e);
+      }
+    })).toList();
+    for (Message message : serverSortedMessages) {
+      long messageUid = uidFolder.getUID(message);
+      if (emailBoxStorage.getEmailByMailRemoteIdAndUserId(username, messageUid) == null) {
+        try {
+          String excerpt = EmailConnectorUtils.getMessageContent(message, true);
+          String subject = message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..."
+                                                              : message.getSubject();
+          emailBoxStorage.createEmail(new Email(null,
+                                                messageUid,
+                                                username,
+                                                subject,
+                                                excerpt,
+                                                message.getFrom() != null
+                                                    && message.getFrom()[0] != null ? message.getFrom()[0].toString() : "",
+                                                message.getSentDate() != null ? message.getSentDate()
+                                                                              : message.getReceivedDate()));
+        } catch (Exception e) {
+          LOG.warn("Error when storing email", e);
+        }
+      }
+    }
   }
 
   private boolean canSynchronize(UserEmailSetting userEmailSetting, String username) {
@@ -221,12 +226,32 @@ public class EmailBoxService {
     return true;
   }
 
-  private void cleanupOldEmails(String username, int maxEmails) {
+  private void cleanupObsoleteEmails(UIDFolder uidFolder, Message[] serverMessages, String username) {
+    Set<Long> serverMessagesUids = Arrays.stream(serverMessages).map(msg -> {
+      try {
+        return uidFolder.getUID(msg);
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when getting message uid", messagingException);
+        return null;
+      }
+    }).collect(Collectors.toSet());
+    List<Email> obsoleteEmails = getEmailBox(username).getEmails()
+                                                      .stream()
+                                                      .filter(email -> !serverMessagesUids.contains(email.getMailRemoteId()))
+                                                      .toList();
+    if (!obsoleteEmails.isEmpty()) {
+      deleteEmails(obsoleteEmails);
+    }
     List<Email> userEmails = getEmailBox(username).getEmails();
-    if (userEmails.size() > maxEmails) {
-      List<Email> oldUserEmailsToCleanup = userEmails.subList(maxEmails, userEmails.size());
+    if (userEmails.size() > EmailConnectorUtils.MAX_EMAILS) {
+      List<Email> oldUserEmailsToCleanup = userEmails.subList(EmailConnectorUtils.MAX_EMAILS, userEmails.size());
       deleteEmails(oldUserEmailsToCleanup);
     }
+  }
+
+  private void deleteEmails(List<Email> emails) {
+    List<Long> emailsIdsToDelete = emails.stream().map(Email::getId).toList();
+    emailBoxStorage.deleteEmails(emailsIdsToDelete);
   }
 
   private void updateEmailSyncStatus(String username, SyncStatus syncStatus) {

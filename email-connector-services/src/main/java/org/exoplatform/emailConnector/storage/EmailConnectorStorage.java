@@ -114,16 +114,12 @@ public class EmailConnectorStorage {
 
   public List<EmailConnector> getEmailConnectors() {
     List<EmailConnectorEntity> emailConnectorEntities = emailConnectorDAO.findAll();
-    return emailConnectorEntities.stream()
-                                 .map(emailConnectorEntity -> fromEntity(emailConnectorEntity))
-                                 .collect(Collectors.toList());
+    return emailConnectorEntities.stream().map(emailConnectorEntity -> fromEntity(emailConnectorEntity)).toList();
   }
 
   public List<EmailConnector> getActiveEmailConnectors() {
     List<EmailConnectorEntity> activeEmailConnectorEntities = emailConnectorDAO.findActiveEmailConnectors();
-    return activeEmailConnectorEntities.stream()
-                                       .map(emailConnectorEntity -> fromEntity(emailConnectorEntity))
-                                       .collect(Collectors.toList());
+    return activeEmailConnectorEntities.stream().map(emailConnectorEntity -> fromEntity(emailConnectorEntity)).toList();
   }
 
   private EmailConnectorEntity toEntity(EmailConnector emailConnector) {
