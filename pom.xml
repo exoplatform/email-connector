@@ -26,8 +26,8 @@
   </scm>
   <properties>
     <!-- 3rd party libraries versions -->
-    <io.meeds.social.version>7.1.x-exo-SNAPSHOT</io.meeds.social.version>
-    <addon.meeds.app-center.version>7.1.x-exo-SNAPSHOT</addon.meeds.app-center.version>
+    <io.meeds.social.version>7.1.0-exo-20251021</io.meeds.social.version>
+    <addon.meeds.app-center.version>7.1.0-exo-20251021</addon.meeds.app-center.version>
 	
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
