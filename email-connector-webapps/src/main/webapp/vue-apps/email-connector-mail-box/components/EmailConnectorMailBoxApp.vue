@@ -21,7 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="emailConnectorMailBox">
     <email-connector-user-setting-connectors-drawer />
     <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
-    <email-connector-mail-box-drawer :user-email-setting="userEmailSetting" />
+    <email-connector-mail-box-drawer />
   </v-app>
 </template>
 

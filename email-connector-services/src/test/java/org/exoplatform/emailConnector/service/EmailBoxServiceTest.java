@@ -76,13 +76,11 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void synchronize() {
-    UserEmailSetting userEmailSetting = mock(UserEmailSetting.class);
+    UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
-    when(userEmailSetting.getEmailConnectorId()).thenReturn("1");
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    when(userEmailSetting.getEmailSyncStatus()).thenReturn(null);
     Store store = mock(Store.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -99,9 +97,12 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void getEmails() {
-    emailBoxService.getEmails(TEST_USER);
+  void getEmailBox() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    emailBoxService.getEmailBox(TEST_USER);
+    verify(userEmailSettingService).getUserEmailSetting(TEST_USER);
     verify(emailBoxStorage).getEmails(TEST_USER);
+    
   }
 
   @Test

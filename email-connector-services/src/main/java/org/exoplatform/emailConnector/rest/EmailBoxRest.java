@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -38,8 +39,8 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
-@RequestMapping("/emails")
-@Tag(name = "/email-connector/rest/emails", description = "Manages Email Box")
+@RequestMapping("/email-box")
+@Tag(name = "/email-connector/rest/email-box", description = "Manages Email Box")
 public class EmailBoxRest {
 
   @Autowired
@@ -53,8 +54,8 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public List<Email> getUserEmails(HttpServletRequest request) {
-    return emailBoxService.getEmails(request.getRemoteUser());
+  public EmailBox getEmailBox(HttpServletRequest request) {
+    return emailBoxService.getEmailBox(request.getRemoteUser());
   }
 
   @PostMapping("synchronization")

@@ -60,7 +60,7 @@ import jakarta.servlet.Filter;
 @ExtendWith(MockitoExtension.class)
 public class EmailBoxRestTest {
 
-  private static final String EMAIL_BOX_PATH = "/emails";     // NOSONAR
+  private static final String EMAIL_BOX_PATH = "/email-box";     // NOSONAR
 
   private static final String SIMPLE_USER    = "simple";
 
@@ -95,7 +95,7 @@ public class EmailBoxRestTest {
   }
 
   @Test
-  void getUserEmails() throws Exception {
+  void getEmailBox() throws Exception {
     ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
   }

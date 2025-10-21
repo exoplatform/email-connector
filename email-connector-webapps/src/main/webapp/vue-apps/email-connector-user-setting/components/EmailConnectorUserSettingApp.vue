@@ -38,9 +38,14 @@ export default {
       emailPassword: ''
     }
   }),
+  mounted() {
+    document.addEventListener('refresh-user-email-setting', this.getUserEmailSetting);
+  },
+  beforeDestroy() {
+    document.removeEventListener('refresh-user-email-setting', this.getUserEmailSetting);
+  },
   created() {
     this.getUserEmailSetting();
-    document.addEventListener('refresh-user-email-setting', this.getUserEmailSetting);
   },
   methods: {
     getUserEmailSetting() {
