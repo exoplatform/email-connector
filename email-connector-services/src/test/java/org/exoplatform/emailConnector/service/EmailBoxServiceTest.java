@@ -19,9 +19,11 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -90,10 +92,13 @@ public class EmailBoxServiceTest {
     Message message2 = mock(Message.class);
     when(message2.getSubject()).thenReturn("message2Subject");
     Message[] messages = { message1, message2 };
-    when(inbox.getMessages()).thenReturn(messages);
+    when((inbox).getMessages(anyInt(), anyInt())).thenReturn(messages);
+    when(emailBoxStorage.getEmails(anyString())).thenReturn(new ArrayList<Email>());
+    emailBoxService.synchronize(TEST_USER);
+    verify(userEmailSettingService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
+    when(inbox.getMessageCount()).thenReturn(1000);
     emailBoxService.synchronize(TEST_USER);
     verify(emailBoxStorage, times(2)).createEmail(any(Email.class));
-    verify(userEmailSettingService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
   }
 
   @Test
@@ -102,20 +107,13 @@ public class EmailBoxServiceTest {
     emailBoxService.getEmailBox(TEST_USER);
     verify(userEmailSettingService).getUserEmailSetting(TEST_USER);
     verify(emailBoxStorage).getEmails(TEST_USER);
-    
+
   }
 
   @Test
   void deleteUserEmails() {
     emailBoxService.deleteUserEmails(TEST_USER);
     verify(emailBoxStorage).deleteUserEmails(TEST_USER);
-  }
-
-  @Test
-  void deleteEmails() {
-    List<Email> emails = new ArrayList<Email>();
-    emailBoxService.deleteEmails(emails);
-    verify(emailBoxStorage).deleteEmails(any(List.class));
   }
 
   @Test

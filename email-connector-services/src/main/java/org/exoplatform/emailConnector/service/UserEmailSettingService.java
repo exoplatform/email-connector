@@ -192,7 +192,8 @@ public class UserEmailSettingService {
    * Get users by email connector id.
    *
    * @param emailConnectorId email connector id
-   * @return list of users with emailConnectorId configured in their user email setting 
+   * @return list of users with emailConnectorId configured in their user email
+   *         setting
    */
   public List<String> getUserEmailSettingsByEmailConnectorId(long emailConnectorId) {
     List<Context> contexts =
@@ -205,7 +206,7 @@ public class UserEmailSettingService {
     List<String> users = contexts.stream().filter(context -> {
       UserEmailSetting userEmailSetting = getUserEmailSetting(context.getId());
       return userEmailSetting.getEmailConnectorId().equals(String.valueOf(emailConnectorId));
-    }).map(Context::getId).collect(Collectors.toList());
+    }).map(Context::getId).toList();
     return users;
   }
 
