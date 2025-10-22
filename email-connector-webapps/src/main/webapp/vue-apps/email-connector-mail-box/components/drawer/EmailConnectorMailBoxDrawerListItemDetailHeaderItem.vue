@@ -14,25 +14,41 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
-
 <template>
-  <div>
-    <email-connector-mail-box-drawer-list-item
-      v-for="email in emails"
-      :key="email.id"
-      :email="email"
-      class="pt-3 pb-3 ps-7 pe-4" />
-    <email-connector-mail-box-drawer-list-item-detail />
-  </div>
+  <v-list-item
+    class="px-0 align-start"
+    style="min-height: 0;">
+    <v-list-item-action class="my-0 align-self-start me-2">
+      <v-list-item-subtitle class="text-color">
+        {{ label }}:
+      </v-list-item-subtitle>
+    </v-list-item-action>
+    <v-list-item-content class="py-0">
+      <v-list-item-subtitle
+        v-for="value in values"
+        :key="value.address"
+        class="mb-2"
+        v-html="parsedValue(value)" />
+    </v-list-item-content>
+  </v-list-item>
 </template>
 
 <script>
 export default {
   props: {
-    emails: {
+    label: {
+      type: String,
+      default: null,
+    },
+    values: {
       type: Array,
       default: () => [],
     },
-  }
+  },
+  methods: {
+    parsedValue(value) {
+      return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${value.name}</a> ${value.address}` || `${value.name} ${value.address}`;
+    },
+  },
 };
 </script>

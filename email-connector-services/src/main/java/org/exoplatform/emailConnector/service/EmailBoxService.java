@@ -22,11 +22,14 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.mail.Address;
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.MessagingException;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
+import javax.mail.internet.InternetAddress;
+import javax.mail.internet.MimeMessage;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -37,6 +40,8 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
+import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -58,6 +63,8 @@ public class EmailBoxService {
   private static final Log        LOG                                            = ExoLogger.getLogger(EmailBoxService.class);
 
   private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE = "User %s is not allowed to synchronize email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE         = "User %s is not allowed to get email";
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
@@ -179,30 +186,86 @@ public class EmailBoxService {
     jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
   }
 
-  private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException {
-    List<Message> serverSortedMessages = Arrays.stream(serverMessages).sorted(Comparator.comparingLong(msg -> {
-      try {
-        return uidFolder.getUID(msg);
-      } catch (MessagingException e) {
-        throw new RuntimeException(e);
+  /**
+   * Retrieve email by its id
+   *
+   * @param emailId email id
+   * @param username user for which email will be retrieved
+   * @return {@link Email} from mail server
+   */
+  public Email getEmailById(long emailId, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (!canSynchronize(userEmailSetting, username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
+    Store store = null;
+    Folder inbox = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      inbox = store.getFolder("INBOX");
+      inbox.open(Folder.READ_ONLY);
+      Message message = ((UIDFolder) inbox).getMessageByUID(emailId);
+      if (message != null) {
+        EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
+        List<EmailRecipient> emailToRecipients =
+                                               EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO), username);
+        List<EmailRecipient> emailCcRecipients =
+                                               EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.CC), username);
+        List<EmailRecipient> emailBccRecipients =
+                                                EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),username);
+        return new Email(null,
+                         emailId,
+                         username,
+                         message.getSubject(),
+                         EmailConnectorUtils.getMessageContent((MimeMessage) message, false),
+                         message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate(),
+                         emailSender,
+                         emailToRecipients,
+                         emailCcRecipients,
+                         emailBccRecipients);
       }
-    })).toList();
-    for (Message message : serverSortedMessages) {
+
+    } catch (Exception e) {
+      LOG.error("Error when connecting store for user {}", username, e);
+      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+    } finally {
+      try {
+        try {
+          if (inbox != null && inbox.isOpen()) {
+            inbox.close(false);
+          }
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing inbox", messagingException);
+        }
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing store", messagingException);
+      }
+    }
+    return null;
+  }
+
+  private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException {
+    for (Message message : serverMessages) {
       long messageUid = uidFolder.getUID(message);
       if (emailBoxStorage.getEmailByMailRemoteIdAndUserId(username, messageUid) == null) {
         try {
-          String excerpt = EmailConnectorUtils.getMessageContent(message, true);
+          String excerpt = EmailConnectorUtils.getMessageContent((MimeMessage) message, true);
           String subject = message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..."
                                                               : message.getSubject();
+          EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
                                                 username,
                                                 subject,
                                                 excerpt,
-                                                message.getFrom() != null
-                                                    && message.getFrom()[0] != null ? message.getFrom()[0].toString() : "",
-                                                message.getSentDate() != null ? message.getSentDate()
-                                                                              : message.getReceivedDate()));
+                                                message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate(),
+                                                emailSender,
+                                                null,
+                                                null,
+                                                null));
         } catch (Exception e) {
           LOG.warn("Error when storing email", e);
         }
