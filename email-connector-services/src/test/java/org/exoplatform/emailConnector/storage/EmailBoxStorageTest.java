@@ -29,9 +29,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
-import org.apache.commons.lang3.ArrayUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -43,6 +41,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailSender;
 
 @SpringBootTest(classes = { EmailBoxStorage.class })
 @ExtendWith(MockitoExtension.class)
@@ -117,8 +116,8 @@ public class EmailBoxStorageTest {
     assertEquals(2l, retrievedEmailEntities.get(0).getId());
     assertEquals(1212l, retrievedEmailEntities.get(0).getMailRemoteId());
     assertEquals("subject", retrievedEmailEntities.get(0).getSubject());
-    assertEquals("excerpt", retrievedEmailEntities.get(0).getExcerpt());
-    assertEquals("sender", retrievedEmailEntities.get(0).getSender());
+    assertEquals("excerpt", retrievedEmailEntities.get(0).getContent());
+    assertEquals("sender", retrievedEmailEntities.get(0).getSender().getName());
   }
 
   @Test
@@ -147,6 +146,15 @@ public class EmailBoxStorageTest {
   }
 
   private Email email(String username) {
-    return new Email(null, 1212l, username, "subject", "excerpt", "sender", new Date());
+    return new Email(null,
+                     1212l,
+                     username,
+                     "subject",
+                     "excerpt",
+                     new Date(),
+                     new EmailSender("sender", null, null, null),
+                     null,
+                     null,
+                     null);
   }
 }

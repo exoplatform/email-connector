@@ -23,19 +23,18 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
 import java.util.ArrayList;
-import java.util.List;
 
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
+import javax.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -87,11 +86,11 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
-    Message message1 = mock(Message.class);
+    MimeMessage message1 = mock(MimeMessage.class);
     when(message1.getSubject()).thenReturn("message1Subject");
-    Message message2 = mock(Message.class);
+    MimeMessage message2 = mock(MimeMessage.class);
     when(message2.getSubject()).thenReturn("message2Subject");
-    Message[] messages = { message1, message2 };
+    MimeMessage[] messages = { message1, message2 };
     when((inbox).getMessages(anyInt(), anyInt())).thenReturn(messages);
     when(emailBoxStorage.getEmails(anyString())).thenReturn(new ArrayList<Email>());
     emailBoxService.synchronize(TEST_USER);
