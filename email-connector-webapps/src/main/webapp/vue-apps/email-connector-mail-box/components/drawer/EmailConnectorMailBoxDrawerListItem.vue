@@ -16,12 +16,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-hover v-slot="{ hover }">
-    <v-list :class="{'light-grey-background-color': hover}">
+    <v-list :class="{ 'light-grey-background-color': hover }">
       <v-list-item
         style="min-height: 0"
-        class="px-0 pb-2">
+        class="px-0 pb-2"
+        @click="openDetail"> 
         <v-list-item-content class="py-0">
-          <v-list-item-title v-text="email.sender" />
+          <v-list-item-title v-text="email.sender.name" />
         </v-list-item-content>
         <v-list-item-action class="my-0">
           <v-list-item-subtitle v-text="sentDate" />
@@ -29,10 +30,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item>
       <v-list-item
         style="min-height: 0"
-        class="px-0">
+        class="px-0"
+        @click="openDetail">
         <v-list-item-content class="py-0">
           <v-list-item-subtitle class="mb-1 text-color" v-text="email.subject" />
-          <v-list-item-subtitle v-text="email.excerpt" />
+          <v-list-item-subtitle v-text="email.content" />
         </v-list-item-content>
       </v-list-item>
     </v-list>
@@ -49,11 +51,13 @@ export default {
   },
   computed: {
     sentDate() {
-      const sentDate = this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate);
-      return sentDate === 'yesterday' && this.$t('emailConnector.mailBox.list.drawer.yesterday') || sentDate;
-    },
+      return this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
+    }
   },
   methods: {
+    openDetail() {
+      this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+    }
   }
 };
 </script>

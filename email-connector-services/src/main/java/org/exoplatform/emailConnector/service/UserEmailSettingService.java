@@ -19,7 +19,6 @@ package org.exoplatform.emailConnector.service;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
-import java.util.stream.Collectors;
 
 import javax.mail.MessagingException;
 import javax.mail.Session;

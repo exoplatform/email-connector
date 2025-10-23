@@ -16,9 +16,6 @@
  */
 package org.exoplatform.emailConnector.model;
 
-import java.util.Date;
-import java.util.List;
-
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -26,25 +23,13 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class Email {
+public class EmailRecipient {
 
-  private Long                 id;
+  private String name;
 
-  private Long                 mailRemoteId;
+  private String address;
 
-  private String               userId;
-
-  private String               subject;
-
-  private String               content;
-
-  private Date                 sentDate;
-
-  private EmailSender          sender;
-
-  private List<EmailRecipient> to;
-
-  private List<EmailRecipient> cc;
-
-  private List<EmailRecipient> bcc;
+  private String profileUrl;
+  
+  private boolean isCurrentUser;
 }

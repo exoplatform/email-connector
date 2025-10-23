@@ -17,9 +17,6 @@
 package org.exoplatform.emailConnector.storage;
 
 import java.util.List;
-import java.util.stream.Collectors;
-
-import javax.mail.internet.InternetAddress;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -27,6 +24,7 @@ import org.springframework.stereotype.Component;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailSender;
 
 import lombok.SneakyThrows;
 
@@ -40,6 +38,7 @@ public class EmailBoxStorage {
   @Autowired
   private EmailBoxDAO emailBoxDao;
 
+  
   public Email createEmail(Email email) {
     if (email == null) {
       throw new IllegalArgumentException("email is mandatory");
@@ -75,8 +74,8 @@ public class EmailBoxStorage {
                                 email.getMailRemoteId(),
                                 email.getUserId(),
                                 email.getSubject(),
-                                email.getExcerpt(),
-                                email.getSender(),
+                                email.getContent(),
+                                email.getSender().getName(),
                                 email.getSentDate());
     }
   }
@@ -86,15 +85,16 @@ public class EmailBoxStorage {
     if (emailBoxEntity == null) {
       return null;
     } else {
-      String sender = emailBoxEntity.getSender();
-      InternetAddress senderIa = new InternetAddress(sender);
       return new Email(emailBoxEntity.getId(),
                        emailBoxEntity.getMailRemoteId(),
                        emailBoxEntity.getUserId(),
                        emailBoxEntity.getSubject(),
                        emailBoxEntity.getExcerpt(),
-                       senderIa.getPersonal() != null ? senderIa.getPersonal() : senderIa.getAddress(),
-                       emailBoxEntity.getSentDate());
+                       emailBoxEntity.getSentDate(),
+                       new EmailSender(emailBoxEntity.getSender(), null, null, null),
+                       null,
+                       null,
+                       null);
     }
   }
 }
