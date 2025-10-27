@@ -1,13 +1,21 @@
 package org.exoplatform.emailConnector.utils;
 
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.Graphics2D;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import javax.imageio.ImageIO;
 import javax.mail.Address;
 import javax.mail.BodyPart;
 import javax.mail.MessagingException;
@@ -16,6 +24,7 @@ import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
 
+import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
 
 import org.exoplatform.commons.utils.CommonsUtils;
@@ -43,6 +52,10 @@ public class EmailConnectorUtils {
                                         Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
 
   public static final String EMAIL_FEATURE           = "email";
+
+  private static final int   DEFAULT_AVATAR_WIDTH    = 350;
+
+  private static final int   DEFAULT_AVATAR_HEIGHT   = 350;
 
   private static final Log   LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
@@ -101,14 +114,14 @@ public class EmailConnectorUtils {
       Profile userProfile = getUserProfileByEmail(ia.getAddress());
       String avatarUrl = null;
       String profileUrl = null;
+      String senderName = ia.getPersonal() != null ? ia.getPersonal() : ia.getAddress();
       if (userProfile != null) {
         avatarUrl = userProfile.getAvatarUrl();
         profileUrl = userProfile.getUrl();
+      } else {
+        avatarUrl = getSenderDefaultAvatar(senderName);
       }
-      return new EmailSender(ia.getPersonal() != null ? ia.getPersonal() : ia.getAddress(),
-                             ia.getAddress(),
-                             avatarUrl,
-                             profileUrl);
+      return new EmailSender(senderName, ia.getAddress(), avatarUrl, profileUrl);
     }
     return null;
   }
@@ -173,6 +186,54 @@ public class EmailConnectorUtils {
       return null;
     } finally {
       RequestLifeCycle.end();
+    }
+  }
+
+  private static String getSenderDefaultAvatar(String senderName) {
+    String senderNameAbbreviation = Arrays.stream(senderName.split(" "))
+                                          .filter(StringUtils::isNotBlank)
+                                          .map(word -> word.substring(0, 1).toUpperCase())
+                                          .limit(2)
+                                          .collect(Collectors.joining());
+    List<Color> colorList = List.of(new Color(239, 83, 80),
+                                    new Color(25, 118, 210),
+                                    new Color(171, 71, 188),
+                                    new Color(0, 137, 123),
+                                    new Color(158, 157, 36),
+                                    new Color(251, 192, 45),
+                                    new Color(0, 191, 165),
+                                    new Color(117, 117, 117),
+                                    new Color(244, 67, 54),
+                                    new Color(33, 150, 243),
+                                    new Color(124, 179, 66),
+                                    new Color(48, 63, 159),
+                                    new Color(69, 39, 160),
+                                    new Color(141, 110, 99),
+                                    new Color(255, 111, 0));
+    BufferedImage image = new BufferedImage(DEFAULT_AVATAR_WIDTH, DEFAULT_AVATAR_HEIGHT, BufferedImage.TYPE_INT_RGB);
+
+    Graphics2D graphics = image.createGraphics();
+    graphics.setColor(colorList.get(senderName.length() % colorList.size()));
+    graphics.fillRect(0, 0, DEFAULT_AVATAR_WIDTH, DEFAULT_AVATAR_HEIGHT);
+    graphics.setColor(Color.WHITE);
+
+    graphics.setFont(new Font("Arial", Font.BOLD, 150));
+    FontMetrics fm = graphics.getFontMetrics();
+
+    int x = (DEFAULT_AVATAR_WIDTH - fm.stringWidth(senderNameAbbreviation)) / 2;
+    int y = (fm.getAscent() + (DEFAULT_AVATAR_HEIGHT - (fm.getAscent() + fm.getDescent())) / 2);
+
+    graphics.drawString(senderNameAbbreviation, x, y);
+    graphics.drawImage(image, 0, 0, DEFAULT_AVATAR_WIDTH, DEFAULT_AVATAR_HEIGHT, null);
+    graphics.dispose();
+
+    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+    try {
+      ImageIO.write(image, "png", outputStream);
+      String base64 = Base64.getEncoder().encodeToString(outputStream.toByteArray());
+      return "data:image/png;base64," + base64;
+    } catch (IOException e) {
+      return null;
     }
   }
 }
