@@ -18,10 +18,16 @@
 
 package org.exoplatform.emailConnector.rest;
 
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.util.Objects;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,6 +53,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -60,7 +67,7 @@ import jakarta.servlet.Filter;
 @ExtendWith(MockitoExtension.class)
 public class EmailBoxRestTest {
 
-  private static final String EMAIL_BOX_PATH = "/email-box";     // NOSONAR
+  private static final String EMAIL_BOX_PATH = "/email-box";  // NOSONAR
 
   private static final String SIMPLE_USER    = "simple";
 
@@ -104,6 +111,18 @@ public class EmailBoxRestTest {
   void synchronizeUserEmails() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/synchronization").with(testSimpleUser()));
     response.andExpect(status().isOk());
+  }
+
+  @Test
+  void getEmailById() throws Exception {
+    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").with(testSimpleUser()));
+    response.andExpect(status().isNotFound());
+    when(emailBoxService.getEmailById(anyLong(), anyString())).thenReturn(mock(Email.class));
+    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").with(testSimpleUser()));
+    response.andExpect(status().isOk());
+    String eTag = "\"" + Objects.hash(2122121, SIMPLE_USER) + "\"";
+    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").header("If-None-Match", eTag).with(testSimpleUser()));
+    response.andExpect(status().isNotModified());
   }
 
   private RequestPostProcessor testSimpleUser() {

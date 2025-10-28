@@ -22,7 +22,9 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -30,14 +32,15 @@ import static org.mockito.Mockito.withSettings;
 
 import java.util.ArrayList;
 
+import javax.mail.Address;
 import javax.mail.Folder;
-import javax.mail.Message;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
 import javax.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -47,6 +50,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.scheduler.JobInfo;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
@@ -121,6 +125,26 @@ public class EmailBoxServiceTest {
     emailBoxService.scheduleEmailBoxUserSyncJob(TEST_USER);
     verify(jobSchedulerService).removeJob(any(JobInfo.class));
     verify(jobSchedulerService).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
+  }
+
+  @Test
+  void getEmailById() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    MimeMessage message1 = mock(MimeMessage.class);
+    when(((UIDFolder) inbox).getMessageByUID(2121212L)).thenReturn(message1);
+    try (MockedStatic<EmailConnectorUtils> mockedUtils = mockStatic(EmailConnectorUtils.class)) {
+      emailBoxService.getEmailById(2121212L, TEST_USER);
+      mockedUtils.verify(() -> EmailConnectorUtils.getEmailSender(nullable(Address[].class)));
+      mockedUtils.verify(() -> EmailConnectorUtils.getEmailRecipients(nullable(Address[].class), anyString()), times(3));
+    }
   }
 
   private UserEmailSetting userEmailSetting() {
