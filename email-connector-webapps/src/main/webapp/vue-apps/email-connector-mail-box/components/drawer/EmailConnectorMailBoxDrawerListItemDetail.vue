@@ -23,7 +23,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     :allow-expand="!$root.isMobile"
     :loading="loading"
     go-back-button
-    @closed="close">
+    @closed="close"
+    @expand-updated="expanded = $event">
     <template #title>
       <span></span>
     </template>
@@ -34,19 +35,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item
             style="min-height: 0"
             class="px-0 pb-4">
-            <v-list-item-content class="py-0 text-title">
-              <v-list-item-title v-text="email.subject" />
+            <v-list-item-content class="py-0 text-title text-wrap overflow-visible">
+              <v-list-item-title v-text="email.subject" class="text-wrap overflow-visible" />
             </v-list-item-content>
           </v-list-item>
           <v-list-item
             style="min-height: 0"
             :class="recipientsClass">
-            <email-connector-mail-box-drawer-list-item-detail-sender-avatar :email="email" />
+            <email-connector-mail-box-drawer-list-item-detail-sender-avatar :email="email" class="me-3 my-0" />
             <v-list-item-content class="py-0">
               <v-list-item-title class="font-weight-bold mb-3" v-text="email.sender.name" />
-              <v-list-item-subtitle class="text-wrap overflow-visible">
-                <span class="me-2">{{ recipients }}</span>
-                <v-icon @click="toggleDetails()" size="8">{{ chevronIcon }}</v-icon>
+              <v-list-item-subtitle class="text-wrap overflow-visible d-flex align-center">
+                <span class="me-1">{{ recipients }}</span>
+                <v-btn
+                  @click="toggleDetails()"
+                  width="20"
+                  height="20"
+                  min-width="20"
+                  icon>
+                  <v-icon size="8">{{ chevronIcon }}</v-icon>
+                </v-btn>
               </v-list-item-subtitle>
             </v-list-item-content>
             <v-list-item-action class="my-0 align-self-start">
@@ -54,18 +62,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </v-list-item-action>
           </v-list-item>
           <email-connector-mail-box-drawer-list-item-detail-header v-if="expandedHeader" :email="email" />
-          <v-list-item
-            style="min-height: 0"
-            class="px-0">
-            <v-list-item-content class="py-0">
-              <iframe
-                ref="iframe"
-                :srcdoc="email.content"
-                style="width: 100%; border: none; overflow: hidden;"
-                :style="{height: iframeHeight + 'px'}"
-                @load="onLoadIframe"
-                title="iframe"></iframe>
-            </v-list-item-content>
+          <v-list-item style="min-height: 0" class="px-0">
+            <v-list-item-content class="py-0" v-html="email.content" />
           </v-list-item>
         </v-list>
       </div>
@@ -80,7 +78,8 @@ export default {
     loading: false,
     email: null,
     expandedHeader: false,
-    iframeHeight: 0
+    iframeHeight: 0,
+    expanded: false,
   }),
   created() {
     this.$root.$on('open-email-detail-drawer', (mailRemoteId) => {
@@ -100,37 +99,17 @@ export default {
         return '';
       }
       if (recipients.length <= 3) {
-        return `${this.$t('emailConnector.mailBox.list.drawer.detail.to')}: ${recipients.map(item => item.currentUser && this.$t('emailConnector.mailBox.list.drawer.detail.me') || item.name).join(', ')}`;
+        return `${this.$t('emailConnector.mailBox.list.drawer.detail.to')} ${recipients.map(item => item.currentUser && this.$t('emailConnector.mailBox.list.drawer.detail.me') || item.name).join(', ')}`;
       }
       else {
         const firstRecipients = recipients.slice(0, 3);
         const remainingCount = recipients.length - 3; 
-        return `${this.$t('emailConnector.mailBox.list.drawer.detail.to')}: ${firstRecipients.map(item => item.currentUser && this.$t('emailConnector.mailBox.list.drawer.detail.me') || item.name).join(', ')}, +${remainingCount}`;
+        return `${this.$t('emailConnector.mailBox.list.drawer.detail.to')} ${firstRecipients.map(item => item.currentUser && this.$t('emailConnector.mailBox.list.drawer.detail.me') || item.name).join(', ')}, +${remainingCount}`;
       }
     },
     recipientsClass() {
       return this.expandedHeader && 'px-0 pb-3' || 'px-0 pb-8';
-    },
-    initials() {
-      const text = (this.email.sender.name || '').trim();
-      const parts = text.split(/\s+/);
-      if (parts.length === 0) {
-        return '';
-      }
-      if (parts.length === 1) {
-        return parts[0].charAt(0).toUpperCase();
-      }
-      return (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase();
-    },
-    bgColor() {
-      const source = this.email.sender.email || this.email.sender.name || '';
-      let hash = 0;
-      for (let i = 0; i < source.length; i++) {
-        hash = source.charCodeAt(i) + ((hash << 5) - hash);
-      }
-      const hue = Math.abs(hash) % 360;
-      return `hsl(${hue},70%,50%)`;
-    },
+    }
   },
   methods: {
     open(mailRemoteId) {
@@ -148,15 +127,6 @@ export default {
     close() {
       this.expandedHeader = false;
       this.$refs.emailDetailDrawer.close();
-    },
-    onLoadIframe() {
-      const iframe = this.$refs.iframe;
-      try {
-        const doc = iframe.contentDocument || iframe.contentWindow.document;
-        this.iframeHeight = doc.body.scrollHeight;
-      } catch (e) {
-        this.iframeHeight = 400;
-      }
     }
   }
 };

@@ -214,11 +214,12 @@ public class EmailBoxService {
         List<EmailRecipient> emailBccRecipients =
                                                 EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
                                                                                        username);
+        MimeMessage mimeMessage = new MimeMessage((MimeMessage) message);
         return new Email(null,
                          emailId,
                          username,
                          message.getSubject(),
-                         EmailConnectorUtils.getMessageContent((MimeMessage) message, false),
+                         EmailConnectorUtils.getMessageContent(mimeMessage, false),
                          message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate(),
                          emailSender,
                          emailToRecipients,
@@ -253,7 +254,8 @@ public class EmailBoxService {
       long messageUid = uidFolder.getUID(message);
       if (emailBoxStorage.getEmailByMailRemoteIdAndUserId(username, messageUid) == null) {
         try {
-          String excerpt = EmailConnectorUtils.getMessageContent((MimeMessage) message, true);
+          MimeMessage mimeMessage = new MimeMessage((MimeMessage) message);
+          String excerpt = EmailConnectorUtils.getMessageContent(mimeMessage, true);
           String subject = message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..."
                                                               : message.getSubject();
           EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());

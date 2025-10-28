@@ -20,14 +20,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     style="min-height: 0;">
     <v-list-item-action class="my-0 align-self-start me-2">
       <v-list-item-subtitle class="text-color">
-        {{ label }}:
+        {{ label }}
       </v-list-item-subtitle>
     </v-list-item-action>
     <v-list-item-content class="py-0">
       <v-list-item-subtitle
-        v-for="value in values"
+        v-for="(value, index) in values"
         :key="value.address"
-        class="mb-2"
+        :class="{'mb-2': index !== values.length - 1}"
         v-html="parsedValue(value)" />
     </v-list-item-content>
   </v-list-item>
@@ -47,7 +47,7 @@ export default {
   },
   methods: {
     parsedValue(value) {
-      return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${value.name}</a> ${value.address}` || `${value.name} ${value.address}`;
+      return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${value.name}</a> ${value.address}` || `<span class="text-color">${value.name}</span> ${value.address}`;
     },
   },
 };
