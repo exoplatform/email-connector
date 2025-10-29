@@ -43,6 +43,7 @@ import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.services.scheduler.JobInfo;
@@ -74,6 +75,9 @@ public class EmailBoxService {
 
   @Autowired
   private JobSchedulerService     jobSchedulerService;
+
+  @Autowired
+  private ListenerService         listenerService;
 
   @PostConstruct
   public void initEmailBoxSyncJob() {
@@ -214,6 +218,7 @@ public class EmailBoxService {
         List<EmailRecipient> emailBccRecipients =
                                                 EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
                                                                                        username);
+        broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, username);
         MimeMessage mimeMessage = new MimeMessage((MimeMessage) message);
         return new Email(null,
                          emailId,
@@ -249,6 +254,20 @@ public class EmailBoxService {
     return null;
   }
 
+  public void broadcastEvent(String eventName, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
+    try {
+      listenerService.broadcast(eventName, username, userEmailSetting.getEmailConnectorName());
+    } catch (Exception e) {
+      LOG.warn("Error broadcasting event '" + eventName + "' using source '" + username + "' and data "
+          + userEmailSetting.getEmailConnectorName(), e);
+    }
+  }
+
   private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException {
     for (Message message : serverMessages) {
       long messageUid = uidFolder.getUID(message);
@@ -256,7 +275,7 @@ public class EmailBoxService {
         try {
           MimeMessage mimeMessage = new MimeMessage((MimeMessage) message);
           String excerpt = EmailConnectorUtils.getMessageContent(mimeMessage, true);
-          String subject = message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..."
+          String subject = message.getSubject() != null && message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..."
                                                               : message.getSubject();
           EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
           emailBoxStorage.createEmail(new Email(null,

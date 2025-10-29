@@ -51,6 +51,8 @@ public class EmailConnectorUtils {
   public static final int    MAX_EMAILS              =
                                         Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
 
+  public static final String OPEN_EMAIL              = "exo.email.openEmail";
+
   public static final String EMAIL_FEATURE           = "email";
 
   private static final int   DEFAULT_AVATAR_WIDTH    = 350;

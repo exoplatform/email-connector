@@ -51,6 +51,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.scheduler.JobInfo;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
@@ -74,6 +75,9 @@ public class EmailBoxServiceTest {
 
   @MockBean
   private JobSchedulerService     jobSchedulerService;
+
+  @MockBean
+  private ListenerService         listenerService;
 
   @Autowired
   private EmailBoxService         emailBoxService;
@@ -147,7 +151,18 @@ public class EmailBoxServiceTest {
     }
   }
 
+  @Test
+  void broadcastEvent() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    emailBoxService.broadcastEvent("operation", TEST_USER);
+    verify(listenerService).broadcast("operation", TEST_USER, "connector");
+  }
+
   private UserEmailSetting userEmailSetting() {
-    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, null, true);
+    return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, "connector", true);
   }
 }

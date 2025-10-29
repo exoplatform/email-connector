@@ -21,5 +21,10 @@
       <artifactId>app-center-services</artifactId>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>io.meeds.analytics</groupId>
+      <artifactId>analytics-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 </project>
