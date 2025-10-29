@@ -34,6 +34,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -98,6 +99,7 @@ public class EmailBoxRest {
     try {
       String eTag = "\"" + Objects.hash(emailId, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.equals(eTag)) {
+        emailBoxService.broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, request.getRemoteUser());
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
       Email email = emailBoxService.getEmailById(emailId, request.getRemoteUser());
