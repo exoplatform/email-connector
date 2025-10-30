@@ -26,7 +26,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       height: iframeHeight + 'px'
     }"
     @load="onLoadIframe"
-    title="email-body"></iframe>
+    title="email-body"
+  ></iframe>
 </template>
 
 <script>
@@ -49,59 +50,38 @@ export default {
       return this.makeMailHtml(this.emailContent || '');
     }
   },
+  watch: {
+    expandedDrawer() {
+      this.$nextTick(() => this.recalculateIframeHeight());
+    }
+  },
   methods: {
     makeMailHtml(html) {
       const baseCSS = `
         html, body {
-          margin: 0;
-          padding: 0;
-          width: 100%;
-          height: auto;
-          overflow: hidden;
-          font-family: Roboto, Arial, sans-serif;
-          box-sizing: border-box;
-          word-wrap: break-word;
-          background-color: transparent;
+          margin:0; padding:0;
+          width:100%; height:auto;
+          overflow:hidden;
+          font-family:Roboto, Arial, sans-serif;
         }
         img {
-          display: block;
-          margin: 0 auto;
+          display:block; max-width:100%; height:auto;
         }
-        iframe {
-          display: none !important;
-        }
-        p, div {
-          margin: 0;
-        }
-        a {
-          color: #1a73e8;
-          text-decoration: none;
-          word-break: break-word;
-        }
+        table { border-collapse: collapse; }
+        td, th { word-break: break-word; }
+        p, div { margin:0; }
+        a { color:#1a73e8; text-decoration:none; word-break: break-word; }
       `;
       const responsiveCSS = `
-        * {
-          max-width: 100% !important;
-          box-sizing: border-box !important;
-        }
-        table {
-          width: 100% !important;
-          height: auto !important;
-        }
-        td, th {
-          word-break: break-word !important;
-        }
-        img {
-          max-width: 100% !important;
-          height: auto !important;
-          display: block;
-        }
+        * { max-width: 100% !important; box-sizing: border-box !important; }
+        table { width: 100% !important; height: auto !important; }
+        img { max-width: 100% !important; height: auto !important; display:block; }
       `;
       const finalCSS = this.expandedDrawer ? baseCSS : baseCSS + responsiveCSS;
       return `
         <html>
           <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>${finalCSS}</style>
           </head>
           <body>${html}</body>
@@ -109,6 +89,9 @@ export default {
       `;
     },
     onLoadIframe() {
+      this.recalculateIframeHeight();
+    },
+    recalculateIframeHeight() {
       const iframe = this.$refs.iframe;
       if (!iframe) {
         return;
@@ -116,13 +99,13 @@ export default {
       try {
         const doc = iframe.contentDocument || iframe.contentWindow.document;
         setTimeout(() => {
-          const height = Math.max(
+          const newHeight = Math.max(
             doc.body.scrollHeight,
             doc.documentElement.scrollHeight
           );
-          this.iframeHeight = height;
-        }, 300);
-      } catch (e) {
+          this.iframeHeight = newHeight;
+        }, 100);
+      } catch {
         this.iframeHeight = 400;
       }
     }
