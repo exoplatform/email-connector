@@ -12,9 +12,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
+import javax.activation.DataHandler;
 import javax.imageio.ImageIO;
 import javax.mail.Address;
 import javax.mail.BodyPart;
@@ -78,7 +81,7 @@ public class EmailConnectorUtils {
       content = Jsoup.parse(content).text().trim();
       return content.length() > 50 ? content.substring(0, 50) + "..." : content;
     } else
-      return Jsoup.parse(content).body().html().trim();
+      return content.trim();
   }
 
   public static int getEmailBoxUserSyncPeriod(UserEmailSetting userEmailSetting) {
@@ -153,17 +156,27 @@ public class EmailConnectorUtils {
   }
 
   private static String getHtmlFromMimeMultipart(MimeMultipart mimeMultipart) throws MessagingException, IOException {
+    StringBuilder htmlContent = new StringBuilder();
+    Map<String, String> cidImageMap = new HashMap<>();
     for (int i = 0; i < mimeMultipart.getCount(); i++) {
       BodyPart bodyPart = mimeMultipart.getBodyPart(i);
       if (bodyPart.isMimeType("text/html")) {
-        return safeGetContent(bodyPart);
-      } else if (bodyPart.getContent() instanceof MimeMultipart) {
-        String result = getHtmlFromMimeMultipart((MimeMultipart) bodyPart.getContent());
-        if (!result.isEmpty())
-          return result;
+        htmlContent.append(safeGetContent(bodyPart));
+      } else if (bodyPart.isMimeType("multipart/alternative") || bodyPart.getContent() instanceof MimeMultipart) {
+        htmlContent.append(getHtmlFromMimeMultipart((MimeMultipart) bodyPart.getContent()));
+      } else if (Part.ATTACHMENT.equalsIgnoreCase(bodyPart.getDisposition()) || bodyPart.isMimeType("image/*")) {
+        String cid = getCid(bodyPart);
+        if (cid != null) {
+          cidImageMap.put(cid, encodeToBase64DataUrl(bodyPart));
+        }
       }
     }
-    return "";
+    String finalHtml = htmlContent.toString();
+    for (Map.Entry<String, String> entry : cidImageMap.entrySet()) {
+      finalHtml = finalHtml.replace("cid:" + entry.getKey(), entry.getValue());
+    }
+
+    return finalHtml;
   }
 
   private static Profile getUserProfileByEmail(String email) {
@@ -239,4 +252,26 @@ public class EmailConnectorUtils {
       return null;
     }
   }
+
+  private static String getCid(BodyPart bodyPart) throws MessagingException {
+    String[] cids = bodyPart.getHeader("Content-ID");
+    if (cids != null && cids.length > 0) {
+      return cids[0].replaceAll("[<>]", "");
+    }
+    return null;
+  }
+
+  private static String encodeToBase64DataUrl(BodyPart bodyPart) {
+    try {
+        DataHandler handler = bodyPart.getDataHandler();
+        ByteArrayOutputStream os = new ByteArrayOutputStream();
+        handler.writeTo(os);
+        byte[] bytes = os.toByteArray();
+        String base64 = Base64.getEncoder().encodeToString(bytes);
+        String mimeType = bodyPart.getContentType().split(";")[0].trim();
+        return "data:" + mimeType + ";base64," + base64;
+    } catch (Exception e) {
+        return "";
+    }
+}
 }
