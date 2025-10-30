@@ -42,7 +42,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item
             style="min-height: 0"
             :class="recipientsClass">
-            <email-connector-mail-box-drawer-list-item-detail-sender-avatar :email="email" class="me-3 my-0" />
+            <email-connector-mail-box-drawer-list-item-detail-sender-avatar 
+              :email="email" 
+              class="me-3 my-0" />
             <v-list-item-content class="py-0">
               <v-list-item-title class="font-weight-bold mb-3" v-text="email.sender.name" />
               <v-list-item-subtitle class="text-wrap overflow-visible d-flex align-center">
@@ -61,8 +63,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <v-list-item-subtitle v-text="sentDate" />
             </v-list-item-action>
           </v-list-item>
-          <email-connector-mail-box-drawer-list-item-detail-header v-if="expandedHeader" :email="email" />
-          <email-connector-mail-box-drawer-list-item-detail-body :expanded-drawer="expandedDrawer" :email-content="email.content" />
+          <email-connector-mail-box-drawer-list-item-detail-header 
+            v-if="expandedHeader"
+            :email="email" />
+          <email-connector-mail-box-drawer-list-item-detail-body 
+            :expanded-drawer="expandedDrawer" 
+            :email-content="email.content" />
         </v-list>
       </div>
     </template>
