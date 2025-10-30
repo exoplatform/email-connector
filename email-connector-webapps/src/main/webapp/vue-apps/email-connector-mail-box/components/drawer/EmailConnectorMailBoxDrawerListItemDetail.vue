@@ -24,7 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     :loading="loading"
     go-back-button
     @closed="close"
-    @expand-updated="expanded = $event">
+    @expand-updated="expandedDrawer = $event">
     <template #title>
       <span></span>
     </template>
@@ -62,9 +62,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </v-list-item-action>
           </v-list-item>
           <email-connector-mail-box-drawer-list-item-detail-header v-if="expandedHeader" :email="email" />
-          <v-list-item style="min-height: 0" class="px-0">
-            <v-list-item-content class="py-0" v-html="email.content" />
-          </v-list-item>
+          <email-connector-mail-box-drawer-list-item-detail-body :expanded-drawer="expandedDrawer" :email-content="email.content" />
         </v-list>
       </div>
     </template>
@@ -78,8 +76,7 @@ export default {
     loading: false,
     email: null,
     expandedHeader: false,
-    iframeHeight: 0,
-    expanded: false,
+    expandedDrawer: false,
   }),
   created() {
     this.$root.$on('open-email-detail-drawer', (mailRemoteId) => {
@@ -109,7 +106,7 @@ export default {
     },
     recipientsClass() {
       return this.expandedHeader && 'px-0 pb-3' || 'px-0 pb-8';
-    }
+    },
   },
   methods: {
     open(mailRemoteId) {
@@ -127,7 +124,7 @@ export default {
     close() {
       this.expandedHeader = false;
       this.$refs.emailDetailDrawer.close();
-    }
+    },
   }
 };
 </script>
