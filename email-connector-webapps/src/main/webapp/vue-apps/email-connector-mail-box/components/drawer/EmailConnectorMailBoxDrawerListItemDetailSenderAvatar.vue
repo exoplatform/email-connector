@@ -14,24 +14,19 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
-
 <template>
-  <div>
-    <email-connector-mail-box-drawer-list-item
-      v-for="email in emails"
-      :key="email.id"
-      :email="email"
-      class="pt-3 pb-3 ps-7 pe-4" />
-    <email-connector-mail-box-drawer-list-item-detail />
-  </div>
+  <v-list-item-avatar
+    size="40">
+    <v-img :src="email.sender.avatarUrl" />
+  </v-list-item-avatar>
 </template>
 
 <script>
 export default {
   props: {
-    emails: {
-      type: Array,
-      default: () => [],
+    email: {
+      type: Object,
+      default: () => null,
     },
   }
 };

@@ -88,8 +88,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </template>
       </div>
     </template>
-    <template #footer>
-    </template>
   </exo-drawer>
 </template>
 

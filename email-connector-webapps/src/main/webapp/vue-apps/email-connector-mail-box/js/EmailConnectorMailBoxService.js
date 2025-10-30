@@ -31,6 +31,22 @@ export function getEmailBox() {
   });
 }
 
+export function getEmailByRemoteId(mailRemoteId) {
+  return fetch(`/email-connector/rest/email-box/${mailRemoteId}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting email detail');
+    }
+  });
+}
+
 export function synchronize() {
   return fetch('/email-connector/rest/email-box/synchronization', {
     headers: {
@@ -45,7 +61,7 @@ export function synchronize() {
   });
 }
 
-export function formatDateString(dateToFormat) {
+export function formatDateString(dateToFormat, yesterdayLabel) {
   const today = new Date();
   today.setHours(0,0,0,0);
   const resetDateToFormat = new Date(dateToFormat);
@@ -61,7 +77,7 @@ export function formatDateString(dateToFormat) {
     return new Date(dateToFormat).toLocaleTimeString(localeOfUser, options);
   }
   else if (differenceInDays === 1) { // In yesterday
-    return 'yesterday';
+    return yesterdayLabel;
   }
   else if (differenceInDays < 7) { // In the same week
     options = {
