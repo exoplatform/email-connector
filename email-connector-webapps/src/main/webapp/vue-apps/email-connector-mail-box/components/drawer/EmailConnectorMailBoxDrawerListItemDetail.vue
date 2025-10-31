@@ -48,7 +48,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-list-item-content class="py-0">
               <v-list-item-title class="font-weight-bold mb-3" v-text="email.sender.name" />
               <v-list-item-subtitle class="text-wrap overflow-visible d-flex align-center">
-                <span class="me-1">{{ recipients }}</span>
+                <span class="me-1 text-wrap text-break-all">{{ recipients }}</span>
                 <v-btn
                   @click="toggleDetails()"
                   width="20"
