@@ -26,8 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       height: iframeHeight + 'px'
     }"
     @load="onLoadIframe"
-    title="email-body"
-  ></iframe>
+    title="email-body"></iframe>
 </template>
 
 <script>
@@ -75,7 +74,19 @@ export default {
       const responsiveCSS = `
         * { max-width: 100% !important; box-sizing: border-box !important; }
         table { width: 100% !important; height: auto !important; }
+        td, th { word-break: break-word !important; }
         img { max-width: 100% !important; height: auto !important; display:block; }
+        pre {
+          white-space: pre-wrap !important;
+          word-wrap: break-word !important;
+          direction: auto !important;
+          text-align: right !important;
+          overflow: visible !important;
+        }
+        [dir="RTL"], [dir="rtl"] {
+          direction: rtl !important;
+          text-align: right !important;
+        }
       `;
       const finalCSS = this.expandedDrawer ? baseCSS : baseCSS + responsiveCSS;
       return `
