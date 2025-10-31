@@ -18,36 +18,55 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-list class="pt-0 pb-8">
     <v-divider class="pb-3" />
     <email-connector-mail-box-drawer-list-item-detail-header-item
+      v-for="(item, index) in labelItems"
+      :key="index"
       class="pb-3"
-      v-if="email.sender"
-      :label="$t('emailConnector.mailBox.list.drawer.detail.from')"
-      :values="[email.sender]" />
-    <email-connector-mail-box-drawer-list-item-detail-header-item
-      class="pb-3"
-      v-if="email.to.length > 0"
-      :label="$t('emailConnector.mailBox.list.drawer.detail.to')"
-      :values="email.to" />
-    <email-connector-mail-box-drawer-list-item-detail-header-item
-      class="pb-3"
-      v-if="email.cc.length > 0"
-      :label="$t('emailConnector.mailBox.list.drawer.detail.cc')"
-      :values="email.cc" />
-    <email-connector-mail-box-drawer-list-item-detail-header-item
-      class="pb-3"
-      v-if="email.bcc.length > 0"
-      :label="$t('emailConnector.mailBox.list.drawer.detail.bcc')"
-      :values="email.bcc" />
+      :label="item.label"
+      :values="item.values"
+      :label-width="maxLabelWidth" />
     <v-divider />
   </v-list>
 </template>
-
 <script>
 export default {
+  data() {
+    return {
+      labelItems: [],
+      maxLabelWidth: 0
+    };
+  },
   props: {
     email: {
       type: Object,
       default: () => null,
     },
+  },
+  created() {
+    this.labelItems = [
+      this.email.sender
+        ? { label: this.$t('emailConnector.mailBox.list.drawer.detail.from'), values: [this.email.sender] }
+        : null,
+      this.email.to && this.email.to.length
+        ? { label: this.$t('emailConnector.mailBox.list.drawer.detail.to'), values: this.email.to }
+        : null,
+      this.email.cc && this.email.cc.length
+        ? { label: this.$t('emailConnector.mailBox.list.drawer.detail.cc'), values: this.email.cc }
+        : null,
+      this.email.bcc && this.email.bcc.length
+        ? { label: this.$t('emailConnector.mailBox.list.drawer.detail.bcc'), values: this.email.bcc }
+        : null,
+    ].filter(Boolean);
+    this.maxLabelWidth = Math.ceil(Math.max(...this.labelItems.map(i => this.getTextWidth(i.label))));
+  },
+  methods: {
+    getTextWidth(text, font = '14px Roboto') {
+      if (typeof document !== 'undefined') {
+        const ctx = document.createElement('canvas').getContext('2d');
+        ctx.font = font;
+        return ctx.measureText(text).width;
+      }
+      return text.length * 8;
+    }
   }
 };
 </script>
