@@ -42,6 +42,8 @@ public class Email {
 
   private EmailSender          sender;
 
+  private boolean              read;
+
   private List<EmailRecipient> to;
 
   private List<EmailRecipient> cc;

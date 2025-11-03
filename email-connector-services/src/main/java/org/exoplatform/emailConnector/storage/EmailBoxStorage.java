@@ -38,7 +38,6 @@ public class EmailBoxStorage {
   @Autowired
   private EmailBoxDAO emailBoxDao;
 
-  
   public Email createEmail(Email email) {
     if (email == null) {
       throw new IllegalArgumentException("email is mandatory");
@@ -46,6 +45,14 @@ public class EmailBoxStorage {
     EmailBoxEntity emailBoxEntity = toEntity(email);
     emailBoxEntity = emailBoxDao.save(emailBoxEntity);
     return fromEntity(emailBoxEntity);
+  }
+
+  public void updateEmail(Email email) {
+    if (email == null) {
+      throw new IllegalArgumentException("email is mandatory");
+    }
+    EmailBoxEntity emailBoxEntity = toEntity(email);
+    emailBoxDao.save(emailBoxEntity);
   }
 
   public Email getEmailByMailRemoteIdAndUserId(String userId, long mailRemoteId) {
@@ -76,7 +83,8 @@ public class EmailBoxStorage {
                                 email.getSubject(),
                                 email.getContent(),
                                 email.getSender().getName(),
-                                email.getSentDate());
+                                email.getSentDate(),
+                                email.isRead());
     }
   }
 
@@ -92,6 +100,7 @@ public class EmailBoxStorage {
                        emailBoxEntity.getExcerpt(),
                        emailBoxEntity.getSentDate(),
                        new EmailSender(emailBoxEntity.getSender(), null, null, null),
+                       emailBoxEntity.isRead(),
                        null,
                        null,
                        null);

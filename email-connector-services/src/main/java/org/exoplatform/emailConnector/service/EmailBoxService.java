@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.MessagingException;
@@ -34,6 +35,7 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -219,14 +221,14 @@ public class EmailBoxService {
                                                 EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
                                                                                        username);
         broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, username);
-        MimeMessage mimeMessage = new MimeMessage((MimeMessage) message);
         return new Email(null,
                          emailId,
                          username,
                          message.getSubject(),
-                         EmailConnectorUtils.getMessageContent(mimeMessage, false),
+                         EmailConnectorUtils.getMessageContent(new MimeMessage((MimeMessage) message), false),
                          message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate(),
                          emailSender,
+                         message.isSet(Flags.Flag.SEEN),
                          emailToRecipients,
                          emailCcRecipients,
                          emailBccRecipients);
@@ -268,15 +270,23 @@ public class EmailBoxService {
     }
   }
 
+  public Email getEmailByMailRemoteIdAndUserId(String userId, long mailRemoteId) {
+    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(userId, mailRemoteId);
+  }
+
+  public void updateEmail(Email email) {
+    emailBoxStorage.updateEmail(email);
+  }
+
   private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException {
     for (Message message : serverMessages) {
       long messageUid = uidFolder.getUID(message);
-      if (emailBoxStorage.getEmailByMailRemoteIdAndUserId(username, messageUid) == null) {
+      Email email = getEmailByMailRemoteIdAndUserId(username, messageUid);
+      if (email == null) {
         try {
-          MimeMessage mimeMessage = new MimeMessage((MimeMessage) message);
-          String excerpt = EmailConnectorUtils.getMessageContent(mimeMessage, true);
-          String subject = message.getSubject() != null && message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..."
-                                                              : message.getSubject();
+          String excerpt = EmailConnectorUtils.getMessageContent(new MimeMessage((MimeMessage) message), true);
+          String subject = message.getSubject() != null
+              && message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..." : message.getSubject();
           EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
@@ -285,12 +295,16 @@ public class EmailBoxService {
                                                 excerpt,
                                                 message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate(),
                                                 emailSender,
+                                                message.isSet(Flags.Flag.SEEN),
                                                 null,
                                                 null,
                                                 null));
         } catch (Exception e) {
           LOG.warn("Error when storing email", e);
         }
+      } else {
+        email.setRead(message.isSet(Flags.Flag.SEEN));
+        updateEmail(email);
       }
     }
   }

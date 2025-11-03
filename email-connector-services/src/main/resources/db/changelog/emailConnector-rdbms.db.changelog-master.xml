@@ -69,4 +69,9 @@
   <changeSet author="email-connector" id="1.0.0-3" dbms="oracle,postgresql,hsqldb">
     <createSequence sequenceName="SEQ_EMAIL_ID" startValue="1"/>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-4">
+    <addColumn tableName="EMAIL_BOX">
+      <column name="IS_READ" type="BOOLEAN" defaultValueBoolean="false"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>
