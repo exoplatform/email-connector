@@ -18,7 +18,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-list-item
     class="px-0 align-start"
     style="min-height: 0;">
-    <v-list-item-action class="my-0 align-self-start me-2">
+    <v-list-item-action class="my-0 align-self-start me-2" :style="{ width: labelWidth + 'px' }">
       <v-list-item-subtitle class="text-color">
         {{ label }}
       </v-list-item-subtitle>
@@ -43,6 +43,10 @@ export default {
     values: {
       type: Array,
       default: () => [],
+    },
+    labelWidth: {
+      type: Number,
+      default: null,
     },
   },
   methods: {
