@@ -47,13 +47,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               class="me-3 my-0" />
             <v-list-item-content class="py-0">
               <v-list-item-title class="font-weight-bold mb-3" v-text="email.sender.name" />
-              <v-list-item-subtitle class="text-wrap overflow-visible d-flex align-center">
-                <span class="me-1">{{ recipients }}</span>
+              <v-list-item-subtitle class="text-wrap overflow-visible d-flex">
+                <span class="me-1 text-wrap text-break-all">{{ recipients }}</span>
                 <v-btn
                   @click="toggleDetails()"
                   width="20"
                   height="20"
                   min-width="20"
+                  class="mt-n1"
                   icon>
                   <v-icon size="8">{{ chevronIcon }}</v-icon>
                 </v-btn>
