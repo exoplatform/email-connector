@@ -40,23 +40,26 @@ public class EmailBoxEntity {
   @SequenceGenerator(name = "SEQ_EMAIL_ID", sequenceName = "SEQ_EMAIL_ID", allocationSize = 1)
   @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_EMAIL_ID")
   @Column(name = "ID")
-  private Long   id;
+  private Long    id;
 
   @Column(name = "MAIL_REMOTE_ID")
-  private Long   mailRemoteId;
+  private Long    mailRemoteId;
 
   @Column(name = "USER_ID")
-  private String userId;
+  private String  userId;
 
   @Column(name = "SUBJECT")
-  private String subject;
+  private String  subject;
 
   @Column(name = "EXCERPT")
-  private String excerpt;
+  private String  excerpt;
 
   @Column(name = "SENDER")
-  private String sender;
+  private String  sender;
 
   @Column(name = "SENT_DATE")
-  private Date   sentDate;
+  private Date    sentDate;
+
+  @Column(name = "IS_READ")
+  private boolean read;
 }

@@ -24,8 +24,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       @keydown.enter="openDetail">
       <v-list-item
         style="min-height: 0"
-        class="px-0 pb-2"> 
-        <v-list-item-content class="py-0">
+        :class="['px-0', 'pb-2', { 'ms-n3': !email.read }]">
+        <v-list-item-avatar
+          v-if="!email.read"
+          width="8"
+          min-width="8"
+          height="8"
+          class="my-0 me-1 error-color-background" />
+        <v-list-item-content :class="['py-0', { 'font-weight-bold': !email.read }]">
           <v-list-item-title v-text="email.sender.name" />
         </v-list-item-content>
         <v-list-item-action class="my-0">
@@ -36,7 +42,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         style="min-height: 0"
         class="px-0">
         <v-list-item-content class="py-0">
-          <v-list-item-subtitle class="mb-1 text-color" v-text="email.subject" />
+          <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
           <v-list-item-subtitle v-text="email.content" />
         </v-list-item-content>
       </v-list-item>

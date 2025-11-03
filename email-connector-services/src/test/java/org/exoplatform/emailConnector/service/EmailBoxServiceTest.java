@@ -31,6 +31,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
 import java.util.ArrayList;
+import java.util.Date;
 
 import javax.mail.Address;
 import javax.mail.Folder;
@@ -48,6 +49,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -162,7 +164,34 @@ public class EmailBoxServiceTest {
     verify(listenerService).broadcast("operation", TEST_USER, "connector");
   }
 
+  @Test
+  void getEmailByMailRemoteIdAndUserId() {
+    emailBoxService.getEmailByMailRemoteIdAndUserId(TEST_USER, 12121L);
+    verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(TEST_USER, 12121L);
+  }
+
+  @Test
+  void updateEmail() {
+    Email email = email(TEST_USER);
+    emailBoxService.updateEmail(email);
+    verify(emailBoxStorage).updateEmail(email);
+  }
+
   private UserEmailSetting userEmailSetting() {
     return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, "connector", true);
+  }
+
+  private Email email(String username) {
+    return new Email(null,
+                     1212l,
+                     username,
+                     "subject",
+                     "excerpt",
+                     new Date(),
+                     new EmailSender("sender", null, null, null),
+                     false,
+                     null,
+                     null,
+                     null);
   }
 }
