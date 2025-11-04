@@ -62,6 +62,8 @@ public class EmailBoxStorageTest {
       EmailBoxEntity entity = invocation.getArgument(0);
       if (entity.getId() == null) {
         entity.setId(ID);
+      } else {
+        entity.setSubject(entity.getSubject() + " (updated)");
       }
       when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Optional.of(entity)
                                                                                    .stream()
@@ -91,6 +93,17 @@ public class EmailBoxStorageTest {
     assertNotNull(storedEmail);
     assertNotNull(storedEmail.getId());
     assertTrue(storedEmail.getId() > 0);
+  }
+
+  @Test
+  void updateEmail() {
+    assertThrows(IllegalArgumentException.class, () -> emailBoxStorage.createEmail(null));
+    Email email = email("root");
+    Email createdEmail = emailBoxStorage.createEmail(email);
+    emailBoxStorage.updateEmail(createdEmail);
+    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId("root", 1212l);
+    assertNotNull(updatedEmail);
+    assertEquals("subject (updated)", updatedEmail.getSubject());
   }
 
   @Test
@@ -153,6 +166,7 @@ public class EmailBoxStorageTest {
                      "excerpt",
                      new Date(),
                      new EmailSender("sender", null, null, null),
+                     false,
                      null,
                      null,
                      null);
