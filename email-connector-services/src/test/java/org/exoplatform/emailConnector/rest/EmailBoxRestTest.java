@@ -21,6 +21,7 @@ package org.exoplatform.emailConnector.rest;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -55,6 +56,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
@@ -114,14 +116,16 @@ public class EmailBoxRestTest {
   }
 
   @Test
-  void getEmailById() throws Exception {
+  void getRemoteEmailById() throws Exception {
     ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").with(testSimpleUser()));
     response.andExpect(status().isNotFound());
-    when(emailBoxService.getEmailById(anyLong(), anyString())).thenReturn(mock(Email.class));
+    when(emailBoxService.getRemoteEmailById(anyLong(), anyString())).thenReturn(mock(Email.class));
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").with(testSimpleUser()));
     response.andExpect(status().isOk());
     String eTag = "\"" + Objects.hash(2122121, SIMPLE_USER) + "\"";
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").header("If-None-Match", eTag).with(testSimpleUser()));
+    verify(emailBoxService).updateEmailReadStatus(2122121L, null, SIMPLE_USER, true, true);
+    verify(emailBoxService).broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, SIMPLE_USER);
     response.andExpect(status().isNotModified());
   }
 

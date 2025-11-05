@@ -121,6 +121,7 @@ export default {
       this.$refs.emailDetailDrawer.open();
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
         this.email = email;
+        this.$root.$emit('refresh-emails');
       }).finally(() => {
         this.loading = false;
       });

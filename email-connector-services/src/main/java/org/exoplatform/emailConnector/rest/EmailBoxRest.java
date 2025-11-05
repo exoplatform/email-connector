@@ -82,7 +82,7 @@ public class EmailBoxRest {
     }
   }
 
-  @GetMapping("/{emailId}")
+  @GetMapping("/{emailRemoteId}")
   @Secured("users")
   @Operation(summary = "Gets user emails", method = "GET", description = "This will get user emails")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -90,19 +90,20 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public ResponseEntity<Email> getEmailById(HttpServletRequest request,
+  public ResponseEntity<Email> getRemoteEmailById(HttpServletRequest request,
                                             @Parameter(description = "Email id", required = true)
-                                            @PathVariable("emailId")
-                                            long emailId,
+                                            @PathVariable("emailRemoteId")
+                                            long emailRemoteId,
                                             @RequestHeader(value = "If-None-Match", required = false)
                                             String ifNoneMatch) {
     try {
-      String eTag = "\"" + Objects.hash(emailId, request.getRemoteUser()) + "\"";
+      String eTag = "\"" + Objects.hash(emailRemoteId, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.equals(eTag)) {
+        emailBoxService.updateEmailReadStatus(emailRemoteId, null, request.getRemoteUser(), true, true);
         emailBoxService.broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, request.getRemoteUser());
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
-      Email email = emailBoxService.getEmailById(emailId, request.getRemoteUser());
+      Email email = emailBoxService.getRemoteEmailById(emailRemoteId, request.getRemoteUser());
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }

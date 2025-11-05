@@ -35,7 +35,6 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
-import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -190,13 +189,13 @@ public class EmailBoxService {
   }
 
   /**
-   * Retrieve email by its id
+   * Retrieve remote email by its id
    *
-   * @param emailId email id
+   * @param emailRemoteId email remote id
    * @param username user for which email will be retrieved
    * @return {@link Email} from mail server
    */
-  public Email getEmailById(long emailId, String username) throws IllegalAccessException {
+  public Email getRemoteEmailById(long emailRemoteId, String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -207,8 +206,8 @@ public class EmailBoxService {
     try {
       store = userEmailSettingService.connect(userEmailSetting);
       inbox = store.getFolder("INBOX");
-      inbox.open(Folder.READ_ONLY);
-      Message message = ((UIDFolder) inbox).getMessageByUID(emailId);
+      inbox.open(Folder.READ_WRITE);
+      Message message = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
       if (message != null) {
         EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
         List<EmailRecipient> emailToRecipients =
@@ -221,8 +220,9 @@ public class EmailBoxService {
                                                 EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
                                                                                        username);
         broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, username);
+        updateEmailReadStatus(emailRemoteId, message, username, true, true);
         return new Email(null,
-                         emailId,
+                         emailRemoteId,
                          username,
                          message.getSubject(),
                          EmailConnectorUtils.getMessageContent(new MimeMessage((MimeMessage) message), false),
@@ -274,11 +274,65 @@ public class EmailBoxService {
     return emailBoxStorage.getEmailByMailRemoteIdAndUserId(userId, mailRemoteId);
   }
 
-  public void updateEmail(Email email) {
-    emailBoxStorage.updateEmail(email);
+  public void updateEmailReadStatus(long emailRemoteId,
+                                    Message remoteMessage,
+                                    String username,
+                                    boolean readStatus,
+                                    boolean updateRemoteReadStatus) throws IllegalAccessException {
+    Email email = getEmailByMailRemoteIdAndUserId(username, emailRemoteId);
+    if (readStatus != email.isRead()) {
+      email.setRead(readStatus);
+      emailBoxStorage.updateEmail(email);
+      if (updateRemoteReadStatus) {
+        if (remoteMessage == null) {
+          UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+          if (userEmailSetting.getEmailConnectorId() == null
+              || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+            throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+          }
+          Store store = null;
+          Folder inbox = null;
+          try {
+            store = userEmailSettingService.connect(userEmailSetting);
+            inbox = store.getFolder("INBOX");
+            inbox.open(Folder.READ_WRITE);
+            remoteMessage = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
+            remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
+          } catch (Exception e) {
+            LOG.error("Error when connecting store for user {}", username, e);
+            throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+          } finally {
+            try {
+              try {
+                if (inbox != null && inbox.isOpen()) {
+                  inbox.close(false);
+                }
+              } catch (MessagingException messagingException) {
+                LOG.warn("Error when closing inbox", messagingException);
+              }
+              if (store != null && store.isConnected()) {
+                store.close();
+              }
+            } catch (MessagingException messagingException) {
+              LOG.warn("Error when closing store", messagingException);
+            }
+          }
+        } else {
+          try {
+            remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
+          } catch (MessagingException e) {
+            LOG.error("Error when setting seen flag of remote message id {} for user {}", emailRemoteId, username, e);
+            throw new IllegalStateException(String.format("Error when connecting setting seen flag of remote message id %s for user %s",
+                                                          emailRemoteId,
+                                                          username));
+          }
+        }
+      }
+    }
   }
 
-  private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException {
+  private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException,
+                                                                                            IllegalAccessException {
     for (Message message : serverMessages) {
       long messageUid = uidFolder.getUID(message);
       Email email = getEmailByMailRemoteIdAndUserId(username, messageUid);
@@ -303,8 +357,7 @@ public class EmailBoxService {
           LOG.warn("Error when storing email", e);
         }
       } else {
-        email.setRead(message.isSet(Flags.Flag.SEEN));
-        updateEmail(email);
+        updateEmailReadStatus(messageUid, message, username, message.isSet(Flags.Flag.SEEN), false);
       }
     }
   }
