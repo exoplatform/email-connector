@@ -56,28 +56,6 @@ public class EmailConnectorRest {
   @Autowired
   private EmailConnectorService emailConnectorService;
 
-  @PatchMapping("/feature/activation")
-  @Secured("administrators")
-  @Operation(summary = "Activate email feature", method = "PATCH", description = "This will activate email feature")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "403", description = "Forbidden"),
-      @ApiResponse(responseCode = "404", description = "Not found"),
-      @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public ResponseEntity<String> activateEmailFeature(HttpServletRequest request,
-                                                     @Parameter(description = "Is feature active")
-                                                     @RequestParam("active")
-                                                     boolean isFeatureActive) {
-    try {
-      emailConnectorService.activateEmailFeature(isFeatureActive, request.getRemoteUser());
-      return ResponseEntity.ok("Email feature " + (isFeatureActive ? "activated" : "deactivated"));
-    } catch (IllegalAccessException e) {
-      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
-    } catch (IllegalArgumentException e) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
-    }
-  }
-
   @PostMapping()
   @Secured("administrators")
   @Operation(summary = "Creates email connector", method = "POST", description = "This will create email connector")

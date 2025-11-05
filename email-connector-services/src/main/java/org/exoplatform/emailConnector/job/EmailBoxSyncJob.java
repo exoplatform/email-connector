@@ -36,12 +36,12 @@ public class EmailBoxSyncJob implements Job {
     String emailBoxSyncJobName = context.getJobDetail().getKey().getName();
     String username = emailBoxSyncJobName.substring(0, emailBoxSyncJobName.indexOf(EmailConnectorUtils.EMAIL_BOX_SYNC_JOB_NAME));
     EmailBoxService emailBoxService = CommonsUtils.getService(EmailBoxService.class);
-    LOG.info("Start email box sync job for user: {}", username);
+    LOG.debug("Start email box sync job for user: {}", username);
     try {
       emailBoxService.synchronize(username);
     } catch (IllegalAccessException e) {
       LOG.warn("Synchronization is not allowed for user {} ", username);
     }
-    LOG.info("End email box sync job for user: {}", username);
+    LOG.debug("End email box sync job for user: {}", username);
   }
 }

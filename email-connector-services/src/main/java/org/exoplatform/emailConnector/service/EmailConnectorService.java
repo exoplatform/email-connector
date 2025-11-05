@@ -58,12 +58,8 @@ public class EmailConnectorService {
 
   private static final String   EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
 
-  private static final String   FEATURE_ACTIVE_IS_MANDATORY_MESSAGE          = "Feature active is mandatory";
-
   private static final String   USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE =
                                                                              "User %s is not allowed to save email connector : %s";
-
-  private static final String   USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE  = "User %s is not allowed to activate email feature";
 
   private static final String   EMAIL_CONNECTOR_NOT_FOUND_MESSAGE            = "Email connector with id %s doesn't exist";
 
@@ -87,27 +83,6 @@ public class EmailConnectorService {
   
   @Autowired
   private ApplicationEventPublisher eventPublisher;
-
-  /**
-   * Activate email feature.
-   *
-   * @param username user activating email feature
-   * @param isFeatureActive A boolean flag that specifies whether the email
-   *          feature is active (true) or inactive (false)
-   * @throws IllegalAccessException if user is not allowed to activate email
-   *           feature
-   */
-  public void activateEmailFeature(Boolean isFeatureActive, String username) throws IllegalAccessException {
-    if (isFeatureActive == null) {
-      throw new IllegalArgumentException(FEATURE_ACTIVE_IS_MANDATORY_MESSAGE);
-    }
-    if (!canEdit(username)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE, username));
-    }
-    featureService.saveActiveFeature(EmailConnectorUtils.EMAIL_FEATURE, isFeatureActive);
-    activateEmailApp();
-
-  }
 
   /**
    * Create new email connector that will be available for all users.

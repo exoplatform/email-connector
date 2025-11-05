@@ -108,13 +108,6 @@ public class EmailConnectorRestTest {
   }
 
   @Test
-  void activateEmailFeature() throws Exception {
-    ResultActions response =
-                           mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/feature/activation?active=true").with(testAdminUser()));
-    response.andExpect(status().isOk());
-  }
-
-  @Test
   void createEmailConnector() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_CONNECTOR_PATH).with(testAdminUser())
                                                                        .content(asJsonString(emailConnector()))

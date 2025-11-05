@@ -16,12 +16,12 @@
  */
  
 export function activateEmailFeature(emailFeatureActive) {
-  return fetch(`/email-connector/rest/connectors/feature/activation?active=${emailFeatureActive}`, {
+  return fetch(`/rest/management/featureservice/changeFeatureActivation?featureName=email&isActive=${emailFeatureActive}`, {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
-    method: 'PATCH'
+    method: 'POST'
   }).then((resp) => {
     if (!resp?.ok) {
       throw new Error('Error when activating email feature');

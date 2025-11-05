@@ -39,7 +39,6 @@ import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.file.services.FileStorageException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
-import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
 
@@ -74,21 +73,6 @@ public class EmailConnectorServiceTest {
 
   @Autowired
   private EmailConnectorService    emailConnectorService;
-
-  @Test
-  @SneakyThrows
-  void activateEmailFeature() {
-    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.activateEmailFeature(null, TEST_USER));
-    assertThrows(IllegalAccessException.class, () -> emailConnectorService.activateEmailFeature(true, TEST_USER));
-    Identity identity = mock(Identity.class);
-    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
-    when(userAcl.isAdministrator(identity)).thenReturn(true);
-    ApplicationList applicationList = mock(ApplicationList.class);
-    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
-    emailConnectorService.activateEmailFeature(true, TEST_USER);
-    verify(featureService).saveActiveFeature(EmailConnectorUtils.EMAIL_FEATURE, true);
-    verify(applicationCenterService).getApplications(0, 0, null);
-  }
 
   @Test
   @SneakyThrows
