@@ -129,4 +129,24 @@
       <module>extensionRegistry</module>
     </depends>
   </module>
+  
+  <module>
+    <name>emailConnectorNotificationExtension</name>
+    <load-group>notificationGRP</load-group>
+    <script>
+      <path>/js/emailConnectorNotificationExtension.bundle.js</path>
+    </script>
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>vuetify</module>
+    </depends>
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+  </module>
 </gatein-resources>

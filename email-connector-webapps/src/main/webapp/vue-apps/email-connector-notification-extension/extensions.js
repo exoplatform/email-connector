@@ -14,29 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-
-export function getUserEmailSetting() {
-  return fetch('/email-connector/rest/user-email-setting', {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    method: 'GET'
-  }).then((resp) => {
-    if (resp?.ok) {
-      return resp.json();
-    } else {
-      throw new Error('Error when getting user email setting');
-    }
-  });
-}
-
-export function openEmailBox() {
-  const quickActions = extensionRegistry.loadExtensions('QuickAction', 'Extension');
-  if (quickActions?.length) {
-    const emailExtension = quickActions.find(ext => ext.id === 'email');
-    if (emailExtension && typeof emailExtension.click === 'function') {
-      emailExtension.click();
-    }
-  }
-}
+extensionRegistry.registerExtension('WebNotification', 'notification-group-extension', {
+  rank: 50,
+  name: 'email-connector',
+  plugins: [
+    'NewEmailsNotificationPlugin'
+  ],
+  icon: 'fa-envelope',
+});
+extensionRegistry.registerExtension('WebNotification', 'notification-content-extension', {
+  type: 'NewEmailsNotificationPlugin',
+  rank: 10,
+  vueComponent: Vue.options.components['user-notification-new-emails'],
+});

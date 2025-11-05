@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -32,9 +33,12 @@ import javax.mail.internet.MimeMessage;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.commons.api.notification.NotificationContext;
+import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -42,8 +46,10 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -126,9 +132,11 @@ public class EmailBoxService {
       }
       int startIndex = Math.max(1, totalMessages - EmailConnectorUtils.MAX_EMAILS + 1);
       Message[] serverMessages = inbox.getMessages(startIndex, totalMessages);
+      List<Email> userEmails = getEmailBox(username).getEmails();
       createEmails(uidFolder, serverMessages, username);
-      cleanupObsoleteEmails(uidFolder, serverMessages, username);
+      cleanupObsoleteEmails(uidFolder, userEmails, serverMessages, username);
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
+      sendNotification(uidFolder, userEmails, serverMessages, username);
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
@@ -378,7 +386,7 @@ public class EmailBoxService {
     return true;
   }
 
-  private void cleanupObsoleteEmails(UIDFolder uidFolder, Message[] serverMessages, String username) {
+  private void cleanupObsoleteEmails(UIDFolder uidFolder, List<Email> userEmails, Message[] serverMessages, String username) {
     Set<Long> serverMessagesUids = Arrays.stream(serverMessages).map(msg -> {
       try {
         return uidFolder.getUID(msg);
@@ -387,14 +395,12 @@ public class EmailBoxService {
         return null;
       }
     }).collect(Collectors.toSet());
-    List<Email> obsoleteEmails = getEmailBox(username).getEmails()
-                                                      .stream()
-                                                      .filter(email -> !serverMessagesUids.contains(email.getMailRemoteId()))
-                                                      .toList();
+    List<Email> obsoleteEmails = userEmails.stream()
+                                           .filter(email -> !serverMessagesUids.contains(email.getMailRemoteId()))
+                                           .toList();
     if (!obsoleteEmails.isEmpty()) {
       deleteEmails(obsoleteEmails);
     }
-    List<Email> userEmails = getEmailBox(username).getEmails();
     if (userEmails.size() > EmailConnectorUtils.MAX_EMAILS) {
       List<Email> oldUserEmailsToCleanup = userEmails.subList(EmailConnectorUtils.MAX_EMAILS, userEmails.size());
       deleteEmails(oldUserEmailsToCleanup);
@@ -424,5 +430,29 @@ public class EmailBoxService {
     userEmailSetting.setEmailSyncFailedAttemps(mailSyncFailedAttemps);
     userEmailSetting.setEmailSyncStatus(syncStatus);
     userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
+  }
+
+  private void sendNotification(UIDFolder uidFolder, List<Email> userEmails, Message[] serverMessages, String userName) {
+    long maxLocalUid = userEmails.stream().mapToLong(Email::getMailRemoteId).max().orElse(0L);
+    long newUnreadCount = Arrays.stream(serverMessages).filter(msg -> {
+      try {
+        long uid = uidFolder.getUID(msg);
+        boolean isNew = uid > maxLocalUid;
+        boolean isUnread = !msg.isSet(Flags.Flag.SEEN);
+        return isNew && isUnread;
+      } catch (MessagingException e) {
+        LOG.warn("Error reading message flags", e);
+        return false;
+      }
+    }).count();
+    if (newUnreadCount > 0) {
+      NotificationContext ctx = NotificationContextImpl.cloneInstance()
+                                                       .append(NewEmailsNotificationPlugin.CONTEXT,
+                                                               NotificationConstants.NOTIFICATION_CONTEXT.NEW_EMAILS_RECIEVED)
+                                                       .append(NewEmailsNotificationPlugin.RECEIVER, userName)
+                                                       .append(NewEmailsNotificationPlugin.NEW_EMAILS, String.valueOf(newUnreadCount));
+      ctx.getNotificationExecutor().with(ctx.makeCommand(PluginKey.key(NewEmailsNotificationPlugin.ID))).execute(ctx);
+    }
+
   }
 }
