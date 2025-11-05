@@ -105,6 +105,9 @@ export default {
     this.$root.$on('open-mail-box-drawer', (loading) => {
       this.open(loading); 
     });
+    this.$root.$on('refresh-emails', () => {
+      this.loadEmailBox();
+    });
   },
   computed: {
     hasEmails() {

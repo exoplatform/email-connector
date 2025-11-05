@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Date;
 
 import javax.mail.Address;
+import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
@@ -134,7 +136,7 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void getEmailById() throws Exception {
+  void getRemoteEmailById() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
@@ -145,11 +147,14 @@ public class EmailBoxServiceTest {
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     MimeMessage message1 = mock(MimeMessage.class);
-    when(((UIDFolder) inbox).getMessageByUID(2121212L)).thenReturn(message1);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message1);
+    Email email = email(TEST_USER);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(TEST_USER, 1212l)).thenReturn(email);
     try (MockedStatic<EmailConnectorUtils> mockedUtils = mockStatic(EmailConnectorUtils.class)) {
-      emailBoxService.getEmailById(2121212L, TEST_USER);
+      emailBoxService.getRemoteEmailById(1212l, TEST_USER);
       mockedUtils.verify(() -> EmailConnectorUtils.getEmailSender(nullable(Address[].class)));
       mockedUtils.verify(() -> EmailConnectorUtils.getEmailRecipients(nullable(Address[].class), anyString()), times(3));
+      verify(emailBoxStorage).updateEmail(email);
     }
   }
 
@@ -171,10 +176,26 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void updateEmail() {
+  void updateEmailReadStatus() throws Exception {
     Email email = email(TEST_USER);
-    emailBoxService.updateEmail(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(TEST_USER, 1212l)).thenReturn(email);
+    emailBoxService.updateEmailReadStatus(1212l, null, TEST_USER, true, false);
     verify(emailBoxStorage).updateEmail(email);
+    reset(emailBoxStorage);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(TEST_USER, 1212l)).thenReturn(email);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    MimeMessage message1 = mock(MimeMessage.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message1);
+    emailBoxService.updateEmailReadStatus(1212l, null, TEST_USER, false, true);
+    verify(emailBoxStorage).updateEmail(email);
+    verify(inbox).open(Folder.READ_WRITE);
+    verify(message1).setFlag(Flags.Flag.SEEN, false);
   }
 
   private UserEmailSetting userEmailSetting() {
