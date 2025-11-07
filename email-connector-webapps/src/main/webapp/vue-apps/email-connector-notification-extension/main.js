@@ -14,12 +14,17 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-
 import './initComponents.js';
-import * as emailConnectorCommonService from './js/EmailConnectorCommonService.js';
+import './extensions.js';
 
-if (!Vue.prototype.$emailConnectorCommonService) {
-  window.Object.defineProperty(Vue.prototype, '$emailConnectorCommonService', {
-    value: emailConnectorCommonService,
-  });
+const lang = eXo.env.portal.language;
+const url = `/content/i18n/locale.notification.emailConnectorNotification?lang=${lang}`;
+
+export function init() {
+  return exoi18n.loadLanguageAsync(lang, url)
+    .then(() => {
+      new Vue({
+        i18n: exoi18n.i18n,
+      });
+    });
 }

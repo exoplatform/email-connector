@@ -14,12 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-
-import './initComponents.js';
-import * as emailConnectorCommonService from './js/EmailConnectorCommonService.js';
-
-if (!Vue.prototype.$emailConnectorCommonService) {
-  window.Object.defineProperty(Vue.prototype, '$emailConnectorCommonService', {
-    value: emailConnectorCommonService,
-  });
-}
+extensionRegistry.registerExtension('WebNotification', 'notification-group-extension', {
+  rank: 50,
+  name: 'email-connector',
+  plugins: [
+    'NewEmailsNotificationPlugin'
+  ],
+  icon: 'fa-envelope',
+});
+extensionRegistry.registerExtension('WebNotification', 'notification-content-extension', {
+  type: 'NewEmailsNotificationPlugin',
+  rank: 10,
+  vueComponent: Vue.options.components['user-notification-new-emails'],
+});

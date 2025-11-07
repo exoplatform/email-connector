@@ -17,7 +17,6 @@
 
 import './extensions.js';
 import './initComponents.js';
-
 import * as emailConnectorMailBoxService from './js/EmailConnectorMailBoxService.js';
 
 if (!Vue.prototype.$emailConnectorMailBoxService) {
