@@ -105,8 +105,8 @@ export default {
     this.$root.$on('open-mail-box-drawer', (loading) => {
       this.open(loading); 
     });
-    this.$root.$on('refresh-emails', () => {
-      this.loadEmailBox();
+    this.$root.$on('update-email-read-status', ({ emailId, read }) => {
+      this.updateEmailReadStatus(emailId, read);
     });
   },
   computed: {
@@ -144,6 +144,12 @@ export default {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
       });
       this.startAutoRefresh();
+    },
+    updateEmailReadStatus(emailId, read) {
+      const email = this.emails.find(e => e.mailRemoteId === emailId);
+      if (email) {
+        this.$set(email, 'read', read);
+      }
     },
     async loadEmailBox() {
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();

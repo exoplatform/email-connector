@@ -278,8 +278,8 @@ public class EmailBoxService {
     }
   }
 
-  public Email getEmailByMailRemoteIdAndUserId(String userId, long mailRemoteId) {
-    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(userId, mailRemoteId);
+  public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId, String userName) {
+    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(userName, mailRemoteId);
   }
 
   public void updateEmailReadStatus(long emailRemoteId,
@@ -287,8 +287,8 @@ public class EmailBoxService {
                                     String username,
                                     boolean readStatus,
                                     boolean updateRemoteReadStatus) throws IllegalAccessException {
-    Email email = getEmailByMailRemoteIdAndUserId(username, emailRemoteId);
-    if (readStatus != email.isRead()) {
+    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username);
+    if (email != null && readStatus != email.isRead()) {
       email.setRead(readStatus);
       emailBoxStorage.updateEmail(email);
       if (updateRemoteReadStatus) {
@@ -305,7 +305,9 @@ public class EmailBoxService {
             inbox = store.getFolder("INBOX");
             inbox.open(Folder.READ_WRITE);
             remoteMessage = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
-            remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
+            if (remoteMessage != null) {
+              remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
+            }
           } catch (Exception e) {
             LOG.error("Error when connecting store for user {}", username, e);
             throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
@@ -343,7 +345,7 @@ public class EmailBoxService {
                                                                                             IllegalAccessException {
     for (Message message : serverMessages) {
       long messageUid = uidFolder.getUID(message);
-      Email email = getEmailByMailRemoteIdAndUserId(username, messageUid);
+      Email email = getEmailByMailRemoteIdAndUserId(messageUid, username);
       if (email == null) {
         try {
           String excerpt = EmailConnectorUtils.getMessageContent(new MimeMessage((MimeMessage) message), true);
@@ -450,7 +452,8 @@ public class EmailBoxService {
                                                        .append(NewEmailsNotificationPlugin.CONTEXT,
                                                                NotificationConstants.NOTIFICATION_CONTEXT.NEW_EMAILS_RECIEVED)
                                                        .append(NewEmailsNotificationPlugin.RECEIVER, userName)
-                                                       .append(NewEmailsNotificationPlugin.NEW_EMAILS, String.valueOf(newUnreadCount));
+                                                       .append(NewEmailsNotificationPlugin.NEW_EMAILS,
+                                                               String.valueOf(newUnreadCount));
       ctx.getNotificationExecutor().with(ctx.makeCommand(PluginKey.key(NewEmailsNotificationPlugin.ID))).execute(ctx);
     }
 

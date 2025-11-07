@@ -28,6 +28,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template #title>
       <span></span>
     </template>
+    <template #titleIcons>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.unread.tooltip')"      
+        v-on="on"
+        v-bind="attrs"
+        @click="markAsUnread()"
+        icon>
+        <v-icon size="20">fa-mail-bulk</v-icon>
+      </v-btn>
+    </template>
     <template v-if="emailDetailDrawer && !loading && email" #content>
       <div
         class="fill-height overflow-y-auto specific-scrollbar">
@@ -119,15 +129,20 @@ export default {
     open(mailRemoteId) {
       this.loading = true;
       this.$refs.emailDetailDrawer.open();
+      this.$root.$emit('update-email-read-status', { emailId: mailRemoteId, read: true });
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
         this.email = email;
-        this.$root.$emit('refresh-emails');
       }).finally(() => {
         this.loading = false;
       });
     },
     toggleDetails() {
       this.expandedHeader = !this.expandedHeader;
+    },
+    markAsUnread() {
+      this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: false });
+      this.close();        
+      this.$emailConnectorMailBoxService.updateEmailReadStatus(this.email.mailRemoteId, false);
     },
     close() {
       this.expandedHeader = false;
