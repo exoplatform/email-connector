@@ -14,29 +14,13 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+ 
+import NewEmailsNotificationPlugin from './components/NewEmailsNotificationPlugin.vue';
 
-export function getUserEmailSetting() {
-  return fetch('/email-connector/rest/user-email-setting', {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    method: 'GET'
-  }).then((resp) => {
-    if (resp?.ok) {
-      return resp.json();
-    } else {
-      throw new Error('Error when getting user email setting');
-    }
-  });
-}
+const components = {
+  'user-notification-new-emails': NewEmailsNotificationPlugin,
+};
 
-export function openEmailBox() {
-  const quickActions = extensionRegistry.loadExtensions('QuickAction', 'Extension');
-  if (quickActions?.length) {
-    const emailExtension = quickActions.find(ext => ext.id === 'email');
-    if (emailExtension && typeof emailExtension.click === 'function') {
-      emailExtension.click();
-    }
-  }
+for (const key in components) {
+  Vue.component(key, components[key]);
 }

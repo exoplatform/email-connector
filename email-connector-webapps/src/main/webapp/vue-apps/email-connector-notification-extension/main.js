@@ -14,29 +14,17 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+import './initComponents.js';
+import './extensions.js';
 
-export function getUserEmailSetting() {
-  return fetch('/email-connector/rest/user-email-setting', {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    method: 'GET'
-  }).then((resp) => {
-    if (resp?.ok) {
-      return resp.json();
-    } else {
-      throw new Error('Error when getting user email setting');
-    }
-  });
-}
+const lang = eXo.env.portal.language;
+const url = `/content/i18n/locale.notification.emailConnectorNotification?lang=${lang}`;
 
-export function openEmailBox() {
-  const quickActions = extensionRegistry.loadExtensions('QuickAction', 'Extension');
-  if (quickActions?.length) {
-    const emailExtension = quickActions.find(ext => ext.id === 'email');
-    if (emailExtension && typeof emailExtension.click === 'function') {
-      emailExtension.click();
-    }
-  }
+export function init() {
+  return exoi18n.loadLanguageAsync(lang, url)
+    .then(() => {
+      new Vue({
+        i18n: exoi18n.i18n,
+      });
+    });
 }
