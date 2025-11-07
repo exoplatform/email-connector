@@ -24,10 +24,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -91,11 +93,11 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public ResponseEntity<Email> getRemoteEmailById(HttpServletRequest request,
-                                            @Parameter(description = "Email id", required = true)
-                                            @PathVariable("emailRemoteId")
-                                            long emailRemoteId,
-                                            @RequestHeader(value = "If-None-Match", required = false)
-                                            String ifNoneMatch) {
+                                                  @Parameter(description = "Email id", required = true)
+                                                  @PathVariable("emailRemoteId")
+                                                  long emailRemoteId,
+                                                  @RequestHeader(value = "If-None-Match", required = false)
+                                                  String ifNoneMatch) {
     try {
       String eTag = "\"" + Objects.hash(emailRemoteId, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.equals(eTag)) {
@@ -108,6 +110,33 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       return ResponseEntity.ok().eTag(eTag).cacheControl(CacheControl.noCache().cachePrivate()).body(email);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @PatchMapping("/{emailRemoteId}")
+  @Secured("users")
+  @Operation(summary = "Gets user emails", method = "PATCH", description = "This will update email read status")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public void updateEmailReadStatus(HttpServletRequest request,
+                                    @Parameter(description = "Email id", required = true)
+                                    @PathVariable("emailRemoteId")
+                                    long emailRemoteId,
+                                    @RequestParam("readStatus")
+                                    boolean readStatus) {
+    try {
+      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser());
+      if (email == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      emailBoxService.updateEmailReadStatus(emailRemoteId, null, request.getRemoteUser(), readStatus, true);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {

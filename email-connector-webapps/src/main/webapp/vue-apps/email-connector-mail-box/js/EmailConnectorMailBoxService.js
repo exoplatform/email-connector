@@ -101,3 +101,17 @@ export function formatDateString(dateToFormat, yesterdayLabel) {
     return new Date(resetDateToFormat.getTime()).toLocaleDateString(localeOfUser, options);
   }
 }
+
+export function updateEmailReadStatus(mailRemoteId, readStatus) {
+  return fetch(`/email-connector/rest/email-box/${mailRemoteId}?readStatus=${readStatus}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating email read status');
+    }
+  });
+}
