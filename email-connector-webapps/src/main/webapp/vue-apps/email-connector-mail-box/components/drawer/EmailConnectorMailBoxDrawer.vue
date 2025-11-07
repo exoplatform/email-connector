@@ -150,6 +150,7 @@ export default {
       if (email) {
         this.$set(email, 'read', read);
       }
+      this.$emailConnectorMailBoxService.updateEmailReadStatus(emailId, read);
     },
     async loadEmailBox() {
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();

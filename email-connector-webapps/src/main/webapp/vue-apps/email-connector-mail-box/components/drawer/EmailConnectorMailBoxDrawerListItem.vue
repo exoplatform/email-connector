@@ -45,6 +45,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
           <v-list-item-subtitle v-text="email.content" />
         </v-list-item-content>
+        <email-connector-mail-box-drawer-list-item-menu
+          v-if="hover || menuOpen"
+          ref="menu"
+          :email="email" 
+          @open="menuOpen = true"
+          @close="menuOpen = false" /> 
       </v-list-item>
     </div>
   </v-hover>
@@ -52,6 +58,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
+  data() {
+    return {
+      menu: false,
+      menuOpen: false,
+    };
+  },
   props: {
     email: {
       type: Object,
