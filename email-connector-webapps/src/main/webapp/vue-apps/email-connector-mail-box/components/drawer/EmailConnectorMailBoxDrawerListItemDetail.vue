@@ -30,10 +30,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template #titleIcons>
       <v-btn
-        :title="$t('emailConnector.mailBox.list.drawer.detail.unread.tooltip')"      
+        :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"      
         v-on="on"
         v-bind="attrs"
-        @click="markAsUnread()"
+        @click="updateEmailReadStatus()"
         icon>
         <v-icon size="20">fa-mail-bulk</v-icon>
       </v-btn>
@@ -139,10 +139,9 @@ export default {
     toggleDetails() {
       this.expandedHeader = !this.expandedHeader;
     },
-    markAsUnread() {
+    updateEmailReadStatus() {
       this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: false });
-      this.close();        
-      this.$emailConnectorMailBoxService.updateEmailReadStatus(this.email.mailRemoteId, false);
+      this.close();
     },
     close() {
       this.expandedHeader = false;

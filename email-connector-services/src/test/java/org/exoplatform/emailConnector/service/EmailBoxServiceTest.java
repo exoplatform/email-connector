@@ -148,13 +148,10 @@ public class EmailBoxServiceTest {
     when(store.getFolder("INBOX")).thenReturn(inbox);
     MimeMessage message1 = mock(MimeMessage.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message1);
-    Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(TEST_USER, 1212l)).thenReturn(email);
     try (MockedStatic<EmailConnectorUtils> mockedUtils = mockStatic(EmailConnectorUtils.class)) {
       emailBoxService.getRemoteEmailById(1212l, TEST_USER);
       mockedUtils.verify(() -> EmailConnectorUtils.getEmailSender(nullable(Address[].class)));
       mockedUtils.verify(() -> EmailConnectorUtils.getEmailRecipients(nullable(Address[].class), anyString()), times(3));
-      verify(emailBoxStorage).updateEmail(email);
     }
   }
 
