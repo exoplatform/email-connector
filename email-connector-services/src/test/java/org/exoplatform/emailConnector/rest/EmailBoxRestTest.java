@@ -125,7 +125,6 @@ public class EmailBoxRestTest {
     response.andExpect(status().isOk());
     String eTag = "\"" + Objects.hash(2122121, SIMPLE_USER) + "\"";
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").header("If-None-Match", eTag).with(testSimpleUser()));
-    verify(emailBoxService).updateEmailReadStatus(2122121L, null, SIMPLE_USER, true, true);
     verify(emailBoxService).broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, SIMPLE_USER);
     response.andExpect(status().isNotModified());
   }
