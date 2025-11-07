@@ -25,6 +25,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -127,6 +128,15 @@ public class EmailBoxRestTest {
     verify(emailBoxService).updateEmailReadStatus(2122121L, null, SIMPLE_USER, true, true);
     verify(emailBoxService).broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, SIMPLE_USER);
     response.andExpect(status().isNotModified());
+  }
+
+  @Test
+  void updateEmailReadStatus() throws Exception {
+    ResultActions response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
+    response.andExpect(status().isNotFound());
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString())).thenReturn(mock(Email.class));
+    response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
+    response.andExpect(status().isOk());
   }
 
   private RequestPostProcessor testSimpleUser() {

@@ -171,7 +171,7 @@ public class EmailBoxServiceTest {
 
   @Test
   void getEmailByMailRemoteIdAndUserId() {
-    emailBoxService.getEmailByMailRemoteIdAndUserId(TEST_USER, 12121L);
+    emailBoxService.getEmailByMailRemoteIdAndUserId(12121L, TEST_USER);
     verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(TEST_USER, 12121L);
   }
 
