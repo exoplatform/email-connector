@@ -16,7 +16,6 @@
  */
 
 import './initComponents.js';
-
 import * as emailConnectorUserSettingService from './js/EmailConnectorUserSettingService.js';
 
 if (!Vue.prototype.$emailConnectorUserSettingService) {
@@ -24,21 +23,14 @@ if (!Vue.prototype.$emailConnectorUserSettingService) {
     value: emailConnectorUserSettingService,
   });
 }
-
 Vue.use(Vuetify);
 const vuetify = new Vuetify(eXo.env.portal.vuetifyPreset);
-
 const appId = 'emailConnectorUserSetting';
-
-//getting language of the PLF
 const lang = eXo?.env?.portal?.language || 'en';
-
-//should expose the locale ressources as REST API
 const url = `/email-connector/i18n/locale.portlet.emailConnector.emailConnectorUserSetting?lang=${lang}`;
 
 export function init() {
   exoi18n.loadLanguageAsync(lang, url).then(i18n => {
-    // init Vue app when locale ressources are ready
     Vue.createApp({
       template: `<email-connector-user-setting-app id="${appId}" />`,
       vuetify,

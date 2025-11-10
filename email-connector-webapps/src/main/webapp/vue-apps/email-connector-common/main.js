@@ -16,7 +16,6 @@
  */
 
 import './initComponents.js';
-
 import * as emailConnectorCommonService from './js/EmailConnectorCommonService.js';
 
 if (!Vue.prototype.$emailConnectorCommonService) {

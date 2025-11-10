@@ -20,12 +20,20 @@ extensionRegistry.registerExtension('QuickAction', 'Extension', {
   icon: 'fa-envelope',
   name: 'quickActions.email.name',
   description: 'quickActions.email.description',
-  click: () => new Promise(resolve => {
-    window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, resolve));
-  }),
+  click: () => {
+    window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n));
+  },
 });
 
-async function initConnectorsMailBox(exoi18n, callback) {
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+  const urlParams = new URLSearchParams(window.location.search);
+  const shouldOpenEmailBox = urlParams.get('openEmailBox') === 'true';
+  if (shouldOpenEmailBox) {
+    window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n));
+  }
+}
+
+async function initConnectorsMailBox(exoi18n) {
   const appId = 'emailConenctor-mailBox-quick-actions';
   if (!document.querySelector(`#${appId}`)) {
     const parent = document.createElement('div');
@@ -34,7 +42,6 @@ async function initConnectorsMailBox(exoi18n, callback) {
     await initConnectorsDrawerApp(appId, exoi18n, eXo.env.portal.maxFileSize);
   }
   document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer'));
-  callback();
 }
 
 function initConnectorsDrawerApp(appId, exoi18n) {

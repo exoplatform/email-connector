@@ -18,11 +18,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <div
     role="button"
     tabindex="0"
-    @click="openEmailBox"
+    @click.stop.prevent="openEmailBox"
     @keydown.enter="openEmailBox"
     @keydown.space="openEmailBox">
     <user-notification-template
       :notification="notification"
+      :url="currentUrl" 
       :message="message"
       :loading="loading">
       <template #avatar>
@@ -58,7 +59,10 @@ export default {
     },
     message() {
       return this.$t('newEmails.notification.description');
-    }
+    },
+    currentUrl() {
+      return `${window.location.href}?openEmailBox=true`;
+    },
   },
   methods: {
     openEmailBox() {
