@@ -36,23 +36,38 @@ export default {
       emailConnectorIcon: '',
       emailAddress: '',
       emailPassword: ''
-    }
+    },
+    displayed: true,
   }),
+  watch: {
+    displayed() {
+      this.$root.$updateApplicationVisibility(this.displayed);
+    },
+  },
   mounted() {
     document.addEventListener('refresh-user-email-setting', this.getUserEmailSetting);
+    this.$root.$updateApplicationVisibility(this.displayed);
   },
   beforeDestroy() {
     document.removeEventListener('refresh-user-email-setting', this.getUserEmailSetting);
   },
   created() {
     this.getUserEmailSetting();
+    document.addEventListener('showSettingsApps', this.showSettingsApps);
+    document.addEventListener('hideSettingsApps', this.hideSettingsApps);
   },
   methods: {
     getUserEmailSetting() {
       this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
       });
-    }
+    },
+    hideSettingsApps() {
+      this.displayed = false;
+    },
+    showSettingsApps() {
+      this.displayed = true;
+    },
   }
 };
 </script>
