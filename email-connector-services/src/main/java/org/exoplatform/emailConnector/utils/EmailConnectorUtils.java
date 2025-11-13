@@ -52,6 +52,9 @@ import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.portal.application.PortalRequestContext;
+import org.exoplatform.portal.config.UserPortalConfigService;
+import org.exoplatform.portal.webui.util.Util;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.services.organization.OrganizationService;
@@ -145,6 +148,23 @@ public class EmailConnectorUtils {
       return new EmailSender(senderName, ia.getAddress(), avatarUrl, profileUrl);
     }
     return null;
+  }
+
+  public static String getEmailsLink(String username) {
+    String defaultPortalOwner = "";
+    PortalRequestContext pContext = null;
+    try {
+      pContext = Util.getPortalRequestContext();
+    } catch (NullPointerException e) {
+      pContext = null;
+    }
+    if (pContext != null) {
+      defaultPortalOwner = pContext.getPortalOwner();
+    } else {
+      UserPortalConfigService portalConfig = CommonsUtils.getService(UserPortalConfigService.class);
+      defaultPortalOwner = portalConfig == null ? null : portalConfig.getDefaultSite(username).getName();
+    }
+    return "/portal/" + defaultPortalOwner + "?openEmailBox=true";
   }
 
   private static String safeGetContent(Part part) {
@@ -279,15 +299,15 @@ public class EmailConnectorUtils {
 
   private static String encodeToBase64DataUrl(BodyPart bodyPart) {
     try {
-        DataHandler handler = bodyPart.getDataHandler();
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        handler.writeTo(os);
-        byte[] bytes = os.toByteArray();
-        String base64 = Base64.getEncoder().encodeToString(bytes);
-        String mimeType = bodyPart.getContentType().split(";")[0].trim();
-        return "data:" + mimeType + ";base64," + base64;
+      DataHandler handler = bodyPart.getDataHandler();
+      ByteArrayOutputStream os = new ByteArrayOutputStream();
+      handler.writeTo(os);
+      byte[] bytes = os.toByteArray();
+      String base64 = Base64.getEncoder().encodeToString(bytes);
+      String mimeType = bodyPart.getContentType().split(";")[0].trim();
+      return "data:" + mimeType + ";base64," + base64;
     } catch (Exception e) {
-        return "";
+      return "";
     }
-}
+  }
 }

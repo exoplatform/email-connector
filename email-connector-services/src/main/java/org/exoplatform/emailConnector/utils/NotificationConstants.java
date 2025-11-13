@@ -18,23 +18,11 @@ package org.exoplatform.emailConnector.utils;
 
 public class NotificationConstants {
 
-  public static final String CONTEXT    = "CONTEXT";
+  public static final String TITLE                          = "TITLE";
 
-  public static final String NEW_EMAILS = "NEW_EMAILS";
+  public static final String CONTENT                        = "CONTENT";
 
-  public static final String RECEIVER   = "RECEIVER";
+  public static final String LINK                           = "LINK";
 
-  public enum NOTIFICATION_CONTEXT {
-    NEW_EMAILS_RECIEVED("NEW EMAILS RECIEVED");
-
-    private String context;
-
-    private NOTIFICATION_CONTEXT(String context) {
-      this.context = context;
-    }
-
-    public String getContext() {
-      return this.context;
-    }
-  }
+  public static final String NEW_EMAILS_NOTIFICATION_PLUGIN = "NewEmailsNotificationPlugin";
 }
