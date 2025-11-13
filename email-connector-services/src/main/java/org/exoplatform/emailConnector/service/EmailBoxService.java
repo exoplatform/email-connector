@@ -228,7 +228,6 @@ public class EmailBoxService {
                                                 EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
                                                                                        username);
         broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, username);
-        updateEmailReadStatus(emailRemoteId, message, username, true, true);
         return new Email(null,
                          emailRemoteId,
                          username,
