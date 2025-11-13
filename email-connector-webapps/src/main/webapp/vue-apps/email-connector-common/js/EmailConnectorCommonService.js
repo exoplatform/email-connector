@@ -30,3 +30,13 @@ export function getUserEmailSetting() {
     }
   });
 }
+
+export function openEmailBox() {
+  const quickActions = extensionRegistry.loadExtensions('QuickAction', 'Extension');
+  if (quickActions?.length) {
+    const emailExtension = quickActions.find(ext => ext.id === 'email');
+    if (emailExtension && typeof emailExtension.click === 'function') {
+      emailExtension.click();
+    }
+  }
+}

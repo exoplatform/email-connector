@@ -9,7 +9,6 @@
  * should have received a copy of the GNU Affero General Public License along
  * with this program. If not, see <gnu.org/licenses>.
  */
-
 package org.exoplatform.emailConnector.event;
 
 public class UserEmailSettingCleanupEvent {

@@ -14,12 +14,13 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+ 
+import NewEmailsNotificationPlugin from './components/NewEmailsNotificationPlugin.vue';
 
-import './initComponents.js';
-import * as emailConnectorCommonService from './js/EmailConnectorCommonService.js';
+const components = {
+  'user-notification-new-emails': NewEmailsNotificationPlugin,
+};
 
-if (!Vue.prototype.$emailConnectorCommonService) {
-  window.Object.defineProperty(Vue.prototype, '$emailConnectorCommonService', {
-    value: emailConnectorCommonService,
-  });
+for (const key in components) {
+  Vue.component(key, components[key]);
 }

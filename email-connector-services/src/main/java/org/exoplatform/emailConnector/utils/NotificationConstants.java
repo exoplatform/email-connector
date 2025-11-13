@@ -14,10 +14,27 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <gnu.org/licenses>.
  */
-package org.exoplatform.emailConnector.model;
+package org.exoplatform.emailConnector.utils;
 
-public enum SyncStatus {
+public class NotificationConstants {
 
-  IN_PROGRESS, SUCCESS, FAILURE, BLOCKED
+  public static final String CONTEXT    = "CONTEXT";
 
+  public static final String NEW_EMAILS = "NEW_EMAILS";
+
+  public static final String RECEIVER   = "RECEIVER";
+
+  public enum NOTIFICATION_CONTEXT {
+    NEW_EMAILS_RECIEVED("NEW EMAILS RECIEVED");
+
+    private String context;
+
+    private NOTIFICATION_CONTEXT(String context) {
+      this.context = context;
+    }
+
+    public String getContext() {
+      return this.context;
+    }
+  }
 }

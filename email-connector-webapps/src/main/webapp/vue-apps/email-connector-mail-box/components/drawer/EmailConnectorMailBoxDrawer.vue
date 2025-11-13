@@ -20,7 +20,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     ref="emailBoxDrawer"
     v-model="emailBoxDrawer"
     :right="!$vuetify.rtl"
-    @closed="close">
+    @closed="close"
+    style="outline: none;"
+    class="no-box-shadow">
     <template #title>
       <span class="me-3">{{ $t('emailConnector.mailBox.list.drawer.title') }}</span>
     </template>
