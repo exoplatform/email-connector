@@ -23,8 +23,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @keydown.space="openEmailBox">
     <user-notification-template
       :notification="notification"
-      :url="currentUrl" 
-      :message="message"
+      :url="link" 
+      :message="content"
       :loading="loading">
       <template #avatar>
         <div>
@@ -34,7 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template #actions>
         <div class="text-truncate">
           <v-icon size="14" class="me-1">fa-inbox</v-icon>
-          {{ eventTitle }}
+          {{ title }}
         </div>
       </template>
     </user-notification-template>
@@ -49,19 +49,14 @@ export default {
     },
   },
   computed: {
-    eventTitle() {
-      return this.newEmails > 1 && this.$t('newEmails.notification.title', {
-        0: this.newEmails,
-      }) || this.$t('newEmail.notification.title');
+    title() {
+      return this.notification?.parameters?.TITLE;
     },
-    newEmails() {
-      return this.notification?.parameters?.NEW_EMAILS;
+    content() {
+      return this.notification?.parameters?.CONTENT;
     },
-    message() {
-      return this.$t('newEmails.notification.description');
-    },
-    currentUrl() {
-      return `${window.location.href}?openEmailBox=true`;
+    link() {
+      return this.notification?.parameters?.LINK;
     },
   },
   methods: {
