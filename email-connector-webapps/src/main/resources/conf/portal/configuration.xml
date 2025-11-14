@@ -22,7 +22,7 @@
   xmlns="http://www.exoplatform.org/xml/ns/kernel_1_2.xsd">
   
   <component>
-    <type>org.exoplatform.emailConnector.plugin.NewEmailsNotificationPwaPlugin</type>
+    <type>org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPwaPlugin</type>
   </component>
 
   <external-component-plugins>
@@ -124,7 +124,7 @@
     <component-plugin>
       <name>notification.plugins</name>
       <set-method>addPlugin</set-method>
-      <type>org.exoplatform.emailConnector.plugin.NewEmailsNotificationPlugin</type>
+      <type>org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin</type>
       <description>Initial information for plugin NewEmailsNotificationPlugin</description>
       <init-params>
         <object-param>
@@ -177,6 +177,53 @@
           <name>portal.resource.names</name>
           <value>locale.notification.emailConnectorNotification</value>
         </values-param>
+      </init-params>
+    </component-plugin>
+  </external-component-plugins>
+  
+  <external-component-plugins>
+    <target-component>org.exoplatform.commons.api.notification.channel.ChannelManager</target-component>
+    <component-plugin>
+      <name>mail.channel.email-connector.template</name>
+      <set-method>registerTemplateProvider</set-method>
+      <type>org.exoplatform.emailConnector.notification.mail.MailTemplateProvider</type>
+      <init-params>
+        <value-param>
+          <name>channel-id</name>
+          <value>MAIL_CHANNEL</value>
+        </value-param>
+      </init-params>
+    </component-plugin>
+  </external-component-plugins>
+  
+  <external-component-plugins>
+    <target-component>org.exoplatform.commons.upgrade.UpgradeProductService</target-component>
+    <component-plugin>
+      <name>NewEmailsNotificationUpgradePlugin</name>
+      <set-method>addUpgradePlugin</set-method>
+      <type>io.meeds.social.notification.upgrade.NotificationUpgradePlugin</type>
+      <description>An upgrade plugin to set a notification plugin </description>
+      <init-params>
+        <value-param>
+          <name>product.group.id</name>
+          <description>The groupId of the product</description>
+          <value>org.exoplatform.social</value>
+        </value-param>
+        <value-param>
+          <name>plugin.execution.order</name>
+          <description>The plugin execution order</description>
+          <value>5</value>
+        </value-param>
+        <value-param>
+          <name>notificationPluginId</name>
+          <description>Notification Plugin Id</description>
+          <value>NewEmailsNotificationPlugin</value>
+        </value-param>
+        <value-param>
+          <name>notificationChannelId</name>
+          <description>Notification Channel Id, applied to all when empty</description>
+          <value>WEB_CHANNEL</value>
+        </value-param>
       </init-params>
     </component-plugin>
   </external-component-plugins>

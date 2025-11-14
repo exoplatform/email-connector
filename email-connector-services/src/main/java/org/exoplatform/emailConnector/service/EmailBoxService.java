@@ -18,7 +18,6 @@ package org.exoplatform.emailConnector.service;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -46,7 +45,7 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
-import org.exoplatform.emailConnector.plugin.NewEmailsNotificationPlugin;
+import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
@@ -448,12 +447,12 @@ public class EmailBoxService {
     }).count();
     if (newUnreadCount > 0) {
       NotificationContext ctx = NotificationContextImpl.cloneInstance()
-                                                       .append(NewEmailsNotificationPlugin.CONTEXT,
-                                                               NotificationConstants.NOTIFICATION_CONTEXT.NEW_EMAILS_RECIEVED)
                                                        .append(NewEmailsNotificationPlugin.RECEIVER, userName)
                                                        .append(NewEmailsNotificationPlugin.NEW_EMAILS,
                                                                String.valueOf(newUnreadCount));
-      ctx.getNotificationExecutor().with(ctx.makeCommand(PluginKey.key(NewEmailsNotificationPlugin.ID))).execute(ctx);
+      ctx.getNotificationExecutor()
+         .with(ctx.makeCommand(PluginKey.key(NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN)))
+         .execute(ctx);
     }
 
   }
