@@ -100,7 +100,7 @@ public class EmailBoxRest {
                                                   String ifNoneMatch) {
     try {
       String eTag = "\"" + Objects.hash(emailRemoteId, request.getRemoteUser()) + "\"";
-      if (ifNoneMatch != null && ifNoneMatch.equals(eTag)) {
+      if (ifNoneMatch != null && ifNoneMatch.replace("W/","").equals(eTag)) {
         emailBoxService.broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, request.getRemoteUser());
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
