@@ -43,28 +43,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-icon>
         </v-btn>
       </template>
-      <v-list class="pa-0" @close="menu = false">
-        <v-list-item
-          class="ps-2 pe-3 height-auto"
-          @click.stop="updateEmailReadStatus">
-          <v-sheet
-            class="d-flex"
-            width="28"
-            height="36">
-            <v-icon
-              class="icon-default-color mx-auto"
-              size="16">
-              {{ email.read ? 'fa-mail-bulk' : 'fa-envelope-open-text' }}
-            </v-icon>
-          </v-sheet>
-          <span v-if="email.read">
-            {{ $t('emailConnector.mailBox.list.drawer.detail.unread.label') }}
-          </span>
-          <span v-else>
-            {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
-          </span>
-        </v-list-item>
-      </v-list>
+      <email-connector-mail-box-drawer-list-item-action-menu-items
+        @close="menu = false"
+        :email="email" />
     </v-menu>
   </v-list-item-action>
 </template>
@@ -90,12 +71,6 @@ export default {
         this.$emit('close');
       }
     }
-  },
-  methods: {
-    updateEmailReadStatus() {
-      this.$emit('close');
-      this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: !this.email.read });
-    },
   }
 };
 </script>

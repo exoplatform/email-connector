@@ -19,7 +19,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div
       role="button"
       tabindex="0"
-      :class="{'light-grey-background-color': hover}"
+      :class="{'light-grey-background-color': hover, 'no-select': isMobile}"
+      v-touch-hold="openActionMenuDrawer"
       @click="openDetail"
       @keydown.enter="openDetail">
       <v-list-item
@@ -45,10 +46,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
           <v-list-item-subtitle v-text="email.content" />
         </v-list-item-content>
-        <email-connector-mail-box-drawer-list-item-menu
+        <email-connector-mail-box-drawer-list-item-action-menu
           v-if="hover || menuOpen"
           ref="menu"
-          :email="email" 
+          :email="email"
           @open="menuOpen = true"
           @close="menuOpen = false" /> 
       </v-list-item>
@@ -73,11 +74,17 @@ export default {
   computed: {
     sentDate() {
       return this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
-    }
+    },
+    isMobile() {
+      return this.$vuetify.breakpoint.smAndDown;
+    },
   },
   methods: {
     openDetail() {
       this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+    },
+    openActionMenuDrawer() {
+      this.$root.$emit('open-email-action-menu-drawer', this.email);
     }
   }
 };
