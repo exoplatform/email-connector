@@ -23,6 +23,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :email="email"
       class="pt-3 pb-3 ps-7 pe-4" />
     <email-connector-mail-box-drawer-list-item-detail />
+    <email-connector-mail-box-drawer-list-item-action-menu-drawer />
   </div>
 </template>
 
