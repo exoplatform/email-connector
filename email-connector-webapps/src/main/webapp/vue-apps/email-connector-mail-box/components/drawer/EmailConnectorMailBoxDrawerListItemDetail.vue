@@ -42,7 +42,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="emailDetailDrawer && !loading && email" #content>
       <div
         class="fill-height overflow-y-auto specific-scrollbar">
-        <v-list class="mt-5 py-0 me-4 ms-4">
+        <v-list class="mt-5 py-0 me-4 ms-4 mb-5">
           <v-list-item
             style="min-height: 0"
             class="px-0 pb-4">
@@ -72,15 +72,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               </v-list-item-subtitle>
             </v-list-item-content>
             <v-list-item-action class="my-0 align-self-start">
-              <v-list-item-subtitle v-text="sentDate" />
+              <v-list-item-subtitle v-text="recievedDate" />
             </v-list-item-action>
           </v-list-item>
           <email-connector-mail-box-drawer-list-item-detail-header 
             v-if="expandedHeader"
             :email="email" />
-          <email-connector-mail-box-drawer-list-item-detail-body 
+          <email-connector-mail-box-drawer-list-item-detail-body
             :expanded-drawer="expandedDrawer" 
-            :email-content="email.content" />
+            :email-content="email.content?.body" />
+          <email-connector-mail-box-drawer-list-item-detail-attachments
+            :email-attachments="email.content?.attachments"
+            v-if="hasAttachments" />
         </v-list>
       </div>
     </template>
@@ -102,8 +105,8 @@ export default {
     });
   },
   computed: {
-    sentDate() {
-      return this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
+    recievedDate() {
+      return this.$emailConnectorMailBoxService.formatDateString(this.email.recievedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
     },
     chevronIcon() {
       return this.expandedHeader ? 'fa-chevron-up' : 'fa-chevron-down';
@@ -124,6 +127,9 @@ export default {
     },
     recipientsClass() {
       return this.expandedHeader && 'px-0 pb-3' || 'px-0 pb-8';
+    },
+    hasAttachments() {
+      return this.email.content?.attachments?.length > 0;
     },
   },
   methods: {

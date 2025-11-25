@@ -22,8 +22,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
+import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
 
 import lombok.SneakyThrows;
@@ -44,7 +47,7 @@ public class EmailBoxStorage {
     }
     EmailBoxEntity emailBoxEntity = toEntity(email);
     emailBoxEntity = emailBoxDao.save(emailBoxEntity);
-    return fromEntity(emailBoxEntity);
+    return fromEntity(emailBoxEntity, false);
   }
 
   public void updateEmail(Email email) {
@@ -57,12 +60,12 @@ public class EmailBoxStorage {
 
   public Email getEmailByMailRemoteIdAndUserId(String userId, long mailRemoteId) {
     EmailBoxEntity emailBoxEntity = emailBoxDao.findByUserIdAndMailRemoteId(userId, mailRemoteId);
-    return fromEntity(emailBoxEntity);
+    return fromEntity(emailBoxEntity, false);
   }
 
   public List<Email> getEmails(String username) {
-    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdOrderBySentDateDesc(username);
-    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity)).toList();
+    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(username);
+    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity, true)).toList();
   }
 
   public void deleteUserEmails(String username) {
@@ -77,33 +80,67 @@ public class EmailBoxStorage {
     if (email == null) {
       return null;
     } else {
-      return new EmailBoxEntity(email.getId(),
-                                email.getMailRemoteId(),
-                                email.getUserId(),
-                                email.getSubject(),
-                                email.getContent(),
-                                email.getSender().getName(),
-                                email.getSentDate(),
-                                email.isRead());
+      EmailBoxEntity emailBoxEntity = new EmailBoxEntity(email.getId(),
+                                                 email.getMailRemoteId(),
+                                                 email.getUserId(),
+                                                 email.getSubject(),
+                                                 email.getContent() != null ? email.getContent().getBody() : null,
+                                                 email.getSender().getName(),
+                                                 email.getRecievedDate(),
+                                                 email.isRead(),
+                                                 null);
+      List<EmailAttachmentEntity> attachments = email.getContent() != null
+          && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
+            return toEmailAttachmentEntity(attachment, emailBoxEntity);
+          }).toList() : null;
+      emailBoxEntity.setAttachments(attachments);
+      return emailBoxEntity;
     }
   }
 
   @SneakyThrows
-  private Email fromEntity(EmailBoxEntity emailBoxEntity) {
+  private Email fromEntity(EmailBoxEntity emailBoxEntity, boolean withAttachments) {
     if (emailBoxEntity == null) {
       return null;
     } else {
+      List<EmailAttachment> attachments = withAttachments
+          && emailBoxEntity.getAttachments() != null ? emailBoxEntity.getAttachments().stream().map(attachment -> {
+            return fromEmailAttachmentEntity(attachment);
+          }).toList() : null;
       return new Email(emailBoxEntity.getId(),
                        emailBoxEntity.getMailRemoteId(),
                        emailBoxEntity.getUserId(),
                        emailBoxEntity.getSubject(),
-                       emailBoxEntity.getExcerpt(),
-                       emailBoxEntity.getSentDate(),
+                       new EmailContent(emailBoxEntity.getExcerpt(), attachments),
+                       emailBoxEntity.getRecievedDate(),
                        new EmailSender(emailBoxEntity.getSender(), null, null, null),
                        emailBoxEntity.isRead(),
                        null,
                        null,
                        null);
+    }
+  }
+
+  private EmailAttachmentEntity toEmailAttachmentEntity(EmailAttachment emailAttachment, EmailBoxEntity emailBoxEntity) {
+    if (emailAttachment == null) {
+      return null;
+    } else {
+      return new EmailAttachmentEntity(emailAttachment.getId(),
+                                       emailBoxEntity,
+                                       emailAttachment.getAttachmentRemoteId(),
+                                       emailAttachment.getName(),
+                                       emailAttachment.getMimeType());
+    }
+  }
+
+  private EmailAttachment fromEmailAttachmentEntity(EmailAttachmentEntity emailAttachmentEntity) {
+    if (emailAttachmentEntity == null) {
+      return null;
+    } else {
+      return new EmailAttachment(emailAttachmentEntity.getId(),
+                                 emailAttachmentEntity.getAttachmentRemoteId(),
+                                 emailAttachmentEntity.getName(),
+                                 emailAttachmentEntity.getMimeType());
     }
   }
 }
