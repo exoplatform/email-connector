@@ -56,6 +56,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
@@ -135,6 +136,20 @@ public class EmailBoxRestTest {
     response.andExpect(status().isNotFound());
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString())).thenReturn(mock(Email.class));
     response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
+  void getAttachmentByMailRemoteIdAnId() throws Exception {
+    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));
+    response.andExpect(status().isNotFound());
+    EmailAttachment emailAttachment = mock(EmailAttachment.class);
+    when(emailBoxService.getAttachmentByMailRemoteIdAnId(anyLong(),
+                                                         anyString(),
+                                                         anyString())).thenReturn(emailAttachment);
+    when(emailAttachment.getName()).thenReturn("attachment.pdf");
+    when(emailAttachment.getMimeType()).thenReturn("application/pdf");
+    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
 

@@ -16,15 +16,21 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.mail.BodyPart;
 import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.MessagingException;
+import javax.mail.Multipart;
+import javax.mail.Part;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
 
@@ -39,6 +45,7 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -69,6 +76,9 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE = "User %s is not allowed to synchronize email";
 
   private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE         = "User %s is not allowed to get email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT      =
+                                                                            "User %s is not allowed to get email attachment";
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
@@ -231,7 +241,7 @@ public class EmailBoxService {
                          emailRemoteId,
                          username,
                          message.getSubject(),
-                         EmailConnectorUtils.getMessageContent(message, false),
+                         EmailConnectorUtils.getMessageContent(emailRemoteId, message, false),
                          message.getReceivedDate(),
                          emailSender,
                          message.isSet(Flags.Flag.SEEN),
@@ -262,6 +272,64 @@ public class EmailBoxService {
     return null;
   }
 
+  public EmailAttachment getAttachmentByMailRemoteIdAnId(long emailRemoteId,
+                                                         String attachmentId,
+                                                         String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT, username));
+    }
+    Store store = null;
+    Folder inbox = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      inbox = store.getFolder("INBOX");
+      inbox.open(Folder.READ_ONLY);
+      Message message = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
+      EmailAttachment emailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnId(emailRemoteId, attachmentId);
+      BodyPart bodyPart = getPartByPath(message, attachmentId);
+      if (bodyPart == null) {
+        throw new RuntimeException("Attachment not found in the email");
+      }
+      try (InputStream is = bodyPart.getInputStream(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+        byte[] buffer = new byte[256 * 1024];
+        int bytesRead;
+        while ((bytesRead = is.read(buffer)) != -1) {
+          baos.write(buffer, 0, bytesRead);
+        }
+        emailAttachment.setData(baos.toByteArray());
+      }
+      String fileName = bodyPart.getFileName();
+      if (fileName != null) {
+        emailAttachment.setName(fileName);
+      }
+      String mimeType = Optional.ofNullable(bodyPart.getContentType().toLowerCase())
+                                .orElse("application/octet-stream")
+                                .split(";")[0];
+      emailAttachment.setMimeType(mimeType);
+      return emailAttachment;
+    } catch (Exception e) {
+      LOG.error("Error when connecting store for user {}", username, e);
+      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+    } finally {
+      try {
+        try {
+          if (inbox != null && inbox.isOpen()) {
+            inbox.close(false);
+          }
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing inbox", messagingException);
+        }
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing store", messagingException);
+      }
+    }
+  }
+
   public void broadcastEvent(String eventName, String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
@@ -277,7 +345,7 @@ public class EmailBoxService {
   }
 
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId, String userName) {
-    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(userName, mailRemoteId);
+    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, userName);
   }
 
   public void updateEmailReadStatus(long emailRemoteId,
@@ -347,7 +415,7 @@ public class EmailBoxService {
         Email email = getEmailByMailRemoteIdAndUserId(messageUid, username);
         if (email == null) {
 
-          EmailContent emailContent = EmailConnectorUtils.getMessageContent(message, true);
+          EmailContent emailContent = EmailConnectorUtils.getMessageContent(messageUid, message, true);
           String subject = message.getSubject() != null
               && message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..." : message.getSubject();
           EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
@@ -456,6 +524,24 @@ public class EmailBoxService {
          .with(ctx.makeCommand(PluginKey.key(NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN)))
          .execute(ctx);
     }
+  }
 
+  private BodyPart getPartByPath(Part root, String partNumber) throws Exception {
+    String[] levels = partNumber.split("\\.");
+    Part current = root;
+    int levelIndex = 0;
+    for (String level : levels) {
+      if (!current.isMimeType("multipart/*")) {
+        throw new IllegalStateException("Trying to go deeper but part is not multipart at level " + levelIndex);
+      }
+      Multipart multipart = (Multipart) current.getContent();
+      int index = Integer.parseInt(level) - 1;
+      if (index < 0 || index >= multipart.getCount()) {
+        throw new IllegalArgumentException("Invalid attachment index " + level + " at level " + levelIndex);
+      }
+      current = multipart.getBodyPart(index);
+      levelIndex++;
+    }
+    return (BodyPart) current;
   }
 }

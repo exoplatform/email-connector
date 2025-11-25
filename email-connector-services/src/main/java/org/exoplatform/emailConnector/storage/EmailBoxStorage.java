@@ -21,6 +21,7 @@ import java.util.List;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
@@ -39,7 +40,10 @@ import lombok.SneakyThrows;
 public class EmailBoxStorage {
 
   @Autowired
-  private EmailBoxDAO emailBoxDao;
+  private EmailBoxDAO        emailBoxDao;
+
+  @Autowired
+  private EmailAttachmentDAO emailAttachmentDAO;
 
   public Email createEmail(Email email) {
     if (email == null) {
@@ -58,8 +62,8 @@ public class EmailBoxStorage {
     emailBoxDao.save(emailBoxEntity);
   }
 
-  public Email getEmailByMailRemoteIdAndUserId(String userId, long mailRemoteId) {
-    EmailBoxEntity emailBoxEntity = emailBoxDao.findByUserIdAndMailRemoteId(userId, mailRemoteId);
+  public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId, String userId) {
+    EmailBoxEntity emailBoxEntity = emailBoxDao.findByMailRemoteIdAndUserId(mailRemoteId, userId);
     return fromEntity(emailBoxEntity, false);
   }
 
@@ -76,19 +80,26 @@ public class EmailBoxStorage {
     emailBoxDao.deleteEmailsByIds(emailsIds);
   }
 
+  public EmailAttachment getAttachmentByMailRemoteIdAnId(long mailRemoteId, String attachmentId) {
+    EmailAttachmentEntity emailAttachmentEntity = emailAttachmentDAO.findByMailRemoteIdAndAttachmentId(mailRemoteId, attachmentId)
+                                                                    .orElse(null);
+    ;
+    return fromEmailAttachmentEntity(emailAttachmentEntity);
+  }
+
   private EmailBoxEntity toEntity(Email email) {
     if (email == null) {
       return null;
     } else {
       EmailBoxEntity emailBoxEntity = new EmailBoxEntity(email.getId(),
-                                                 email.getMailRemoteId(),
-                                                 email.getUserId(),
-                                                 email.getSubject(),
-                                                 email.getContent() != null ? email.getContent().getBody() : null,
-                                                 email.getSender().getName(),
-                                                 email.getRecievedDate(),
-                                                 email.isRead(),
-                                                 null);
+                                                         email.getMailRemoteId(),
+                                                         email.getUserId(),
+                                                         email.getSubject(),
+                                                         email.getContent() != null ? email.getContent().getBody() : null,
+                                                         email.getSender().getName(),
+                                                         email.getRecievedDate(),
+                                                         email.isRead(),
+                                                         null);
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -138,9 +149,11 @@ public class EmailBoxStorage {
       return null;
     } else {
       return new EmailAttachment(emailAttachmentEntity.getId(),
+                                 emailAttachmentEntity.getEmail().getMailRemoteId(),
                                  emailAttachmentEntity.getAttachmentRemoteId(),
                                  emailAttachmentEntity.getName(),
-                                 emailAttachmentEntity.getMimeType());
+                                 emailAttachmentEntity.getMimeType(),
+                                 null);
     }
   }
 }

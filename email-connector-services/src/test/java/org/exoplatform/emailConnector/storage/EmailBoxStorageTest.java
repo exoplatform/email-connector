@@ -38,9 +38,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 
+import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
+import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
 
@@ -48,13 +51,16 @@ import org.exoplatform.emailConnector.model.EmailSender;
 @ExtendWith(MockitoExtension.class)
 public class EmailBoxStorageTest {
 
-  private static final Long ID = 2l;
+  private static final Long  ID = 2l;
 
   @MockBean
-  private EmailBoxDAO       emailBoxDAO;
+  private EmailBoxDAO        emailBoxDAO;
+
+  @MockBean
+  private EmailAttachmentDAO emailAttachmentDAO;
 
   @Autowired
-  private EmailBoxStorage   emailBoxStorage;
+  private EmailBoxStorage    emailBoxStorage;
 
   @BeforeEach
   void setup() {
@@ -67,11 +73,11 @@ public class EmailBoxStorageTest {
         entity.setSubject(entity.getSubject() + " (updated)");
       }
       when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(Optional.of(entity)
-                                                                                   .stream()
-                                                                                   .filter(email -> email.getUserId()
-                                                                                                         .equals("root"))
-                                                                                   .toList());
-      when(emailBoxDAO.findByUserIdAndMailRemoteId("root", 1212l)).thenReturn(entity);
+                                                                               .stream()
+                                                                               .filter(email -> email.getUserId().equals("root"))
+                                                                               .toList());
+      when(emailBoxDAO.findByMailRemoteIdAndUserId(1212l, "root")).thenReturn(entity);
+
       return entity;
     });
 
@@ -102,18 +108,18 @@ public class EmailBoxStorageTest {
     Email email = email("root");
     Email createdEmail = emailBoxStorage.createEmail(email);
     emailBoxStorage.updateEmail(createdEmail);
-    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId("root", 1212l);
+    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root");
     assertNotNull(updatedEmail);
     assertEquals("subject (updated)", updatedEmail.getSubject());
   }
 
   @Test
   void getEmailByMailRemoteIdAndUserId() {
-    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId("root", 1L);
+    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root");
     assertNull(retrievedEmail);
     Email email1 = email("root");
     emailBoxStorage.createEmail(email1);
-    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId("root", 1212l);
+    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root");
     assertNotNull(retrievedEmail);
   }
 
@@ -159,17 +165,50 @@ public class EmailBoxStorageTest {
     assertEquals(0, retrievedEmailEntities.size());
   }
 
+  @Test
+  void getAttachmentByIdAndMailRemoteId() {
+    EmailAttachment retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnId(1212l, "2");
+    assertNull(retrievedEmailAttachment);
+    EmailBoxEntity emailBoxEntity = new EmailBoxEntity(null,
+                                                       1212l,
+                                                       "root",
+                                                       "subject",
+                                                       "excerpt",
+                                                       "sender",
+                                                       new Date(),
+                                                       false,
+                                                       null);
+    Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
+                                                                                                          emailBoxEntity,
+                                                                                                          "2",
+                                                                                                          "attachment.pdf",
+                                                                                                          "application/pdf"));
+    when(emailAttachmentDAO.findByMailRemoteIdAndAttachmentId(1212l, "2")).thenReturn(emailAttachmentEntity);
+    retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnId(1212l, "2");
+    assertNotNull(retrievedEmailAttachment);
+    retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnId(1212L, "2");
+    assertNotNull(retrievedEmailAttachment);
+    assertEquals("attachment.pdf", retrievedEmailAttachment.getName());
+    assertEquals("application/pdf", retrievedEmailAttachment.getMimeType());
+    assertEquals(1212L, retrievedEmailAttachment.getMailRemoteId());
+  }
+
   private Email email(String username) {
+    EmailAttachment emailAttachment = emailAttachment();
     return new Email(null,
                      1212l,
                      username,
                      "subject",
-                     new EmailContent("excerpt", null),
+                     new EmailContent("excerpt", List.of(emailAttachment)),
                      new Date(),
                      new EmailSender("sender", null, null, null),
                      false,
                      null,
                      null,
                      null);
+  }
+
+  private EmailAttachment emailAttachment() {
+    return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null);
   }
 }

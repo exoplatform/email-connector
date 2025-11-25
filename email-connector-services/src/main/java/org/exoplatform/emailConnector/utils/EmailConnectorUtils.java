@@ -88,13 +88,13 @@ public class EmailConnectorUtils {
   private static final Log   LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
   @SneakyThrows
-  public static EmailContent getMessageContent(Message message, boolean excerpt) {
+  public static EmailContent getMessageContent(long messageUid, Message message, boolean excerpt) {
     EmailContent content = new EmailContent("", null);
     try {
       if (message.isMimeType("text/*")) {
         content = safeGetContent(message);
       } else if (message.getContent() instanceof MimeMultipart) {
-        content = getHtmlFromMimeMultipart((MimeMultipart) message.getContent(), null);
+        content = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) message.getContent(), null);
       }
     } catch (Exception e) {
       LOG.warn("Error extracting content from message: From={}, Subject={}", message.getFrom()[0], message.getSubject(), e);
@@ -196,7 +196,8 @@ public class EmailConnectorUtils {
     }
   }
 
-  private static EmailContent getHtmlFromMimeMultipart(MimeMultipart mimeMultipart,
+  private static EmailContent getHtmlFromMimeMultipart(long messageUid,
+                                                       MimeMultipart mimeMultipart,
                                                        String parentPartNumber) throws MessagingException, IOException {
     EmailContent htmlContent = null;
     EmailContent plainContent = null;
@@ -211,7 +212,7 @@ public class EmailConnectorUtils {
       } else if (bodyPart.isMimeType("text/plain") && plainContent == null) {
         plainContent = safeGetContent(bodyPart);
       } else if (bodyPart.getContent() instanceof MimeMultipart) {
-        EmailContent nested = getHtmlFromMimeMultipart((MimeMultipart) bodyPart.getContent(), partNumber);
+        EmailContent nested = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) bodyPart.getContent(), partNumber);
         if (nested != null && !nested.getBody().isEmpty()) {
           if (nested.isHtml()) {
             if (htmlContent == null) {
@@ -246,6 +247,7 @@ public class EmailConnectorUtils {
         emailAttachment.setName(bodyPart.getFileName());
         emailAttachment.setMimeType(new ContentType(bodyPart.getContentType()).getBaseType());
         emailAttachment.setAttachmentRemoteId(partNumber);
+        emailAttachment.setMailRemoteId(messageUid);
         finalContent.getAttachments().add(emailAttachment);
       }
     }
