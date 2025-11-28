@@ -25,6 +25,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
@@ -37,10 +38,11 @@ import javax.activation.DataHandler;
 import javax.imageio.ImageIO;
 import javax.mail.Address;
 import javax.mail.BodyPart;
+import javax.mail.Message;
 import javax.mail.MessagingException;
 import javax.mail.Part;
+import javax.mail.internet.ContentType;
 import javax.mail.internet.InternetAddress;
-import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
 
 import org.apache.commons.lang3.StringUtils;
@@ -49,6 +51,8 @@ import org.jsoup.Jsoup;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.RequestLifeCycle;
+import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -84,23 +88,28 @@ public class EmailConnectorUtils {
   private static final Log   LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
   @SneakyThrows
-  public static String getMessageContent(MimeMessage message, boolean excerpt) {
-    String content = "";
+  public static EmailContent getMessageContent(Message message, boolean excerpt) {
+    EmailContent content = new EmailContent("", null);
     try {
       if (message.isMimeType("text/*")) {
         content = safeGetContent(message);
-      } else if (message.isMimeType("multipart/*") || message.getContent() instanceof MimeMultipart) {
-        content = getHtmlFromMimeMultipart((MimeMultipart) message.getContent());
+      } else if (message.getContent() instanceof MimeMultipart) {
+        content = getHtmlFromMimeMultipart((MimeMultipart) message.getContent(), null);
       }
     } catch (Exception e) {
       LOG.warn("Error extracting content from message: From={}, Subject={}", message.getFrom()[0], message.getSubject(), e);
     }
-
+    String bodyText = content.getBody() != null ? content.getBody().trim() : "";
     if (excerpt) {
-      content = Jsoup.parse(content).text().trim();
-      return content.length() > 50 ? content.substring(0, 50) + "..." : content;
-    } else
-      return content.trim();
+      String parsedText = Jsoup.parse(bodyText).text().trim();
+      if (parsedText.length() > 50) {
+        bodyText = parsedText.substring(0, 50) + "...";
+      } else {
+        bodyText = parsedText;
+      }
+    }
+    content.setBody(bodyText);
+    return content;
   }
 
   public static int getEmailBoxUserSyncPeriod(UserEmailSetting userEmailSetting) {
@@ -167,52 +176,88 @@ public class EmailConnectorUtils {
     return "/portal/" + defaultPortalOwner + "?openEmailBox=true";
   }
 
-  private static String safeGetContent(Part part) {
+  private static EmailContent safeGetContent(Part part) {
+    String emailBody = "";
     try {
       Object content = part.getContent();
       if (content instanceof String) {
-        return (String) content;
+        emailBody = (String) content;
       }
       if (content instanceof InputStream) {
-        return new String(((InputStream) content).readAllBytes(), StandardCharsets.UTF_8);
+        emailBody = new String(((InputStream) content).readAllBytes(), StandardCharsets.UTF_8);
       }
-      return "";
-    } catch (IOException e) {
-      if (e.getMessage().contains("Unknown encoding")) {
-        try (InputStream is = part.getInputStream()) {
-          return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (Exception ex) {
-          return "";
-        }
-      }
-      return "";
-    } catch (MessagingException e) {
-      return "";
+      EmailContent emailContent = new EmailContent(emailBody, null);
+      emailContent.setHtml(part.isMimeType("text/html"));
+      return emailContent;
+    } catch (Exception e) {
+      EmailContent emailContent = new EmailContent(emailBody, null);
+      emailContent.setHtml(false);
+      return emailContent;
     }
   }
 
-  private static String getHtmlFromMimeMultipart(MimeMultipart mimeMultipart) throws MessagingException, IOException {
-    StringBuilder htmlContent = new StringBuilder();
+  private static EmailContent getHtmlFromMimeMultipart(MimeMultipart mimeMultipart,
+                                                       String parentPartNumber) throws MessagingException, IOException {
+    EmailContent htmlContent = null;
+    EmailContent plainContent = null;
     Map<String, String> cidImageMap = new HashMap<>();
+    EmailContent finalContent = new EmailContent("", null);
     for (int i = 0; i < mimeMultipart.getCount(); i++) {
       BodyPart bodyPart = mimeMultipart.getBodyPart(i);
-      if (bodyPart.isMimeType("text/html")) {
-        htmlContent.append(safeGetContent(bodyPart));
-      } else if (bodyPart.isMimeType("multipart/alternative") || bodyPart.getContent() instanceof MimeMultipart) {
-        htmlContent.append(getHtmlFromMimeMultipart((MimeMultipart) bodyPart.getContent()));
-      } else if (Part.ATTACHMENT.equalsIgnoreCase(bodyPart.getDisposition()) || bodyPart.isMimeType("image/*")) {
+      String disposition = bodyPart.getDisposition();
+      String partNumber = (parentPartNumber == null ? "" : parentPartNumber + ".") + (i + 1);
+      if (bodyPart.isMimeType("text/html") && htmlContent == null) {
+        htmlContent = safeGetContent(bodyPart);
+      } else if (bodyPart.isMimeType("text/plain") && plainContent == null) {
+        plainContent = safeGetContent(bodyPart);
+      } else if (bodyPart.getContent() instanceof MimeMultipart) {
+        EmailContent nested = getHtmlFromMimeMultipart((MimeMultipart) bodyPart.getContent(), partNumber);
+        if (nested != null && !nested.getBody().isEmpty()) {
+          if (nested.isHtml()) {
+            if (htmlContent == null) {
+              htmlContent = new EmailContent("", null);
+              htmlContent.setHtml(true);
+            }
+            htmlContent.setBody(htmlContent.getBody() + nested.getBody());
+          } else {
+            if (plainContent == null) {
+              plainContent = new EmailContent("", null);
+              plainContent.setHtml(false);
+            }
+            plainContent.setBody(plainContent.getBody() + nested.getBody());
+          }
+          if (nested.getAttachments() != null) {
+            if (finalContent.getAttachments() == null) {
+              finalContent.setAttachments(new ArrayList<>());
+            }
+            finalContent.getAttachments().addAll(nested.getAttachments());
+          }
+        }
+      } else if (bodyPart.isMimeType("image/*") && Part.INLINE.equalsIgnoreCase(disposition)) {
         String cid = getCid(bodyPart);
         if (cid != null) {
           cidImageMap.put(cid, encodeToBase64DataUrl(bodyPart));
         }
+      } else if (disposition == null || Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
+        if (finalContent.getAttachments() == null) {
+          finalContent.setAttachments(new ArrayList<>());
+        }
+        EmailAttachment emailAttachment = new EmailAttachment();
+        emailAttachment.setName(bodyPart.getFileName());
+        emailAttachment.setMimeType(new ContentType(bodyPart.getContentType()).getBaseType());
+        emailAttachment.setAttachmentRemoteId(partNumber);
+        finalContent.getAttachments().add(emailAttachment);
       }
     }
-    String finalHtml = htmlContent.toString();
-    for (Map.Entry<String, String> entry : cidImageMap.entrySet()) {
-      finalHtml = finalHtml.replace("cid:" + entry.getKey(), entry.getValue());
+    if (htmlContent != null) {
+      finalContent.setBody(htmlContent.getBody());
+    } else if (plainContent != null) {
+      finalContent.setBody(plainContent.getBody());
     }
-
-    return finalHtml;
+    for (Map.Entry<String, String> entry : cidImageMap.entrySet()) {
+      finalContent.setBody(finalContent.getBody().replace("cid:" + entry.getKey(), entry.getValue()));
+    }
+    return finalContent;
   }
 
   private static Profile getUserProfileByEmail(String email) {

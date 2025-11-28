@@ -37,9 +37,9 @@ import java.util.Date;
 import javax.mail.Address;
 import javax.mail.Flags;
 import javax.mail.Folder;
+import javax.mail.Message;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
-import javax.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -51,6 +51,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -98,11 +99,11 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
-    MimeMessage message1 = mock(MimeMessage.class);
+    Message message1 = mock(Message.class);
     when(message1.getSubject()).thenReturn("message1Subject");
-    MimeMessage message2 = mock(MimeMessage.class);
+    Message message2 = mock(Message.class);
     when(message2.getSubject()).thenReturn("message2Subject");
-    MimeMessage[] messages = { message1, message2 };
+    Message[] messages = { message1, message2 };
     when((inbox).getMessages(anyInt(), anyInt())).thenReturn(messages);
     when(emailBoxStorage.getEmails(anyString())).thenReturn(new ArrayList<Email>());
     emailBoxService.synchronize(TEST_USER);
@@ -146,7 +147,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
-    MimeMessage message1 = mock(MimeMessage.class);
+    Message message1 = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message1);
     try (MockedStatic<EmailConnectorUtils> mockedUtils = mockStatic(EmailConnectorUtils.class)) {
       emailBoxService.getRemoteEmailById(1212l, TEST_USER);
@@ -187,7 +188,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
-    MimeMessage message1 = mock(MimeMessage.class);
+    Message message1 = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message1);
     emailBoxService.updateEmailReadStatus(1212l, null, TEST_USER, false, true);
     verify(emailBoxStorage).updateEmail(email);
@@ -204,7 +205,7 @@ public class EmailBoxServiceTest {
                      1212l,
                      username,
                      "subject",
-                     "excerpt",
+                     new EmailContent("excerpt", null),
                      new Date(),
                      new EmailSender("sender", null, null, null),
                      false,

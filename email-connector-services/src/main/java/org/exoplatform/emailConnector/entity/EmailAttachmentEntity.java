@@ -16,16 +16,14 @@
  */
 package org.exoplatform.emailConnector.entity;
 
-import java.util.Date;
-import java.util.List;
-
-import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.OneToMany;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
@@ -35,37 +33,26 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity(name = "EmailBoxEntity")
-@Table(name = "EMAIL_BOX")
-public class EmailBoxEntity {
+@Entity(name = "EmailAttachmentEntity")
+@Table(name = "EMAIL_ATTACHMENTS")
+public class EmailAttachmentEntity {
 
   @Id
-  @SequenceGenerator(name = "SEQ_EMAIL_ID", sequenceName = "SEQ_EMAIL_ID", allocationSize = 1)
-  @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_EMAIL_ID")
+  @SequenceGenerator(name = "SEQ_EMAIL_ATTACHMENT_ID", sequenceName = "SEQ_EMAIL_ATTACHMENT_ID", allocationSize = 1)
+  @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_EMAIL_ATTACHMENT_ID")
   @Column(name = "ID")
-  private Long                        id;
+  private Long           id;
 
-  @Column(name = "MAIL_REMOTE_ID")
-  private Long                        mailRemoteId;
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "MAIL_ID")
+  private EmailBoxEntity email;
 
-  @Column(name = "USER_ID")
-  private String                      userId;
+  @Column(name = "ATTACHMENT_REMOTE_ID")
+  private String         attachmentRemoteId;
 
-  @Column(name = "SUBJECT")
-  private String                      subject;
+  @Column(name = "NAME")
+  private String         name;
 
-  @Column(name = "EXCERPT")
-  private String                      excerpt;
-
-  @Column(name = "SENDER")
-  private String                      sender;
-
-  @Column(name = "RECIEVED_DATE")
-  private Date                        recievedDate;
-
-  @Column(name = "IS_READ")
-  private boolean                     read;
-
-  @OneToMany(mappedBy = "email", cascade = CascadeType.PERSIST)
-  private List<EmailAttachmentEntity> attachments;
+  @Column(name = "MIME_TYPE")
+  private String         mimeType;
 }
