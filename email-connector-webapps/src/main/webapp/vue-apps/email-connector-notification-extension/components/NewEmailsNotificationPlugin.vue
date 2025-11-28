@@ -28,12 +28,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :loading="loading">
       <template #avatar>
         <div>
-          <v-icon size="40">fa-envelope</v-icon>
+          <v-icon size="40" class="icon-default-color">fa-envelope</v-icon>
         </div>
       </template>
       <template #actions>
         <div class="text-truncate">
-          <v-icon size="14" class="me-1">fa-inbox</v-icon>
+          <v-icon size="14" class="me-1 icon-default-color">fa-inbox</v-icon>
           {{ title }}
         </div>
       </template>

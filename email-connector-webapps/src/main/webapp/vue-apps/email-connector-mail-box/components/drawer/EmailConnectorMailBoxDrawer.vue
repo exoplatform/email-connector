@@ -32,22 +32,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
         loader-class="align-self-center me-2"
         icon-size="20" />
-      <v-tooltip
-        v-else 
-        bottom>
-        <template #activator="{on, attrs}">
-          <v-btn
-            v-on="on"
-            v-bind="attrs"
-            @click="synchronize()"
-            icon>
-            <v-icon size="20">fa-sync-alt</v-icon>
-          </v-btn>
-        </template>
-        <span>
-          {{ $t('emailConnector.mailBox.list.drawer.sync.tooltip') }}
-        </span>
-      </v-tooltip>
+      <v-btn
+        v-else
+        :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
+        v-on="on"
+        v-bind="attrs"
+        @click="synchronize()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
+      </v-btn>
     </template>
     <template v-if="emailBoxDrawer" #content>
       <div

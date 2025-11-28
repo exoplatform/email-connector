@@ -47,7 +47,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             v-else
             icon
             @click="$root.$emit('open-user-setting-connectors-drawer')">
-            <v-icon size="20">fa-edit</v-icon>
+            <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
           </v-btn>
         </v-list-item-action>
       </v-list-item>

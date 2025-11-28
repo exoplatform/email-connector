@@ -36,7 +36,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item-title v-text="email.sender.name" />
         </v-list-item-content>
         <v-list-item-action class="my-0">
-          <v-list-item-subtitle v-text="sentDate" />
+          <v-list-item-subtitle v-text="recievedDate" />
         </v-list-item-action>
       </v-list-item>
       <v-list-item
@@ -44,7 +44,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="px-0">
         <v-list-item-content class="py-0">
           <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
-          <v-list-item-subtitle v-text="email.content" />
+          <v-list-item-subtitle v-text="email.content?.body" />
         </v-list-item-content>
         <email-connector-mail-box-drawer-list-item-action-menu
           v-if="hover || menuOpen"
@@ -72,8 +72,8 @@ export default {
     },
   },
   computed: {
-    sentDate() {
-      return this.$emailConnectorMailBoxService.formatDateString(this.email.sentDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
+    recievedDate() {
+      return this.$emailConnectorMailBoxService.formatDateString(this.email.recievedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
     },
     isMobile() {
       return this.$vuetify.breakpoint.smAndDown;
