@@ -15,8 +15,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <div class="mt-5">
-    <div>
+  <div
+    class="mt-5">
+    <div
+      role="button"
+      tabindex="0"
+      @click="openAttachmentsDrawer"
+      @keydown.enter="openAttachmentsDrawer"
+      :class="[{ 'not-clickable': !canOpenAttachmentsDrawer }]">
       <v-icon size="20">
         fa-paperclip
       </v-icon>
@@ -24,10 +30,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ attachmentsLabel }}
       </span>
     </div>
-    <email-connector-mail-box-drawer-list-item-detail-attachment
-      v-for="attachment in emailAttachmentsList"
-      :key="attachment.id"
-      :attachment="attachment" />
+    <email-connector-mail-box-drawer-attachments-list
+      :email-attachments="emailAttachmentsList" />
   </div>
 </template>
 
@@ -41,11 +45,21 @@ export default {
   },
   computed: {
     attachmentsLabel() {
-      return `${this.$t('emailConnector.mailBox.list.drawer.detail.attachments.label')} (${this.emailAttachments.length})`;
+      return `${this.$t('emailConnector.mailBox.attachments.label')} (${this.emailAttachments.length})`;
     },
     emailAttachmentsList() {
       return this.emailAttachments.slice(0, 2);
     },
+    canOpenAttachmentsDrawer() {
+      return this.emailAttachments.length > 2;
+    },
   },
+  methods: {
+    openAttachmentsDrawer() {
+      if (this.canOpenAttachmentsDrawer) {
+        this.$root.$emit('open-email-attachments-drawer', this.emailAttachments);
+      }
+    },
+  }
 };
 </script>
