@@ -15,44 +15,31 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <div
-    class="pt-3 text-truncate"
-    :title="attachmentTitle">
-    <v-icon size="36" :color="attachmentColor">
-      {{ attachmentIcon }}
-    </v-icon>
-    <span class="ms-2">
-      {{ attachment.name }}
-    </span>
+  <div>
+    <email-connector-mail-box-drawer-attachments-list-item
+      v-for="attachment in emailAttachments"
+      :key="attachment.id"
+      :attachment="attachment" 
+      :attachment-icon-size="attachmentIconSize" 
+      :attachment-icon-margin="attachmentIconMargin" />
   </div>
 </template>
 
 <script>
 export default {
-  data: () => ({
-    
-  }),
   props: {
-    attachment: {
-      type: Object,
-      default: () => null,
+    emailAttachments: {
+      type: Array,
+      default: () => [],
     },
-  },
-  computed: {
-    attachmentIcon() {
-      return this.$emailConnectorMailBoxService.getAttachmentIcon(this.attachment.mimeType).class;
+    attachmentIconSize: {
+      type: Number,
+      default: 36,
     },
-    attachmentColor() {
-      return this.$emailConnectorMailBoxService.getAttachmentIcon(this.attachment.mimeType).color;
+    attachmentIconMargin: {
+      type: Number,
+      default: 2,
     },
-    attachmentTitle() {
-      return this.$t('emailConnector.mailBox.list.drawer.detail.attachment.download.title', {
-        0: this.attachment.name,
-      });
-    },
-  },
-  methods: {
-   
   }
 };
 </script>
