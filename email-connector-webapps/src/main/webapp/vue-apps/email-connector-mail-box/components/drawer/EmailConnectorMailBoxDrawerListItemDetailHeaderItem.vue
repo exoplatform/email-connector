@@ -16,8 +16,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-list-item
-    class="px-0 align-start"
-    style="min-height: 0;">
+    class="height-auto px-0 align-start">
     <v-list-item-action class="my-0 align-self-start me-2" :style="{ width: labelWidth + 'px' }">
       <v-list-item-subtitle class="text-color">
         {{ label }}

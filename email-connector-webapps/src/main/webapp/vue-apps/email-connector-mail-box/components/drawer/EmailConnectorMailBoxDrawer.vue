@@ -30,8 +30,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-box-sync-loader
         v-if="syncInProgress"
         :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
-        loader-class="align-self-center me-2"
-        icon-size="20" />
+        loader-class="align-self-center me-2" />
       <v-btn
         v-else
         :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
@@ -88,13 +87,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  data: () => ({
-    emailBoxDrawer: false,
-    emailBox: null,
-    emails: [],
-    syncInProgress: false,
-    refreshInterval: null,
-  }),
+  data() {
+    return {
+      emailBoxDrawer: false,
+      emailBox: null,
+      emails: [],
+      syncInProgress: false,
+      refreshInterval: null,
+    };
+  },
   created() {
     this.isRefreshing = false;
     this.$root.$on('open-mail-box-drawer', (loading) => {

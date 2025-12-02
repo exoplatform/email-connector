@@ -216,3 +216,60 @@ export function updateEmailReadStatus(mailRemoteId, readStatus) {
 export function getAttachmentIcon(mimeType) {
   return attachmentMapIconsExtensions.get(mimeType.toLowerCase()) || file;
 }
+
+export async function downloadAttachment(attachment, signal) {
+  const mailId = attachment.mailRemoteId;
+  const attachId = attachment.attachmentRemoteId;
+  const url = `/email-connector/rest/email-box/attachments/${mailId}/${attachId}`;
+  const etagKey = `etag-${mailId}-${attachId}`;
+  const fileKey = `file-${mailId}-${attachId}`;
+  const savedETag = localStorage.getItem(etagKey);
+  const savedFileUrl = localStorage.getItem(fileKey);
+  const headers = {};
+  if (savedETag) {
+    headers['If-None-Match'] = savedETag;
+  }
+  try {
+    const response = await fetch(url, {
+      headers,
+      signal
+    });
+    if (response.status === 304 && savedFileUrl) {
+      const filename = attachment.name;
+      triggerDownload(savedFileUrl, filename);
+      return;
+    }
+    if (!response.ok) {
+      throw new Error('Error when downloading attachment');
+    }
+    const newETag = response.headers.get('ETag');
+    if (newETag) {
+      localStorage.setItem(etagKey, newETag);
+    }
+    const contentDisp = response.headers.get('Content-Disposition');
+    let filename = attachment.name;
+    if (contentDisp) {
+      const match = contentDisp.match(/filename\*?=UTF-8''([^;]+)/);
+      if (match) {
+        filename = decodeURIComponent(match[1]);
+      }
+    }
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    localStorage.setItem(fileKey, blobUrl);
+    triggerDownload(blobUrl, filename);
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.error('Error when downloading attachment:', e);
+    }
+  }
+}
+
+export function triggerDownload(fileUrl, filename) {
+  const link = document.createElement('a');
+  link.href = fileUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}

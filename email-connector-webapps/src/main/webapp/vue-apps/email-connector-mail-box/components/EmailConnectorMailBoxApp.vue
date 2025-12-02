@@ -22,20 +22,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-user-setting-connectors-drawer />
     <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
     <email-connector-mail-box-drawer />
+    <email-connector-mail-box-abort-download-confirm-dialog />
   </v-app>
 </template>
 
 <script>
 export default {
-  data: () => ({
-    userEmailSetting: {
-      emailConnectorId: '',
-      emailConnectorImageUrl: '',
-      emailConnectorIcon: '',
-      emailAddress: '',
-      emailPassword: ''
-    }
-  }),
+  data() {
+    return {
+      userEmailSetting: {
+        emailConnectorId: '',
+        emailConnectorImageUrl: '',
+        emailConnectorIcon: '',
+        emailAddress: '',
+        emailPassword: ''
+      }
+    }; 
+  },
   mounted() {
     document.addEventListener('quick-action-mailBox-drawer', this.openDrawer);
   },
@@ -53,7 +56,7 @@ export default {
           this.$root.$emit('open-user-setting-connectors-drawer');
         }
       });
-    }
+    },
   }
 };
 </script>
