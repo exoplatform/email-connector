@@ -16,29 +16,20 @@
  */
 package org.exoplatform.emailConnector.dao;
 
-import java.util.List;
+import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
-import org.springframework.transaction.annotation.Transactional;
 
-import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 
-public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
+public interface EmailAttachmentDAO extends JpaRepository<EmailAttachmentEntity, Long> {
 
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :username ORDER BY email.recievedDate DESC")
-  List<EmailBoxEntity> findByUserIdWithAttachments(@Param("username")
+  @Query("SELECT attachment FROM EmailAttachmentEntity attachment LEFT JOIN FETCH attachment.email email WHERE attachment.attachmentRemoteId = :attachmentId "
+      + "AND email.mailRemoteId = :mailRemoteId AND email.userId = :username")
+  Optional<EmailAttachmentEntity> findByMailRemoteIdAndAttachmentIdAndUserId(@Param("mailRemoteId")
+  long mailRemoteId, @Param("attachmentId")
+  String attachmentId, @Param("username")
   String username);
-
-  EmailBoxEntity findByMailRemoteIdAndUserId(long mailRemoteId, String userId);
-
-  void deleteByUserId(String userId);
-
-  @Transactional
-  @Modifying
-  @Query("DELETE FROM EmailBoxEntity eb WHERE eb.id IN :ids")
-  void deleteEmailsByIds(@Param("ids")
-  List<Long> ids);
 }

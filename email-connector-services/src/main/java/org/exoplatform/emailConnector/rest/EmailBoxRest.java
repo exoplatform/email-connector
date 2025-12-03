@@ -16,11 +16,15 @@
  */
 package org.exoplatform.emailConnector.rest;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -34,6 +38,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -100,7 +105,7 @@ public class EmailBoxRest {
                                                   String ifNoneMatch) {
     try {
       String eTag = "\"" + Objects.hash(emailRemoteId, request.getRemoteUser()) + "\"";
-      if (ifNoneMatch != null && ifNoneMatch.replace("W/","").equals(eTag)) {
+      if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
         emailBoxService.broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, request.getRemoteUser());
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
@@ -136,6 +141,43 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       emailBoxService.updateEmailReadStatus(emailRemoteId, null, request.getRemoteUser(), readStatus, true);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @GetMapping("/attachments/{emailRemoteId}/{attachmentId}")
+  @Secured("users")
+  @Operation(summary = "Gets user emails", method = "GET", description = "This will get user emails")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public ResponseEntity<byte[]> getAttachmentByMailRemoteIdAnId(HttpServletRequest request,
+                                                  @Parameter(description = "Email id", required = true)
+                                                  @PathVariable("emailRemoteId")
+                                                  long emailRemoteId,
+                                                  @Parameter(description = "Attachment id", required = true)
+                                                  @PathVariable("attachmentId")
+                                                  String attachmentId) {
+    try {
+      EmailAttachment emailAttachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(emailRemoteId,
+                                                                                        attachmentId,
+                                                                                        request.getRemoteUser());
+      if (emailAttachment == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      byte[] data = emailAttachment.getData();
+      String filename = emailAttachment.getName();
+      String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
+      return ResponseEntity.ok()
+                           .contentType(MediaType.parseMediaType(emailAttachment.getMimeType()))
+                           .header(HttpHeaders.CONTENT_DISPOSITION,
+                                   "inline; filename=\"" + filename + "\"; filename*=UTF-8''" + encodedFilename)
+                           .body(data);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
