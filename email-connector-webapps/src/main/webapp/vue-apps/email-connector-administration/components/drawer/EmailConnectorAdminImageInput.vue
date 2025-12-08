@@ -52,7 +52,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="ms-2"
       icon
       @click="reset">
-      <v-icon size="24">fa-undo</v-icon>
+      <v-icon size="24" class="icon-default-color">fa-undo</v-icon>
     </v-btn>
   </div>
 </template>

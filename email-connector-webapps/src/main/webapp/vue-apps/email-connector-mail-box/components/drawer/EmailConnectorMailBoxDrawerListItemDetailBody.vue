@@ -21,9 +21,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     :style="{
       width: '100%',
       border: 'none',
-      overflow: 'hidden',
-      transition: 'height 0.2s ease',
-      height: iframeHeight + 'px'
+      height: iframeHeight + 'px',
+      visibility: iframeVisible ? 'visible' : 'hidden',
+      display: 'block',
     }"
     @load="onLoadIframe"
     title="email-body"></iframe>
@@ -32,7 +32,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   data: () => ({
-    iframeHeight: 400,
+    iframeHeight: 0,
+    iframeVisible: false,
+    resizeObserver: null   
   }),
   props: {
     emailContent: {
@@ -58,10 +60,18 @@ export default {
     makeMailHtml(html) {
       const baseCSS = `
         html, body {
-          margin:0; padding:0;
+          margin: 0 !important;
+          padding: 0 !important;
           width:100%; height:auto;
-          overflow:hidden;
           font-family:Roboto, Arial, sans-serif;
+          line-height: 1 !important;
+        }
+        body {
+          overflow: hidden; 
+          padding-bottom: 2px;
+        }
+        body > *:last-child { 
+          margin-bottom: 0 !important;
         }
         img {
           display:block; max-width:100%; height:auto;
@@ -101,23 +111,37 @@ export default {
     },
     onLoadIframe() {
       this.recalculateIframeHeight();
+
+      setTimeout(() => this.recalculateIframeHeight(), 150);
+      setTimeout(() => this.recalculateIframeHeight(), 400);
     },
+
     recalculateIframeHeight() {
       const iframe = this.$refs.iframe;
       if (!iframe) {
         return;
       }
-      try {
-        const doc = iframe.contentDocument || iframe.contentWindow.document;
-        setTimeout(() => {
-          const newHeight = Math.max(
-            doc.body.scrollHeight,
-            doc.documentElement.scrollHeight
-          );
-          this.iframeHeight = newHeight;
-        }, 100);
-      } catch {
-        this.iframeHeight = 400;
+      const doc = iframe.contentDocument || iframe.contentWindow.document;
+      if (!doc || !doc.body) {
+        return;
+      }
+      const newHeight = Math.max(doc.body.scrollHeight, doc.body.getBoundingClientRect().height);
+      this.iframeHeight = newHeight;
+
+      doc.body.style.overflow = 'hidden';
+      doc.querySelectorAll('img').forEach(img => {
+        if (!img.complete) {
+          img.onload = () => this.recalculateIframeHeight();
+        }
+      });
+
+      if (!this.iframeVisible) {
+        this.iframeVisible = true;
+      }
+
+      if (!this.resizeObserver) {
+        this.resizeObserver = new ResizeObserver(() => this.recalculateIframeHeight());
+        this.resizeObserver.observe(doc.body);
       }
     }
   }

@@ -49,7 +49,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-btn
           icon
           @click="editItem(item)">
-          <v-icon size="20">fa-edit</v-icon>
+          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
         </v-btn>
         <v-btn
           icon

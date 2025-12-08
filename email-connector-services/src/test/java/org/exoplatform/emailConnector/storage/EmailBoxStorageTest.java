@@ -41,6 +41,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
 
 @SpringBootTest(classes = { EmailBoxStorage.class })
@@ -65,7 +66,7 @@ public class EmailBoxStorageTest {
       } else {
         entity.setSubject(entity.getSubject() + " (updated)");
       }
-      when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Optional.of(entity)
+      when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(Optional.of(entity)
                                                                                    .stream()
                                                                                    .filter(email -> email.getUserId()
                                                                                                          .equals("root"))
@@ -75,12 +76,12 @@ public class EmailBoxStorageTest {
     });
 
     doAnswer(invocation -> {
-      when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Collections.emptyList());
+      when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(Collections.emptyList());
       return null;
     }).when(emailBoxDAO).deleteByUserId(any());
 
     doAnswer(invocation -> {
-      when(emailBoxDAO.findByUserIdOrderBySentDateDesc("root")).thenReturn(Collections.emptyList());
+      when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(Collections.emptyList());
       return null;
     }).when(emailBoxDAO).deleteEmailsByIds(any());
   }
@@ -129,7 +130,7 @@ public class EmailBoxStorageTest {
     assertEquals(2l, retrievedEmailEntities.get(0).getId());
     assertEquals(1212l, retrievedEmailEntities.get(0).getMailRemoteId());
     assertEquals("subject", retrievedEmailEntities.get(0).getSubject());
-    assertEquals("excerpt", retrievedEmailEntities.get(0).getContent());
+    assertEquals("excerpt", retrievedEmailEntities.get(0).getContent().getBody());
     assertEquals("sender", retrievedEmailEntities.get(0).getSender().getName());
   }
 
@@ -163,7 +164,7 @@ public class EmailBoxStorageTest {
                      1212l,
                      username,
                      "subject",
-                     "excerpt",
+                     new EmailContent("excerpt", null),
                      new Date(),
                      new EmailSender("sender", null, null, null),
                      false,

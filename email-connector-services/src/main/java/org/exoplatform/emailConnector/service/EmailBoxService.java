@@ -27,7 +27,6 @@ import javax.mail.Message;
 import javax.mail.MessagingException;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
-import javax.mail.internet.MimeMessage;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -41,6 +40,7 @@ import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
+import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
@@ -231,8 +231,8 @@ public class EmailBoxService {
                          emailRemoteId,
                          username,
                          message.getSubject(),
-                         EmailConnectorUtils.getMessageContent(new MimeMessage((MimeMessage) message), false),
-                         message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate(),
+                         EmailConnectorUtils.getMessageContent(message, false),
+                         message.getReceivedDate(),
                          emailSender,
                          message.isSet(Flags.Flag.SEEN),
                          emailToRecipients,
@@ -342,11 +342,12 @@ public class EmailBoxService {
   private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException,
                                                                                             IllegalAccessException {
     for (Message message : serverMessages) {
-      long messageUid = uidFolder.getUID(message);
-      Email email = getEmailByMailRemoteIdAndUserId(messageUid, username);
-      if (email == null) {
-        try {
-          String excerpt = EmailConnectorUtils.getMessageContent(new MimeMessage((MimeMessage) message), true);
+      try {
+        long messageUid = uidFolder.getUID(message);
+        Email email = getEmailByMailRemoteIdAndUserId(messageUid, username);
+        if (email == null) {
+
+          EmailContent emailContent = EmailConnectorUtils.getMessageContent(message, true);
           String subject = message.getSubject() != null
               && message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..." : message.getSubject();
           EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
@@ -354,18 +355,19 @@ public class EmailBoxService {
                                                 messageUid,
                                                 username,
                                                 subject,
-                                                excerpt,
-                                                message.getSentDate() != null ? message.getSentDate() : message.getReceivedDate(),
+                                                emailContent,
+                                                message.getReceivedDate(),
                                                 emailSender,
                                                 message.isSet(Flags.Flag.SEEN),
                                                 null,
                                                 null,
                                                 null));
-        } catch (Exception e) {
-          LOG.warn("Error when storing email", e);
+
+        } else {
+          updateEmailReadStatus(messageUid, message, username, message.isSet(Flags.Flag.SEEN), false);
         }
-      } else {
-        updateEmailReadStatus(messageUid, message, username, message.isSet(Flags.Flag.SEEN), false);
+      } catch (Exception e) {
+        LOG.warn("Error when storing email", e);
       }
     }
   }

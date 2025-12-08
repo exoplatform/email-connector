@@ -28,7 +28,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-if="userEmailConnector.userConnected"
         @click="$root.$emit('open-user-setting-drawer', userEmailConnector)"
         icon>
-        <v-icon size="20">fa-edit</v-icon>
+        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
       </v-btn>
     </v-list-item-action>
     <v-list-item-action class="ml-3 my-0">

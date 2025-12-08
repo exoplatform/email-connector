@@ -15,26 +15,37 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-progress-circular
-    :title="label"
-    v-on="on"
-    v-bind="attrs"
-    size="20"
-    color="primary"
-    indeterminate 
-    :class="loaderClass" />
+  <div class="mt-5">
+    <div>
+      <v-icon size="20" class="icon-default-color">
+        fa-paperclip
+      </v-icon>
+      <span class="ms-3 font-weight-bold">
+        {{ attachmentsLabel }}
+      </span>
+    </div>
+    <email-connector-mail-box-drawer-list-item-detail-attachment
+      v-for="attachment in emailAttachmentsList"
+      :key="attachment.id"
+      :attachment="attachment" />
+  </div>
 </template>
+
 <script>
 export default {
   props: {
-    label: {
-      type: String,
-      default: null,
+    emailAttachments: {
+      type: Array,
+      default: () => [],
     },
-    loaderClass: {
-      type: String,
-      default: null,
-    }
+  },
+  computed: {
+    attachmentsLabel() {
+      return `${this.$t('emailConnector.mailBox.list.drawer.detail.attachments.label')} (${this.emailAttachments.length})`;
+    },
+    emailAttachmentsList() {
+      return this.emailAttachments.slice(0, 2);
+    },
   },
 };
 </script>
