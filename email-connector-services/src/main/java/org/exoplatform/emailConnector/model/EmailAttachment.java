@@ -27,9 +27,13 @@ public class EmailAttachment {
 
   private Long   id;
 
-  private String   attachmentRemoteId;
+  private Long   mailRemoteId;
+
+  private String attachmentRemoteId;
 
   private String name;
 
   private String mimeType;
+
+  private byte[] data;
 }

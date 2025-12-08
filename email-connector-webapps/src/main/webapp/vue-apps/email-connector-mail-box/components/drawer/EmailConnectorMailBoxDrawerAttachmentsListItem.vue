@@ -16,6 +16,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <div
+    role="button"
+    tabindex="0"
+    @click="downloadAttachment"
+    @keydown.enter="downloadAttachment"
     class="pt-3 text-truncate"
     :title="attachmentTitle">
     <v-icon :size="attachmentIconSize" :color="attachmentColor">
@@ -57,7 +61,10 @@ export default {
     },
   },
   methods: {
-   
+    downloadAttachment() {
+      const url = `/email-connector/rest/email-box/attachments/${this.attachment.mailRemoteId}/${this.attachment.attachmentRemoteId}`;
+      window.open(url, '_blank');
+    }
   }
 };
 </script>
