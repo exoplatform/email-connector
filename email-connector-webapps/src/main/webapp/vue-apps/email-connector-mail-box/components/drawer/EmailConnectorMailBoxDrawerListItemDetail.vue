@@ -80,7 +80,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :email="email" />
           <email-connector-mail-box-drawer-list-item-detail-body
             :expanded-drawer="expandedDrawer" 
-            :email-content="email.content?.body" />
+            :email-body="email.content?.body" />
           <email-connector-mail-box-drawer-list-item-detail-attachments
             :email-attachments="emailAttachments"
             v-if="hasAttachments" />

@@ -15,9 +15,12 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
+  <span v-if="isEmptyBody">
+    {{ $t('emailConnector.mailBox.list.drawer.emptyEmail') }}</span>
   <iframe
+    v-else
     ref="iframe"
-    :srcdoc="sanitizedContent"
+    :srcdoc="sanitizedBody"
     :style="{
       width: '100%',
       border: 'none',
@@ -37,7 +40,7 @@ export default {
     resizeObserver: null   
   }),
   props: {
-    emailContent: {
+    emailBody: {
       type: String,
       default: null,
     },
@@ -47,8 +50,15 @@ export default {
     },
   },
   computed: {
-    sanitizedContent() {
-      return this.makeMailHtml(this.emailContent || '');
+    sanitizedBody() {
+      return this.makeMailHtml(this.emailBody || '');
+    },
+    isEmptyBody() {
+      if (!this.emailBody) {
+        return true;
+      }  
+      const emailBodyText = this.emailBody.replace(/<[^>]*>/g, '').trim();
+      return emailBodyText === '';
     }
   },
   watch: {
