@@ -15,58 +15,65 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-hover v-slot="{ hover }">
-    <div :class="{'light-grey-background-color': hover, 'no-select': isMobile}">
-      <div
-        role="button"
-        tabindex="0"
-        v-touch-hold="openActionMenuDrawer"
-        @click="openDetail"
-        @keydown.enter="openDetail">
-        <v-list-item
-          style="min-height: 0"
-          :class="['px-0', 'pb-2', { 'ms-n3': !email.read }]">
-          <v-list-item-avatar
-            v-if="!email.read"
-            width="8"
-            min-width="8"
-            height="8"
-            class="my-0 me-1 error-color-background" />
-          <v-list-item-content :class="['py-0', { 'font-weight-bold': !email.read }]">
-            <v-list-item-title v-text="email.sender.name" />
-          </v-list-item-content>
-          <v-list-item-action class="my-0">
-            <v-list-item-subtitle v-text="recievedDate" />
-          </v-list-item-action>
-        </v-list-item>
-        <v-list-item
-          style="min-height: 0"
-          class="px-0">
-          <v-list-item-content class="py-0">
-            <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
-            <v-list-item-subtitle v-text="email.content?.body" />
-          </v-list-item-content>
-          <email-connector-mail-box-drawer-list-item-action-menu
-            v-if="hover || menuOpen"
-            ref="menu"
-            :email="email"
-            @open="menuOpen = true"
-            @close="menuOpen = false" /> 
-        </v-list-item>
-      </div>
-      <email-connector-mail-box-drawer-list-item-attachments
-        :email-attachments="emailAttachments"
-        v-if="hasAttachments" />
+  <div
+    role="button"
+    tabindex="0"
+    @mouseenter="!isMobile && (isHover = true)"
+    @mouseleave="!isMobile && (isHover = false)"
+    @focusin="!isMobile && (isHover = true)"
+    @focusout="!isMobile && (isHover = false)"
+    :class="{ 'light-grey-background-color': !isMobile && isHover }">
+    <div
+      role="button"
+      tabindex="0"
+      class="no-select"
+      @click="openDetail"
+      @keydown.enter="openDetail"
+      v-touch-hold="openActionMenuDrawer">
+      <v-list-item
+        style="min-height: 0"
+        :class="['px-0', 'pb-2', { 'ms-n3': !email.read }]">
+        <v-list-item-avatar
+          v-if="!email.read"
+          width="8"
+          min-width="8"
+          height="8"
+          class="my-0 me-1 error-color-background" />
+        <v-list-item-content :class="['py-0', { 'font-weight-bold': !email.read }]">
+          <v-list-item-title v-text="email.sender.name" />
+        </v-list-item-content>
+        <v-list-item-action class="my-0">
+          <v-list-item-subtitle v-text="recievedDate" />
+        </v-list-item-action>
+      </v-list-item>
+      <v-list-item
+        style="min-height: 0"
+        class="px-0">
+        <v-list-item-content class="py-0">
+          <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
+          <v-list-item-subtitle v-text="email.content?.body" />
+        </v-list-item-content>
+        <email-connector-mail-box-drawer-list-item-action-menu
+          v-if="(!isMobile && isHover) || menuOpen"
+          ref="menu"
+          :email="email"
+          @open="menuOpen = true"
+          @close="menuOpen = false" /> 
+      </v-list-item>
     </div>
-  </v-hover>
+    <email-connector-mail-box-drawer-list-item-attachments
+      :email-attachments="emailAttachments"
+      v-if="hasAttachments" />
+  </div>
 </template>
 
-<script>
+<script>  
 export default {
   data() {
     return {
       menu: false,
       menuOpen: false,
+      isHover: false
     };
   },
   props: {
