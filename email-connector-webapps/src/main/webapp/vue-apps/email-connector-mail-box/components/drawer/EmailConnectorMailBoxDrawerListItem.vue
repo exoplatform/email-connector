@@ -51,7 +51,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="px-0">
         <v-list-item-content class="py-0">
           <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
-          <v-list-item-subtitle v-text="email.content?.body" />
+          <v-list-item-subtitle v-text="body" />
         </v-list-item-content>
         <email-connector-mail-box-drawer-list-item-action-menu
           v-if="(!isMobile && isHover) || menuOpen"
@@ -94,6 +94,9 @@ export default {
     },
     emailAttachments() {
       return this.email.content?.attachments || [];
+    },
+    body() {
+      return this.email.content?.body || this.$t('emailConnector.mailBox.list.drawer.emptyEmail');
     },
   },
   methods: {
