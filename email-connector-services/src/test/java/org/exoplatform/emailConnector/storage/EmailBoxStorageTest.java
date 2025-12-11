@@ -136,7 +136,8 @@ public class EmailBoxStorageTest {
     assertEquals(2l, retrievedEmailEntities.get(0).getId());
     assertEquals(1212l, retrievedEmailEntities.get(0).getMailRemoteId());
     assertEquals("subject", retrievedEmailEntities.get(0).getSubject());
-    assertEquals("excerpt", retrievedEmailEntities.get(0).getContent().getBody());
+    assertEquals("body", retrievedEmailEntities.get(0).getContent().getBody());
+    assertEquals("body", retrievedEmailEntities.get(0).getContent().getExcerpt());
     assertEquals("sender", retrievedEmailEntities.get(0).getSender().getName());
   }
 
@@ -173,8 +174,11 @@ public class EmailBoxStorageTest {
                                                        1212l,
                                                        "root",
                                                        "subject",
-                                                       "excerpt",
+                                                       "body",
                                                        "sender",
+                                                       "to",
+                                                       "cc",
+                                                       "bcc",
                                                        new Date(),
                                                        false,
                                                        null);
@@ -199,7 +203,7 @@ public class EmailBoxStorageTest {
                      1212l,
                      username,
                      "subject",
-                     new EmailContent("excerpt", List.of(emailAttachment)),
+                     new EmailContent("body", null, List.of(emailAttachment)),
                      new Date(),
                      new EmailSender("sender", null, null, null),
                      false,

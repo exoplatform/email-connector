@@ -21,7 +21,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-model="emailDetailDrawer"
     :right="!$vuetify.rtl"
     :allow-expand="!$root.isMobile"
-    :loading="loading"
     go-back-button
     @closed="close"
     @expand-updated="expandedDrawer = $event">
@@ -30,7 +29,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template #titleIcons>
       <v-btn
-        v-if="!loading"
         :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
         v-on="on"
         v-bind="attrs"
@@ -39,7 +37,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
       </v-btn>
     </template>
-    <template v-if="emailDetailDrawer && !loading && email" #content>
+    <template v-if="emailDetailDrawer && email" #content>
       <div
         class="fill-height overflow-y-auto specific-scrollbar">
         <v-list class="mt-5 py-0 me-4 ms-4 mb-5">
@@ -94,7 +92,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     emailDetailDrawer: false,
-    loading: false,
     email: null,
     expandedHeader: false,
     expandedDrawer: false,
@@ -136,15 +133,11 @@ export default {
     },
   },
   methods: {
-    open(mailRemoteId) {
-      this.loading = true;
+    async open(email) {
+      this.email = email;
       this.$refs.emailDetailDrawer.open();
-      this.$root.$emit('update-email-read-status', { emailId: mailRemoteId, read: true });
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
-        this.email = email;
-      }).finally(() => {
-        this.loading = false;
-      });
+      this.$root.$emit('update-email-read-status', { emailId: email.mailRemoteId, read: true });
+      await this.$emailConnectorMailBoxService.broadcastOpenEmail();
     },
     toggleDetails() {
       this.expandedHeader = !this.expandedHeader;

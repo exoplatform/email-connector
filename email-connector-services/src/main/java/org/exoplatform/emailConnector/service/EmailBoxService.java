@@ -33,6 +33,7 @@ import javax.mail.Multipart;
 import javax.mail.Part;
 import javax.mail.Store;
 import javax.mail.UIDFolder;
+import javax.mail.internet.InternetAddress;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -173,9 +174,13 @@ public class EmailBoxService {
    * @param username user getting user emails
    * @return list of stored {@link Email} in datasource
    */
-  public EmailBox getEmailBox(String username) {
-    List<Email> emails = emailBoxStorage.getEmails(username);
+  public EmailBox getEmailBox(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
+    List<Email> emails = emailBoxStorage.getEmails(username);
     return new EmailBox(emails, userEmailSetting.getEmailSyncStatus());
   }
 
@@ -205,76 +210,9 @@ public class EmailBoxService {
     jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
   }
 
-  /**
-   * Retrieve remote email by its id
-   *
-   * @param emailRemoteId email remote id
-   * @param username user for which email will be retrieved
-   * @return {@link Email} from mail server
-   */
-  public Email getRemoteEmailById(long emailRemoteId, String username) throws IllegalAccessException {
-    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
-    if (userEmailSetting.getEmailConnectorId() == null
-        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
-    }
-    Store store = null;
-    Folder inbox = null;
-    try {
-      store = userEmailSettingService.connect(userEmailSetting);
-      inbox = store.getFolder("INBOX");
-      inbox.open(Folder.READ_WRITE);
-      Message message = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
-      if (message != null) {
-        EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
-        List<EmailRecipient> emailToRecipients =
-                                               EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO),
-                                                                                      username);
-        List<EmailRecipient> emailCcRecipients =
-                                               EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.CC),
-                                                                                      username);
-        List<EmailRecipient> emailBccRecipients =
-                                                EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
-                                                                                       username);
-        broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, username);
-        return new Email(null,
-                         emailRemoteId,
-                         username,
-                         message.getSubject(),
-                         EmailConnectorUtils.getMessageContent(emailRemoteId, message, false),
-                         message.getReceivedDate(),
-                         emailSender,
-                         message.isSet(Flags.Flag.SEEN),
-                         emailToRecipients,
-                         emailCcRecipients,
-                         emailBccRecipients);
-      }
-
-    } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
-    } finally {
-      try {
-        try {
-          if (inbox != null && inbox.isOpen()) {
-            inbox.close(false);
-          }
-        } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing inbox", messagingException);
-        }
-        if (store != null && store.isConnected()) {
-          store.close();
-        }
-      } catch (MessagingException messagingException) {
-        LOG.warn("Error when closing store", messagingException);
-      }
-    }
-    return null;
-  }
-
   public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long emailRemoteId,
-                                                         String attachmentId,
-                                                         String username) throws IllegalAccessException {
+                                                                  String attachmentId,
+                                                                  String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -287,7 +225,9 @@ public class EmailBoxService {
       inbox = store.getFolder("INBOX");
       inbox.open(Folder.READ_ONLY);
       Message message = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
-      EmailAttachment emailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(emailRemoteId, attachmentId, username);
+      EmailAttachment emailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(emailRemoteId,
+                                                                                                 attachmentId,
+                                                                                                 username);
       BodyPart bodyPart = getPartByPath(message, attachmentId);
       if (bodyPart == null) {
         throw new RuntimeException("Attachment not found in the email");
@@ -414,11 +354,20 @@ public class EmailBoxService {
         long messageUid = uidFolder.getUID(message);
         Email email = getEmailByMailRemoteIdAndUserId(messageUid, username);
         if (email == null) {
-
-          EmailContent emailContent = EmailConnectorUtils.getMessageContent(messageUid, message, true);
+          EmailContent emailContent = EmailConnectorUtils.getMessageContent(messageUid, message);
           String subject = message.getSubject() != null
               && message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..." : message.getSubject();
-          EmailSender emailSender = EmailConnectorUtils.getEmailSender(message.getFrom());
+          EmailSender emailSender = message.getFrom() != null
+              && message.getFrom().length != 0 ? EmailConnectorUtils.getEmailSender(message.getFrom()[0], false) : null;
+          List<EmailRecipient> emailToRecipients =
+                                                 EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO),
+                                                                                        username);
+          List<EmailRecipient> emailCcRecipients =
+                                                 EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.CC),
+                                                                                        username);
+          List<EmailRecipient> emailBccRecipients =
+                                                  EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
+                                                                                         username);
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
                                                 username,
@@ -427,9 +376,9 @@ public class EmailBoxService {
                                                 message.getReceivedDate(),
                                                 emailSender,
                                                 message.isSet(Flags.Flag.SEEN),
-                                                null,
-                                                null,
-                                                null));
+                                                emailToRecipients,
+                                                emailCcRecipients,
+                                                emailBccRecipients));
 
         } else {
           updateEmailReadStatus(messageUid, message, username, message.isSet(Flags.Flag.SEEN), false);

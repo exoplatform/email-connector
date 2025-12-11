@@ -29,12 +29,19 @@ public class EmailContent {
 
   private String                body;
 
+  private String                excerpt;
+
   private List<EmailAttachment> attachments;
 
   private boolean               html;
 
-  public EmailContent(String body, List<EmailAttachment> attachments) {
+  public EmailContent(String body) {
     this.body = body;
+  }
+
+  public EmailContent(String body, String excerpt, List<EmailAttachment> attachments) {
+    this.body = body;
+    this.excerpt = excerpt;
     this.attachments = attachments;
   }
 }
