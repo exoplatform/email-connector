@@ -43,12 +43,12 @@ public class EmailConnectorUtilsTest {
     Message message = mock(Message.class);
     when(message.isMimeType("text/*")).thenReturn(true);
     when(message.getContent()).thenReturn("test message");
-    EmailContent emailContent = EmailConnectorUtils.getMessageContent(1L, message, false);
+    EmailContent emailContent = EmailConnectorUtils.getMessageContent(1L, message);
     assertEquals("test message", emailContent.getBody());
     assertFalse(emailContent.isHtml());
-    when(message.getContent()).thenReturn("test message test message test message test message test message");
-    emailContent = EmailConnectorUtils.getMessageContent(1L, message, true);
-    assertEquals("test message test message test message test messag...", emailContent.getBody());
+//    when(message.getContent()).thenReturn("test message test message test message test message test message");
+//    emailContent = EmailConnectorUtils.getMessageContent(1L, message, true);
+//    assertEquals("test message test message test message test messag...", emailContent.getBody());
     when(message.isMimeType("text/*")).thenReturn(false);
     MimeMultipart mimeMultipart = mock(MimeMultipart.class);
     when(message.getContent()).thenReturn(mimeMultipart);
@@ -57,12 +57,12 @@ public class EmailConnectorUtilsTest {
     when(mimeMultipart.getBodyPart(0)).thenReturn(bodyPart);
     when(bodyPart.isMimeType("text/html")).thenReturn(true);
     when(bodyPart.getContent()).thenReturn("<span>test message</span>");
-    emailContent = EmailConnectorUtils.getMessageContent(1L, message, false);
+    emailContent = EmailConnectorUtils.getMessageContent(1L, message);
     assertEquals("<span>test message</span>", emailContent.getBody());
     when(bodyPart.isMimeType("text/html")).thenReturn(false);
     when(bodyPart.isMimeType("text/plain")).thenReturn(true);
     when(bodyPart.getContent()).thenReturn("test message");
-    emailContent = EmailConnectorUtils.getMessageContent(1L, message, false);
+    emailContent = EmailConnectorUtils.getMessageContent(1L, message);
     assertEquals("test message", emailContent.getBody());
   }
 

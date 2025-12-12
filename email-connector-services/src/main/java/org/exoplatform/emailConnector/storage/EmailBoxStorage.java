@@ -16,8 +16,14 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
+import javax.mail.internet.InternetAddress;
+
+import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -28,7 +34,8 @@ import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
-import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import lombok.SneakyThrows;
 
@@ -51,7 +58,7 @@ public class EmailBoxStorage {
     }
     EmailBoxEntity emailBoxEntity = toEntity(email);
     emailBoxEntity = emailBoxDao.save(emailBoxEntity);
-    return fromEntity(emailBoxEntity, false);
+    return fromEntity(emailBoxEntity, false, false, null);
   }
 
   public void updateEmail(Email email) {
@@ -64,12 +71,12 @@ public class EmailBoxStorage {
 
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId, String userId) {
     EmailBoxEntity emailBoxEntity = emailBoxDao.findByMailRemoteIdAndUserId(mailRemoteId, userId);
-    return fromEntity(emailBoxEntity, false);
+    return fromEntity(emailBoxEntity, false, false, userId);
   }
 
   public List<Email> getEmails(String username) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(username);
-    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity, true)).toList();
+    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, username)).toList();
   }
 
   public void deleteUserEmails(String username) {
@@ -81,7 +88,10 @@ public class EmailBoxStorage {
   }
 
   public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId, String attachmentId, String userId) {
-    EmailAttachmentEntity emailAttachmentEntity = emailAttachmentDAO.findByMailRemoteIdAndAttachmentIdAndUserId(mailRemoteId, attachmentId, userId)
+    EmailAttachmentEntity emailAttachmentEntity = emailAttachmentDAO
+                                                                    .findByMailRemoteIdAndAttachmentIdAndUserId(mailRemoteId,
+                                                                                                                attachmentId,
+                                                                                                                userId)
                                                                     .orElse(null);
     ;
     return fromEmailAttachmentEntity(emailAttachmentEntity);
@@ -96,7 +106,11 @@ public class EmailBoxStorage {
                                                          email.getUserId(),
                                                          email.getSubject(),
                                                          email.getContent() != null ? email.getContent().getBody() : null,
-                                                         email.getSender().getName(),
+                                                         email.getSender() != null ? email.getSender().getName() + ","
+                                                             + email.getSender().getAddress() : "",
+                                                         toRecipientsString(email.getTo()),
+                                                         toRecipientsString(email.getCc()),
+                                                         toRecipientsString(email.getBcc()),
                                                          email.getRecievedDate(),
                                                          email.isRead(),
                                                          null);
@@ -110,30 +124,40 @@ public class EmailBoxStorage {
   }
 
   @SneakyThrows
-  private Email fromEntity(EmailBoxEntity emailBoxEntity, boolean withAttachments) {
+  private Email fromEntity(EmailBoxEntity emailBoxEntity, boolean withAttachments, boolean isExcerpt, String userId) {
     if (emailBoxEntity == null) {
       return null;
     } else {
       List<EmailAttachment> attachments = withAttachments
-          && emailBoxEntity.getAttachments() != null ? emailBoxEntity.getAttachments().stream().map(attachment -> {
-            return fromEmailAttachmentEntity(attachment);
-          }).toList() : null;
+          && emailBoxEntity.getAttachments() != null ? emailBoxEntity.getAttachments().stream().map(this::fromEmailAttachmentEntity).filter(Objects::nonNull).toList() : null;
+      String excerpt = null;
+      if (isExcerpt) {
+        excerpt = Jsoup.parse(emailBoxEntity.getBody()).text().trim();
+        if (excerpt.length() > 50) {
+          excerpt = excerpt.substring(0, 50) + "...";
+        }
+      }
+      String[] emailSenderParts = emailBoxEntity.getSender().split(",");
+      InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
+      InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
+      InternetAddress[] emailCcRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getCc());
+      InternetAddress[] emailBccRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getBcc());
       return new Email(emailBoxEntity.getId(),
                        emailBoxEntity.getMailRemoteId(),
                        emailBoxEntity.getUserId(),
                        emailBoxEntity.getSubject(),
-                       new EmailContent(emailBoxEntity.getExcerpt(), attachments),
+                       new EmailContent(emailBoxEntity.getBody(), excerpt, attachments),
                        emailBoxEntity.getRecievedDate(),
-                       new EmailSender(emailBoxEntity.getSender(), null, null, null),
+                       EmailConnectorUtils.getEmailSender(emailSenderAddress, true),
                        emailBoxEntity.isRead(),
-                       null,
-                       null,
-                       null);
+                       EmailConnectorUtils.getEmailRecipients(emailToRecipientsInternetAddresses, userId),
+                       EmailConnectorUtils.getEmailRecipients(emailCcRecipientsInternetAddresses, userId),
+                       EmailConnectorUtils.getEmailRecipients(emailBccRecipientsInternetAddresses, userId));
     }
   }
 
   private EmailAttachmentEntity toEmailAttachmentEntity(EmailAttachment emailAttachment, EmailBoxEntity emailBoxEntity) {
-    if (emailAttachment == null) {
+    if (emailAttachment == null || emailAttachment.getName() == null) {
       return null;
     } else {
       return new EmailAttachmentEntity(emailAttachment.getId(),
@@ -155,5 +179,30 @@ public class EmailBoxStorage {
                                  emailAttachmentEntity.getMimeType(),
                                  null);
     }
+  }
+
+  private String toRecipientsString(List<EmailRecipient> recipients) {
+    if (recipients == null || recipients.isEmpty()) {
+      return "";
+    }
+    return recipients.stream()
+                     .map(recipient -> recipient.getName() + "," + recipient.getAddress())
+                     .collect(Collectors.joining(";"));
+  }
+
+  public static InternetAddress[] toRecipientsInternetAddresses(String recipientsString) {
+    if (recipientsString == null || recipientsString.trim().isEmpty()) {
+      return new InternetAddress[0];
+    }
+    return Arrays.stream(recipientsString.split(";")).map(entry -> {
+      String[] parts = entry.split(",", 2);
+      String name = parts.length > 0 ? parts[0] : "";
+      String address = parts.length > 1 ? parts[1] : "";
+      try {
+        return new InternetAddress(address, name);
+      } catch (Exception e) {
+        return null;
+      }
+    }).filter(Objects::nonNull).toArray(InternetAddress[]::new);
   }
 }

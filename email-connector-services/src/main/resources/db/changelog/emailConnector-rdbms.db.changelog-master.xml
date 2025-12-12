@@ -111,5 +111,17 @@
       oldColumnName="SENT_DATE"
       newColumnName="RECIEVED_DATE"
       columnDataType="TIMESTAMP" />
-    </changeSet>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-8">
+    <renameColumn
+      tableName="EMAIL_BOX"
+      oldColumnName="EXCERPT"
+      newColumnName="BODY"
+      columnDataType="LONGTEXT" />
+    <addColumn tableName="EMAIL_BOX">
+      <column name="RECIEVER" type="VARCHAR(1024)"/>
+      <column name="CC" type="VARCHAR(1024)"/>
+      <column name="BCC" type="VARCHAR(1024)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>

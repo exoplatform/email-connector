@@ -29,8 +29,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import java.util.Objects;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -118,16 +116,10 @@ public class EmailBoxRestTest {
   }
 
   @Test
-  void getRemoteEmailById() throws Exception {
-    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").with(testSimpleUser()));
-    response.andExpect(status().isNotFound());
-    when(emailBoxService.getRemoteEmailById(anyLong(), anyString())).thenReturn(mock(Email.class));
-    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").with(testSimpleUser()));
-    response.andExpect(status().isOk());
-    String eTag = "\"" + Objects.hash(2122121, SIMPLE_USER) + "\"";
-    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/2122121").header("If-None-Match", eTag).with(testSimpleUser()));
+  void broadcastOpenEmail() throws Exception {
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/broadcast").with(testSimpleUser()));
     verify(emailBoxService).broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, SIMPLE_USER);
-    response.andExpect(status().isNotModified());
+    response.andExpect(status().isOk());
   }
 
   @Test
@@ -145,8 +137,8 @@ public class EmailBoxRestTest {
     response.andExpect(status().isNotFound());
     EmailAttachment emailAttachment = mock(EmailAttachment.class);
     when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(anyLong(),
-                                                         anyString(),
-                                                         anyString())).thenReturn(emailAttachment);
+                                                                  anyString(),
+                                                                  anyString())).thenReturn(emailAttachment);
     when(emailAttachment.getName()).thenReturn("attachment.pdf");
     when(emailAttachment.getMimeType()).thenReturn("application/pdf");
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));

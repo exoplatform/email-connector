@@ -54,11 +54,20 @@ public class EmailBoxEntity {
   @Column(name = "SUBJECT")
   private String                      subject;
 
-  @Column(name = "EXCERPT")
-  private String                      excerpt;
+  @Column(name = "BODY")
+  private String                      body;
 
   @Column(name = "SENDER")
   private String                      sender;
+
+  @Column(name = "RECIEVER")
+  private String                      to;
+
+  @Column(name = "CC")
+  private String                      cc;
+
+  @Column(name = "BCC")
+  private String                      bcc;
 
   @Column(name = "RECIEVED_DATE")
   private Date                        recievedDate;
