@@ -46,7 +46,6 @@ import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeMultipart;
 
 import org.apache.commons.lang3.StringUtils;
-import org.jsoup.Jsoup;
 
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.container.ExoContainerContext;
@@ -88,8 +87,8 @@ public class EmailConnectorUtils {
   private static final Log   LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
   @SneakyThrows
-  public static EmailContent getMessageContent(long messageUid, Message message, boolean excerpt) {
-    EmailContent content = new EmailContent("", null);
+  public static EmailContent getMessageContent(long messageUid, Message message) {
+    EmailContent content = new EmailContent("");
     try {
       if (message.isMimeType("text/*")) {
         content = safeGetContent(message);
@@ -100,14 +99,6 @@ public class EmailConnectorUtils {
       LOG.warn("Error extracting content from message: From={}, Subject={}", message.getFrom()[0], message.getSubject(), e);
     }
     String bodyText = content.getBody() != null ? content.getBody().trim() : "";
-    if (excerpt) {
-      String parsedText = Jsoup.parse(bodyText).text().trim();
-      if (parsedText.length() > 50) {
-        bodyText = parsedText.substring(0, 50) + "...";
-      } else {
-        bodyText = parsedText;
-      }
-    }
     content.setBody(bodyText);
     return content;
   }
@@ -127,7 +118,7 @@ public class EmailConnectorUtils {
       Profile userProfile = getUserProfileByEmail(ia.getAddress());
       String profileUrl = null;
       boolean isCurrentUser = false;
-      if (userProfile != null) {
+      if (username != null && userProfile != null) {
         profileUrl = userProfile.getUrl();
         isCurrentUser = userProfile.getIdentity().getRemoteId().equals(username);
       }
@@ -138,23 +129,21 @@ public class EmailConnectorUtils {
     }).collect(Collectors.toList());
   }
 
-  public static EmailSender getEmailSender(Address[] messageSender) {
-    if (messageSender == null || messageSender.length == 0) {
-      return null;
-    }
-    Address a = messageSender[0];
-    if (a instanceof InternetAddress ia) {
-      Profile userProfile = getUserProfileByEmail(ia.getAddress());
+  public static EmailSender getEmailSender(Address messageSenderAddress, boolean withAvatar) {
+    if (messageSenderAddress instanceof InternetAddress internetAddress) {
       String avatarUrl = null;
       String profileUrl = null;
-      String senderName = ia.getPersonal() != null ? ia.getPersonal() : ia.getAddress();
-      if (userProfile != null) {
-        avatarUrl = userProfile.getAvatarUrl();
-        profileUrl = userProfile.getUrl();
-      } else {
-        avatarUrl = getSenderDefaultAvatar(senderName);
+      String senderName = internetAddress.getPersonal() != null ? internetAddress.getPersonal() : internetAddress.getAddress();
+      if (withAvatar) {
+        Profile userProfile = getUserProfileByEmail(internetAddress.getAddress());
+        if (userProfile != null) {
+          avatarUrl = userProfile.getAvatarUrl();
+          profileUrl = userProfile.getUrl();
+        } else {
+          avatarUrl = getSenderDefaultAvatar(senderName);
+        }
       }
-      return new EmailSender(senderName, ia.getAddress(), avatarUrl, profileUrl);
+      return new EmailSender(senderName, internetAddress.getAddress(), avatarUrl, profileUrl);
     }
     return null;
   }
@@ -186,11 +175,11 @@ public class EmailConnectorUtils {
       if (content instanceof InputStream) {
         emailBody = new String(((InputStream) content).readAllBytes(), StandardCharsets.UTF_8);
       }
-      EmailContent emailContent = new EmailContent(emailBody, null);
+      EmailContent emailContent = new EmailContent(emailBody);
       emailContent.setHtml(part.isMimeType("text/html"));
       return emailContent;
     } catch (Exception e) {
-      EmailContent emailContent = new EmailContent(emailBody, null);
+      EmailContent emailContent = new EmailContent(emailBody);
       emailContent.setHtml(false);
       return emailContent;
     }
@@ -202,7 +191,7 @@ public class EmailConnectorUtils {
     EmailContent htmlContent = null;
     EmailContent plainContent = null;
     Map<String, String> cidImageMap = new HashMap<>();
-    EmailContent finalContent = new EmailContent("", null);
+    EmailContent finalContent = new EmailContent("");
     for (int i = 0; i < mimeMultipart.getCount(); i++) {
       BodyPart bodyPart = mimeMultipart.getBodyPart(i);
       String disposition = bodyPart.getDisposition();
@@ -216,13 +205,13 @@ public class EmailConnectorUtils {
         if (nested != null && !nested.getBody().isEmpty()) {
           if (nested.isHtml()) {
             if (htmlContent == null) {
-              htmlContent = new EmailContent("", null);
+              htmlContent = new EmailContent("");
               htmlContent.setHtml(true);
             }
             htmlContent.setBody(htmlContent.getBody() + nested.getBody());
           } else {
             if (plainContent == null) {
-              plainContent = new EmailContent("", null);
+              plainContent = new EmailContent("");
               plainContent.setHtml(false);
             }
             plainContent.setBody(plainContent.getBody() + nested.getBody());
