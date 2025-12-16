@@ -30,9 +30,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="attachmentsDrawer" #content>
       <email-connector-mail-box-drawer-attachments-list
         class="pt-2 ps-4"
-        :email-attachments="emailAttachments" 
-        :attachment-icon-size="41" 
-        :attachment-icon-margin="5" />
+        :email-attachments="emailAttachments" />
     </template>
   </exo-drawer>
 </template>

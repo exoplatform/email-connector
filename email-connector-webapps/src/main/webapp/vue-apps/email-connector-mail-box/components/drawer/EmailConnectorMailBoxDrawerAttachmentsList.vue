@@ -19,9 +19,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-mail-box-drawer-attachments-list-item
       v-for="attachment in emailAttachments"
       :key="attachment.id"
-      :attachment="attachment" 
-      :attachment-icon-size="attachmentIconSize" 
-      :attachment-icon-margin="attachmentIconMargin" />
+      :attachment="attachment" />
   </div>
 </template>
 
@@ -34,11 +32,7 @@ export default {
     },
     attachmentIconSize: {
       type: Number,
-      default: 36,
-    },
-    attachmentIconMargin: {
-      type: Number,
-      default: 2,
+      default: 40,
     },
   }
 };

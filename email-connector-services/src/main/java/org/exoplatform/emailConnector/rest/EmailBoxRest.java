@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.rest;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -144,16 +146,23 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public ResponseEntity<byte[]> getAttachmentByMailRemoteIdAnId(HttpServletRequest request,
-                                                                @Parameter(description = "Email id", required = true)
-                                                                @PathVariable("emailRemoteId")
-                                                                long emailRemoteId,
-                                                                @Parameter(description = "Attachment id", required = true)
-                                                                @PathVariable("attachmentId")
-                                                                String attachmentId) {
+                                                  @Parameter(description = "Email id", required = true)
+                                                  @PathVariable("emailRemoteId")
+                                                  long emailRemoteId,
+                                                  @Parameter(description = "Attachment id", required = true)
+                                                  @PathVariable("attachmentId")
+                                                  String attachmentId,
+                                                  @RequestHeader(value = "If-None-Match", required = false)
+                                                  String ifNoneMatch) {
     try {
-      EmailAttachment emailAttachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(emailRemoteId,
-                                                                                                 attachmentId,
-                                                                                                 request.getRemoteUser());
+      String eTag = "\"" + Objects.hash(emailRemoteId, attachmentId, request.getRemoteUser()) + "\"";
+      if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
+        return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
+      }
+      EmailAttachment emailAttachment =
+                                      emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(emailRemoteId,
+                                                                                        attachmentId,
+                                                                                        request.getRemoteUser());
       if (emailAttachment == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
@@ -161,9 +170,10 @@ public class EmailBoxRest {
       String filename = emailAttachment.getName();
       String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
       return ResponseEntity.ok()
+                           .eTag(eTag)
                            .contentType(MediaType.parseMediaType(emailAttachment.getMimeType()))
                            .header(HttpHeaders.CONTENT_DISPOSITION,
-                                   "inline; filename=\"" + filename + "\"; filename*=UTF-8''" + encodedFilename)
+                                   "attachment; filename=\"" + filename + "\"; filename*=UTF-8''" + encodedFilename)
                            .body(data);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);

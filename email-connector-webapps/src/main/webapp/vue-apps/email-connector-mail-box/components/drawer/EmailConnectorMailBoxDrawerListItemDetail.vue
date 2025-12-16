@@ -42,15 +42,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="fill-height overflow-y-auto specific-scrollbar">
         <v-list class="mt-5 py-0 me-4 ms-4 mb-5">
           <v-list-item
-            style="min-height: 0"
-            class="px-0 pb-4">
+            class="px-0 pb-4 height-auto">
             <v-list-item-content class="py-0 text-title text-wrap overflow-visible">
               <v-list-item-title v-text="email.subject" class="text-wrap overflow-visible" />
             </v-list-item-content>
           </v-list-item>
           <v-list-item
-            style="min-height: 0"
-            :class="recipientsClass">
+            :class="['height-auto', recipientsClass]">
             <email-connector-mail-box-drawer-list-item-detail-sender-avatar 
               :email="email" 
               class="me-3 my-0" />
@@ -90,12 +88,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  data: () => ({
-    emailDetailDrawer: false,
-    email: null,
-    expandedHeader: false,
-    expandedDrawer: false,
-  }),
+  data() {
+    return {
+      emailDetailDrawer: false,
+      email: null,
+      expandedHeader: false,
+      expandedDrawer: false,
+    };
+  },
   created() {
     this.$root.$on('open-email-detail-drawer', (mailRemoteId) => {
       this.open(mailRemoteId); 

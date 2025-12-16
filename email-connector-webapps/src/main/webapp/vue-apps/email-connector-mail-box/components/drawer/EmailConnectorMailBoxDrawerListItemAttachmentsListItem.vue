@@ -22,42 +22,69 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     color="primary"
     class="me-2"
     outlined>
-    <v-icon
-      size="12"
-      :color="attachmentColor"
-      class="pe-2">
-      {{ attachmentIcon }}
-    </v-icon>
-    <span class="text-truncate primary--text">{{ attachment.name }}</span>
+    <email-connector-mail-box-drawer-attachment-item
+      :downloading="downloading" 
+      :attachment="attachment" 
+      :loader-width="2"
+      attachment-icon-size="12"
+      attachment-name-class="primary--text ms-2" />
   </v-chip>
 </template>
 
 <script>
 export default {
+  data() {
+    return {
+      downloading: false,
+      abortController: null
+    };
+  },
   props: {
     attachment: {
       type: Object,
       default: () => null,
-    }
+    },
+    loaderWidth: {
+      type: Number,
+      default: 4,
+    },
   },
   computed: {
-    attachmentIcon() {
-      return this.$emailConnectorMailBoxService.getAttachmentIcon(this.attachment.mimeType).class;
-    },
-    attachmentColor() {
-      return this.$emailConnectorMailBoxService.getAttachmentIcon(this.attachment.mimeType).color;
-    },
     attachmentTitle() {
       return this.$t('emailConnector.mailBox.list.drawer.detail.attachment.download.title', {
         0: this.attachment.name,
       });
     },
   },
+  beforeDestroy() {
+    if (this.abortController) {
+      this.$root.$emit('open-abort-download-confirm-dialog', this.attachment.mailRemoteId, this.attachment.attachmentRemoteId);
+      this.$root.$on('abort-download-attachment', (mailRemoteId, attachmentRemoteId) => {
+        this.abortDownloadAttachment(mailRemoteId, attachmentRemoteId) ; 
+      });
+    }
+  },
   methods: {
     downloadAttachment() {
-      const url = `/email-connector/rest/email-box/attachments/${this.attachment.mailRemoteId}/${this.attachment.attachmentRemoteId}`;
-      window.open(url, '_blank');
-    }
+      if (this.downloading) {
+        return;
+      }
+      this.downloading = true;
+      this.abortController = new AbortController();
+      this.$emailConnectorMailBoxService.downloadAttachment(this.attachment, this.abortController.signal)
+        .finally(() => {
+          this.downloading = false;
+          this.abortController = null;
+        });
+    },
+    abortDownloadAttachment(mailRemoteId, attachmentRemoteId) {
+      if (this.attachment.mailRemoteId === mailRemoteId && this.attachment.attachmentRemoteId === attachmentRemoteId) {
+        if (this.abortController) {
+          this.abortController.abort();
+          this.downloading = false;
+        }
+      }
+    }  
   }
 };
 </script>

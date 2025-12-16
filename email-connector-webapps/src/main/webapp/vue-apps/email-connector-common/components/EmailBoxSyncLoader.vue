@@ -19,7 +19,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     :title="label"
     v-on="on"
     v-bind="attrs"
-    size="20"
+    :size="iconSize"
+    :width="loaderWidth"
     color="primary"
     indeterminate 
     :class="loaderClass" />
@@ -34,7 +35,15 @@ export default {
     loaderClass: {
       type: String,
       default: null,
-    }
+    },
+    loaderWidth: {
+      type: Number,
+      default: 4,
+    },
+    iconSize: {
+      type: Number,
+      default: 20,
+    },
   },
 };
 </script>

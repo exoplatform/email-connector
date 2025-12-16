@@ -31,8 +31,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       @keydown.enter="openDetail"
       v-touch-hold="openActionMenuDrawer">
       <v-list-item
-        style="min-height: 0"
-        :class="['px-0', 'pb-2', { 'ms-n3': !email.read }]">
+        :class="['height-auto', 'px-0', 'pb-2', { 'ms-n3': !email.read }]">
         <v-list-item-avatar
           v-if="!email.read"
           width="8"
@@ -47,8 +46,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item-action>
       </v-list-item>
       <v-list-item
-        style="min-height: 0"
-        class="px-0">
+        class="px-0 height-auto">
         <v-list-item-content class="py-0">
           <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
           <v-list-item-subtitle v-text="excerpt" />

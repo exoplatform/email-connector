@@ -41,8 +41,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item-action>
           <email-box-sync-loader
             v-if="syncInProgress"
-            :label="$t('UserSettings.emailConnector.sync.tooltip')"
-            icon-size="20" />
+            :label="$t('UserSettings.emailConnector.sync.tooltip')" />
           <v-btn
             v-else
             icon
