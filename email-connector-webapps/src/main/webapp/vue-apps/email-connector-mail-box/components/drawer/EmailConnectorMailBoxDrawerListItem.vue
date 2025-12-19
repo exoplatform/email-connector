@@ -99,7 +99,7 @@ export default {
   },
   methods: {
     openDetail() {
-      this.$root.$emit('open-email-detail-drawer', this.email);
+      this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
     },
     openActionMenuDrawer() {
       this.$root.$emit('open-email-action-menu-drawer', this.email);

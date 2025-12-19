@@ -109,18 +109,20 @@ public class EmailConnectorUtils {
                                                                                                        "10")));
   }
 
-  public static List<EmailRecipient> getEmailRecipients(Address[] messageRecipients, String username) {
+  public static List<EmailRecipient> getEmailRecipients(Address[] messageRecipients, String username, boolean withProfile) {
     if (messageRecipients == null) {
       return Collections.emptyList();
     }
     return Arrays.stream(messageRecipients).filter(a -> a instanceof InternetAddress).map(a -> {
       InternetAddress ia = (InternetAddress) a;
-      Profile userProfile = getUserProfileByEmail(ia.getAddress());
       String profileUrl = null;
       boolean isCurrentUser = false;
-      if (username != null && userProfile != null) {
-        profileUrl = userProfile.getUrl();
-        isCurrentUser = userProfile.getIdentity().getRemoteId().equals(username);
+      if (username != null && withProfile) {
+        Profile userProfile = getUserProfileByEmail(ia.getAddress());
+        if (userProfile != null) {
+          profileUrl = userProfile.getUrl();
+          isCurrentUser = userProfile.getIdentity().getRemoteId().equals(username);
+        }
       }
       return new EmailRecipient(ia.getPersonal() != null ? ia.getPersonal() : ia.getAddress(),
                                 ia.getAddress(),
@@ -129,12 +131,12 @@ public class EmailConnectorUtils {
     }).collect(Collectors.toList());
   }
 
-  public static EmailSender getEmailSender(Address messageSenderAddress, boolean withAvatar) {
+  public static EmailSender getEmailSender(Address messageSenderAddress, boolean withProfile) {
     if (messageSenderAddress instanceof InternetAddress internetAddress) {
       String avatarUrl = null;
       String profileUrl = null;
       String senderName = internetAddress.getPersonal() != null ? internetAddress.getPersonal() : internetAddress.getAddress();
-      if (withAvatar) {
+      if (withProfile) {
         Profile userProfile = getUserProfileByEmail(internetAddress.getAddress());
         if (userProfile != null) {
           avatarUrl = userProfile.getAvatarUrl();

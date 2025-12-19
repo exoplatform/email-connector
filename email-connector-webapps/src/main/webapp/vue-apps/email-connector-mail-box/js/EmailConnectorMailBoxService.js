@@ -130,16 +130,18 @@ export function getEmailBox() {
   });
 }
 
-export function broadcastOpenEmail() {
-  return fetch('/email-connector/rest/email-box/broadcast', {
+export function getEmailByRemoteId(mailRemoteId) {
+  return fetch(`/email-connector/rest/email-box/${mailRemoteId}`, {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
-    method: 'POST'
+    method: 'GET'
   }).then((resp) => {
-    if (!resp?.ok) {
-      throw new Error('Error when broadcasting open email box');
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting email detail');
     }
   });
 }

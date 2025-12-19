@@ -32,7 +32,10 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<EmailBoxEntity> findByUserIdWithAttachments(@Param("username")
   String username);
 
-  EmailBoxEntity findByMailRemoteIdAndUserId(long mailRemoteId, String userId);
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :username AND email.mailRemoteId = :mailRemoteId ORDER BY email.recievedDate DESC")
+  EmailBoxEntity findByMailRemoteIdAndUserId(@Param("mailRemoteId")
+  long mailRemoteId, @Param("username")
+  String userId);
 
   void deleteByUserId(String userId);
 
