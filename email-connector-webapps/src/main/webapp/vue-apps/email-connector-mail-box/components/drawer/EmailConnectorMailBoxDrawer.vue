@@ -21,6 +21,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-model="emailBoxDrawer"
     :right="!$vuetify.rtl"
     :loading="loading"
+    :confirm-close="activeDownload"
+    :confirm-close-labels="{
+      title: $t('emailConnector.mailBox.attachment.download.confirmAbort.title'),
+      message: $t('emailConnector.mailBox.attachment.download.confirmAbort.message'),
+      ok: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.yes'),
+      cancel: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.no')
+    }"
+    @confirm-close="onAbortDownloadConfirmed"
     @closed="close"
     style="outline: none;"
     class="no-box-shadow">
@@ -96,6 +104,7 @@ export default {
       loading: false,
       syncInProgress: false,
       refreshInterval: null,
+      activeDownload: null,
     };
   },
   created() {
@@ -105,6 +114,12 @@ export default {
     });
     this.$root.$on('update-email-read-status', ({ emailId, read }) => {
       this.updateEmailReadStatus(emailId, read);
+    });
+    this.$root.$on('attachment-download-started', (payload) => {
+      this.activeDownload = payload;
+    });
+    this.$root.$on('attachment-download-finished', () => {
+      this.activeDownload = null;
     });
   },
   computed: {
@@ -128,6 +143,10 @@ export default {
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
+    },
+    onAbortDownloadConfirmed() {
+      this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
+      this.close();
     },
     close() {
       this.stopAutoRefresh();

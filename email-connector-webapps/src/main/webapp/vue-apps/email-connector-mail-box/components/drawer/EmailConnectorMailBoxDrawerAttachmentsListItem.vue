@@ -52,13 +52,14 @@ export default {
       default: null,
     },
   },
+  created() {
+    this.onAbortDownload = (mailRemoteId, attachmentRemoteId) => {
+      this.abortDownloadAttachment(mailRemoteId, attachmentRemoteId);
+    };
+    this.$root.$on('abort-download-attachment', this.abortDownloadAttachment);
+  },
   beforeDestroy() {
-    if (this.abortController) {
-      this.$root.$emit('open-abort-download-confirm-dialog', this.attachment.mailRemoteId, this.attachment.attachmentRemoteId);
-      this.$root.$on('abort-download-attachment', (mailRemoteId, attachmentRemoteId) => {
-        this.abortDownloadAttachment(mailRemoteId, attachmentRemoteId) ; 
-      });
-    }
+    this.$root.$off('abort-download-attachment', this.abortDownloadAttachment);
   },
   computed: {
     attachmentTitle() {
@@ -74,17 +75,26 @@ export default {
       }
       this.downloading = true;
       this.abortController = new AbortController();
+      this.$root.$emit('attachment-download-started', {
+        mailRemoteId: this.attachment.mailRemoteId,
+        attachmentRemoteId: this.attachment.attachmentRemoteId,
+        abortController: this.abortController
+      });
       this.$emailConnectorMailBoxService.downloadAttachment(this.attachment, this.abortController.signal)
         .finally(() => {
           this.downloading = false;
           this.abortController = null;
+          this.$root.$emit('attachment-download-finished');
         });
     },
-    abortDownloadAttachment(mailRemoteId, attachmentRemoteId) {
+    abortDownloadAttachment(mailRemoteId, attachmentRemoteId, abortController) {
       if (this.attachment.mailRemoteId === mailRemoteId && this.attachment.attachmentRemoteId === attachmentRemoteId) {
+        this.abortController = abortController;
         if (this.abortController) {
           this.abortController.abort();
           this.downloading = false;
+          this.abortController = null;
+          this.$root.$emit('attachment-download-finished');
         }
       }
     }  

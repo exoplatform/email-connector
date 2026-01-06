@@ -15,7 +15,6 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 import EmailConnectorMailBoxApp from './components/EmailConnectorMailBoxApp.vue';
-import EmailConnectorMailBoxAbortDownloadConfirmDialog from './components/drawer/EmailConnectorMailBoxAbortDownloadConfirmDialog.vue';
 import EmailConnectorMailBoxDrawer from './components/drawer/EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerAttachmentItem from './components/drawer/EmailConnectorMailBoxDrawerAttachmentItem.vue';
 import EmailConnectorMailBoxDrawerAttachmentsDrawer from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsDrawer.vue';
@@ -37,7 +36,6 @@ import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from './components/
 
 const components = {
   'email-connector-mail-box-app': EmailConnectorMailBoxApp,
-  'email-connector-mail-box-abort-download-confirm-dialog': EmailConnectorMailBoxAbortDownloadConfirmDialog,
   'email-connector-mail-box-drawer': EmailConnectorMailBoxDrawer,
   'email-connector-mail-box-drawer-attachment-item': EmailConnectorMailBoxDrawerAttachmentItem,
   'email-connector-mail-box-drawer-attachments-drawer': EmailConnectorMailBoxDrawerAttachmentsDrawer,

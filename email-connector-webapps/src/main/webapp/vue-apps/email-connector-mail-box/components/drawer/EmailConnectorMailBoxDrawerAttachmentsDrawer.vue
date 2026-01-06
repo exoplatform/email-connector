@@ -20,6 +20,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     ref="attachmentsDrawer"
     v-model="attachmentsDrawer"
     :right="!$vuetify.rtl"
+    :confirm-close="activeDownload"
+    :confirm-close-labels="{
+      title: $t('emailConnector.mailBox.attachment.download.confirmAbort.title'),
+      message: $t('emailConnector.mailBox.attachment.download.confirmAbort.message'),
+      ok: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.yes'),
+      cancel: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.no')
+    }"
+    @confirm-close="onAbortDownloadConfirmed"
     @closed="close"
     style="outline: none;"
     class="no-box-shadow"
@@ -40,11 +48,18 @@ export default {
   data() {
     return {
       emailAttachments: null,
-      attachmentsDrawer: false
+      attachmentsDrawer: false,
+      activeDownload: null,
     };
   },
   created() {
     this.$root.$on('open-email-attachments-drawer', this.open);
+    this.$root.$on('attachment-download-started', (payload) => {
+      this.activeDownload = payload;
+    });
+    this.$root.$on('attachment-download-finished', () => {
+      this.activeDownload = null;
+    });
   },
   beforeDestroy() {
     this.$root.$off('open-email-attachments-drawer', this.open);
@@ -53,6 +68,10 @@ export default {
     open(emailAttachments) {
       this.emailAttachments = emailAttachments;
       this.$refs.attachmentsDrawer.open();
+    },
+    onAbortDownloadConfirmed() {
+      this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
+      this.close();
     },
     close() {
       this.$refs.attachmentsDrawer.close();
