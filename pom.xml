@@ -26,8 +26,7 @@
   </scm>
   <properties>
     <!-- 3rd party libraries versions -->
-    <io.meeds.social.version>7.2.x-exo-SNAPSHOT</io.meeds.social.version>
-    <addon.meeds.app-center.version>7.2.x-exo-SNAPSHOT</addon.meeds.app-center.version>
+    <org.exoplatform.commons-exo.version>7.2.x-SNAPSHOT</org.exoplatform.commons-exo.version>
 	
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
@@ -35,16 +34,9 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>io.meeds.social</groupId>
-        <artifactId>social</artifactId>
-        <version>${io.meeds.social.version}</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
-	  <dependency>
-        <groupId>io.meeds.app-center</groupId>
-        <artifactId>app-center</artifactId>
-        <version>${addon.meeds.app-center.version}</version>
+        <groupId>org.exoplatform.commons-exo</groupId>
+        <artifactId>commons-exo</artifactId>
+        <version>${org.exoplatform.commons-exo.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
