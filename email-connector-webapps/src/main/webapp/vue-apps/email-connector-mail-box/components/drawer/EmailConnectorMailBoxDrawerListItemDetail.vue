@@ -21,7 +21,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-model="emailDetailDrawer"
     :right="!$vuetify.rtl"
     :allow-expand="!$root.isMobile"
+    :loading="loading"
     go-back-button
+    :confirm-close="activeDownload"
+    :confirm-close-labels="{
+      title: $t('emailConnector.mailBox.attachment.download.confirmAbort.title'),
+      message: $t('emailConnector.mailBox.attachment.download.confirmAbort.message'),
+      ok: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.yes'),
+      cancel: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.no')
+    }"
+    @confirm-close="onAbortDownloadConfirmed"
     @closed="close"
     @expand-updated="expandedDrawer = $event">
     <template #title>
@@ -29,6 +38,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template #titleIcons>
       <v-btn
+        v-if="!loading"
         :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
         v-on="on"
         v-bind="attrs"
@@ -37,20 +47,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
       </v-btn>
     </template>
-    <template v-if="emailDetailDrawer && email" #content>
+    <template v-if="emailDetailDrawer && !loading && email" #content>
       <div
         class="fill-height overflow-y-auto specific-scrollbar">
         <v-list class="mt-5 py-0 me-4 ms-4 mb-5">
           <v-list-item
-            style="min-height: 0"
-            class="px-0 pb-4">
+            class="px-0 pb-4 height-auto">
             <v-list-item-content class="py-0 text-title text-wrap overflow-visible">
               <v-list-item-title v-text="email.subject" class="text-wrap overflow-visible" />
             </v-list-item-content>
           </v-list-item>
           <v-list-item
-            style="min-height: 0"
-            :class="recipientsClass">
+            :class="['height-auto', recipientsClass]">
             <email-connector-mail-box-drawer-list-item-detail-sender-avatar 
               :email="email" 
               class="me-3 my-0" />
@@ -90,15 +98,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  data: () => ({
-    emailDetailDrawer: false,
-    email: null,
-    expandedHeader: false,
-    expandedDrawer: false,
-  }),
+  data() {
+    return {
+      emailDetailDrawer: false,
+      loading: false,
+      email: null,
+      expandedHeader: false,
+      expandedDrawer: false,
+      activeDownload: null,
+    };
+  },
   created() {
     this.$root.$on('open-email-detail-drawer', (mailRemoteId) => {
       this.open(mailRemoteId); 
+    });
+    this.$root.$on('attachment-download-started', (payload) => {
+      this.activeDownload = payload;
+    });
+    this.$root.$on('attachment-download-finished', () => {
+      this.activeDownload = null;
     });
   },
   computed: {
@@ -133,17 +151,25 @@ export default {
     },
   },
   methods: {
-    async open(email) {
-      this.email = email;
+    open(mailRemoteId) {
+      this.loading = true;
       this.$refs.emailDetailDrawer.open();
-      this.$root.$emit('update-email-read-status', { emailId: email.mailRemoteId, read: true });
-      await this.$emailConnectorMailBoxService.broadcastOpenEmail();
+      this.$root.$emit('update-email-read-status', { emailId: mailRemoteId, read: true });
+      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
+        this.email = email;
+      }).finally(() => {
+        this.loading = false;
+      });
     },
     toggleDetails() {
       this.expandedHeader = !this.expandedHeader;
     },
     updateEmailReadStatus() {
       this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: false });
+      this.close();
+    },
+    onAbortDownloadConfirmed() {
+      this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
       this.close();
     },
     close() {

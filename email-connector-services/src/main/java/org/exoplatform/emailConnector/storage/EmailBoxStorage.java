@@ -58,7 +58,7 @@ public class EmailBoxStorage {
     }
     EmailBoxEntity emailBoxEntity = toEntity(email);
     emailBoxEntity = emailBoxDao.save(emailBoxEntity);
-    return fromEntity(emailBoxEntity, false, false, null);
+    return fromEntity(emailBoxEntity, false, false, null, true, false);
   }
 
   public void updateEmail(Email email) {
@@ -69,14 +69,20 @@ public class EmailBoxStorage {
     emailBoxDao.save(emailBoxEntity);
   }
 
-  public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId, String userId) {
+  public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
+                                               String userId,
+                                               boolean withAttachments,
+                                               boolean withRecipients,
+                                               boolean withProfile) {
     EmailBoxEntity emailBoxEntity = emailBoxDao.findByMailRemoteIdAndUserId(mailRemoteId, userId);
-    return fromEntity(emailBoxEntity, false, false, userId);
+    return fromEntity(emailBoxEntity, withAttachments, false, userId, withRecipients, withProfile);
   }
 
   public List<Email> getEmails(String username) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(username);
-    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, username)).toList();
+    return emailBoxEntities.stream()
+                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, username, false, false))
+                           .toList();
   }
 
   public void deleteUserEmails(String username) {
@@ -124,7 +130,12 @@ public class EmailBoxStorage {
   }
 
   @SneakyThrows
-  private Email fromEntity(EmailBoxEntity emailBoxEntity, boolean withAttachments, boolean isExcerpt, String userId) {
+  private Email fromEntity(EmailBoxEntity emailBoxEntity,
+                           boolean withAttachments,
+                           boolean isExcerpt,
+                           String userId,
+                           boolean withRecipients,
+                           boolean withProfile) {
     if (emailBoxEntity == null) {
       return null;
     } else {
@@ -139,20 +150,26 @@ public class EmailBoxStorage {
       }
       String[] emailSenderParts = emailBoxEntity.getSender().split(",");
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
-      InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
-      InternetAddress[] emailCcRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getCc());
-      InternetAddress[] emailBccRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getBcc());
-      return new Email(emailBoxEntity.getId(),
-                       emailBoxEntity.getMailRemoteId(),
-                       emailBoxEntity.getUserId(),
-                       emailBoxEntity.getSubject(),
-                       new EmailContent(emailBoxEntity.getBody(), excerpt, attachments),
-                       emailBoxEntity.getRecievedDate(),
-                       EmailConnectorUtils.getEmailSender(emailSenderAddress, true),
-                       emailBoxEntity.isRead(),
-                       EmailConnectorUtils.getEmailRecipients(emailToRecipientsInternetAddresses, userId),
-                       EmailConnectorUtils.getEmailRecipients(emailCcRecipientsInternetAddresses, userId),
-                       EmailConnectorUtils.getEmailRecipients(emailBccRecipientsInternetAddresses, userId));
+      Email email = new Email(emailBoxEntity.getId(),
+                              emailBoxEntity.getMailRemoteId(),
+                              emailBoxEntity.getUserId(),
+                              emailBoxEntity.getSubject(),
+                              new EmailContent(emailBoxEntity.getBody(), excerpt, attachments),
+                              emailBoxEntity.getRecievedDate(),
+                              EmailConnectorUtils.getEmailSender(emailSenderAddress, withProfile),
+                              emailBoxEntity.isRead(),
+                              null,
+                              null,
+                              null);
+      if (withRecipients) {
+        InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
+        InternetAddress[] emailCcRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getCc());
+        InternetAddress[] emailBccRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getBcc());
+        email.setTo(EmailConnectorUtils.getEmailRecipients(emailToRecipientsInternetAddresses, userId, withProfile));
+        email.setCc(EmailConnectorUtils.getEmailRecipients(emailCcRecipientsInternetAddresses, userId, withProfile));
+        email.setBcc(EmailConnectorUtils.getEmailRecipients(emailBccRecipientsInternetAddresses, userId, withProfile));
+      }
+      return email;
     }
   }
 

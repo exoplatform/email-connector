@@ -34,11 +34,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  data: () => ({
-    iframeHeight: 0,
-    iframeVisible: false,
-    resizeObserver: null   
-  }),
+  data() {
+    return {
+      iframeHeight: 0,
+      iframeVisible: false,
+      resizeObserver: null
+    };   
+  },
   props: {
     emailBody: {
       type: String,

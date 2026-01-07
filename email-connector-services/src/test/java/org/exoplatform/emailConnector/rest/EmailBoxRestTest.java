@@ -18,6 +18,7 @@
 
 package org.exoplatform.emailConnector.rest;
 
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -126,7 +127,7 @@ public class EmailBoxRestTest {
   void updateEmailReadStatus() throws Exception {
     ResultActions response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
     response.andExpect(status().isNotFound());
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString())).thenReturn(mock(Email.class));
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(mock(Email.class));
     response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
     response.andExpect(status().isOk());
   }

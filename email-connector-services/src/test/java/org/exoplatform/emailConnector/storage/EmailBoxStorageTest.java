@@ -108,18 +108,18 @@ public class EmailBoxStorageTest {
     Email email = email("root");
     Email createdEmail = emailBoxStorage.createEmail(email);
     emailBoxStorage.updateEmail(createdEmail);
-    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root");
+    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
     assertNotNull(updatedEmail);
     assertEquals("subject (updated)", updatedEmail.getSubject());
   }
 
   @Test
   void getEmailByMailRemoteIdAndUserId() {
-    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root");
+    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
     assertNull(retrievedEmail);
     Email email1 = email("root");
     emailBoxStorage.createEmail(email1);
-    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root");
+    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
     assertNotNull(retrievedEmail);
   }
 

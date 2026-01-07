@@ -150,19 +150,19 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void getEmailByMailRemoteIdAndUserId() {
-    emailBoxService.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER);
-    verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(1212l, TEST_USER);
+  void getEmailByMailRemoteIdAndUserId() throws IllegalAccessException {
+    emailBoxService.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false, false);
+    verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false);
   }
 
   @Test
   void updateEmailReadStatus() throws Exception {
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
     emailBoxService.updateEmailReadStatus(1212l, null, TEST_USER, true, false);
     verify(emailBoxStorage).updateEmail(email);
     reset(emailBoxStorage);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);

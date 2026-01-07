@@ -18,8 +18,10 @@ package org.exoplatform.emailConnector.rest;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -29,6 +31,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -90,6 +93,39 @@ public class EmailBoxRest {
     }
   }
 
+  @GetMapping("/{emailRemoteId}")
+  @Secured("users")
+  @Operation(summary = "Gets user emails", method = "GET", description = "This will get user emails")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public ResponseEntity<Email> getRemoteEmailById(HttpServletRequest request,
+                                                  @Parameter(description = "Email id", required = true)
+                                                  @PathVariable("emailRemoteId")
+                                                  long emailRemoteId,
+                                                  @RequestHeader(value = "If-None-Match", required = false)
+                                                  String ifNoneMatch) {
+    try {
+      String eTag = "\"" + Objects.hash(emailRemoteId, request.getRemoteUser()) + "\"";
+      if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
+        emailBoxService.broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, request.getRemoteUser());
+        return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
+      }
+      Email email =
+                  emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser(), true, true, true, true);
+      if (email == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return ResponseEntity.ok().eTag(eTag).cacheControl(CacheControl.noCache().cachePrivate()).body(email);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
   @PostMapping("broadcast")
   @Secured("users")
   @Operation(summary = "Gets user emails", method = "GET", description = "This will get user emails")
@@ -123,7 +159,12 @@ public class EmailBoxRest {
                                     @RequestParam("readStatus")
                                     boolean readStatus) {
     try {
-      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser());
+      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId,
+                                                                    request.getRemoteUser(),
+                                                                    false,
+                                                                    false,
+                                                                    false,
+                                                                    false);
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
@@ -149,8 +190,14 @@ public class EmailBoxRest {
                                                                 long emailRemoteId,
                                                                 @Parameter(description = "Attachment id", required = true)
                                                                 @PathVariable("attachmentId")
-                                                                String attachmentId) {
+                                                                String attachmentId,
+                                                                @RequestHeader(value = "If-None-Match", required = false)
+                                                                String ifNoneMatch) {
     try {
+      String eTag = "\"" + Objects.hash(emailRemoteId, attachmentId, request.getRemoteUser()) + "\"";
+      if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
+        return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
+      }
       EmailAttachment emailAttachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(emailRemoteId,
                                                                                                  attachmentId,
                                                                                                  request.getRemoteUser());
@@ -161,9 +208,10 @@ public class EmailBoxRest {
       String filename = emailAttachment.getName();
       String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
       return ResponseEntity.ok()
+                           .eTag(eTag)
                            .contentType(MediaType.parseMediaType(emailAttachment.getMimeType()))
                            .header(HttpHeaders.CONTENT_DISPOSITION,
-                                   "inline; filename=\"" + filename + "\"; filename*=UTF-8''" + encodedFilename)
+                                   "attachment; filename=\"" + filename + "\"; filename*=UTF-8''" + encodedFilename)
                            .body(data);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);

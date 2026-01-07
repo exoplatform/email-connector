@@ -283,8 +283,16 @@ public class EmailBoxService {
     }
   }
 
-  public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId, String userName) {
-    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, userName);
+  public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
+                                               String userName,
+                                               boolean withAttachments,
+                                               boolean withRecipients,
+                                               boolean withProfile,
+                                               boolean broadcast) throws IllegalAccessException {
+    if (broadcast) {
+      broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, userName);
+    }
+    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, userName, withAttachments, withRecipients, withProfile);
   }
 
   public void updateEmailReadStatus(long emailRemoteId,
@@ -292,7 +300,7 @@ public class EmailBoxService {
                                     String username,
                                     boolean readStatus,
                                     boolean updateRemoteReadStatus) throws IllegalAccessException {
-    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username);
+    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, false, false, false, false);
     if (email != null && readStatus != email.isRead()) {
       email.setRead(readStatus);
       emailBoxStorage.updateEmail(email);
@@ -351,7 +359,7 @@ public class EmailBoxService {
     for (Message message : serverMessages) {
       try {
         long messageUid = uidFolder.getUID(message);
-        Email email = getEmailByMailRemoteIdAndUserId(messageUid, username);
+        Email email = getEmailByMailRemoteIdAndUserId(messageUid, username, false, false, false, false);
         if (email == null) {
           EmailContent emailContent = EmailConnectorUtils.getMessageContent(messageUid, message);
           String subject = message.getSubject() != null
@@ -360,13 +368,16 @@ public class EmailBoxService {
               && message.getFrom().length != 0 ? EmailConnectorUtils.getEmailSender(message.getFrom()[0], false) : null;
           List<EmailRecipient> emailToRecipients =
                                                  EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO),
-                                                                                        username);
+                                                                                        username,
+                                                                                        false);
           List<EmailRecipient> emailCcRecipients =
                                                  EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.CC),
-                                                                                        username);
+                                                                                        username,
+                                                                                        false);
           List<EmailRecipient> emailBccRecipients =
                                                   EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
-                                                                                         username);
+                                                                                         username,
+                                                                                         false);
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
                                                 username,

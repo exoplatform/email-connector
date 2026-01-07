@@ -20,19 +20,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     tabindex="0"
     @click="downloadAttachment"
     @keydown.enter="downloadAttachment"
-    class="pt-3 text-truncate"
+    class="pt-3"
     :title="attachmentTitle">
-    <v-icon :size="attachmentIconSize" :color="attachmentColor">
-      {{ attachmentIcon }}
-    </v-icon>
-    <span :class="[`ms-${attachmentIconMargin}`]">
-      {{ attachment.name }}
-    </span>
+    <email-connector-mail-box-drawer-attachment-item
+      :downloading="downloading" 
+      :attachment="attachment" 
+      :attachment-icon-size="attachmentIconSize" 
+      attachment-name-class="ms-3" />
   </div>
 </template>
 
 <script>
 export default {
+  data() {
+    return {
+      downloading: false,
+      abortController: null
+    };
+  },
   props: {
     attachment: {
       type: Object,
@@ -40,20 +45,23 @@ export default {
     },
     attachmentIconSize: {
       type: Number,
-      default: 36,
+      default: 40,
     },
-    attachmentIconMargin: {
-      type: Number,
-      default: 2,
+    attachmentNameClass: {
+      type: String,
+      default: null,
     },
   },
+  created() {
+    this.onAbortDownload = (mailRemoteId, attachmentRemoteId) => {
+      this.abortDownloadAttachment(mailRemoteId, attachmentRemoteId);
+    };
+    this.$root.$on('abort-download-attachment', this.abortDownloadAttachment);
+  },
+  beforeDestroy() {
+    this.$root.$off('abort-download-attachment', this.abortDownloadAttachment);
+  },
   computed: {
-    attachmentIcon() {
-      return this.$emailConnectorMailBoxService.getAttachmentIcon(this.attachment.mimeType).class;
-    },
-    attachmentColor() {
-      return this.$emailConnectorMailBoxService.getAttachmentIcon(this.attachment.mimeType).color;
-    },
     attachmentTitle() {
       return this.$t('emailConnector.mailBox.list.drawer.detail.attachment.download.title', {
         0: this.attachment.name,
@@ -62,9 +70,34 @@ export default {
   },
   methods: {
     downloadAttachment() {
-      const url = `/email-connector/rest/email-box/attachments/${this.attachment.mailRemoteId}/${this.attachment.attachmentRemoteId}`;
-      window.open(url, '_blank');
-    }
+      if (this.downloading) {
+        return;
+      }
+      this.downloading = true;
+      this.abortController = new AbortController();
+      this.$root.$emit('attachment-download-started', {
+        mailRemoteId: this.attachment.mailRemoteId,
+        attachmentRemoteId: this.attachment.attachmentRemoteId,
+        abortController: this.abortController
+      });
+      this.$emailConnectorMailBoxService.downloadAttachment(this.attachment, this.abortController.signal)
+        .finally(() => {
+          this.downloading = false;
+          this.abortController = null;
+          this.$root.$emit('attachment-download-finished');
+        });
+    },
+    abortDownloadAttachment(mailRemoteId, attachmentRemoteId, abortController) {
+      if (this.attachment.mailRemoteId === mailRemoteId && this.attachment.attachmentRemoteId === attachmentRemoteId) {
+        this.abortController = abortController;
+        if (this.abortController) {
+          this.abortController.abort();
+          this.downloading = false;
+          this.abortController = null;
+          this.$root.$emit('attachment-download-finished');
+        }
+      }
+    }  
   }
 };
 </script>

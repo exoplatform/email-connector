@@ -20,6 +20,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     ref="emailBoxDrawer"
     v-model="emailBoxDrawer"
     :right="!$vuetify.rtl"
+    :loading="loading"
+    :confirm-close="activeDownload"
+    :confirm-close-labels="{
+      title: $t('emailConnector.mailBox.attachment.download.confirmAbort.title'),
+      message: $t('emailConnector.mailBox.attachment.download.confirmAbort.message'),
+      ok: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.yes'),
+      cancel: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.no')
+    }"
+    @confirm-close="onAbortDownloadConfirmed"
     @closed="close"
     style="outline: none;"
     class="no-box-shadow">
@@ -30,8 +39,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-box-sync-loader
         v-if="syncInProgress"
         :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
-        loader-class="align-self-center me-2"
-        icon-size="20" />
+        loader-class="align-self-center me-2" />
       <v-btn
         v-else
         :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
@@ -42,7 +50,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
       </v-btn>
     </template>
-    <template v-if="emailBoxDrawer" #content>
+    <template v-if="emailBoxDrawer && !loading" #content>
       <div
         class="fill-height overflow-y-auto specific-scrollbar">
         <v-list-item v-if="syncBlocked" class="full-height align-center">
@@ -88,13 +96,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  data: () => ({
-    emailBoxDrawer: false,
-    emailBox: null,
-    emails: [],
-    syncInProgress: false,
-    refreshInterval: null,
-  }),
+  data() {
+    return {
+      emailBoxDrawer: false,
+      emailBox: null,
+      emails: [],
+      loading: false,
+      syncInProgress: false,
+      refreshInterval: null,
+      activeDownload: null,
+    };
+  },
   created() {
     this.isRefreshing = false;
     this.$root.$on('open-mail-box-drawer', (loading) => {
@@ -102,6 +114,12 @@ export default {
     });
     this.$root.$on('update-email-read-status', ({ emailId, read }) => {
       this.updateEmailReadStatus(emailId, read);
+    });
+    this.$root.$on('attachment-download-started', (payload) => {
+      this.activeDownload = payload;
+    });
+    this.$root.$on('attachment-download-finished', () => {
+      this.activeDownload = null;
     });
   },
   computed: {
@@ -118,11 +136,17 @@ export default {
         this.syncInProgress = true;
         await this.$nextTick();
       }
-      await this.loadEmailBox();
+      this.loading = true;
       this.$refs.emailBoxDrawer.open();
+      await this.loadEmailBox();
+      this.loading = false;
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
+    },
+    onAbortDownloadConfirmed() {
+      this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
+      this.close();
     },
     close() {
       this.stopAutoRefresh();

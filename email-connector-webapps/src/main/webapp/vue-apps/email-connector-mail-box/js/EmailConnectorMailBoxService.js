@@ -130,16 +130,18 @@ export function getEmailBox() {
   });
 }
 
-export function broadcastOpenEmail() {
-  return fetch('/email-connector/rest/email-box/broadcast', {
+export function getEmailByRemoteId(mailRemoteId) {
+  return fetch(`/email-connector/rest/email-box/${mailRemoteId}`, {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
-    method: 'POST'
+    method: 'GET'
   }).then((resp) => {
-    if (!resp?.ok) {
-      throw new Error('Error when broadcasting open email box');
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting email detail');
     }
   });
 }
@@ -215,4 +217,43 @@ export function updateEmailReadStatus(mailRemoteId, readStatus) {
 
 export function getAttachmentIcon(mimeType) {
   return attachmentMapIconsExtensions.get(mimeType.toLowerCase()) || file;
+}
+
+export async function downloadAttachment(attachment, signal) {
+  const mailId = attachment.mailRemoteId;
+  const attachId = attachment.attachmentRemoteId;
+  const url = `/email-connector/rest/email-box/attachments/${mailId}/${attachId}`;
+  try {
+    const response = await fetch(url, { signal });
+    if (!response.ok) {
+      throw new Error('Error when downloading attachment');
+    }
+    const contentDisp = response.headers.get('Content-Disposition');
+    let filename = attachment.name;
+    if (contentDisp) {
+      const match = contentDisp.match(/filename\*?=UTF-8''([^;]+)/);
+      if (match) {
+        filename = decodeURIComponent(match[1]);
+      }
+    }
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    triggerDownload(blobUrl, filename);
+    setTimeout(() => {
+      URL.revokeObjectURL(blobUrl);
+    }, 60000);
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.error('Error when downloading attachment:', e);
+    }
+  }
+}
+
+export function triggerDownload(fileUrl, filename) {
+  const link = document.createElement('a');
+  link.href = fileUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
