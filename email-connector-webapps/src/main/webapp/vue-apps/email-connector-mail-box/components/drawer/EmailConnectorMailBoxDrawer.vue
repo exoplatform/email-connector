@@ -43,8 +43,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-btn
         v-else
         :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
-        v-on="on"
-        v-bind="attrs"
         @click="synchronize()"
         icon>
         <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
