@@ -27,6 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       role="button"
       tabindex="0"
       class="no-select"
+      aria-label="Open email"
       @click="openDetail"
       @keydown.enter="openDetail"
       v-touch-hold="openActionMenuDrawer">
