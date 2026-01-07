@@ -40,8 +40,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-btn
         v-if="!loading"
         :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
-        v-on="on"
-        v-bind="attrs"
         @click="updateEmailReadStatus()"
         icon>
         <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
@@ -68,6 +66,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 <span class="me-1 text-wrap text-break-all">{{ recipients }}</span>
                 <v-btn
                   @click="toggleDetails()"
+                  :title="recipientsToggleTooltip"
                   width="20"
                   height="20"
                   min-width="20"
@@ -142,6 +141,9 @@ export default {
     },
     recipientsClass() {
       return this.expandedHeader && 'px-0 pb-3' || 'px-0 pb-8';
+    },
+    recipientsToggleTooltip() {
+      return this.expandedHeader ? this.$t('emailConnector.mailBox.list.drawer.detail.hideRecipients') : this.$t('emailConnector.mailBox.list.drawer.detail.displayRecipients');
     },
     hasAttachments() {
       return this.emailAttachments.length > 0;

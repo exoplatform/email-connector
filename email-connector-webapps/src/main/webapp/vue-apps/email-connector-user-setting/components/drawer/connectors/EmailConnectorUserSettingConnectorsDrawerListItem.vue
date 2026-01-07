@@ -26,6 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <v-list-item-action class="my-0">
       <v-btn
         v-if="userEmailConnector.userConnected"
+        :title="$t('UserSettings.emailConnector.connectors.drawer.connector.button.edit.tooltip')"
         @click="$root.$emit('open-user-setting-drawer', userEmailConnector)"
         icon>
         <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
