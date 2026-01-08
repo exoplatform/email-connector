@@ -41,6 +41,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :aria-label="$t('UserSettings.emailConnector.userSetting.drawer.emailAddress')"
               :placeholder="$t('UserSettings.emailConnector.userSetting.drawer.placeHolder.emailAddress')"
               class="pt-3"
+              autocomplete="username"
               type="text"
               required="required"
               outlined
@@ -57,12 +58,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :aria-label="$t('UserSettings.emailConnector.userSetting.drawer.password')"
               :placeholder="$t('UserSettings.emailConnector.userSetting.drawer.placeHolder.password')"
               class="pt-3"
+              autocomplete="current-password"
               :type="showPassword ? 'text' : 'password'"
-              :append-icon="showPassword ? 'fa-eye-slash' : 'fa-eye'"
-              @click:append="togglePasswordVisibility"
               required="required"
               outlined
-              dense />
+              dense>
+              <template #append>
+                <v-btn
+                  icon
+                  :title="showPassword
+                    ? $t('UserSettings.emailConnector.userSetting.drawer.hidePassword')
+                    : $t('UserSettings.emailConnector.userSetting.drawer.showPassword')"
+                  @click="togglePasswordVisibility">
+                  <v-icon size="20">
+                    {{ showPassword ? 'fa-eye-slash' : 'fa-eye' }}
+                  </v-icon>
+                </v-btn>
+              </template>
+            </v-text-field>
           </v-list-item-content>
         </v-list-item>
       </form>
