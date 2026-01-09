@@ -33,14 +33,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @submit.stop.prevent="0">
         <v-list-item class="pa-0 mb-5" dense>
           <v-list-item-content class="py-0">
-            <v-list-item-title>
+            <v-label for="email">
               {{ $t('UserSettings.emailConnector.userSetting.drawer.emailAddress') }}
-            </v-list-item-title>
+            </v-label>
             <v-text-field
+              id="email"
               v-model="emailSetting.emailAddress"
-              :aria-label="$t('UserSettings.emailConnector.userSetting.drawer.emailAddress')"
               :placeholder="$t('UserSettings.emailConnector.userSetting.drawer.placeHolder.emailAddress')"
               class="pt-3"
+              autocomplete="email"
               type="text"
               required="required"
               outlined
@@ -49,20 +50,32 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item>
         <v-list-item class="pa-0" dense>
           <v-list-item-content class="py-0">
-            <v-list-item-title>
+            <v-label for="password">
               {{ $t('UserSettings.emailConnector.userSetting.drawer.password') }}
-            </v-list-item-title>
+            </v-label>
             <v-text-field
+              id="password"
               v-model="emailSetting.emailPassword"
-              :aria-label="$t('UserSettings.emailConnector.userSetting.drawer.password')"
               :placeholder="$t('UserSettings.emailConnector.userSetting.drawer.placeHolder.password')"
               class="pt-3"
+              autocomplete="current-password"
               :type="showPassword ? 'text' : 'password'"
-              :append-icon="showPassword ? 'fa-eye-slash' : 'fa-eye'"
-              @click:append="togglePasswordVisibility"
               required="required"
               outlined
-              dense />
+              dense>
+              <template #append>
+                <v-btn
+                  icon
+                  :title="showPassword
+                    ? $t('UserSettings.emailConnector.userSetting.drawer.hidePassword')
+                    : $t('UserSettings.emailConnector.userSetting.drawer.showPassword')"
+                  @click="togglePasswordVisibility">
+                  <v-icon size="20">
+                    {{ showPassword ? 'fa-eye-slash' : 'fa-eye' }}
+                  </v-icon>
+                </v-btn>
+              </template>
+            </v-text-field>
           </v-list-item-content>
         </v-list-item>
       </form>
