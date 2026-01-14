@@ -27,6 +27,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -95,7 +96,7 @@ public class EmailBoxRest {
 
   @GetMapping("/{emailRemoteId}")
   @Secured("users")
-  @Operation(summary = "Gets user emails", method = "GET", description = "This will get user emails")
+  @Operation(summary = "Gets remote email by id", method = "GET", description = "This will get remote email by id")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -128,7 +129,7 @@ public class EmailBoxRest {
 
   @PostMapping("broadcast")
   @Secured("users")
-  @Operation(summary = "Gets user emails", method = "GET", description = "This will get user emails")
+  @Operation(summary = "Broadcasts open email", method = "GET", description = "This will broadcast open email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -146,7 +147,7 @@ public class EmailBoxRest {
 
   @PatchMapping("/{emailRemoteId}")
   @Secured("users")
-  @Operation(summary = "Gets user emails", method = "PATCH", description = "This will update email read status")
+  @Operation(summary = "Update email read status", method = "PATCH", description = "This will update email read status")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -176,9 +177,39 @@ public class EmailBoxRest {
     }
   }
 
+  @DeleteMapping("/{emailRemoteId}")
+  @Secured("users")
+  @Operation(summary = "Delete email", method = "PATCH", description = "This will delete email")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public void deleteEmail(HttpServletRequest request,
+                          @Parameter(description = "Email id", required = true)
+                          @PathVariable("emailRemoteId")
+                          long emailRemoteId) {
+    try {
+      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId,
+                                                                    request.getRemoteUser(),
+                                                                    false,
+                                                                    false,
+                                                                    false,
+                                                                    false);
+      if (email == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      emailBoxService.deleteEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
   @GetMapping("/attachments/{emailRemoteId}/{attachmentId}")
   @Secured("users")
-  @Operation(summary = "Gets user emails", method = "GET", description = "This will get user emails")
+  @Operation(summary = "Gets attachment by mail remote id and attachment id", method = "GET", description = "This will get attachment by mail remote id and attachment id")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
