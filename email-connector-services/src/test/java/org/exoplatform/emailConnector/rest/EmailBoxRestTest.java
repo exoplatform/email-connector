@@ -25,6 +25,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -127,8 +128,27 @@ public class EmailBoxRestTest {
   void updateEmailReadStatus() throws Exception {
     ResultActions response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
     response.andExpect(status().isNotFound());
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(mock(Email.class));
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                         anyString(),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(mock(Email.class));
     response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
+  void deleteEmail() throws Exception {
+    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/1").with(testSimpleUser()));
+    response.andExpect(status().isNotFound());
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                         anyString(),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(mock(Email.class));
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/1").with(testSimpleUser()));
     response.andExpect(status().isOk());
   }
 

@@ -20,6 +20,7 @@ import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -157,15 +158,15 @@ public class EmailBoxServiceTest {
 
   @Test
   void updateEmailReadStatus() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
     emailBoxService.updateEmailReadStatus(1212l, null, TEST_USER, true, false);
     verify(emailBoxStorage).updateEmail(email);
     reset(emailBoxStorage);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
-    UserEmailSetting userEmailSetting = userEmailSetting();
-    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
-    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -176,6 +177,25 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).updateEmail(email);
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.SEEN, false);
+  }
+
+  @Test
+  void deleteEmailByMailRemoteIdAndUserId() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email email = email(TEST_USER);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    emailBoxService.deleteEmailByMailRemoteIdAndUserId(1212l, TEST_USER);
+    verify(emailBoxStorage).deleteEmails(anyList());
+    verify(inbox).open(Folder.READ_WRITE);
+    verify(message).setFlag(Flags.Flag.DELETED, true);
   }
 
   @Test

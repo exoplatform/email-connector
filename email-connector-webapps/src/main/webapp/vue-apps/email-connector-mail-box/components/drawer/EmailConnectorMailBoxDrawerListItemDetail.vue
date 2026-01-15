@@ -44,6 +44,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         icon>
         <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
       </v-btn>
+      <v-btn
+        v-if="!loading"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+        color="error"
+        @click="deleteEmail()"
+        icon>
+        <v-icon size="20">fa-trash</v-icon>
+      </v-btn>
     </template>
     <template v-if="emailDetailDrawer && !loading && email" #content>
       <div
@@ -168,6 +176,10 @@ export default {
     },
     updateEmailReadStatus() {
       this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: false });
+      this.close();
+    },
+    deleteEmail() {
+      this.$root.$emit('delete-email', { emailId: this.email.mailRemoteId });
       this.close();
     },
     onAbortDownloadConfirmed() {
