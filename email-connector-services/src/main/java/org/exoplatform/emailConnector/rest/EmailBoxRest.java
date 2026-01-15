@@ -77,7 +77,7 @@ public class EmailBoxRest {
 
   @PostMapping("synchronization")
   @Secured("users")
-  @Operation(summary = "Synchronize email box", method = "POST", description = "This will synchronize email box")
+  @Operation(summary = "Synchronizes email box", method = "POST", description = "This will synchronize email box")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -147,7 +147,7 @@ public class EmailBoxRest {
 
   @PatchMapping("/{emailRemoteId}")
   @Secured("users")
-  @Operation(summary = "Update email read status", method = "PATCH", description = "This will update email read status")
+  @Operation(summary = "Updates email read status", method = "PATCH", description = "This will update email read status")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -179,7 +179,7 @@ public class EmailBoxRest {
 
   @DeleteMapping("/{emailRemoteId}")
   @Secured("users")
-  @Operation(summary = "Delete email", method = "PATCH", description = "This will delete email")
+  @Operation(summary = "Deletes email", method = "PATCH", description = "This will delete email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),

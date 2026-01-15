@@ -37,6 +37,9 @@ import javax.mail.UIDFolder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import com.sun.mail.imap.IMAPFolder;
+import com.sun.mail.imap.IMAPStore;
+
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -151,13 +154,13 @@ public class EmailBoxService {
       LOG.error("Error when user {} synchronization ", username, e);
     } finally {
       try {
-        try {
-          if (inbox != null && inbox.isOpen()) {
-            inbox.close(false);
-          }
-        } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing inbox", messagingException);
+        if (inbox != null && inbox.isOpen()) {
+          inbox.close(false);
         }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing inbox", messagingException);
+      }
+      try {
         if (store != null && store.isConnected()) {
           store.close();
         }
@@ -253,13 +256,13 @@ public class EmailBoxService {
       throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
     } finally {
       try {
-        try {
-          if (inbox != null && inbox.isOpen()) {
-            inbox.close(false);
-          }
-        } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing inbox", messagingException);
+        if (inbox != null && inbox.isOpen()) {
+          inbox.close(false);
         }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing inbox", messagingException);
+      }
+      try {
         if (store != null && store.isConnected()) {
           store.close();
         }
@@ -326,13 +329,13 @@ public class EmailBoxService {
             throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
           } finally {
             try {
-              try {
-                if (inbox != null && inbox.isOpen()) {
-                  inbox.close(false);
-                }
-              } catch (MessagingException messagingException) {
-                LOG.warn("Error when closing inbox", messagingException);
+              if (inbox != null && inbox.isOpen()) {
+                inbox.close(false);
               }
+            } catch (MessagingException messagingException) {
+              LOG.warn("Error when closing inbox", messagingException);
+            }
+            try {
               if (store != null && store.isConnected()) {
                 store.close();
               }
@@ -364,27 +367,45 @@ public class EmailBoxService {
       }
       emailBoxStorage.deleteEmails(Arrays.asList(email.getId()));
       Store store = null;
-      Folder inbox = null;
+      IMAPFolder inbox = null;
+      IMAPFolder trash = null;
       try {
-        store = userEmailSettingService.connect(userEmailSetting);
-        inbox = store.getFolder("INBOX");
+        store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
+        inbox = (IMAPFolder) store.getFolder("INBOX");
         inbox.open(Folder.READ_WRITE);
         Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
         if (remoteMessage != null) {
           remoteMessage.setFlag(Flags.Flag.DELETED, true);
+          trash = findTrashFolder(store);
+          if (trash != null) {
+            if (!trash.isOpen()) {
+              trash.open(Folder.READ_WRITE);
+            }
+            inbox.moveMessages(new Message[] { remoteMessage }, trash);
+          } else {
+            inbox.close(true);
+            return;
+          }
         }
       } catch (Exception e) {
         LOG.error("Error when connecting store for user {}", username, e);
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
         try {
-          try {
-            if (inbox != null && inbox.isOpen()) {
-              inbox.close(false);
-            }
-          } catch (MessagingException messagingException) {
-            LOG.warn("Error when closing inbox", messagingException);
+          if (inbox != null && inbox.isOpen()) {
+            inbox.close(false);
           }
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing inbox", messagingException);
+        }
+        try {
+          if (trash != null && trash.isOpen()) {
+            trash.close(false);
+          }
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing trash", messagingException);
+        }
+        try {
           if (store != null && store.isConnected()) {
             store.close();
           }
@@ -543,5 +564,19 @@ public class EmailBoxService {
       levelIndex++;
     }
     return (BodyPart) current;
+  }
+
+  @SuppressWarnings("resource")
+  private IMAPFolder findTrashFolder(Store store) throws MessagingException {
+    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
+      if (!(folder instanceof IMAPFolder))
+        continue;
+      IMAPFolder imapFolder = (IMAPFolder) folder;
+      String name = imapFolder.getFullName().toLowerCase();
+      if (name.contains("trash") || name.contains("corbeille") || name.contains("deleted")) {
+        return imapFolder;
+      }
+    }
+    return null;
   }
 }
