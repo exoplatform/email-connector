@@ -49,6 +49,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 
+import com.sun.mail.imap.IMAPFolder;
+import com.sun.mail.imap.IMAPStore;
+
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -186,16 +189,23 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
-    Store store = mock(Store.class);
+    IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
-    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    IMAPFolder trashFolder = mock(IMAPFolder.class);
+    when(trashFolder.getFullName()).thenReturn("trash");
+    Folder[] folders = new Folder[] { trashFolder };
+    when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
     emailBoxService.deleteEmailByMailRemoteIdAndUserId(1212l, TEST_USER);
     verify(emailBoxStorage).deleteEmails(anyList());
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.DELETED, true);
+    verify(inbox).moveMessages(any(Message[].class), any(Folder.class));
   }
 
   @Test

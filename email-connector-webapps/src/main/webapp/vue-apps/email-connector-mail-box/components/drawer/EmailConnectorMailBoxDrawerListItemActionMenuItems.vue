@@ -36,6 +36,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
       </span>
     </v-list-item>
+    <v-list-item
+      class="ps-2 pe-3 height-auto"
+      @click.stop="deleteEmail">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="error--text mx-auto"
+          size="16">
+          fa-trash
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}
+      </span>
+    </v-list-item>
   </v-list>
 </template>
 
@@ -51,6 +68,10 @@ export default {
     updateEmailReadStatus() {
       this.$emit('close');
       this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: !this.email.read });
+    },
+    deleteEmail() {
+      this.$emit('close');
+      this.$root.$emit('delete-email', { emailId: this.email.mailRemoteId });
     },
   }
 };
