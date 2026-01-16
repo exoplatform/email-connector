@@ -209,6 +209,31 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void archiveEmailByMailRemoteIdAndUserId() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email email = email(TEST_USER);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    IMAPFolder archiveFolder = mock(IMAPFolder.class);
+    when(archiveFolder.getFullName()).thenReturn("archive");
+    Folder[] folders = new Folder[] { archiveFolder };
+    when(folder.listSubscribed("*")).thenReturn(folders);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    emailBoxService.archiveEmailByMailRemoteIdAndUserId(1212l, TEST_USER);
+    verify(emailBoxStorage).deleteEmails(anyList());
+    verify(inbox).open(Folder.READ_WRITE);
+    verify(inbox).moveMessages(any(Message[].class), any(Folder.class));
+  }
+
+  @Test
   void getAttachmentByMailRemoteIdAnId() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);

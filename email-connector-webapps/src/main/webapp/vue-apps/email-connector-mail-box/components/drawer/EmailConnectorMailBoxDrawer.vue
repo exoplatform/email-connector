@@ -116,6 +116,9 @@ export default {
     this.$root.$on('delete-email', ({ emailId }) => {
       this.deleteEmail(emailId);
     });
+    this.$root.$on('archive-email', ({ emailId }) => {
+      this.archiveEmail(emailId);
+    });
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
     });
@@ -177,6 +180,18 @@ export default {
         e => e.mailRemoteId !== emailId
       );
       this.$emailConnectorMailBoxService.deleteEmail(emailId);
+    },
+    archiveEmail(emailId) {
+      this.$emailConnectorMailBoxService.archiveEmail(emailId).then(() =>
+      {
+        this.emails = this.emails.filter(
+          e => e.mailRemoteId !== emailId
+        );
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.archive.success'), 'success');
+      })
+        .catch(() => { 
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.archive.error'), 'error');
+        });
     },
     async loadEmailBox() {
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();
