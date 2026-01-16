@@ -160,6 +160,20 @@ export function deleteEmail(mailRemoteId) {
   });
 }
 
+export function archiveEmail(mailRemoteId) {
+  return fetch(`/email-connector/rest/email-box/archive/${mailRemoteId}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'DELETE'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when archiving email');
+    }
+  });
+}
+
 export function synchronize() {
   return fetch('/email-connector/rest/email-box/synchronization', {
     headers: {
