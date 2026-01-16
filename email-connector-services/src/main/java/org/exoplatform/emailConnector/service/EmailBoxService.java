@@ -302,15 +302,15 @@ public class EmailBoxService {
                                     boolean updateRemoteReadStatus) throws IllegalAccessException {
     Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, false, false, false, false);
     if (email != null && readStatus != email.isRead()) {
+      UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+      if (userEmailSetting.getEmailConnectorId() == null
+          || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+      }
       email.setRead(readStatus);
       emailBoxStorage.updateEmail(email);
       if (updateRemoteReadStatus) {
         if (remoteMessage == null) {
-          UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
-          if (userEmailSetting.getEmailConnectorId() == null
-              || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-            throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
-          }
           Store store = null;
           Folder inbox = null;
           try {
@@ -349,6 +349,47 @@ public class EmailBoxService {
                                                           emailRemoteId,
                                                           username));
           }
+        }
+      }
+    }
+  }
+
+  public void deleteEmailByMailRemoteIdAndUserId(long emailRemoteId, String username) throws IllegalAccessException {
+    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, false, false, false, false);
+    if (email != null) {
+      UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+      if (userEmailSetting.getEmailConnectorId() == null
+          || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+      }
+      emailBoxStorage.deleteEmails(Arrays.asList(email.getId()));
+      Store store = null;
+      Folder inbox = null;
+      try {
+        store = userEmailSettingService.connect(userEmailSetting);
+        inbox = store.getFolder("INBOX");
+        inbox.open(Folder.READ_WRITE);
+        Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
+        if (remoteMessage != null) {
+          remoteMessage.setFlag(Flags.Flag.DELETED, true);
+        }
+      } catch (Exception e) {
+        LOG.error("Error when connecting store for user {}", username, e);
+        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      } finally {
+        try {
+          try {
+            if (inbox != null && inbox.isOpen()) {
+              inbox.close(false);
+            }
+          } catch (MessagingException messagingException) {
+            LOG.warn("Error when closing inbox", messagingException);
+          }
+          if (store != null && store.isConnected()) {
+            store.close();
+          }
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing store", messagingException);
         }
       }
     }

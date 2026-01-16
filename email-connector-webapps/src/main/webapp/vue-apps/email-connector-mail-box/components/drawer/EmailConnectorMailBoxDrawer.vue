@@ -113,6 +113,9 @@ export default {
     this.$root.$on('update-email-read-status', ({ emailId, read }) => {
       this.updateEmailReadStatus(emailId, read);
     });
+    this.$root.$on('delete-email', ({ emailId }) => {
+      this.deleteEmail(emailId);
+    });
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
     });
@@ -168,6 +171,12 @@ export default {
         this.$set(email, 'read', read);
       }
       this.$emailConnectorMailBoxService.updateEmailReadStatus(emailId, read);
+    },
+    deleteEmail(emailId) {
+      this.emails = this.emails.filter(
+        e => e.mailRemoteId !== emailId
+      );
+      this.$emailConnectorMailBoxService.deleteEmail(emailId);
     },
     async loadEmailBox() {
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();
