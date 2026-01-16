@@ -38,6 +38,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-list-item>
     <v-list-item
       class="ps-2 pe-3 height-auto"
+      @click.stop="archiveEmail">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="mx-auto"
+          size="16">
+          fa-archive
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.archive.label') }}
+      </span>
+    </v-list-item>
+    <v-list-item
+      class="ps-2 pe-3 height-auto"
       @click.stop="deleteEmail">
       <v-sheet
         class="d-flex"
@@ -72,6 +89,10 @@ export default {
     deleteEmail() {
       this.$emit('close');
       this.$root.$emit('delete-email', { emailId: this.email.mailRemoteId });
+    },
+    archiveEmail() {
+      this.$emit('close');
+      this.$root.$emit('archive-email', { emailId: this.email.mailRemoteId });
     },
   }
 };
