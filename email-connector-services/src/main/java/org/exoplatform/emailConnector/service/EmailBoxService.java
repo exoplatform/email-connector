@@ -406,6 +406,52 @@ public class EmailBoxService {
     }
   }
 
+  public void archiveEmailByMailRemoteIdAndUserId(long emailRemoteId, String username) throws IllegalAccessException {
+    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, false, false, false, false);
+    if (email != null) {
+      UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+      if (userEmailSetting.getEmailConnectorId() == null
+          || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+      }
+      emailBoxStorage.deleteEmails(Arrays.asList(email.getId()));
+      Store store = null;
+      IMAPFolder inbox = null;
+      IMAPFolder archive = null;
+      try {
+        store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
+        inbox = (IMAPFolder) store.getFolder("INBOX");
+        inbox.open(Folder.READ_WRITE);
+        Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
+        if (remoteMessage != null) {
+          remoteMessage.setFlag(Flags.Flag.DELETED, true);
+          archive = findArchiveFolder(store);
+          if (archive != null) {
+            inbox.moveMessages(new Message[] { remoteMessage }, archive);
+          }
+        }
+      } catch (Exception e) {
+        LOG.error("Error when connecting store for user {}", username, e);
+        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      } finally {
+        try {
+          if (inbox != null && inbox.isOpen()) {
+            inbox.close(false);
+          }
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing inbox", messagingException);
+        }
+        try {
+          if (store != null && store.isConnected()) {
+            store.close();
+          }
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing store", messagingException);
+        }
+      }
+    }
+  }
+
   private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException,
                                                                                             IllegalAccessException {
     for (Message message : serverMessages) {
@@ -564,6 +610,20 @@ public class EmailBoxService {
       IMAPFolder imapFolder = (IMAPFolder) folder;
       String name = imapFolder.getFullName().toLowerCase();
       if (name.contains("trash") || name.contains("corbeille") || name.contains("deleted")) {
+        return imapFolder;
+      }
+    }
+    return null;
+  }
+
+  @SuppressWarnings("resource")
+  private IMAPFolder findArchiveFolder(Store store) throws MessagingException {
+    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
+      if (!(folder instanceof IMAPFolder))
+        continue;
+      IMAPFolder imapFolder = (IMAPFolder) folder;
+      String name = imapFolder.getFullName().toLowerCase();
+      if (name.contains("archive") || name.contains("archivage")) {
         return imapFolder;
       }
     }
