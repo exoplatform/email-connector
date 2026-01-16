@@ -176,10 +176,16 @@ export default {
       this.$emailConnectorMailBoxService.updateEmailReadStatus(emailId, read);
     },
     deleteEmail(emailId) {
-      this.emails = this.emails.filter(
-        e => e.mailRemoteId !== emailId
-      );
-      this.$emailConnectorMailBoxService.deleteEmail(emailId);
+      this.$emailConnectorMailBoxService.deleteEmail(emailId)
+        .then(() => {
+          this.emails = this.emails.filter(
+            e => e.mailRemoteId !== emailId
+          );
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.delete.success'), 'success');
+        })
+        .catch(() => { 
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.delete.error'), 'error');
+        });
     },
     archiveEmail(emailId) {
       this.$emailConnectorMailBoxService.archiveEmail(emailId)
