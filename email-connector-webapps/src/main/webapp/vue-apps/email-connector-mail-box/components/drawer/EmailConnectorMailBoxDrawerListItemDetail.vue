@@ -46,6 +46,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-btn>
       <v-btn
         v-if="!loading"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
+        @click="archiveEmail()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
+      </v-btn>
+      <v-btn
+        v-if="!loading"
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
         color="error"
         @click="deleteEmail()"
@@ -180,6 +187,10 @@ export default {
     },
     deleteEmail() {
       this.$root.$emit('delete-email', { emailId: this.email.mailRemoteId });
+      this.close();
+    },
+    archiveEmail() {
+      this.$root.$emit('archive-email', { emailId: this.email.mailRemoteId });
       this.close();
     },
     onAbortDownloadConfirmed() {

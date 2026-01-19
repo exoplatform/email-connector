@@ -153,6 +153,20 @@ public class EmailBoxRestTest {
   }
 
   @Test
+  void archiveEmail() throws Exception {
+    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive/1").with(testSimpleUser()));
+    response.andExpect(status().isNotFound());
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                         anyString(),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(mock(Email.class));
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive/1").with(testSimpleUser()));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
   void getAttachmentByMailRemoteIdAnId() throws Exception {
     ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));
     response.andExpect(status().isNotFound());

@@ -129,7 +129,7 @@ public class EmailBoxRest {
 
   @PostMapping("broadcast")
   @Secured("users")
-  @Operation(summary = "Broadcasts open email", method = "GET", description = "This will broadcast open email")
+  @Operation(summary = "Broadcasts open email", method = "POST", description = "This will broadcast open email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -179,7 +179,7 @@ public class EmailBoxRest {
 
   @DeleteMapping("/{emailRemoteId}")
   @Secured("users")
-  @Operation(summary = "Deletes email", method = "PATCH", description = "This will delete email")
+  @Operation(summary = "Deletes email", method = "DELETE", description = "This will delete email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -200,6 +200,36 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       emailBoxService.deleteEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+  
+  @DeleteMapping("archive/{emailRemoteId}")
+  @Secured("users")
+  @Operation(summary = "Archives email", method = "DELETE", description = "This will archive email")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public void archiveEmail(HttpServletRequest request,
+                          @Parameter(description = "Email id", required = true)
+                          @PathVariable("emailRemoteId")
+                          long emailRemoteId) {
+    try {
+      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId,
+                                                                    request.getRemoteUser(),
+                                                                    false,
+                                                                    false,
+                                                                    false,
+                                                                    false);
+      if (email == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      emailBoxService.archiveEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
