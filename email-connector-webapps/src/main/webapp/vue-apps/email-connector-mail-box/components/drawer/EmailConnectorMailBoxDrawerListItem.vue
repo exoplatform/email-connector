@@ -22,47 +22,88 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @mouseleave="!isMobile && (isHover = false)"
     @focusin="!isMobile && (isHover = true)"
     @focusout="!isMobile && (isHover = false)"
-    :class="{ 'light-grey-background-color': !isMobile && isHover }">
+    :class="{ 'light-grey-background-color': !isMobile && isHover }"
+    class="position-relative no-border overflow-hidden">
     <div
-      role="button"
-      tabindex="0"
-      class="no-select"
-      aria-label="Open email"
-      @click="openDetail"
-      @keydown.enter="openDetail"
-      v-touch-hold="openActionMenuDrawer">
-      <v-list-item
-        :class="['height-auto', 'px-0', 'pb-2', { 'ms-n3': !email.read }]">
-        <v-list-item-avatar
-          v-if="!email.read"
-          width="8"
-          min-width="8"
-          height="8"
-          class="my-0 me-1 error-color-background" />
-        <v-list-item-content :class="['py-0', { 'font-weight-bold': !email.read }]">
-          <v-list-item-title v-text="email.sender.name" />
-        </v-list-item-content>
-        <v-list-item-action class="my-0">
-          <v-list-item-subtitle v-text="recievedDate" />
-        </v-list-item-action>
-      </v-list-item>
-      <v-list-item
-        class="px-0 height-auto">
-        <v-list-item-content class="py-0">
-          <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
-          <v-list-item-subtitle v-text="excerpt" />
-        </v-list-item-content>
-        <email-connector-mail-box-drawer-list-item-action-menu
-          v-if="(!isMobile && isHover) || menuOpen"
-          ref="menu"
-          :email="email"
-          @open="menuOpen = true"
-          @close="menuOpen = false" /> 
-      </v-list-item>
+      v-if="absolute"
+      :class="[
+        'position-absolute',
+        'my-auto',
+        't-0',
+        'b-0',
+        'd-flex',
+        'align-center',
+        'justify-center',
+        movingLeft ? 'blue darken-1 r-0' : 'red darken-1 l-0'
+      ]"
+      :style="{
+        width: `${gapSize}px`,
+        overflow: 'hidden'
+      }">
+      <v-card
+        class="transparent d-flex flex-column align-center justify-center"
+        :width="gapSize"
+        min-width="85"
+        dark
+        flat>
+        <v-icon size="24">{{ movingLeft && 'fa-archive' || 'fa-trash' }}</v-icon>
+        <span class="text-no-wrap mt-3">{{ movingLeft && $t('emailConnector.mailBox.list.drawer.detail.archive.label') || $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}</span>
+      </v-card>
     </div>
-    <email-connector-mail-box-drawer-list-item-attachments
-      :email-attachments="emailAttachments"
-      v-if="hasAttachments" />
+    <div
+      v-touch="{
+        start: moveStart,
+        end: moveEnd,
+        move: moveSwipe,
+      }"
+      :class="absolute && 'position-relative' || 'position-static'"
+      :style="absolute && {
+        transform: `translateX(${left}px)`,
+        width: `${minWidth}px`,
+        'min-width': `${minWidth}px`,
+        'padding-bottom': '9px'
+      }">
+      <div
+        role="button"
+        tabindex="0"
+        aria-label="Open email"
+        @click="openDetail"
+        @keydown.enter="openDetail"
+        v-touch-hold="openActionMenuDrawer">
+        <v-list-item
+          ref="mail"
+          :class="['height-auto', 'px-0', 'pb-2', { 'ms-n3': !email.read }]">
+          <v-list-item-avatar
+            v-if="!email.read"
+            width="8"
+            min-width="8"
+            height="8"
+            class="my-0 me-1 error-color-background" />
+          <v-list-item-content :class="['py-0', { 'font-weight-bold': !email.read }]">
+            <v-list-item-title v-text="email.sender.name" />
+          </v-list-item-content>
+          <v-list-item-action class="my-0">
+            <v-list-item-subtitle v-text="recievedDate" />
+          </v-list-item-action>
+        </v-list-item>
+        <v-list-item
+          class="px-0 height-auto">
+          <v-list-item-content class="py-0">
+            <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
+            <v-list-item-subtitle v-text="excerpt" />
+          </v-list-item-content>
+          <email-connector-mail-box-drawer-list-item-action-menu
+            v-if="(!isMobile && isHover) || menuOpen"
+            ref="menu"
+            :email="email"
+            @open="menuOpen = true"
+            @close="menuOpen = false" /> 
+        </v-list-item>
+      </div>
+      <email-connector-mail-box-drawer-list-item-attachments
+        :email-attachments="emailAttachments"
+        v-if="hasAttachments" />
+    </div>
   </div>
 </template>
 
@@ -70,9 +111,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data() {
     return {
-      menu: false,
       menuOpen: false,
-      isHover: false
+      isHover: false,
+      absolute: false,
+      left: 0,
+      startEvent: null,
+      minWidth: 0,
+      movingLeft: false,
+      isSwiping: false,
     };
   },
   props: {
@@ -82,6 +128,9 @@ export default {
     },
   },
   computed: {
+    gapSize() {
+      return Math.abs(this.left);
+    },
     recievedDate() {
       return this.$emailConnectorMailBoxService.formatDateString(this.email.recievedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
     },
@@ -103,8 +152,55 @@ export default {
       this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
     },
     openActionMenuDrawer() {
-      this.$root.$emit('open-email-action-menu-drawer', this.email);
+      if (!this.isSwiping) {
+        this.$root.$emit('open-email-action-menu-drawer', this.email);
+      }
+    },
+    async reset() {
+      this.absolute = false;
+      await this.$nextTick();
+      this.left = 0;
+      this.movingLeft = false;
+      this.startEvent = null;
+      this.minWidth = 0;
+      this.isSwiping = false;
+    },
+    async moveStart() {
+      if (this.absolute) {
+        return;
+      }
+      await this.reset();
+      this.minWidth = Math.max(this.minWidth, this.$refs?.mail?.$el?.offsetWidth);
+    },
+    moveEnd() {
+      const deleteEmail = this.left > 0;
+      const confirm = Math.abs(this.left) > (this.minWidth / 2);
+      if (confirm) {
+        if (deleteEmail) {
+          this.$root.$emit('delete-email', { emailId: this.email.mailRemoteId });
+        } else {
+          this.$root.$emit('archive-email', { emailId: this.email.mailRemoteId });
+        }
+      } else {
+        this.reset();
+      }
+    },
+    moveSwipe(event) {
+      if (!this.startEvent) {
+        this.startEvent = event;
+        return;
+      }
+      const deltaX = event.touchmoveX - this.startEvent.touchmoveX;
+      if (!this.absolute && Math.abs(deltaX) > 10) {
+        this.absolute = true;
+        this.isSwiping = true;
+      }
+      if (!this.absolute) {
+        return;
+      }
+      this.left = deltaX;
+      this.movingLeft = this.left < 0;
     }
-  }
+  } 
 };
 </script>
