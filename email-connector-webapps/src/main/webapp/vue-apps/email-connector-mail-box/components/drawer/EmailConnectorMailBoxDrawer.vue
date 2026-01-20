@@ -176,27 +176,31 @@ export default {
       this.$emailConnectorMailBoxService.updateEmailReadStatus(emailId, read);
     },
     deleteEmail(emailId) {
+      this.emails = this.emails.filter(
+        e => e.mailRemoteId !== emailId
+      );
       this.$emailConnectorMailBoxService.deleteEmail(emailId)
-        .then(() => {
-          this.emails = this.emails.filter(
-            e => e.mailRemoteId !== emailId
-          );
-          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.delete.success'), 'success');
-        })
         .catch(() => { 
-          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.delete.error'), 'error');
+          document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+            alertType: 'error',
+            alertMessage: this.$t('emailConnector.mailBox.list.drawer.delete.error'),
+            alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
+            alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
+          }}));
         });
     },
     archiveEmail(emailId) {
+      this.emails = this.emails.filter(
+        e => e.mailRemoteId !== emailId
+      );
       this.$emailConnectorMailBoxService.archiveEmail(emailId)
-        .then(() => {
-          this.emails = this.emails.filter(
-            e => e.mailRemoteId !== emailId
-          );
-          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.archive.success'), 'success');
-        })
         .catch(() => { 
-          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.archive.error'), 'error');
+          document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+            alertType: 'error',
+            alertMessage: this.$t('emailConnector.mailBox.list.drawer.archive.error'),
+            alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
+            alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
+          }}));
         });
     },
     async loadEmailBox() {
