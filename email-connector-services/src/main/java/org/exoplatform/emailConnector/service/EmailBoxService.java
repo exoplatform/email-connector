@@ -358,7 +358,7 @@ public class EmailBoxService {
   }
 
   public void deleteEmailByMailRemoteIdAndUserId(long emailRemoteId, String username) throws IllegalAccessException {
-    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, false, false, false, false);
+    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, true, true, false, false);
     if (email != null) {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
@@ -386,6 +386,8 @@ public class EmailBoxService {
         }
       } catch (Exception e) {
         LOG.error("Error when connecting store for user {}", username, e);
+        email.setId(null);
+        emailBoxStorage.createEmail(email);
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
         try {
@@ -407,7 +409,7 @@ public class EmailBoxService {
   }
 
   public void archiveEmailByMailRemoteIdAndUserId(long emailRemoteId, String username) throws IllegalAccessException {
-    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, false, false, false, false);
+    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, true, true, false, false);
     if (email != null) {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
@@ -432,6 +434,8 @@ public class EmailBoxService {
         }
       } catch (Exception e) {
         LOG.error("Error when connecting store for user {}", username, e);
+        email.setId(null);
+        emailBoxStorage.createEmail(email);
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
         try {
