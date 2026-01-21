@@ -27,7 +27,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template #content>
         <email-connector-mail-box-drawer-list-item-action-menu-items
           @close="close"
-          :email="email" />
+          :email="email" 
+          restricted />
       </template>
     </exo-drawer>
   </div>
