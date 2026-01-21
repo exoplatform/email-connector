@@ -188,7 +188,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, true, true, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -214,7 +214,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, true, true, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
