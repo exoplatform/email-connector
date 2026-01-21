@@ -37,6 +37,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <v-list-item
+      v-if="!restricted"
       class="ps-2 pe-3 height-auto"
       @click.stop="archiveEmail">
       <v-sheet
@@ -54,6 +55,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <v-list-item
+      v-if="!restricted"
       class="ps-2 pe-3 height-auto"
       @click.stop="deleteEmail">
       <v-sheet
@@ -79,7 +81,11 @@ export default {
     email: {
       type: Object,
       default: () => null,
-    }
+    },
+    restricted: {
+      type: Boolean,
+      default: false,
+    },
   },
   methods: {
     updateEmailReadStatus() {
