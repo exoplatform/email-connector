@@ -22,8 +22,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @mouseleave="!isMobile && (isHover = false)"
     @focusin="!isMobile && (isHover = true)"
     @focusout="!isMobile && (isHover = false)"
-    :class="{ 'light-grey-background-color': !isMobile && isHover }"
-    class="position-relative no-border overflow-hidden">
+    :class="[
+      { 'light-grey-background-color': !isMobile && isHover },
+      selectMode ? 'ps-4' : 'ps-7'
+    ]"
+    class="position-relative no-border overflow-hidden pt-3 pb-3 pe-4">
     <div
       v-if="absolute"
       :class="[
@@ -51,6 +54,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-card>
     </div>
     <div
+      class="d-flex"
       v-touch="{
         start: moveStart,
         end: moveEnd,
@@ -62,46 +66,56 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         width: `${minWidth}px`,
         'min-width': `${minWidth}px`,
       }">
-      <div
-        role="button"
-        tabindex="0"
-        aria-label="Open email"
-        @click="openDetail"
-        @keydown.enter="openDetail"
-        v-touch-hold="openActionMenuDrawer">
-        <v-list-item
-          ref="mail"
-          :class="['height-auto', 'px-0', 'pb-2', { 'ms-n3': !email.read }]">
-          <v-list-item-avatar
-            v-if="!email.read"
-            width="8"
-            min-width="8"
-            height="8"
-            class="my-0 me-1 error-color-background" />
-          <v-list-item-content :class="['py-0', { 'font-weight-bold': !email.read }]">
-            <v-list-item-title v-text="email.sender.name" />
-          </v-list-item-content>
-          <v-list-item-action class="my-0">
-            <v-list-item-subtitle v-text="receivedDate" />
-          </v-list-item-action>
-        </v-list-item>
-        <v-list-item
-          class="px-0 height-auto">
-          <v-list-item-content class="py-0">
-            <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
-            <v-list-item-subtitle v-text="excerpt" />
-          </v-list-item-content>
-          <email-connector-mail-box-drawer-list-item-action-menu
-            v-if="(!isMobile && isHover) || menuOpen"
-            ref="menu"
-            :email="email"
-            @open="menuOpen = true"
-            @close="menuOpen = false" /> 
-        </v-list-item>
+      <v-checkbox
+        v-if="selectMode"
+        class="me-0 pt-0 align-self-center"
+        color="#707070"
+        background-color="transparent"
+        :input-value="selected"
+        @click.stop
+        @change="onSelectChange" />
+      <div class="flex-grow-1">    
+        <div
+          role="button"
+          tabindex="0"
+          aria-label="Open email"
+          @click="openDetail"
+          @keydown.enter="openDetail"
+          v-touch-hold="openActionMenuDrawer">
+          <v-list-item
+            ref="mail"
+            :class="['height-auto', 'px-0', 'pb-2', { 'ms-n3': !email.read }]">
+            <v-list-item-avatar
+              v-if="!email.read"
+              width="8"
+              min-width="8"
+              height="8"
+              class="my-0 me-1 error-color-background" />
+            <v-list-item-content :class="['py-0', { 'font-weight-bold': !email.read }]">
+              <v-list-item-title v-text="email.sender.name" />
+            </v-list-item-content>
+            <v-list-item-action class="my-0">
+              <v-list-item-subtitle v-text="receivedDate" />
+            </v-list-item-action>
+          </v-list-item>
+          <v-list-item
+            class="px-0 height-auto">
+            <v-list-item-content class="py-0">
+              <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
+              <v-list-item-subtitle v-text="excerpt" />
+            </v-list-item-content>
+            <email-connector-mail-box-drawer-list-item-action-menu
+              v-if="(!isMobile && isHover && !selectMode) || menuOpen"
+              ref="menu"
+              :email="email"
+              @open="menuOpen = true"
+              @close="menuOpen = false" /> 
+          </v-list-item>
+        </div>
+        <email-connector-mail-box-drawer-list-item-attachments
+          :email-attachments="emailAttachments"
+          v-if="hasAttachments" />
       </div>
-      <email-connector-mail-box-drawer-list-item-attachments
-        :email-attachments="emailAttachments"
-        v-if="hasAttachments" />
     </div>
   </div>
 </template>
@@ -118,6 +132,7 @@ export default {
       minWidth: 0,
       movingLeft: false,
       isSwiping: false,
+      selected: false,
     };
   },
   props: {
@@ -125,6 +140,26 @@ export default {
       type: Object,
       default: () => null,
     },
+    selectMode: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  created() {
+    this.$root.$on('select-email', ({ emailId, selected }) => {
+      if (this.email.mailRemoteId === emailId) {
+        if (this.selected === selected) {
+          return;
+        } 
+        this.selected = selected;
+      }
+    });
+    this.$root.$on('select-all-emails', () => {
+      this.onSelectChange(true);
+    });
+    this.$root.$on('unselect-all-emails', () => {
+      this.selected = false;
+    });
   },
   computed: {
     gapSize() {
@@ -151,7 +186,7 @@ export default {
       this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
     },
     openActionMenuDrawer() {
-      if (!this.isSwiping) {
+      if (!this.selectMode && !this.isSwiping) {
         this.$root.$emit('open-email-action-menu-drawer', this.email);
       }
     },
@@ -185,6 +220,9 @@ export default {
       }
     },
     moveSwipe(event) {
+      if (this.selectMode) {
+        return;
+      }
       if (!this.startEvent) {
         this.startEvent = event;
         return;
@@ -199,7 +237,10 @@ export default {
       }
       this.left = deltaX;
       this.movingLeft = this.left < 0;
+    },
+    onSelectChange(value) {
+      this.$root.$emit('select-email', { emailId: this.email.mailRemoteId, selected: value });
     }
-  } 
+  }
 };
 </script>
