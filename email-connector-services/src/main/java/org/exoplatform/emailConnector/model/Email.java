@@ -38,7 +38,7 @@ public class Email {
 
   private EmailContent         content;
 
-  private Date                 recievedDate;
+  private Date                 receivedDate;
 
   private EmailSender          sender;
 
