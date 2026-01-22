@@ -60,7 +60,7 @@ public class EmailBoxEntity {
   @Column(name = "SENDER")
   private String                      sender;
 
-  @Column(name = "RECIEVER")
+  @Column(name = "RECEIVER")
   private String                      to;
 
   @Column(name = "CC")
@@ -69,8 +69,8 @@ public class EmailBoxEntity {
   @Column(name = "BCC")
   private String                      bcc;
 
-  @Column(name = "RECIEVED_DATE")
-  private Date                        recievedDate;
+  @Column(name = "RECEIVED_DATE")
+  private Date                        receivedDate;
 
   @Column(name = "IS_READ")
   private boolean                     read;

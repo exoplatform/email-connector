@@ -92,7 +92,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               </v-list-item-subtitle>
             </v-list-item-content>
             <v-list-item-action class="my-0 align-self-start">
-              <v-list-item-subtitle v-text="recievedDate" />
+              <v-list-item-subtitle v-text="receivedDate" />
             </v-list-item-action>
           </v-list-item>
           <email-connector-mail-box-drawer-list-item-detail-header 
@@ -134,8 +134,8 @@ export default {
     });
   },
   computed: {
-    recievedDate() {
-      return this.$emailConnectorMailBoxService.formatDateString(this.email.recievedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
+    receivedDate() {
+      return this.$emailConnectorMailBoxService.formatDateString(this.email.receivedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
     },
     chevronIcon() {
       return this.expandedHeader ? 'fa-chevron-up' : 'fa-chevron-down';

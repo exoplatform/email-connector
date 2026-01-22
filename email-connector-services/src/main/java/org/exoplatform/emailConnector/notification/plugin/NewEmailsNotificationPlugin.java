@@ -32,7 +32,7 @@ import org.exoplatform.services.resources.ResourceBundleService;
 public class NewEmailsNotificationPlugin extends BaseNotificationPlugin {
 
   public static final ArgumentLiteral<String> RECEIVER                  =
-                                                       new ArgumentLiteral<>(String.class, "reciever");
+                                                       new ArgumentLiteral<>(String.class, "receiver");
 
   public static final ArgumentLiteral<String> NEW_EMAILS                = new ArgumentLiteral<>(String.class, "newEmails");
 
