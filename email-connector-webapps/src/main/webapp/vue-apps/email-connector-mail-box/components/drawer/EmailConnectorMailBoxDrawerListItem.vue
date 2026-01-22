@@ -61,7 +61,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         transform: `translateX(${left}px)`,
         width: `${minWidth}px`,
         'min-width': `${minWidth}px`,
-        'padding-bottom': '9px'
       }">
       <div
         role="button"
