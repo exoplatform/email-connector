@@ -117,7 +117,7 @@ public class EmailBoxStorage {
                                                          toRecipientsString(email.getTo()),
                                                          toRecipientsString(email.getCc()),
                                                          toRecipientsString(email.getBcc()),
-                                                         email.getRecievedDate(),
+                                                         email.getReceivedDate(),
                                                          email.isRead(),
                                                          null);
       List<EmailAttachmentEntity> attachments = email.getContent() != null
@@ -155,7 +155,7 @@ public class EmailBoxStorage {
                               emailBoxEntity.getUserId(),
                               emailBoxEntity.getSubject(),
                               new EmailContent(emailBoxEntity.getBody(), excerpt, attachments),
-                              emailBoxEntity.getRecievedDate(),
+                              emailBoxEntity.getReceivedDate(),
                               EmailConnectorUtils.getEmailSender(emailSenderAddress, withProfile),
                               emailBoxEntity.isRead(),
                               null,

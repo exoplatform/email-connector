@@ -28,11 +28,11 @@ import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 
 public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :username ORDER BY email.recievedDate DESC")
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :username ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByUserIdWithAttachments(@Param("username")
   String username);
 
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :username AND email.mailRemoteId = :mailRemoteId ORDER BY email.recievedDate DESC")
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :username AND email.mailRemoteId = :mailRemoteId ORDER BY email.receivedDate DESC")
   EmailBoxEntity findByMailRemoteIdAndUserId(@Param("mailRemoteId")
   long mailRemoteId, @Param("username")
   String userId);

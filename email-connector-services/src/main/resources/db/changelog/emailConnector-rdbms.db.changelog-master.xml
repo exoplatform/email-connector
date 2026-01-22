@@ -125,4 +125,28 @@
       <column name="BCC" type="VARCHAR(1024)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-9">
+     <modifyDataType 
+      tableName="EMAIL_BOX" 
+      columnName="RECIEVER" 
+      newDataType="LONGTEXT" />
+     <modifyDataType 
+      tableName="EMAIL_BOX" 
+      columnName="CC" 
+      newDataType="LONGTEXT" />
+     <modifyDataType 
+      tableName="EMAIL_BOX" 
+      columnName="BCC" 
+      newDataType="LONGTEXT" />
+    <renameColumn
+      tableName="EMAIL_BOX"
+      oldColumnName="RECIEVED_DATE"
+      newColumnName="RECEIVED_DATE" 
+      columnDataType="TIMESTAMP" />
+    <renameColumn
+      tableName="EMAIL_BOX"
+      oldColumnName="RECIEVER"
+      newColumnName="RECEIVER"
+      columnDataType="LONGTEXT" />
+  </changeSet>
 </databaseChangeLog>

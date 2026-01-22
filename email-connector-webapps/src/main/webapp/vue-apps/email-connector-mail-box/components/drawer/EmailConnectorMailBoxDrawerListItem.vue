@@ -83,7 +83,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-list-item-title v-text="email.sender.name" />
           </v-list-item-content>
           <v-list-item-action class="my-0">
-            <v-list-item-subtitle v-text="recievedDate" />
+            <v-list-item-subtitle v-text="receivedDate" />
           </v-list-item-action>
         </v-list-item>
         <v-list-item
@@ -131,8 +131,8 @@ export default {
     gapSize() {
       return Math.abs(this.left);
     },
-    recievedDate() {
-      return this.$emailConnectorMailBoxService.formatDateString(this.email.recievedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
+    receivedDate() {
+      return this.$emailConnectorMailBoxService.formatDateString(this.email.receivedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
     },
     isMobile() {
       return this.$vuetify.breakpoint.smAndDown;
