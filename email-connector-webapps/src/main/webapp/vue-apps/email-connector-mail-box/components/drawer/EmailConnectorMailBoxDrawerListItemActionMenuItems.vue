@@ -18,6 +18,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-list class="pa-0">
     <v-list-item
       class="ps-2 pe-3 height-auto"
+      @click.stop="selectEmail">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-mouse-pointer
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.select.label') }}
+      </span>
+    </v-list-item>
+    <v-list-item
+      class="ps-2 pe-3 height-auto"
       @click.stop="updateEmailReadStatus">
       <v-sheet
         class="d-flex"
@@ -88,6 +105,10 @@ export default {
     },
   },
   methods: {
+    selectEmail() {
+      this.$emit('close');
+      this.$root.$emit('select-email', { emailId: this.email.mailRemoteId, selected: true });
+    },
     updateEmailReadStatus() {
       this.$emit('close');
       this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: !this.email.read });
