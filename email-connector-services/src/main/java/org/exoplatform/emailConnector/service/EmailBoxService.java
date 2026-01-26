@@ -20,6 +20,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -192,7 +193,7 @@ public class EmailBoxService {
    * @param username user whose emails will be deleted
    */
   public void deleteUserEmails(String username) {
-    emailBoxStorage.deleteUserEmails(username);
+    emailBoxStorage.deleteEmailsByUserId(username);
   }
 
   /**
@@ -353,42 +354,62 @@ public class EmailBoxService {
     }
   }
 
-  public void deleteEmailByMailRemoteIdAndUserId(long mailRemoteId, String username) throws IllegalAccessException {
-    Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, true, true, false, false);
-    if (email != null) {
+  public int deleteEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
+    int failedEmailDeletions = 0;
+    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
       }
-      emailBoxStorage.deleteEmails(Arrays.asList(email.getId()));
+      List<Email> emails = mailRemoteIds.stream().map(mailRemoteId -> {
+        try {
+          return getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
+        } catch (Exception e) {
+          LOG.error("Error getting email {} for user {}", mailRemoteId, username, e);
+          return null;
+        }
+      }).filter(Objects::nonNull).collect(Collectors.toList());
+      deleteEmails(emails);
       Store store = null;
       IMAPFolder inbox = null;
-      IMAPFolder trash = null;
+      boolean needExpunge = false;
       try {
         store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
         inbox = (IMAPFolder) store.getFolder("INBOX");
         inbox.open(Folder.READ_WRITE);
-        Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
-        if (remoteMessage != null) {
-          remoteMessage.setFlag(Flags.Flag.DELETED, true);
-          trash = findTrashFolder(store);
-          if (trash != null) {
-            inbox.moveMessages(new Message[] { remoteMessage }, trash);
-          } else {
-            inbox.close(true);
-            return;
+        IMAPFolder trash = findTrashFolder(store);
+        for (Long mailRemoteId : mailRemoteIds) {
+          try {
+            Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
+            if (remoteMessage != null) {
+              remoteMessage.setFlag(Flags.Flag.DELETED, true);
+              if (trash != null) {
+                inbox.moveMessages(new Message[] { remoteMessage }, trash);
+              } else {
+                needExpunge = true;
+              }
+            }
+          } catch (Exception e) {
+            emails.stream().filter(mail -> mail.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
+              email.setId(null);
+              return email;
+            }).ifPresent(emailBoxStorage::createEmail);
+            failedEmailDeletions++;
+            LOG.error("Error when deleting email {} for user {}", mailRemoteId, username, e);
           }
         }
       } catch (Exception e) {
         LOG.error("Error when connecting store for user {}", username, e);
-        email.setId(null);
-        emailBoxStorage.createEmail(email);
+        emails.stream().forEach(email -> {
+          email.setId(null);
+          emailBoxStorage.createEmail(email);
+        });
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
         try {
           if (inbox != null && inbox.isOpen()) {
-            inbox.close(false);
+            inbox.close(needExpunge);
           }
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing inbox", messagingException);
@@ -402,6 +423,7 @@ public class EmailBoxService {
         }
       }
     }
+    return failedEmailDeletions;
   }
 
   public void archiveEmailByMailRemoteIdAndUserId(long mailRemoteId, String username) throws IllegalAccessException {
@@ -412,7 +434,7 @@ public class EmailBoxService {
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
       }
-      emailBoxStorage.deleteEmails(Arrays.asList(email.getId()));
+      emailBoxStorage.deleteEmailsByIds(Arrays.asList(email.getId()));
       Store store = null;
       IMAPFolder inbox = null;
       IMAPFolder archive = null;
@@ -536,7 +558,7 @@ public class EmailBoxService {
 
   private void deleteEmails(List<Email> emails) {
     List<Long> emailsIdsToDelete = emails.stream().map(Email::getId).toList();
-    emailBoxStorage.deleteEmails(emailsIdsToDelete);
+    emailBoxStorage.deleteEmailsByIds(emailsIdsToDelete);
   }
 
   private void updateEmailSyncStatus(String username, SyncStatus syncStatus) {
@@ -628,5 +650,12 @@ public class EmailBoxService {
       }
     }
     return null;
+  }
+
+  private void rollbackLocalEmail(Long mailRemoteId, List<Email> emails) {
+    emails.stream().filter(mail -> mail.getMailRemoteId().equals(mailRemoteId)).findFirst().ifPresent(email -> {
+      email.setId(null);
+      emailBoxStorage.createEmail(email);
+    });
   }
 }

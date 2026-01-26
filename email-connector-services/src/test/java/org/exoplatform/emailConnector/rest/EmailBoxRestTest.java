@@ -149,15 +149,19 @@ public class EmailBoxRestTest {
 
   @Test
   void deleteEmail() throws Exception {
-    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/1").with(testSimpleUser()));
+    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH).with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    List<Long> emailIds = new ArrayList<Long>();
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH).with(testSimpleUser())
+                                                     .content(asJsonString(emailIds))
+                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                     .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isNotFound());
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(),
-                                                         anyString(),
-                                                         anyBoolean(),
-                                                         anyBoolean(),
-                                                         anyBoolean(),
-                                                         anyBoolean())).thenReturn(mock(Email.class));
-    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/1").with(testSimpleUser()));
+    emailIds = List.of(123L, 456L, 789L);
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH).with(testSimpleUser())
+                                                     .content(asJsonString(emailIds))
+                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                     .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
   }
 

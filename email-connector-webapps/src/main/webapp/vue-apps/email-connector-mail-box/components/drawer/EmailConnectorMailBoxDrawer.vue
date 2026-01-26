@@ -70,6 +70,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           icon>
           <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
         </v-btn>
+        <v-btn
+          :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+          @click="deleteEmails()"
+          icon>
+          <v-icon size="20" class="error--text">fa-trash</v-icon>
+        </v-btn>
       </div>
     </template>
     <template v-if="emailBoxDrawer && !loading" #content>
@@ -150,7 +156,7 @@ export default {
       this.updateEmailsReadStatus(read, mailRemoteId);
     });
     this.$root.$on('delete-email', ({ emailId }) => {
-      this.deleteEmail(emailId);
+      this.deleteEmails(emailId);
     });
     this.$root.$on('archive-email', ({ emailId }) => {
       this.archiveEmail(emailId);
@@ -261,19 +267,41 @@ export default {
         return email && email.read !== read;
       });
     },
-    deleteEmail(emailId) {
+    deleteEmails(emailId = null) {
+      const emailIdsToDelete = emailId ? [emailId] : this.selectedEmails;
       this.emails = this.emails.filter(
-        e => e.mailRemoteId !== emailId
+        e => !emailIdsToDelete.includes(e.mailRemoteId)
       );
-      this.$emailConnectorMailBoxService.deleteEmail(emailId)
-        .catch(() => { 
-          document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-            alertType: 'error',
-            alertMessage: this.$t('emailConnector.mailBox.list.drawer.delete.error'),
-            alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
-            alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
-          }}));
-        });
+      if (!emailId) {
+        this.cancelSelectMode();
+      }
+      if (emailIdsToDelete.length > 0) {
+        this.$emailConnectorMailBoxService.deleteEmails(emailIdsToDelete)
+          .then((deleteResult) => {
+            if ((deleteResult.failedDeletions ?? 0) > 0) {
+              const alertMessage = this.$t(deleteResult.failedDeletions === 1 ? 'emailConnector.mailBox.list.drawer.delete.email.error' : 'emailConnector.mailBox.list.drawer.delete.emails.error', {
+                0: deleteResult.failedDeletions,
+              });
+              document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+                alertType: 'error',
+                alertMessage: alertMessage,
+                alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
+                alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
+              }}));
+            }
+          })
+          .catch(() => { 
+            const alertMessage = this.$t(emailIdsToDelete.length === 1 ? 'emailConnector.mailBox.list.drawer.delete.email.error' : 'emailConnector.mailBox.list.drawer.delete.emails.error', {
+              0: emailIdsToDelete.length,
+            });
+            document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+              alertType: 'error',
+              alertMessage: alertMessage,
+              alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
+              alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
+            }}));
+          });
+      }
     },
     archiveEmail(emailId) {
       this.emails = this.emails.filter(
