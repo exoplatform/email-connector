@@ -168,7 +168,7 @@ export default {
     open(mailRemoteId) {
       this.loading = true;
       this.$refs.emailDetailDrawer.open();
-      this.$root.$emit('update-email-read-status', { emailId: mailRemoteId, read: true });
+      this.$root.$emit('update-email-read-status', { mailRemoteId: mailRemoteId, read: true });
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
         this.email = email;
       }).finally(() => {
@@ -179,7 +179,7 @@ export default {
       this.expandedHeader = !this.expandedHeader;
     },
     updateEmailReadStatus() {
-      this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: false });
+      this.$root.$emit('update-email-read-status', { mailRemoteId: this.email.mailRemoteId, read: false });
       this.close();
     },
     deleteEmail() {

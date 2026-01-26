@@ -317,17 +317,17 @@ public class EmailBoxService {
           inbox = store.getFolder("INBOX");
           inbox.open(Folder.READ_WRITE);
         }
-        for (Long emailId : mailRemoteIds) {
+        for (Long mailRemoteId : mailRemoteIds) {
           try {
             if (updateRemoteReadStatus) {
-              Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(emailId);
+              Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
               remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
             }
           } catch (Exception e) {
-            Email email = getEmailByMailRemoteIdAndUserId(emailId, username, false, false, false, false);
+            Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
             email.setRead(!readStatus);
             emailBoxStorage.updateEmail(email);
-            LOG.error("Error updating email {} read status for user {}", emailId, username, e);
+            LOG.error("Error when updating email {} read status for user {}", mailRemoteId, username, e);
           }
         }
       } catch (Exception e) {

@@ -229,17 +229,17 @@ export function formatDateString(dateToFormat, yesterdayLabel) {
   }
 }
 
-export function updateEmailReadStatus(emailIds, readStatus) {
+export function updateEmailsReadStatus(mailRemoteIds, readStatus) {
   return fetch(`/email-connector/rest/email-box?readStatus=${readStatus}`, {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
     method: 'PATCH',
-    body: JSON.stringify(emailIds)
+    body: JSON.stringify(mailRemoteIds)
   }).then(resp => {
     if (!resp?.ok) {
-      throw new Error('Error when updating email read status');
+      throw new Error('Error when updating emails read status');
     }
   });
 }

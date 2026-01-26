@@ -111,7 +111,7 @@ export default {
     },
     updateEmailReadStatus() {
       this.$emit('close');
-      this.$root.$emit('update-email-read-status', { emailId: this.email.mailRemoteId, read: !this.email.read });
+      this.$root.$emit('update-email-read-status', { mailRemoteId: this.email.mailRemoteId, read: !this.email.read });
     },
     deleteEmail() {
       this.$emit('close');
