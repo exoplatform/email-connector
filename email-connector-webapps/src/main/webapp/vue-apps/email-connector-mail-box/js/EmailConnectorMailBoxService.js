@@ -146,17 +146,19 @@ export function getEmailByRemoteId(mailRemoteId) {
   });
 }
 
-export function deleteEmail(mailRemoteId) {
-  return fetch(`/email-connector/rest/email-box/${mailRemoteId}`, {
+export function deleteEmails(mailRemoteIds) {
+  return fetch('/email-connector/rest/email-box', {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
-    method: 'DELETE'
+    method: 'DELETE',
+    body: JSON.stringify(mailRemoteIds)
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when deleting email');
+      throw new Error('Error when deleting emails');
     }
+    return resp.json();
   });
 }
 

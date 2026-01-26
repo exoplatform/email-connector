@@ -163,26 +163,26 @@ public class EmailBoxStorageTest {
   }
 
   @Test
-  void deletetUserEmails() {
+  void deleteEmailsByUserId() {
     Email email1 = email("root");
     emailBoxStorage.createEmail(email1);
     List<Email> retrievedEmailEntities = emailBoxStorage.getEmails("root");
     assertNotNull(retrievedEmailEntities);
     assertEquals(1, retrievedEmailEntities.size());
-    emailBoxStorage.deleteUserEmails("root");
+    emailBoxStorage.deleteEmailsByUserId("root");
     retrievedEmailEntities = emailBoxStorage.getEmails("root");
     assertEquals(0, retrievedEmailEntities.size());
   }
 
   @Test
-  void deleteEmails() {
+  void deleteEmailsByIds() {
     Email email1 = email("root");
     Email storedEmail = emailBoxStorage.createEmail(email1);
     List<Email> retrievedEmailEntities = emailBoxStorage.getEmails("root");
     assertNotNull(retrievedEmailEntities);
     assertEquals(1, retrievedEmailEntities.size());
     List<Long> emailsIds = List.of(storedEmail.getId());
-    emailBoxStorage.deleteEmails(emailsIds);
+    emailBoxStorage.deleteEmailsByIds(emailsIds);
     retrievedEmailEntities = emailBoxStorage.getEmails("root");
     assertEquals(0, retrievedEmailEntities.size());
   }

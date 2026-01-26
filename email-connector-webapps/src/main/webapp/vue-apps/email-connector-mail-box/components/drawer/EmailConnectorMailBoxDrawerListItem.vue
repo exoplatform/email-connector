@@ -23,7 +23,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @focusin="!isMobile && (isHover = true)"
     @focusout="!isMobile && (isHover = false)"
     :class="[
-      { 'light-grey-background-color': !isMobile && isHover },
+      { 'light-grey-background-color': !isMobile && isHover, 'no-select': isMobile },
       selectMode ? 'ps-4' : 'ps-7'
     ]"
     class="position-relative no-border overflow-hidden pt-3 pb-3 pe-4">
@@ -183,7 +183,12 @@ export default {
   },
   methods: {
     openDetail() {
-      this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+      if (this.isMobile) {
+        this.$root.$emit('select-email', { emailId: this.email.mailRemoteId, selected: true });
+      }
+      else {
+        this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+      }
     },
     openActionMenuDrawer() {
       if (!this.selectMode && !this.isSwiping) {
