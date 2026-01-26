@@ -135,7 +135,7 @@ public class UserEmailSettingRestTest {
   }
 
   @SneakyThrows
-  public static String asJsonString(final Object obj) {
+  private String asJsonString(final Object obj) {
     return OBJECT_MAPPER.writeValueAsString(obj);
   }
 }

@@ -31,6 +31,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,6 +43,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureWebMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.context.ContextConfiguration;
@@ -63,6 +67,7 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
 import jakarta.servlet.Filter;
+import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { EmailBoxRest.class, PortalAuthenticationManager.class })
 @ContextConfiguration(classes = { WebSecurityConfiguration.class })
@@ -126,15 +131,19 @@ public class EmailBoxRestTest {
 
   @Test
   void updateEmailReadStatus() throws Exception {
-    ResultActions response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
+    ResultActions response = mockMvc.perform(patch(EMAIL_BOX_PATH + "?readStatus=true").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    List<Long> emailIds = new ArrayList<Long>();
+    response = mockMvc.perform(patch(EMAIL_BOX_PATH + "?readStatus=true").with(testSimpleUser())
+                                                                         .content(asJsonString(emailIds))
+                                                                         .contentType(MediaType.APPLICATION_JSON)
+                                                                         .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isNotFound());
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(),
-                                                         anyString(),
-                                                         anyBoolean(),
-                                                         anyBoolean(),
-                                                         anyBoolean(),
-                                                         anyBoolean())).thenReturn(mock(Email.class));
-    response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/2122121?readStatus=true").with(testSimpleUser()));
+    emailIds = List.of(123L, 456L, 789L);
+    response = mockMvc.perform(patch(EMAIL_BOX_PATH + "?readStatus=true").with(testSimpleUser())
+                                                                         .content(asJsonString(emailIds))
+                                                                         .contentType(MediaType.APPLICATION_JSON)
+                                                                         .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
   }
 
@@ -182,5 +191,10 @@ public class EmailBoxRestTest {
 
   private RequestPostProcessor testSimpleUser() {
     return user(SIMPLE_USER).password(TEST_PASSWORD).authorities(new SimpleGrantedAuthority("users"));
+  }
+
+  @SneakyThrows
+  private String asJsonString(final Object obj) {
+    return OBJECT_MAPPER.writeValueAsString(obj);
   }
 }

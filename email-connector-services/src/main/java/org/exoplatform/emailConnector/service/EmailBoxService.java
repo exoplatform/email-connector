@@ -298,60 +298,58 @@ public class EmailBoxService {
     return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, userName, withAttachments, withRecipients, withProfile);
   }
 
-  public void updateEmailReadStatus(long emailRemoteId,
-                                    Message remoteMessage,
+  public void updateEmailReadStatus(List<Long> emailIds,
                                     String username,
                                     boolean readStatus,
                                     boolean updateRemoteReadStatus) throws IllegalAccessException {
-    Email email = getEmailByMailRemoteIdAndUserId(emailRemoteId, username, false, false, false, false);
-    if (email != null && readStatus != email.isRead()) {
+    if (emailIds != null && !emailIds.isEmpty()) {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
       }
-      email.setRead(readStatus);
-      emailBoxStorage.updateEmail(email);
-      if (updateRemoteReadStatus) {
-        if (remoteMessage == null) {
-          Store store = null;
-          Folder inbox = null;
+      Store store = null;
+      Folder inbox = null;
+      try {
+        if (updateRemoteReadStatus) {
+          store = userEmailSettingService.connect(userEmailSetting);
+          inbox = store.getFolder("INBOX");
+          inbox.open(Folder.READ_WRITE);
+        }
+        for (Long emailId : emailIds) {
+          Email email = getEmailByMailRemoteIdAndUserId(emailId, username, false, false, false, false);
           try {
-            store = userEmailSettingService.connect(userEmailSetting);
-            inbox = store.getFolder("INBOX");
-            inbox.open(Folder.READ_WRITE);
-            remoteMessage = ((UIDFolder) inbox).getMessageByUID(emailRemoteId);
-            if (remoteMessage != null) {
-              remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
+            if (email != null && readStatus != email.isRead()) {
+              email.setRead(readStatus);
+              emailBoxStorage.updateEmail(email);
+              if (updateRemoteReadStatus) {
+                Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(emailId);
+                remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
+              }
             }
           } catch (Exception e) {
-            LOG.error("Error when connecting store for user {}", username, e);
-            throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
-          } finally {
-            try {
-              if (inbox != null && inbox.isOpen()) {
-                inbox.close(false);
-              }
-            } catch (MessagingException messagingException) {
-              LOG.warn("Error when closing inbox", messagingException);
-            }
-            try {
-              if (store != null && store.isConnected()) {
-                store.close();
-              }
-            } catch (MessagingException messagingException) {
-              LOG.warn("Error when closing store", messagingException);
-            }
+            email.setRead(!readStatus);
+            emailBoxStorage.updateEmail(email);
+            LOG.error("Error updating email {} read status for user {}", emailId, username, e);
           }
-        } else {
-          try {
-            remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
-          } catch (MessagingException e) {
-            LOG.error("Error when setting seen flag of remote message id {} for user {}", emailRemoteId, username, e);
-            throw new IllegalStateException(String.format("Error when connecting setting seen flag of remote message id %s for user %s",
-                                                          emailRemoteId,
-                                                          username));
+        }
+      } catch (Exception e) {
+        LOG.error("Error when connecting store for user {}", username, e);
+        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      } finally {
+        try {
+          if (inbox != null && inbox.isOpen()) {
+            inbox.close(false);
           }
+        } catch (MessagingException e) {
+          LOG.warn("Error when closing inbox", e);
+        }
+        try {
+          if (store != null && store.isConnected()) {
+            store.close();
+          }
+        } catch (MessagingException e) {
+          LOG.warn("Error when closing store", e);
         }
       }
     }
@@ -493,7 +491,7 @@ public class EmailBoxService {
                                                 emailBccRecipients));
 
         } else {
-          updateEmailReadStatus(messageUid, message, username, message.isSet(Flags.Flag.SEEN), false);
+          updateEmailReadStatus(List.of(messageUid), username, message.isSet(Flags.Flag.SEEN), false);
         }
       } catch (Exception e) {
         LOG.warn("Error when storing email with subject {} for user {}", message.getSubject(), username, e);

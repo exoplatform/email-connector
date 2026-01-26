@@ -42,17 +42,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
     </template>
     <template #titleIcons>
-      <email-box-sync-loader
-        v-if="syncInProgress && !selectMode"
-        :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
-        loader-class="align-self-center me-2" />
-      <v-btn
-        v-if="!syncInProgress && !selectMode"
-        :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
-        @click="synchronize()"
-        icon>
-        <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
-      </v-btn>
+      <div v-if="!selectMode">
+        <email-box-sync-loader
+          v-if="syncInProgress"
+          :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
+          loader-class="align-self-center me-2" />
+        <v-btn
+          v-if="!syncInProgress"
+          :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
+          @click="synchronize()"
+          icon>
+          <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
+        </v-btn>
+      </div>
+      <div v-else>
+        <v-btn
+          v-if="canUpdateEmailReadStatus(true)"
+          :title="$t('emailConnector.mailBox.list.drawer.detail.read.label')"
+          @click="updateEmailReadStatus(true)"
+          icon>
+          <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
+        </v-btn>
+      </div>
     </template>
     <template v-if="emailBoxDrawer && !loading" #content>
       <div
@@ -128,8 +139,8 @@ export default {
     this.$root.$on('open-mail-box-drawer', (loading) => {
       this.open(loading); 
     });
-    this.$root.$on('update-email-read-status', ({ emailId, read }) => {
-      this.updateEmailReadStatus(emailId, read);
+    this.$root.$on('update-email-read-status', ({ read, emailId }) => {
+      this.updateEmailReadStatus(read, emailId);
     });
     this.$root.$on('delete-email', ({ emailId }) => {
       this.deleteEmail(emailId);
@@ -180,7 +191,7 @@ export default {
       set(value) {
         this.onSelectAllChange(value);
       }
-    },
+    }
   },
   methods: {
     async open(loading) {
@@ -217,12 +228,31 @@ export default {
       });
       this.startAutoRefresh();
     },
-    updateEmailReadStatus(emailId, read) {
-      const email = this.emails.find(e => e.mailRemoteId === emailId);
-      if (email) {
-        this.$set(email, 'read', read);
+    updateEmailReadStatus(read, emailId = null) {
+      const emailIdsSource = emailId ? [emailId] : this.selectedEmails;
+      const emailIdsToUpdate = emailIdsSource.filter(id => {
+        const email = this.emails.find(e => e.mailRemoteId === id);
+        if (email && email.read !== read) {
+          this.$set(email, 'read', read);
+          return true;
+        }
+        return false;
+      });
+      if (!emailId) {
+        this.cancelSelectMode();
       }
-      this.$emailConnectorMailBoxService.updateEmailReadStatus(emailId, read);
+      if (emailIdsToUpdate.length > 0) {
+        this.$emailConnectorMailBoxService.updateEmailReadStatus(
+          emailIdsToUpdate,
+          read
+        );
+      }
+    },
+    canUpdateEmailReadStatus(read) {
+      return this.selectedEmails.some(emailId => {
+        const email = this.emails.find(e => e.mailRemoteId === emailId);
+        return email && email.read !== read;
+      });
     },
     deleteEmail(emailId) {
       this.emails = this.emails.filter(
