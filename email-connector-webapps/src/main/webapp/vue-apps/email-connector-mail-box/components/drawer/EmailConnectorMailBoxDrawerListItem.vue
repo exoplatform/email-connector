@@ -183,7 +183,12 @@ export default {
   },
   methods: {
     openDetail() {
-      this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+      if (this.isMobile) {
+        this.$root.$emit('select-email', { emailId: this.email.mailRemoteId, selected: true });
+      }
+      else {
+        this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+      }
     },
     openActionMenuDrawer() {
       if (!this.selectMode && !this.isSwiping) {
