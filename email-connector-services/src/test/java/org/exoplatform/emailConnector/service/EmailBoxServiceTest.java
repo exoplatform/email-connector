@@ -33,6 +33,7 @@ import static org.mockito.Mockito.withSettings;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 
 import javax.mail.BodyPart;
 import javax.mail.Flags;
@@ -163,21 +164,21 @@ public class EmailBoxServiceTest {
   void updateEmailReadStatus() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    List<Long> emailIds = List.of(1212l);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.updateEmailReadStatus(emailIds, TEST_USER, true, false));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
-    emailBoxService.updateEmailReadStatus(1212l, null, TEST_USER, true, false);
-    verify(emailBoxStorage).updateEmail(email);
+    emailBoxService.updateEmailReadStatus(emailIds, TEST_USER, true, false);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(emailIds, TEST_USER, true);
     reset(emailBoxStorage);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false)).thenReturn(email);
     Store store = mock(Store.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    emailBoxService.updateEmailReadStatus(1212l, null, TEST_USER, false, true);
-    verify(emailBoxStorage).updateEmail(email);
+    emailBoxService.updateEmailReadStatus(emailIds, TEST_USER, false, true);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(emailIds, TEST_USER, false);
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.SEEN, false);
   }
