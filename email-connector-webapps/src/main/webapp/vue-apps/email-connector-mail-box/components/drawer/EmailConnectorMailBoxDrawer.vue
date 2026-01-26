@@ -63,6 +63,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           icon>
           <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
         </v-btn>
+        <v-btn
+          v-if="canUpdateEmailReadStatus(false)"
+          :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
+          @click="updateEmailReadStatus(false)"
+          icon>
+          <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
+        </v-btn>
       </div>
     </template>
     <template v-if="emailBoxDrawer && !loading" #content>
