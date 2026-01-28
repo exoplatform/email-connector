@@ -22,26 +22,32 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     :right="!$vuetify.rtl"
     :loading="loading"
     :confirm-close="activeDownload"
+    :go-back-button="selectMode"
     :confirm-close-labels="{
       title: $t('emailConnector.mailBox.attachment.download.confirmAbort.title'),
       message: $t('emailConnector.mailBox.attachment.download.confirmAbort.message'),
       ok: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.yes'),
       cancel: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.no')
     }"
+    @go-back="cancelSelectMode"
     @confirm-close="onAbortDownloadConfirmed"
     @closed="close"
     style="outline: none;"
     class="no-box-shadow">
     <template #title>
-      <span class="me-3">{{ $t('emailConnector.mailBox.list.drawer.title') }}</span>
+      <div :class="{ 'd-flex align-center': selectMode }">
+        <span :class="{ 'text-body': selectMode }">
+          {{ title }}
+        </span>
+      </div>
     </template>
     <template #titleIcons>
       <email-box-sync-loader
-        v-if="syncInProgress"
+        v-if="syncInProgress && !selectMode"
         :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
         loader-class="align-self-center me-2" />
       <v-btn
-        v-else
+        v-if="!syncInProgress && !selectMode"
         :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
         @click="synchronize()"
         icon>
@@ -71,9 +77,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-content>
         </v-list-item>
         <template v-else>
+          <v-checkbox
+            class="ps-4 my-2 pt-0"
+            v-if="selectMode"
+            :indeterminate="indeterminate"
+            color="#707070"
+            hide-details
+            :label="$t('emailConnector.mailBox.list.drawer.selectAll')"
+            v-model="selectedAll"
+            @click.stop />
           <email-connector-mail-box-drawer-list
             v-if="hasEmails"
-            :emails="emails" /> 
+            :emails="emails" 
+            :select-mode="selectMode" /> 
           <v-list-item v-else class="full-height align-center">
             <v-list-item-content>
               <v-icon
@@ -103,6 +119,8 @@ export default {
       syncInProgress: false,
       refreshInterval: null,
       activeDownload: null,
+      selectedEmails: [],
+      selectMode: false,
     };
   },
   created() {
@@ -125,6 +143,17 @@ export default {
     this.$root.$on('attachment-download-finished', () => {
       this.activeDownload = null;
     });
+    this.$root.$on('select-email', ({ emailId, selected }) => {
+      this.selectMode = true;
+      if (selected) {
+        if (!this.selectedEmails.includes(emailId)) {
+          this.selectedEmails.push(emailId);
+        }
+      }
+      else {
+        this.selectedEmails = this.selectedEmails.filter(id => id !== emailId);
+      }
+    });
   },
   computed: {
     hasEmails() {
@@ -132,6 +161,25 @@ export default {
     },
     syncBlocked() {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';
+    },
+    title() {
+      if (!this.selectMode) {
+        return this.$t('emailConnector.mailBox.list.drawer.title');
+      }
+      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ? 
+        this.$t('emailConnector.mailBox.list.drawer.emailSelected') : 
+        this.$t('emailConnector.mailBox.list.drawer.emailsSelected')}`;
+    },
+    indeterminate() {
+      return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
+    },
+    selectedAll: {
+      get() {
+        return this.emails.length > 0 && this.selectedEmails.length === this.emails.length;
+      },
+      set(value) {
+        this.onSelectAllChange(value);
+      }
     },
   },
   methods: {
@@ -155,6 +203,7 @@ export default {
     close() {
       this.stopAutoRefresh();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
+      this.cancelSelectMode();
       this.$refs.emailBoxDrawer.close();
     },
     checkSetting() {
@@ -232,6 +281,19 @@ export default {
       if (this.refreshInterval) {
         clearInterval(this.refreshInterval);
         this.refreshInterval = null;
+      }
+    },
+    cancelSelectMode() {
+      this.selectedEmails = [];
+      this.selectMode = false;
+      this.$root.$emit('unselect-all-emails');
+    },
+    onSelectAllChange(value) {
+      if (!value) {
+        this.$root.$emit('unselect-all-emails');
+        this.selectedEmails = [];
+      } else {
+        this.$root.$emit('select-all-emails');
       }
     }
   }
