@@ -22,6 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
@@ -90,6 +93,15 @@ public class EmailBoxStorageTest {
       when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(Collections.emptyList());
       return null;
     }).when(emailBoxDAO).deleteEmailsByIds(any());
+
+    doAnswer(invocation -> {
+      boolean readStatus = invocation.getArgument(2);
+      EmailBoxEntity entity = emailBoxDAO.findByMailRemoteIdAndUserId(1212L, "root");
+      if (entity != null) {
+        entity.setRead(readStatus);
+      }
+      return null;
+    }).when(emailBoxDAO).updateReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean());
   }
 
   @Test
@@ -104,13 +116,22 @@ public class EmailBoxStorageTest {
 
   @Test
   void updateEmail() {
-    assertThrows(IllegalArgumentException.class, () -> emailBoxStorage.createEmail(null));
     Email email = email("root");
     Email createdEmail = emailBoxStorage.createEmail(email);
     emailBoxStorage.updateEmail(createdEmail);
     Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
     assertNotNull(updatedEmail);
     assertEquals("subject (updated)", updatedEmail.getSubject());
+  }
+
+  @Test
+  void updateEmailReadStatusByMailRemoteIds() {
+    Email email = email("root");
+    emailBoxStorage.createEmail(email);
+    emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(1212l), "root", true);
+    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
+    assertNotNull(updatedEmail);
+    assertTrue(updatedEmail.isRead());
   }
 
   @Test

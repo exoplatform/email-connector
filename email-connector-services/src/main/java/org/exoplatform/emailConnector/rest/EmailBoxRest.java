@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.rest;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Objects;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +33,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -94,7 +96,7 @@ public class EmailBoxRest {
     }
   }
 
-  @GetMapping("/{emailRemoteId}")
+  @GetMapping("/{mailRemoteId}")
   @Secured("users")
   @Operation(summary = "Gets remote email by id", method = "GET", description = "This will get remote email by id")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -104,18 +106,18 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public ResponseEntity<Email> getRemoteEmailById(HttpServletRequest request,
                                                   @Parameter(description = "Email id", required = true)
-                                                  @PathVariable("emailRemoteId")
-                                                  long emailRemoteId,
+                                                  @PathVariable("mailRemoteId")
+                                                  long mailRemoteId,
                                                   @RequestHeader(value = "If-None-Match", required = false)
                                                   String ifNoneMatch) {
     try {
-      String eTag = "\"" + Objects.hash(emailRemoteId, request.getRemoteUser()) + "\"";
+      String eTag = "\"" + Objects.hash(mailRemoteId, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
         emailBoxService.broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, request.getRemoteUser());
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
       Email email =
-                  emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser(), true, true, true, true);
+                  emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, request.getRemoteUser(), true, true, true, true);
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
@@ -145,31 +147,22 @@ public class EmailBoxRest {
     }
   }
 
-  @PatchMapping("/{emailRemoteId}")
+  @PatchMapping()
   @Secured("users")
-  @Operation(summary = "Updates email read status", method = "PATCH", description = "This will update email read status")
+  @Operation(summary = "Updates emails read status", method = "PATCH", description = "This will update emails read status")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void updateEmailReadStatus(HttpServletRequest request,
-                                    @Parameter(description = "Email id", required = true)
-                                    @PathVariable("emailRemoteId")
-                                    long emailRemoteId,
-                                    @RequestParam("readStatus")
-                                    boolean readStatus) {
+  public void updateEmailReadStatus(HttpServletRequest request, @RequestBody
+  List<Long> mailRemoteIds, @RequestParam("readStatus")
+  boolean readStatus) {
     try {
-      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId,
-                                                                    request.getRemoteUser(),
-                                                                    false,
-                                                                    false,
-                                                                    false,
-                                                                    false);
-      if (email == null) {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      emailBoxService.updateEmailReadStatus(emailRemoteId, null, request.getRemoteUser(), readStatus, true);
+      emailBoxService.updateEmailReadStatus(mailRemoteIds, request.getRemoteUser(), readStatus, true);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -177,7 +170,7 @@ public class EmailBoxRest {
     }
   }
 
-  @DeleteMapping("/{emailRemoteId}")
+  @DeleteMapping("/{mailRemoteId}")
   @Secured("users")
   @Operation(summary = "Deletes email", method = "DELETE", description = "This will delete email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -187,10 +180,10 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public void deleteEmail(HttpServletRequest request,
                           @Parameter(description = "Email id", required = true)
-                          @PathVariable("emailRemoteId")
-                          long emailRemoteId) {
+                          @PathVariable("mailRemoteId")
+                          long mailRemoteId) {
     try {
-      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId,
+      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId,
                                                                     request.getRemoteUser(),
                                                                     false,
                                                                     false,
@@ -199,15 +192,15 @@ public class EmailBoxRest {
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      emailBoxService.deleteEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser());
+      emailBoxService.deleteEmailByMailRemoteIdAndUserId(mailRemoteId, request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
-  
-  @DeleteMapping("archive/{emailRemoteId}")
+
+  @DeleteMapping("archive/{mailRemoteId}")
   @Secured("users")
   @Operation(summary = "Archives email", method = "DELETE", description = "This will archive email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -216,11 +209,11 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public void archiveEmail(HttpServletRequest request,
-                          @Parameter(description = "Email id", required = true)
-                          @PathVariable("emailRemoteId")
-                          long emailRemoteId) {
+                           @Parameter(description = "Email id", required = true)
+                           @PathVariable("mailRemoteId")
+                           long mailRemoteId) {
     try {
-      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(emailRemoteId,
+      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId,
                                                                     request.getRemoteUser(),
                                                                     false,
                                                                     false,
@@ -229,7 +222,7 @@ public class EmailBoxRest {
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      emailBoxService.archiveEmailByMailRemoteIdAndUserId(emailRemoteId, request.getRemoteUser());
+      emailBoxService.archiveEmailByMailRemoteIdAndUserId(mailRemoteId, request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -237,7 +230,7 @@ public class EmailBoxRest {
     }
   }
 
-  @GetMapping("/attachments/{emailRemoteId}/{attachmentId}")
+  @GetMapping("/attachments/{mailRemoteId}/{attachmentId}")
   @Secured("users")
   @Operation(summary = "Gets attachment by mail remote id and attachment id", method = "GET", description = "This will get attachment by mail remote id and attachment id")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -247,19 +240,19 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public ResponseEntity<byte[]> getAttachmentByMailRemoteIdAnId(HttpServletRequest request,
                                                                 @Parameter(description = "Email id", required = true)
-                                                                @PathVariable("emailRemoteId")
-                                                                long emailRemoteId,
+                                                                @PathVariable("mailRemoteId")
+                                                                long mailRemoteId,
                                                                 @Parameter(description = "Attachment id", required = true)
                                                                 @PathVariable("attachmentId")
                                                                 String attachmentId,
                                                                 @RequestHeader(value = "If-None-Match", required = false)
                                                                 String ifNoneMatch) {
     try {
-      String eTag = "\"" + Objects.hash(emailRemoteId, attachmentId, request.getRemoteUser()) + "\"";
+      String eTag = "\"" + Objects.hash(mailRemoteId, attachmentId, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
-      EmailAttachment emailAttachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(emailRemoteId,
+      EmailAttachment emailAttachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(mailRemoteId,
                                                                                                  attachmentId,
                                                                                                  request.getRemoteUser());
       if (emailAttachment == null) {

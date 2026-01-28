@@ -69,6 +69,10 @@ public class EmailBoxStorage {
     emailBoxDao.save(emailBoxEntity);
   }
 
+  public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus) {
+    emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus);
+  }
+
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
                                                String userId,
                                                boolean withAttachments,

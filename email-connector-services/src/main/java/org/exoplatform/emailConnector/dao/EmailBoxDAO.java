@@ -41,7 +41,16 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   @Transactional
   @Modifying
-  @Query("DELETE FROM EmailBoxEntity eb WHERE eb.id IN :ids")
+  @Query("DELETE FROM EmailBoxEntity email WHERE email.id IN :ids")
   void deleteEmailsByIds(@Param("ids")
   List<Long> ids);
+
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.read = :readStatus WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :username AND (email.read IS NULL OR email.read <> :readStatus)")
+  void updateReadStatusByMailRemoteIds(@Param("mailRemoteIds")
+  List<Long> mailRemoteIds, @Param("username")
+  String username, @Param("readStatus")
+  boolean readStatus);
+
 }
