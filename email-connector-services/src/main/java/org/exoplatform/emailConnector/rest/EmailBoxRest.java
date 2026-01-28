@@ -155,9 +155,12 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void updateEmailReadStatus(HttpServletRequest request, @RequestBody
-  List<Long> mailRemoteIds, @RequestParam("readStatus")
-  boolean readStatus) {
+  public void updateEmailReadStatus(HttpServletRequest request,
+                                     @Parameter(description = "Email remote ids", required = true)
+                                     @RequestBody
+                                     List<Long> mailRemoteIds,
+                                     @RequestParam("readStatus")
+                                     boolean readStatus) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);

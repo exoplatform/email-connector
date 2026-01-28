@@ -57,9 +57,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
       <div class="me-3" v-else>
         <v-btn
-          v-if="canUpdateEmailReadStatus(true)"
+          v-if="canUpdateEmailsReadStatus(false)"
+          :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
+          @click="updateEmailsReadStatus(false)"
+          icon>
+          <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
+        </v-btn>
+        <v-btn
+          v-if="canUpdateEmailsReadStatus(true)"
           :title="$t('emailConnector.mailBox.list.drawer.detail.read.label')"
-          @click="updateEmailReadStatus(true)"
+          @click="updateEmailsReadStatus(true)"
           icon>
           <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
         </v-btn>
@@ -139,8 +146,8 @@ export default {
     this.$root.$on('open-mail-box-drawer', (loading) => {
       this.open(loading); 
     });
-    this.$root.$on('update-email-read-status', ({ read, emailId }) => {
-      this.updateEmailReadStatus(read, emailId);
+    this.$root.$on('update-email-read-status', ({ read, mailRemoteId }) => {
+      this.updateEmailsReadStatus(read, mailRemoteId);
     });
     this.$root.$on('delete-email', ({ emailId }) => {
       this.deleteEmail(emailId);
@@ -228,9 +235,9 @@ export default {
       });
       this.startAutoRefresh();
     },
-    updateEmailReadStatus(read, emailId = null) {
-      const emailIdsSource = emailId ? [emailId] : this.selectedEmails;
-      const emailIdsToUpdate = emailIdsSource.filter(id => {
+    updateEmailsReadStatus(read, mailRemoteId = null) {
+      const remoteEmailIdsSource = mailRemoteId ? [mailRemoteId] : this.selectedEmails;
+      const remoteEmailIdsToUpdate = remoteEmailIdsSource.filter(id => {
         const email = this.emails.find(e => e.mailRemoteId === id);
         if (email && email.read !== read) {
           this.$set(email, 'read', read);
@@ -238,17 +245,17 @@ export default {
         }
         return false;
       });
-      if (!emailId) {
+      if (!mailRemoteId) {
         this.cancelSelectMode();
       }
-      if (emailIdsToUpdate.length > 0) {
-        this.$emailConnectorMailBoxService.updateEmailReadStatus(
-          emailIdsToUpdate,
+      if (remoteEmailIdsToUpdate.length > 0) {
+        this.$emailConnectorMailBoxService.updateEmailsReadStatus(
+          remoteEmailIdsToUpdate,
           read
         );
       }
     },
-    canUpdateEmailReadStatus(read) {
+    canUpdateEmailsReadStatus(read) {
       return this.selectedEmails.some(emailId => {
         const email = this.emails.find(e => e.mailRemoteId === emailId);
         return email && email.read !== read;

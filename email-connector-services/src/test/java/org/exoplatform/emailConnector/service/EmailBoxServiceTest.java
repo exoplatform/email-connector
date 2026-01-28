@@ -165,11 +165,12 @@ public class EmailBoxServiceTest {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
-    List<Long> emailIds = List.of(1212l);
-    assertThrows(IllegalAccessException.class, () -> emailBoxService.updateEmailReadStatus(emailIds, TEST_USER, true, false));
+    List<Long> mailRemoteIds = List.of(1212l);
+    assertThrows(IllegalAccessException.class,
+                 () -> emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, false));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    emailBoxService.updateEmailReadStatus(emailIds, TEST_USER, true, false);
-    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(emailIds, TEST_USER, true);
+    emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, false);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true);
     reset(emailBoxStorage);
     Store store = mock(Store.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
@@ -177,8 +178,8 @@ public class EmailBoxServiceTest {
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    emailBoxService.updateEmailReadStatus(emailIds, TEST_USER, false, true);
-    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(emailIds, TEST_USER, false);
+    emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, false, true);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, false);
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.SEEN, false);
   }
