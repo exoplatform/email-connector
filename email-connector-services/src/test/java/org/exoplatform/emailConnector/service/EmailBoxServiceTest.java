@@ -217,6 +217,9 @@ public class EmailBoxServiceTest {
   void archiveEmailByMailRemoteIdAndUserId() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    List<Long> emailIds = List.of(1212l);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.archiveEmail(emailIds, TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, true, true, false)).thenReturn(email);
@@ -232,7 +235,7 @@ public class EmailBoxServiceTest {
     when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    emailBoxService.archiveEmailByMailRemoteIdAndUserId(1212l, TEST_USER);
+    emailBoxService.archiveEmail(emailIds, TEST_USER);
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
     verify(inbox).moveMessages(any(Message[].class), any(Folder.class));
