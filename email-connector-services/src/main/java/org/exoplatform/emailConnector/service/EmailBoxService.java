@@ -426,34 +426,54 @@ public class EmailBoxService {
     return failedEmailDeletions;
   }
 
-  public void archiveEmailByMailRemoteIdAndUserId(long mailRemoteId, String username) throws IllegalAccessException {
-    Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, true, true, false, false);
-    if (email != null) {
+  public int archiveEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
+    int failedEmailArchives = 0;
+    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
       }
-      emailBoxStorage.deleteEmailsByIds(Arrays.asList(email.getId()));
+      List<Email> emails = mailRemoteIds.stream().map(mailRemoteId -> {
+        try {
+          return getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
+        } catch (Exception e) {
+          LOG.error("Error getting email {} for user {}", mailRemoteId, username, e);
+          return null;
+        }
+      }).filter(Objects::nonNull).collect(Collectors.toList());
+      deleteEmails(emails);
       Store store = null;
       IMAPFolder inbox = null;
-      IMAPFolder archive = null;
       try {
         store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
         inbox = (IMAPFolder) store.getFolder("INBOX");
         inbox.open(Folder.READ_WRITE);
-        Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
-        if (remoteMessage != null) {
-          remoteMessage.setFlag(Flags.Flag.DELETED, true);
-          archive = findArchiveFolder(store);
-          if (archive != null) {
-            inbox.moveMessages(new Message[] { remoteMessage }, archive);
+        IMAPFolder archive = findArchiveFolder(store);
+        for (Long mailRemoteId : mailRemoteIds) {
+          try {
+            Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
+            if (remoteMessage != null) {
+              remoteMessage.setFlag(Flags.Flag.DELETED, true);
+              if (archive != null) {
+                inbox.moveMessages(new Message[] { remoteMessage }, archive);
+              }
+            }
+          } catch (Exception e) {
+            emails.stream().filter(mail -> mail.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
+              email.setId(null);
+              return email;
+            }).ifPresent(emailBoxStorage::createEmail);
+            failedEmailArchives++;
+            LOG.error("Error when archiving email {} for user {}", mailRemoteId, username, e);
           }
         }
       } catch (Exception e) {
         LOG.error("Error when connecting store for user {}", username, e);
-        email.setId(null);
-        emailBoxStorage.createEmail(email);
+        emails.stream().forEach(email -> {
+          email.setId(null);
+          emailBoxStorage.createEmail(email);
+        });
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
         try {
@@ -472,6 +492,7 @@ public class EmailBoxService {
         }
       }
     }
+    return failedEmailArchives;
   }
 
   private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException,

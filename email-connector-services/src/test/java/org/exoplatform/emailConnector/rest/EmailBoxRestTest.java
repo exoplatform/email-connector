@@ -18,7 +18,6 @@
 
 package org.exoplatform.emailConnector.rest;
 
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -59,7 +58,6 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
-import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -167,15 +165,19 @@ public class EmailBoxRestTest {
 
   @Test
   void archiveEmail() throws Exception {
-    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive/1").with(testSimpleUser()));
+    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    List<Long> emailIds = new ArrayList<Long>();
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive").with(testSimpleUser())
+                                                                  .content(asJsonString(emailIds))
+                                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                                  .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isNotFound());
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(),
-                                                         anyString(),
-                                                         anyBoolean(),
-                                                         anyBoolean(),
-                                                         anyBoolean(),
-                                                         anyBoolean())).thenReturn(mock(Email.class));
-    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive/1").with(testSimpleUser()));
+    emailIds = List.of(123L, 456L, 789L);
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive").with(testSimpleUser())
+                                                                  .content(asJsonString(emailIds))
+                                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                                  .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
   }
 
