@@ -89,11 +89,11 @@ public class EmailBoxStorage {
                            .toList();
   }
 
-  public void deleteUserEmails(String username) {
+  public void deleteEmailsByUserId(String username) {
     emailBoxDao.deleteByUserId(username);
   }
 
-  public void deleteEmails(List<Long> emailsIds) {
+  public void deleteEmailsByIds(List<Long> emailsIds) {
     emailBoxDao.deleteEmailsByIds(emailsIds);
   }
 
