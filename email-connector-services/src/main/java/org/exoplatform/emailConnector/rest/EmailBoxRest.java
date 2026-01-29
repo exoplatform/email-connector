@@ -203,7 +203,7 @@ public class EmailBoxRest {
     }
   }
 
-  @DeleteMapping("archive/{mailRemoteId}")
+  @DeleteMapping("archive")
   @Secured("users")
   @Operation(summary = "Archives email", method = "DELETE", description = "This will archive email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -211,21 +211,18 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void archiveEmail(HttpServletRequest request,
-                           @Parameter(description = "Email id", required = true)
-                           @PathVariable("mailRemoteId")
-                           long mailRemoteId) {
+  public Map<String, Integer> archiveEmail(HttpServletRequest request,
+                                           @Parameter(description = "Email remote ids", required = true)
+                                           @RequestBody
+                                           List<Long> mailRemoteIds) {
     try {
-      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId,
-                                                                    request.getRemoteUser(),
-                                                                    false,
-                                                                    false,
-                                                                    false,
-                                                                    false);
-      if (email == null) {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      emailBoxService.archiveEmailByMailRemoteIdAndUserId(mailRemoteId, request.getRemoteUser());
+      int failedEmailArchives = emailBoxService.archiveEmail(mailRemoteIds, request.getRemoteUser());
+      Map<String, Integer> response = new HashMap<>();
+      response.put("failedArchives", failedEmailArchives);
+      return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
