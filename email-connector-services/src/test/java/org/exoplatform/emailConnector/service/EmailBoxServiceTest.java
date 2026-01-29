@@ -132,7 +132,7 @@ public class EmailBoxServiceTest {
   @Test
   void deleteUserEmails() {
     emailBoxService.deleteUserEmails(TEST_USER);
-    verify(emailBoxStorage).deleteUserEmails(TEST_USER);
+    verify(emailBoxStorage).deleteEmailsByUserId(TEST_USER);
   }
 
   @Test
@@ -185,9 +185,12 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void deleteEmailByMailRemoteIdAndUserId() throws Exception {
+  void deleteEmail() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    List<Long> emailIds = List.of(1212l);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.deleteEmail(emailIds, TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, true, true, false)).thenReturn(email);
@@ -203,8 +206,8 @@ public class EmailBoxServiceTest {
     when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    emailBoxService.deleteEmailByMailRemoteIdAndUserId(1212l, TEST_USER);
-    verify(emailBoxStorage).deleteEmails(anyList());
+    emailBoxService.deleteEmail(emailIds, TEST_USER);
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.DELETED, true);
     verify(inbox).moveMessages(any(Message[].class), any(Folder.class));
@@ -230,7 +233,7 @@ public class EmailBoxServiceTest {
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
     emailBoxService.archiveEmailByMailRemoteIdAndUserId(1212l, TEST_USER);
-    verify(emailBoxStorage).deleteEmails(anyList());
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
     verify(inbox).moveMessages(any(Message[].class), any(Folder.class));
   }

@@ -18,7 +18,9 @@ package org.exoplatform.emailConnector.rest;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -156,11 +158,11 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public void updateEmailReadStatus(HttpServletRequest request,
-                                     @Parameter(description = "Email remote ids", required = true)
-                                     @RequestBody
-                                     List<Long> mailRemoteIds,
-                                     @RequestParam("readStatus")
-                                     boolean readStatus) {
+                                    @Parameter(description = "Email remote ids", required = true)
+                                    @RequestBody
+                                    List<Long> mailRemoteIds,
+                                    @RequestParam("readStatus")
+                                    boolean readStatus) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
@@ -173,7 +175,7 @@ public class EmailBoxRest {
     }
   }
 
-  @DeleteMapping("/{mailRemoteId}")
+  @DeleteMapping()
   @Secured("users")
   @Operation(summary = "Deletes email", method = "DELETE", description = "This will delete email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -181,21 +183,19 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void deleteEmail(HttpServletRequest request,
-                          @Parameter(description = "Email id", required = true)
-                          @PathVariable("mailRemoteId")
-                          long mailRemoteId) {
+  public Map<String, Integer> deleteEmail(HttpServletRequest request,
+                                          @Parameter(description = "Email remote ids", required = true)
+                                          @RequestBody
+                                          List<Long> mailRemoteIds) {
+
     try {
-      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId,
-                                                                    request.getRemoteUser(),
-                                                                    false,
-                                                                    false,
-                                                                    false,
-                                                                    false);
-      if (email == null) {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      emailBoxService.deleteEmailByMailRemoteIdAndUserId(mailRemoteId, request.getRemoteUser());
+      int failedEmailDeletions = emailBoxService.deleteEmail(mailRemoteIds, request.getRemoteUser());
+      Map<String, Integer> response = new HashMap<>();
+      response.put("failedDeletions", failedEmailDeletions);
+      return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
