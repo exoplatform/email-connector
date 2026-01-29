@@ -71,6 +71,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
         </v-btn>
         <v-btn
+          :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
+          @click="archiveEmails()"
+          icon>
+          <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
+        </v-btn>
+        <v-btn
           :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
           @click="deleteEmails()"
           icon>
@@ -159,7 +165,7 @@ export default {
       this.deleteEmails(emailId);
     });
     this.$root.$on('archive-email', ({ emailId }) => {
-      this.archiveEmail(emailId);
+      this.archiveEmails(emailId);
     });
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
@@ -303,19 +309,41 @@ export default {
           });
       }
     },
-    archiveEmail(emailId) {
+    archiveEmails(emailId = null) {
+      const emailIdsToArchive = emailId ? [emailId] : this.selectedEmails;
       this.emails = this.emails.filter(
-        e => e.mailRemoteId !== emailId
+        e => !emailIdsToArchive.includes(e.mailRemoteId)
       );
-      this.$emailConnectorMailBoxService.archiveEmail(emailId)
-        .catch(() => { 
-          document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-            alertType: 'error',
-            alertMessage: this.$t('emailConnector.mailBox.list.drawer.archive.error'),
-            alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
-            alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
-          }}));
-        });
+      if (!emailId) {
+        this.cancelSelectMode();
+      }
+      if (emailIdsToArchive.length > 0) {
+        this.$emailConnectorMailBoxService.archiveEmails(emailIdsToArchive)
+          .then(archiveResult => {
+            if ((archiveResult.failedArchives ?? 0) > 0) {
+              const alertMessage = this.$t(archiveResult.failedArchives === 1 ? 'emailConnector.mailBox.list.drawer.archive.email.error' : 'emailConnector.mailBox.list.drawer.archive.emails.error', {
+                0: archiveResult.failedArchives,
+              });
+              document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+                alertType: 'error',
+                alertMessage: alertMessage,
+                alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
+                alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
+              }}));
+            }
+          })
+          .catch(() => { 
+            const alertMessage = this.$t(emailIdsToArchive.length === 1 ? 'emailConnector.mailBox.list.drawer.archive.email.error' : 'emailConnector.mailBox.list.drawer.archive.emails.error', {
+              0: emailIdsToArchive.length,
+            });
+            document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+              alertType: 'error',
+              alertMessage: alertMessage,
+              alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
+              alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
+            }}));
+          });
+      }
     },
     async loadEmailBox() {
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();

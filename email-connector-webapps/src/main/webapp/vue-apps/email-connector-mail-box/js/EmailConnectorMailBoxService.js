@@ -162,17 +162,19 @@ export function deleteEmails(mailRemoteIds) {
   });
 }
 
-export function archiveEmail(mailRemoteId) {
-  return fetch(`/email-connector/rest/email-box/archive/${mailRemoteId}`, {
+export function archiveEmails(mailRemoteIds) {
+  return fetch('/email-connector/rest/email-box/archive', {
     headers: {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
-    method: 'DELETE'
+    method: 'DELETE',
+    body: JSON.stringify(mailRemoteIds)
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when archiving email');
+      throw new Error('Error when archiving emails');
     }
+    return resp.json();
   });
 }
 
