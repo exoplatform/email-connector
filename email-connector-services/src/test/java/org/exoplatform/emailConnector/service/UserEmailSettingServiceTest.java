@@ -225,7 +225,20 @@ public class UserEmailSettingServiceTest {
   }
 
   private EmailConnector emailConnector() {
-    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "8000", true, false, true, "testUploadId");
+    return new EmailConnector(null,
+                              "testName",
+                              null,
+                              null,
+                              null,
+                              "testImapUrl",
+                              "8000",
+                              "testSmtpUrl",
+                              "9000",
+                              "STARTTLS",
+                              true,
+                              false,
+                              true,
+                              "testUploadId");
   }
 
   private UserEmailSetting userEmailSetting() {
