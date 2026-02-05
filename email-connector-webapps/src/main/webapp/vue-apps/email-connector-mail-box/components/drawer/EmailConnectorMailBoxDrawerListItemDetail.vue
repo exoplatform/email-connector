@@ -19,8 +19,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="emailDetailDrawer"
     ref="emailDetailDrawer"
     v-model="emailDetailDrawer"
-    :right="!$vuetify.rtl"
-    :allow-expand="!$root.isMobile"
+    right
+    allow-expand
     :loading="loading"
     go-back-button
     :confirm-close="activeDownload"

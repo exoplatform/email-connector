@@ -18,13 +18,16 @@ package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.mail.Authenticator;
 import javax.mail.BodyPart;
 import javax.mail.Flags;
 import javax.mail.Folder;
@@ -32,8 +35,13 @@ import javax.mail.Message;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Part;
+import javax.mail.PasswordAuthentication;
+import javax.mail.Session;
 import javax.mail.Store;
+import javax.mail.Transport;
 import javax.mail.UIDFolder;
+import javax.mail.internet.InternetAddress;
+import javax.mail.internet.MimeMessage;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -51,6 +59,7 @@ import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
+import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
@@ -66,6 +75,7 @@ import org.exoplatform.services.log.Log;
 import org.exoplatform.services.scheduler.JobInfo;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
+import org.exoplatform.social.core.identity.model.Profile;
 
 import jakarta.annotation.PostConstruct;
 
@@ -84,6 +94,17 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT      =
                                                                             "User %s is not allowed to get email attachment";
 
+  private static final String     USER_NOT_ALLOWED_FOR_BROADCAST_EVENT_MESSAGE   =
+                                                                               "User %s is not allowed to broadcast open email event";
+
+  private static final String     USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE      = "User %s is not allowed to update email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE      = "User %s is not allowed to delete email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE     = "User %s is not allowed to archive email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE        = "User %s is not allowed to send email";
+
   @Autowired
   private UserEmailSettingService userEmailSettingService;
 
@@ -98,6 +119,9 @@ public class EmailBoxService {
 
   @Autowired
   private ListenerService         listenerService;
+
+  @Autowired
+  private EmailConnectorService   emailConnectorService;
 
   @PostConstruct
   public void initEmailBoxSyncJob() {
@@ -277,7 +301,7 @@ public class EmailBoxService {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_BROADCAST_EVENT_MESSAGE, username));
     }
     try {
       listenerService.broadcast(eventName, username, userEmailSetting.getEmailConnectorName());
@@ -307,7 +331,7 @@ public class EmailBoxService {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
       emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, readStatus);
       Store store = null;
@@ -360,7 +384,7 @@ public class EmailBoxService {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE, username));
       }
       List<Email> emails = mailRemoteIds.stream().map(mailRemoteId -> {
         try {
@@ -432,7 +456,7 @@ public class EmailBoxService {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE, username));
       }
       List<Email> emails = mailRemoteIds.stream().map(mailRemoteId -> {
         try {
@@ -493,6 +517,68 @@ public class EmailBoxService {
       }
     }
     return failedEmailArchives;
+  }
+
+  public void sendEmail(Email email, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE, username));
+    }
+    String emailAddress = userEmailSetting.getEmailAddress();
+    String emailPassword = userEmailSetting.getEmailPassword();
+    EmailConnector emailConnector =
+                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    Properties props = new Properties();
+    props.put("mail.smtp.auth", "true");
+    props.put("mail.smtp." + emailConnector.getSmtpSecurityType() + ".enable", "true");
+    props.put("mail.smtp.host", emailConnector.getSmtpUrl());
+    props.put("mail.smtp.port", emailConnector.getSmtpPort());
+    Session session = Session.getInstance(props, new Authenticator() {
+      @Override
+      protected PasswordAuthentication getPasswordAuthentication() {
+        return new PasswordAuthentication(emailAddress, emailPassword);
+      }
+    });
+    try {
+      Message message = new MimeMessage(session);
+      Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
+      message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+      if (email.getTo() != null) {
+        String toRecipients = email.getTo()
+                                   .stream()
+                                   .map(EmailRecipient::getAddress)
+                                   .filter(Objects::nonNull)
+                                   .filter(address -> !address.isBlank())
+                                   .collect(Collectors.joining(","));
+        message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(toRecipients));
+      }
+      if (email.getCc() != null) {
+        String ccRecipients = email.getCc()
+                                   .stream()
+                                   .map(EmailRecipient::getAddress)
+                                   .filter(Objects::nonNull)
+                                   .filter(address -> !address.isBlank())
+                                   .collect(Collectors.joining(","));
+        message.setRecipients(Message.RecipientType.CC, InternetAddress.parse(ccRecipients));
+      }
+      if (email.getBcc() != null) {
+        String bccRecipients = email.getBcc()
+                                    .stream()
+                                    .map(EmailRecipient::getAddress)
+                                    .filter(Objects::nonNull)
+                                    .filter(address -> !address.isBlank())
+                                    .collect(Collectors.joining(","));
+
+        message.setRecipients(Message.RecipientType.BCC, InternetAddress.parse(bccRecipients));
+      }
+      message.setSubject(email.getSubject());
+      message.setContent(email.getContent().getBody(), "text/html; charset=UTF-8");
+      Transport.send(message);
+    } catch (MessagingException | UnsupportedEncodingException e) {
+      LOG.error("Error when sending email for user {}", username, e);
+      throw new IllegalStateException(String.format("Error when sending email for user %s", username));
+    }
   }
 
   private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException,

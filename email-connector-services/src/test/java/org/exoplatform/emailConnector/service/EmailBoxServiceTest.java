@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -34,17 +35,22 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Properties;
 
+import javax.mail.Authenticator;
 import javax.mail.BodyPart;
 import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.Multipart;
+import javax.mail.Session;
 import javax.mail.Store;
+import javax.mail.Transport;
 import javax.mail.UIDFolder;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -56,7 +62,9 @@ import com.sun.mail.imap.IMAPStore;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -87,6 +95,9 @@ public class EmailBoxServiceTest {
 
   @MockBean
   private ListenerService         listenerService;
+
+  @MockBean
+  private EmailConnectorService   emailConnectorService;
 
   @Autowired
   private EmailBoxService         emailBoxService;
@@ -242,6 +253,25 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void sendEmail() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    Email email = email(TEST_USER);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.sendEmail(email, TEST_USER));
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Session session = mock(Session.class);
+    when(session.getProperties()).thenReturn(new Properties());
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      emailBoxService.sendEmail(email, TEST_USER);
+      transportMock.verify(() -> Transport.send(any(Message.class)), times(1));
+    }
+  }
+
+  @Test
   void getAttachmentByMailRemoteIdAnId() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
@@ -291,8 +321,25 @@ public class EmailBoxServiceTest {
                      new Date(),
                      new EmailSender("sender", null, null, null),
                      false,
-                     null,
+                     List.of(new EmailRecipient()),
                      null,
                      null);
+  }
+
+  private EmailConnector emailConnector() {
+    return new EmailConnector(null,
+                              "testName",
+                              null,
+                              1L,
+                              null,
+                              "testImapUrl",
+                              "8000",
+                              "testSmtpUrl",
+                              "9000",
+                              "STARTTLS",
+                              true,
+                              false,
+                              true,
+                              "testUploadId");
   }
 }

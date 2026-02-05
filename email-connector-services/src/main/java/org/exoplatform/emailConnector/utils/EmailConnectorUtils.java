@@ -166,6 +166,32 @@ public class EmailConnectorUtils {
     }
     return "/portal/" + defaultPortalOwner + "?openEmailBox=true";
   }
+  
+  public static Profile getUserProfileByEmail(String email) {
+    if (email == null) {
+      return null;
+    }
+    RequestLifeCycle.begin(ExoContainerContext.getCurrentContainer());
+    try {
+      Query query = new Query();
+      query.setEmail(email);
+      OrganizationService organizationService = CommonsUtils.getOrganizationService();
+      User[] users = organizationService.getUserHandler().findUsersByQuery(query).load(0, 10);
+      if (users.length > 0) {
+        String userName = users[0].getUserName();
+        if (userName != null) {
+          IdentityManager identityManager = CommonsUtils.getService(IdentityManager.class);
+          Identity userIdentity = identityManager.getOrCreateUserIdentity(userName);
+          return userIdentity.getProfile();
+        }
+      }
+      return null;
+    } catch (Exception e) {
+      return null;
+    } finally {
+      RequestLifeCycle.end();
+    }
+  }
 
   private static EmailContent safeGetContent(Part part) {
     String emailBody = "";
@@ -251,32 +277,6 @@ public class EmailConnectorUtils {
       finalContent.setBody(finalContent.getBody().replace("cid:" + entry.getKey(), entry.getValue()));
     }
     return finalContent;
-  }
-
-  private static Profile getUserProfileByEmail(String email) {
-    if (email == null) {
-      return null;
-    }
-    RequestLifeCycle.begin(ExoContainerContext.getCurrentContainer());
-    try {
-      Query query = new Query();
-      query.setEmail(email);
-      OrganizationService organizationService = CommonsUtils.getOrganizationService();
-      User[] users = organizationService.getUserHandler().findUsersByQuery(query).load(0, 10);
-      if (users.length > 0) {
-        String userName = users[0].getUserName();
-        if (userName != null) {
-          IdentityManager identityManager = CommonsUtils.getService(IdentityManager.class);
-          Identity userIdentity = identityManager.getOrCreateUserIdentity(userName);
-          return userIdentity.getProfile();
-        }
-      }
-      return null;
-    } catch (Exception e) {
-      return null;
-    } finally {
-      RequestLifeCycle.end();
-    }
   }
 
   private static String getSenderDefaultAvatar(String senderName) {

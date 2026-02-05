@@ -20,8 +20,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     ref="emailConnectorDrawer"
     v-model="emailConnectorDrawer"
     :loading="loading"
-    :right="!$vuetify.rtl"
-    :allow-expand="!$root.isMobile"
+    right
+    allow-expand
     @closed="close">
     <template #title>
       <span>{{ drawerTitle }}</span>
