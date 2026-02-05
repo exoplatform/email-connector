@@ -130,7 +130,10 @@ public class EmailConnectorStorage {
                                       emailConnector.getImageFileId(),
                                       emailConnector.getIcon(),
                                       emailConnector.getImapUrl(),
-                                      emailConnector.getPort(),
+                                      emailConnector.getImapPort(),
+                                      emailConnector.getSmtpUrl(),
+                                      emailConnector.getSmtpPort(),
+                                      emailConnector.getSmtpSecurityType(),
                                       emailConnector.isActive());
     }
   }
@@ -154,7 +157,10 @@ public class EmailConnectorStorage {
                                                          emailConnectorEntity.getImageFileId(),
                                                          emailConnectorEntity.getIcon(),
                                                          emailConnectorEntity.getImapUrl(),
-                                                         emailConnectorEntity.getPort(),
+                                                         emailConnectorEntity.getImapPort(),
+                                                         emailConnectorEntity.getSmtpUrl(),
+                                                         emailConnectorEntity.getSmtpPort(),
+                                                         emailConnectorEntity.getSmtpSecurityType(),
                                                          emailConnectorEntity.isActive(),
                                                          null,
                                                          null,

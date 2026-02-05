@@ -221,13 +221,13 @@ public class UserEmailSettingService {
     Properties props = new Properties();
     props.setProperty("mail.imaps.ssl.enable", "true");
     props.setProperty("mail.store.protocol", "imaps");
-    props.setProperty("mail.imaps.port", emailConnector.getPort());
+    props.setProperty("mail.imaps.port", emailConnector.getImapPort());
     props.put("mail.imap.connectiontimeout", "10000");
     // Connect to the server
     Session session = Session.getDefaultInstance(props);
     Store store = session.getStore();
     store.connect(emailConnector.getImapUrl(),
-                  Integer.parseInt(emailConnector.getPort()),
+                  Integer.parseInt(emailConnector.getImapPort()),
                   userEmailSetting.getEmailAddress(),
                   userEmailSetting.getEmailPassword());
     return store;

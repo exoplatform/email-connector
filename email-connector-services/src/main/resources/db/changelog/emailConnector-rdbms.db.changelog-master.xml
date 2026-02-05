@@ -149,4 +149,16 @@
       newColumnName="RECEIVER"
       columnDataType="LONGTEXT" />
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-10">
+    <renameColumn
+      tableName="EMAIL_CONNECTOR"
+      oldColumnName="PORT"
+      newColumnName="IMAP_PORT" 
+      columnDataType="NVARCHAR(50)" />
+    <addColumn tableName="EMAIL_CONNECTOR">
+      <column name="SMTP_URL" type="NVARCHAR(250)"/>
+      <column name="SMTP_PORT" type="NVARCHAR(50)"/>
+      <column name="SMTP_SECURITY_TYPE" type="NVARCHAR(50)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>
