@@ -98,7 +98,10 @@ public class EmailConnectorStorageTest {
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
     storedEmailConnector.setName("testNameUpdated");
     storedEmailConnector.setImapUrl("testImapUrlUpdated");
-    storedEmailConnector.setPort("testPortUpdated");
+    storedEmailConnector.setImapPort("testImapPortUpdated");
+    storedEmailConnector.setSmtpUrl("testSmtpUrlUpdated");
+    storedEmailConnector.setSmtpPort("testSmtpPortUpdated");
+    storedEmailConnector.setSmtpSecurityType("testSmtpSecurityTypeUpdated");
     emailConnectorStorage.updateEmailConnector(storedEmailConnector);
     EmailConnector retrievedEmailConnector = emailConnectorStorage.getEmailConnector(storedEmailConnector.getId());
     assertNotNull(retrievedEmailConnector);
@@ -106,7 +109,10 @@ public class EmailConnectorStorageTest {
     assertEquals(storedEmailConnector.getId(), retrievedEmailConnector.getId());
     assertEquals("testNameUpdated", retrievedEmailConnector.getName());
     assertEquals("testImapUrlUpdated", retrievedEmailConnector.getImapUrl());
-    assertEquals("testPortUpdated", retrievedEmailConnector.getPort());
+    assertEquals("testImapPortUpdated", retrievedEmailConnector.getImapPort());
+    assertEquals("testSmtpUrlUpdated", retrievedEmailConnector.getSmtpUrl());
+    assertEquals("testSmtpPortUpdated", retrievedEmailConnector.getSmtpPort());
+    assertEquals("testSmtpSecurityTypeUpdated", retrievedEmailConnector.getSmtpSecurityType());
   }
 
   @Test
@@ -143,7 +149,10 @@ public class EmailConnectorStorageTest {
     assertEquals(storedEmailConnector.getId(), retrievedEmailConnector.getId());
     assertEquals("testName", retrievedEmailConnector.getName());
     assertEquals("testImapUrl", retrievedEmailConnector.getImapUrl());
-    assertEquals("testPort", retrievedEmailConnector.getPort());
+    assertEquals("testImapPort", retrievedEmailConnector.getImapPort());
+    assertEquals("testSmtpUrl", retrievedEmailConnector.getSmtpUrl());
+    assertEquals("testSmtpPort", retrievedEmailConnector.getSmtpPort());
+    assertEquals("testSmtpSecurityType", retrievedEmailConnector.getSmtpSecurityType());
   }
 
   @Test
@@ -159,7 +168,10 @@ public class EmailConnectorStorageTest {
     assertEquals(storedEmailConnector.getId(), retrievedEmailConnectorEntities.get(0).getId());
     assertEquals("testName", retrievedEmailConnectorEntities.get(0).getName());
     assertEquals("testImapUrl", retrievedEmailConnectorEntities.get(0).getImapUrl());
-    assertEquals("testPort", retrievedEmailConnectorEntities.get(0).getPort());
+    assertEquals("testImapPort", retrievedEmailConnectorEntities.get(0).getImapPort());
+    assertEquals("testSmtpUrl", retrievedEmailConnectorEntities.get(0).getSmtpUrl());
+    assertEquals("testSmtpPort", retrievedEmailConnectorEntities.get(0).getSmtpPort());
+    assertEquals("testSmtpSecurityType", retrievedEmailConnectorEntities.get(0).getSmtpSecurityType());
   }
 
   @Test
@@ -180,6 +192,19 @@ public class EmailConnectorStorageTest {
   }
 
   private EmailConnector emailConnector() {
-    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "testPort", false, true, false, null);
+    return new EmailConnector(null,
+                              "testName",
+                              null,
+                              null,
+                              null,
+                              "testImapUrl",
+                              "testImapPort",
+                              "testSmtpUrl",
+                              "testSmtpPort",
+                              "testSmtpSecurityType",
+                              false,
+                              true,
+                              false,
+                              null);
   }
 }

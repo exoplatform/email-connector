@@ -54,9 +54,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           no-expand-icon
           back-icon
           required />
-        <v-list-item class="pa-0 mb-7" dense>
+        <v-list-item-title class="pa-0 mt-7 mb-4 text-header">
+          {{ $t('emailConnector.admin.connectors.drawer.connector.imapSettings') }}
+        </v-list-item-title>
+        <v-list-item class="pa-0 mb-5" dense>
           <v-list-item-content class="py-0">
-            <v-list-item-title>
+            <v-list-item-title class="my-0">
               {{ $t('emailConnector.admin.connectors.drawer.connector.imapUrl') }}
             </v-list-item-title>
             <v-text-field
@@ -72,16 +75,64 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item>
         <v-list-item class="pa-0" dense>
           <v-list-item-content class="py-0">
-            <v-list-item-title>
-              {{ $t('emailConnector.admin.connectors.drawer.connector.port') }}
+            <v-list-item-title class="my-0">
+              {{ $t('emailConnector.admin.connectors.drawer.connector.imapPort') }}
             </v-list-item-title>
             <v-text-field
-              v-model="emailConnector.port"
-              :aria-label="$t('emailConnector.admin.connectors.drawer.connector.port')"
-              :placeholder="$t('emailConnector.admin.connectors.drawer.connector.placeHolder.port')"
+              v-model="emailConnector.imapPort"
+              :aria-label="$t('emailConnector.admin.connectors.drawer.connector.imapPort')"
+              :placeholder="$t('emailConnector.admin.connectors.drawer.connector.placeHolder.imapPort')"
               class="pt-3"
               type="text"
               required="required"
+              outlined
+              dense />
+          </v-list-item-content>
+        </v-list-item>
+        <v-list-item-title class="pa-0 mt-7 mb-4 text-header">
+          {{ $t('emailConnector.admin.connectors.drawer.connector.smtpSettings') }}
+        </v-list-item-title>
+        <v-list-item class="pa-0 mb-5" dense>
+          <v-list-item-content class="py-0">
+            <v-list-item-title class="my-0">
+              {{ $t('emailConnector.admin.connectors.drawer.connector.smtpUrl') }}
+            </v-list-item-title>
+            <v-text-field
+              v-model="emailConnector.smtpUrl"
+              :aria-label="$t('emailConnector.admin.connectors.drawer.connector.smtpUrl')"
+              :placeholder="$t('emailConnector.admin.connectors.drawer.connector.placeHolder.smtpUrl')"
+              class="pt-3"
+              type="text"
+              required="required"
+              outlined
+              dense />
+          </v-list-item-content>
+        </v-list-item>
+        <v-list-item class="pa-0 mb-5" dense>
+          <v-list-item-content class="py-0">
+            <v-list-item-title>
+              {{ $t('emailConnector.admin.connectors.drawer.connector.smtpPort') }}
+            </v-list-item-title>
+            <v-text-field
+              v-model="emailConnector.smtpPort"
+              :aria-label="$t('emailConnector.admin.connectors.drawer.connector.smtpPort')"
+              :placeholder="$t('emailConnector.admin.connectors.drawer.connector.placeHolder.smtpPort')"
+              class="pt-3"
+              type="text"
+              required="required"
+              outlined
+              dense />
+          </v-list-item-content>
+        </v-list-item>
+        <v-list-item class="pa-0" dense>
+          <v-list-item-content class="py-0">
+            <v-list-item-title>
+              {{ $t('emailConnector.admin.connectors.drawer.connector.smtpSecurityType') }}
+            </v-list-item-title>
+            <v-select
+              v-model="emailConnector.smtpSecurityType"
+              :items="smtpSecurityTypes"
+              class="pt-3"
               outlined
               dense />
           </v-list-item-content>
@@ -113,12 +164,16 @@ export default {
     emailConnectorDrawer: false,
     emailConnectorNameTranslations: {},
     loading: false,
+    smtpSecurityTypes: [],
     emailConnector: {
       id: '',
       name: '',
       icon: '',
       imapUrl: '',
-      port: '',
+      imapPort: '',
+      smtpUrl: '',
+      smtpPort: '',
+      smtpSecurityType: 'starttls',
       imageUploadId: null,
       imageFileId: null,
       imageUrl: null
@@ -129,7 +184,8 @@ export default {
       return this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
     },
     disabled() {
-      return !this.emailConnectorName || !this.emailConnector.imapUrl || !this.emailConnector.port;
+      return !this.emailConnectorName || !this.emailConnector.imapUrl || !this.emailConnector.imapPort 
+      || !this.emailConnector.smtpUrl || !this.emailConnector.smtpPort || !this.emailConnector.smtpSecurityType;
     },
     drawerTitle() {
       return this.emailConnector.id && this.$t('emailConnector.admin.connectors.drawer.edit.title', {
@@ -144,11 +200,18 @@ export default {
   },
   created() {
     this.$root.$on('open-email-connector-drawer', this.open);
+    this.smtpSecurityTypes = [  
+      { text: this.$t('emailConnector.admin.connectors.drawer.connector.smtpSecurityType.starttls'), value: 'starttls' },
+      { text: this.$t('emailConnector.admin.connectors.drawer.connector.smtpSecurityType.ssl'), value: 'ssl' }
+    ];
   },
   methods: {
     async open(emailConnector) {
       if (emailConnector) {
         this.emailConnector = { ...emailConnector };
+        if (!this.emailConnector.smtpSecurityType) {
+          this.emailConnector.smtpSecurityType = 'starttls';
+        }
         this.emailConnectorNameTranslations = await this.$translationService.getTranslations('emailConnector', emailConnector.id, 'name');
         this.emailConnector.name = this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
       }
@@ -160,7 +223,10 @@ export default {
       this.emailConnector.name = '';
       this.emailConnector.icon = null;
       this.emailConnector.imapUrl = '';
-      this.emailConnector.port = '';
+      this.emailConnector.imapPort = '';
+      this.emailConnector.smtpUrl = '';
+      this.emailConnector.smtpPort = '';
+      this.emailConnector.smtpSecurityType = 'starttls';
       this.emailConnector.imageUploadId = null;
       this.emailConnector.imageFileId = null;
       this.emailConnector.imageUrl = null;

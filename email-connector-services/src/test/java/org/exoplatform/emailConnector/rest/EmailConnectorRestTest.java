@@ -167,7 +167,20 @@ public class EmailConnectorRestTest {
   }
 
   private EmailConnector emailConnector() {
-    return new EmailConnector(null, "testName", null, null, null, "testImapUrl", "testPort", false, false, true, "testUploadId");
+    return new EmailConnector(null,
+                              "testName",
+                              null,
+                              null,
+                              null,
+                              "testImapUrl",
+                              "testImapPort",
+                              "testSmtpUrl",
+                              "testSmtpPort",
+                              "testSmtpSecurityType",
+                              false,
+                              false,
+                              true,
+                              "testUploadId");
   }
 
   @SneakyThrows

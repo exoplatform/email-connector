@@ -52,8 +52,17 @@ public class EmailConnectorEntity {
   @Column(name = "IMAP_URL")
   private String  imapUrl;
 
-  @Column(name = "PORT")
-  private String  port;
+  @Column(name = "IMAP_PORT")
+  private String  imapPort;
+
+  @Column(name = "SMTP_URL")
+  private String  smtpUrl;
+
+  @Column(name = "SMTP_PORT")
+  private String  smtpPort;
+
+  @Column(name = "SMTP_SECURITY_TYPE")
+  private String  smtpSecurityType;
 
   @Column(name = "ACTIVE")
   private boolean active;

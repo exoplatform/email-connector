@@ -37,7 +37,13 @@ public class EmailConnector {
 
   private String  imapUrl;
 
-  private String  port;
+  private String  imapPort;
+
+  private String  smtpUrl;
+
+  private String  smtpPort;
+
+  private String  smtpSecurityType;
 
   private boolean active = true;
 
@@ -47,12 +53,20 @@ public class EmailConnector {
 
   private String  imageUploadId;
 
-  public EmailConnector(Long id, String name, Long imageFileId, String imapUrl, String port, boolean active) {
+  public EmailConnector(Long id,
+                        String name,
+                        Long imageFileId,
+                        String imapUrl,
+                        String imapPort,
+                        String smtpUrl,
+                        String smtpPort,
+                        String smtpSecurityType,
+                        boolean active) {
     this.id = id;
     this.name = name;
     this.imageFileId = imageFileId;
     this.imapUrl = imapUrl;
-    this.port = port;
+    this.imapPort = imapPort;
     this.active = active;
   }
 }
