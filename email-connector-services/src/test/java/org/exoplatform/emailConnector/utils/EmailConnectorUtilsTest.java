@@ -46,9 +46,6 @@ public class EmailConnectorUtilsTest {
     EmailContent emailContent = EmailConnectorUtils.getMessageContent(1L, message);
     assertEquals("test message", emailContent.getBody());
     assertFalse(emailContent.isHtml());
-//    when(message.getContent()).thenReturn("test message test message test message test message test message");
-//    emailContent = EmailConnectorUtils.getMessageContent(1L, message, true);
-//    assertEquals("test message test message test message test messag...", emailContent.getBody());
     when(message.isMimeType("text/*")).thenReturn(false);
     MimeMultipart mimeMultipart = mock(MimeMultipart.class);
     when(message.getContent()).thenReturn(mimeMultipart);

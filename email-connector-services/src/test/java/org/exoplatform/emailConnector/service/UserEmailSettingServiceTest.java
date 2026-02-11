@@ -99,15 +99,16 @@ public class UserEmailSettingServiceTest {
     EmailConnector emailConnector = emailConnector();
     when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
     Session session = mock(Session.class);
-    MockedStatic<Session> mockedSession = mockStatic(Session.class);
-    mockedSession.when(() -> Session.getDefaultInstance(any(Properties.class))).thenReturn(session);
-    Store store = mock(Store.class);
-    when(session.getStore()).thenReturn(store);
-    when(store.isConnected()).thenReturn(true);
-    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
-    userEmailSettingService.connectUserEmailSetting(userEmailSetting, TEST_USER, false);
-    verify(store).connect(anyString(), anyInt(), anyString(), anyString());
-    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getDefaultInstance(any(Properties.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      when(store.isConnected()).thenReturn(true);
+      when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+      userEmailSettingService.connectUserEmailSetting(userEmailSetting, TEST_USER, false);
+      verify(store).connect(anyString(), anyInt(), anyString(), anyString());
+      verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+    }
   }
 
   @Test
@@ -173,11 +174,13 @@ public class UserEmailSettingServiceTest {
   void connect() throws MessagingException {
     when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
     Session session = mock(Session.class);
-    when(Session.getDefaultInstance(any(Properties.class))).thenReturn(session);
-    Store store = mock(Store.class);
-    when(session.getStore()).thenReturn(store);
-    userEmailSettingService.connect(userEmailSetting());
-    verify(store).connect(anyString(), anyInt(), anyString(), anyString());
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getDefaultInstance(any(Properties.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      userEmailSettingService.connect(userEmailSetting());
+      verify(store).connect(anyString(), anyInt(), anyString(), anyString());
+    }
   }
 
   @Test

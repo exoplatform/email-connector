@@ -58,7 +58,9 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
@@ -178,6 +180,24 @@ public class EmailBoxRestTest {
                                                                   .content(asJsonString(emailIds))
                                                                   .contentType(MediaType.APPLICATION_JSON)
                                                                   .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
+  void sendEmail() throws Exception {
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    Email email = new Email();
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser())
+                                                             .content(asJsonString(email))
+                                                             .contentType(MediaType.APPLICATION_JSON)
+                                                             .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isNotFound());
+    email.setTo(List.of(mock(EmailRecipient.class)));
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser())
+                                                             .content(asJsonString(email))
+                                                             .contentType(MediaType.APPLICATION_JSON)
+                                                             .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
   }
 

@@ -1,0 +1,204 @@
+<!--
+Copyright (C) 2025 eXo Platform SAS.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <http://www.gnu.org/licenses/>.
+-->
+<template>
+  <exo-drawer
+    id="newEmailDrawer"
+    ref="newEmailDrawer"
+    v-model="newEmailDrawer"
+    right
+    go-back-button
+    allow-expand
+    :confirm-close="confirmClose"
+    :confirm-close-labels="{
+      title: $t('emailConnector.mailBox.newEmail.drawer.confirmCancel.title'),
+      message: $t('emailConnector.mailBox.newEmail.drawer.confirmCancel.message'),
+      ok: $t('emailConnector.mailBox.newEmail.drawer.confirmCancel.button.yes'),
+      cancel: $t('emailConnector.mailBox.newEmail.drawer.confirmCancel.button.no')
+    }"
+    @closed="close">
+    <template #title>
+      <span>
+        {{ title }}
+      </span>
+    </template>
+    <template v-if="newEmailDrawer" #content>
+      <v-list-item class="pa-0 mx-4" dense>
+        <v-label for="to">
+          <span class="text-subtitle-color">
+            {{ $t('emailConnector.mailBox.newEmail.drawer.to.label') }}
+          </span>
+        </v-label>
+        <v-text-field
+          v-model="toEmails"
+          class="pt-0"
+          autocomplete="to"
+          id="to"
+          :aria-label="$t('emailConnector.mailBox.newEmail.drawer.to.label')"
+          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.to.placeholder')"
+          type="text"
+          required="required"
+          solo
+          flat
+          single-line
+          hide-details />
+      </v-list-item>
+      <v-divider />
+      <div>
+        <v-list-item class="pa-0 mx-4" dense>
+          <v-label for="cc">
+            <span class="text-subtitle-color">
+              {{ $t('emailConnector.mailBox.newEmail.drawer.cc.label') }}
+            </span>
+          </v-label>
+          <v-text-field
+            v-model="ccEmails"
+            class="pt-0"
+            autocomplete="cc"
+            id="cc"
+            :aria-label="$t('emailConnector.mailBox.newEmail.drawer.cc.label')"
+            :placeholder="$t('emailConnector.mailBox.newEmail.drawer.cc.placeholder')"
+            type="text"
+            solo
+            flat
+            single-line
+            hide-details />
+        </v-list-item>
+        <v-divider />
+        <v-list-item class="pa-0 mx-4" dense>
+          <v-label for="bcc">
+            <span class="text-subtitle-color">
+              {{ $t('emailConnector.mailBox.newEmail.drawer.bcc.label') }}
+            </span>
+          </v-label>
+          <v-text-field
+            v-model="bccEmails"
+            class="pt-0"
+            autocomplete="bcc"
+            id="bcc"
+            :aria-label="$t('emailConnector.mailBox.newEmail.drawer.bcc.label')"
+            :placeholder="$t('emailConnector.mailBox.newEmail.drawer.bcc.placeholder')"
+            type="text"
+            solo
+            flat
+            single-line
+            hide-details />
+        </v-list-item>
+        <v-divider />
+      </div>
+      <v-list-item class="pa-0 ms-1 me-4">
+        <v-text-field
+          v-model="email.subject"
+          class="pt-0"
+          autocomplete="subject"
+          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.subject.placeholder')"
+          type="text"
+          solo
+          flat
+          single-line
+          hide-details />
+      </v-list-item>
+      <v-divider />
+      <rich-editor
+        ref="emailContent"
+        v-model="email.content.body"
+        :placeholder="$t('emailConnector.mailBox.newEmail.drawer.content.placeholder')"
+        class="mx-4 mt-3"
+        content-link-enabled
+        hide-chars-count />
+    </template>
+    <template #footer>
+      <div class="d-flex">
+        <v-spacer />
+        <v-btn
+          :disabled="disabled"
+          :loading="loading"
+          @click="sendEmail"
+          class="btn btn-primary">
+          {{ $t('emailConnector.mailBox.newEmail.drawer.send.label') }}
+        </v-btn>
+      </div>
+    </template>
+  </exo-drawer>
+</template>
+
+<script>
+export default {
+  data() {
+    return {
+      newEmailDrawer: false,
+      toEmails: '',
+      ccEmails: '',
+      bccEmails: '',
+      email: {
+        to: [],
+        cc: [],
+        bcc: [],
+        subject: '',
+        content: {
+          body: ''
+        }
+      },
+      loading: false,
+    };
+  },
+  created() {
+    this.$root.$on('open-new-email-drawer', this.open);
+  },
+  computed: {
+    title() {
+      return this.$t('emailConnector.mailBox.list.drawer.newEmail.label');
+    },
+    disabled() {
+      return !this.toEmails;
+    },
+    confirmClose() {
+      return !!(this.email.content.body || this.email.subject || this.toEmails || this.ccEmails || this.bccEmails);
+    }
+  },
+  methods: {
+    open() {
+      this.$refs.newEmailDrawer.open();
+    },
+    close() {
+      this.toEmails = '';
+      this.ccEmails = '';
+      this.bccEmails = '';
+      this.email.subject = '';
+      this.email.content.body = '';
+      this.newEmailDrawer = false;
+    },
+    sendEmail() {
+      this.email.to = this.toEmails.split(',')
+        .map(email => ({ address: email.trim() }))
+        .filter(email => email.address);
+      this.email.cc = this.ccEmails.split(',')
+        .map(email => ({ address: email.trim() }))
+        .filter(email => email.address);
+      this.email.bcc = this.bccEmails.split(',')
+        .map(email => ({ address: email.trim() }))
+        .filter(email => email.address);
+      this.loading = true;
+      this.$emailConnectorMailBoxService.sendEmail(this.email).then(() => {
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
+        this.close();
+      }).catch(() => { 
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
+      }).finally(() => this.loading = false);
+    }
+  }
+};
+</script>

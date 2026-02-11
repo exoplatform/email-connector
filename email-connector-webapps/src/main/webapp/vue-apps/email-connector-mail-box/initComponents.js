@@ -33,6 +33,7 @@ import EmailConnectorMailBoxDrawerListItemDetailBody from './components/drawer/E
 import EmailConnectorMailBoxDrawerListItemDetailHeader from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailHeader.vue';
 import EmailConnectorMailBoxDrawerListItemDetailHeaderItem from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailHeaderItem.vue';
 import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailSenderAvatar.vue';
+import EmailConnectorNewEmailDrawer from './components/drawer/EmailConnectorNewEmailDrawer.vue';
 
 const components = {
   'email-connector-mail-box-app': EmailConnectorMailBoxApp,
@@ -54,6 +55,7 @@ const components = {
   'email-connector-mail-box-drawer-list-item-detail-header': EmailConnectorMailBoxDrawerListItemDetailHeader,
   'email-connector-mail-box-drawer-list-item-detail-header-item': EmailConnectorMailBoxDrawerListItemDetailHeaderItem,
   'email-connector-mail-box-drawer-list-item-detail-sender-avatar': EmailConnectorMailBoxDrawerListItemDetailSenderAvatar,
+  'email-connector-new-email-drawer': EmailConnectorNewEmailDrawer,
 };
 
 for (const key in components) {
