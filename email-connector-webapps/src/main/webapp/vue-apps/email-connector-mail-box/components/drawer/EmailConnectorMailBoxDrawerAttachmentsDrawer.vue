@@ -19,7 +19,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="attachmentsDrawer"
     ref="attachmentsDrawer"
     v-model="attachmentsDrawer"
-    :right="!$vuetify.rtl"
+    right
     :confirm-close="activeDownload"
     :confirm-close-labels="{
       title: $t('emailConnector.mailBox.attachment.download.confirmAbort.title'),
@@ -28,7 +28,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       cancel: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.no')
     }"
     @confirm-close="onAbortDownloadConfirmed"
-    @closed="close"
     style="outline: none;"
     class="no-box-shadow"
     go-back-button>

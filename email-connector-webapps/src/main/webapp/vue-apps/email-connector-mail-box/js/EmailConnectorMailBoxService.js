@@ -192,6 +192,21 @@ export function synchronize() {
   });
 }
 
+export function sendEmail(email) {
+  return fetch('/email-connector/rest/email-box/send', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(email)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when sending email');
+    }
+  });
+}
+
 export function formatDateString(dateToFormat, yesterdayLabel) {
   const today = new Date();
   today.setHours(0,0,0,0);

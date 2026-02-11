@@ -19,7 +19,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="emailBoxDrawer"
     ref="emailBoxDrawer"
     v-model="emailBoxDrawer"
-    :right="!$vuetify.rtl"
+    right
     :loading="loading"
     :confirm-close="activeDownload"
     :go-back-button="selectMode"
@@ -53,6 +53,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @click="synchronize()"
           icon>
           <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
+        </v-btn>
+        <v-btn
+          :title="$t('emailConnector.mailBox.list.drawer.newEmail.label')"
+          @click="openNewEmailDrawer()"
+          icon>
+          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
         </v-btn>
       </div>
       <div class="me-3" v-else>
@@ -225,6 +231,9 @@ export default {
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
+    },
+    openNewEmailDrawer() {
+      this.$root.$emit('open-new-email-drawer');
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
