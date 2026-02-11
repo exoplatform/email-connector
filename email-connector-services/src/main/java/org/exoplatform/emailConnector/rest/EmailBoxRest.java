@@ -230,6 +230,30 @@ public class EmailBoxRest {
     }
   }
 
+  @PostMapping("send")
+  @Secured("users")
+  @Operation(summary = "Sends email", method = "POST", description = "This will send email")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public void sendEmail(HttpServletRequest request,
+                        @Parameter(description = "Email to be sent", required = true)
+                        @RequestBody
+                        Email email) {
+    try {
+      if (email == null || email.getTo() == null || email.getTo().isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      emailBoxService.sendEmail(email, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
   @GetMapping("/attachments/{mailRemoteId}/{attachmentId}")
   @Secured("users")
   @Operation(summary = "Gets attachment by mail remote id and attachment id", method = "GET", description = "This will get attachment by mail remote id and attachment id")

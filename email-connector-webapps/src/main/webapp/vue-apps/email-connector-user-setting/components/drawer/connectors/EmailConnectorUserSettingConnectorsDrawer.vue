@@ -20,9 +20,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     ref="userSettingConnectorsDrawer"
     v-model="userSettingConnectorsDrawer"
     :loading="loading"
-    :right="!$vuetify.rtl"
-    :allow-expand="!$root.isMobile"
-    @closed="close">
+    right
+    allow-expand>
     <template #title>
       <span>{{ $t('UserSettings.emailConnector.connectors.drawer.title') }}</span>
     </template>
