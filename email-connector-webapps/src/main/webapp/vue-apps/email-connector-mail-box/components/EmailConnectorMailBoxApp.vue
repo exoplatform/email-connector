@@ -23,6 +23,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
     <email-connector-mail-box-drawer />
     <email-connector-new-email-drawer />
+    <email-connector-new-email-drawer-no-subject-confirm-popup />
   </v-app>
 </template>
 
