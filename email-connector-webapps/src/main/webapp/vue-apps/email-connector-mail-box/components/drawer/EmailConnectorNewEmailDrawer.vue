@@ -126,7 +126,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-btn
           :disabled="disabled"
           :loading="loading"
-          @click="sendEmail"
+          @click="sendEmail()"
           class="btn btn-primary">
           {{ $t('emailConnector.mailBox.newEmail.drawer.send.label') }}
         </v-btn>
@@ -157,6 +157,9 @@ export default {
   },
   created() {
     this.$root.$on('open-new-email-drawer', this.open);
+    this.$root.$on('send-email', (email) => {
+      this.sendEmail(email);
+    });
   },
   computed: {
     title() {
@@ -181,16 +184,25 @@ export default {
       this.email.content.body = '';
       this.newEmailDrawer = false;
     },
-    sendEmail() {
-      this.email.to = this.toEmails.split(',')
-        .map(email => ({ address: email.trim() }))
-        .filter(email => email.address);
-      this.email.cc = this.ccEmails.split(',')
-        .map(email => ({ address: email.trim() }))
-        .filter(email => email.address);
-      this.email.bcc = this.bccEmails.split(',')
-        .map(email => ({ address: email.trim() }))
-        .filter(email => email.address);
+    sendEmail(email) {
+      if (email) {
+        this.email = email;
+      }
+      else {
+        this.email.to = this.toEmails.split(',')
+          .map(email => ({ address: email.trim() }))
+          .filter(email => email.address);
+        this.email.cc = this.ccEmails.split(',')
+          .map(email => ({ address: email.trim() }))
+          .filter(email => email.address);
+        this.email.bcc = this.bccEmails.split(',')
+          .map(email => ({ address: email.trim() }))
+          .filter(email => email.address);
+        if (!this.email.subject) {
+          this.$root.$emit('open-no-subject-email-confirm-popup', this.email);
+          return;
+        }
+      }
       this.loading = true;
       this.$emailConnectorMailBoxService.sendEmail(this.email).then(() => {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
