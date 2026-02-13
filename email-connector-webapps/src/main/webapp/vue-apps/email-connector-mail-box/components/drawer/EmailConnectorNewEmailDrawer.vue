@@ -153,18 +153,18 @@ export default {
         }
       },
       loading: false,
+      title: '',
     };
   },
   created() {
-    this.$root.$on('open-new-email-drawer', this.open);
+    this.$root.$on('open-new-email-drawer', (email) => {
+      this.open(email);
+    });
     this.$root.$on('send-email', (email) => {
       this.sendEmail(email);
     });
   },
   computed: {
-    title() {
-      return this.$t('emailConnector.mailBox.list.drawer.newEmail.label');
-    },
     disabled() {
       return !this.toEmails;
     },
@@ -173,7 +173,13 @@ export default {
     }
   },
   methods: {
-    open() {
+    open(email) {
+      this.title = email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
+      if (email) {
+        this.toEmails = email.sender ? email.sender.address : '';
+        this.email.subject = `${this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject}`;
+        this.email.mailHeaderId = email.mailHeaderId;
+      }
       this.$refs.newEmailDrawer.open();
     },
     close() {
@@ -195,9 +201,13 @@ export default {
         this.email.cc = this.ccEmails.split(',')
           .map(email => ({ address: email.trim() }))
           .filter(email => email.address);
-        this.email.bcc = this.bccEmails.split(',')
-          .map(email => ({ address: email.trim() }))
-          .filter(email => email.address);
+        this.email.bcc = [
+          ...(this.email.bcc || []),
+          ...this.bccEmails
+            .split(',')
+            .map(email => ({ address: email.trim() }))
+            .filter(email => email.address)
+        ];
         if (!this.email.subject) {
           this.$root.$emit('open-no-subject-email-confirm-popup', this.email);
           return;
