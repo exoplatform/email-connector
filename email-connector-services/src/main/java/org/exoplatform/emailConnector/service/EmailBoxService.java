@@ -43,6 +43,7 @@ import javax.mail.UIDFolder;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeMessage;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -574,6 +575,10 @@ public class EmailBoxService {
       }
       message.setSubject(email.getSubject());
       message.setContent(email.getContent().getBody(), "text/html; charset=UTF-8");
+      if (!StringUtils.isEmpty(email.getMailHeaderId())) {
+        message.setHeader("In-Reply-To", email.getMailHeaderId());
+        message.setHeader("References", email.getMailHeaderId());
+      }
       Transport.send(message);
     } catch (MessagingException | UnsupportedEncodingException e) {
       LOG.error("Error when sending email for user {}", username, e);
@@ -605,8 +610,10 @@ public class EmailBoxService {
                                                   EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
                                                                                          username,
                                                                                          false);
+          String mailHeaderId = ((MimeMessage) message).getMessageID();
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
+                                                mailHeaderId,
                                                 username,
                                                 subject,
                                                 emailContent,

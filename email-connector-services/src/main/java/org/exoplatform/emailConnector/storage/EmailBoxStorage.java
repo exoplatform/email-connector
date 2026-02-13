@@ -113,6 +113,7 @@ public class EmailBoxStorage {
     } else {
       EmailBoxEntity emailBoxEntity = new EmailBoxEntity(email.getId(),
                                                          email.getMailRemoteId(),
+                                                         email.getMailHeaderId(),
                                                          email.getUserId(),
                                                          email.getSubject(),
                                                          email.getContent() != null ? email.getContent().getBody() : null,
@@ -156,6 +157,7 @@ public class EmailBoxStorage {
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
       Email email = new Email(emailBoxEntity.getId(),
                               emailBoxEntity.getMailRemoteId(),
+                              emailBoxEntity.getMailHeaderId(),
                               emailBoxEntity.getUserId(),
                               emailBoxEntity.getSubject(),
                               new EmailContent(emailBoxEntity.getBody(), excerpt, attachments),

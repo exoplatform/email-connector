@@ -55,7 +55,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
         </v-btn>
         <v-btn
-          :title="$t('emailConnector.mailBox.list.drawer.newEmail.label')"
+          :title="$t('emailConnector.mailBox.list.drawer.newEmail.button.title')"
           @click="openNewEmailDrawer()"
           icon>
           <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
