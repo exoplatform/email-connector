@@ -193,6 +193,7 @@ public class EmailBoxStorageTest {
     assertNull(retrievedEmailAttachment);
     EmailBoxEntity emailBoxEntity = new EmailBoxEntity(null,
                                                        1212l,
+                                                       null,
                                                        "root",
                                                        "subject",
                                                        "body",
@@ -222,6 +223,7 @@ public class EmailBoxStorageTest {
     EmailAttachment emailAttachment = emailAttachment();
     return new Email(null,
                      1212l,
+                     null,
                      username,
                      "subject",
                      new EmailContent("body", null, List.of(emailAttachment)),

@@ -62,7 +62,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="fill-height overflow-y-auto specific-scrollbar">
         <v-list class="mt-5 py-0 me-4 ms-4 mb-5">
           <v-list-item
-            class="px-0 pb-4 height-auto">
+            class="px-0 pb-1 height-auto">
             <v-list-item-content class="py-0 text-title text-wrap overflow-visible">
               <v-list-item-title v-text="email.subject" class="text-wrap overflow-visible" />
             </v-list-item-content>
@@ -88,8 +88,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 </v-btn>
               </v-list-item-subtitle>
             </v-list-item-content>
-            <v-list-item-action class="my-0 align-self-start">
-              <v-list-item-subtitle v-text="receivedDate" />
+            <v-list-item-action class="pt-4 my-0">
+              <v-list-item-subtitle class="pb-1" v-text="receivedDate" />
+              <v-btn
+                class="justify-end"
+                @click="openReplyEmailDrawer()"
+                :title="$t('emailConnector.mailBox.list.drawer.detail.reply.button.title')"
+                icon>
+                <v-icon size="20" class="icon-default-color">fa-reply</v-icon>
+              </v-btn>
             </v-list-item-action>
           </v-list-item>
           <email-connector-mail-box-drawer-list-item-detail-header 
@@ -198,6 +205,9 @@ export default {
       this.expandedHeader = false;
       this.$refs.emailDetailDrawer.close();
     },
+    openReplyEmailDrawer() {
+      this.$root.$emit('open-new-email-drawer', this.email);
+    }
   }
 };
 </script>

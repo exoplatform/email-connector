@@ -48,6 +48,9 @@ public class EmailBoxEntity {
   @Column(name = "MAIL_REMOTE_ID")
   private Long                        mailRemoteId;
 
+  @Column(name = "MAIL_HEADER_ID")
+  private String                      mailHeaderId;
+
   @Column(name = "USER_ID")
   private String                      userId;
 

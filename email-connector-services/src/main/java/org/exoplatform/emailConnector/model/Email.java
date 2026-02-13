@@ -32,6 +32,8 @@ public class Email {
 
   private Long                 mailRemoteId;
 
+  private String               mailHeaderId;
+
   private String               userId;
 
   private String               subject;
