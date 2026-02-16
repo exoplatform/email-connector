@@ -43,7 +43,11 @@ import javax.mail.UIDFolder;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeMessage;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -56,6 +60,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
+import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -78,6 +83,7 @@ import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.social.core.identity.model.Profile;
 
+import io.meeds.social.html.utils.HtmlUtils;
 import jakarta.annotation.PostConstruct;
 
 /**
@@ -545,7 +551,7 @@ public class EmailBoxService {
       Message message = new MimeMessage(session);
       Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
       message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
-      if (email.getTo() != null) {
+      if (!CollectionUtils.isEmpty(email.getTo())) {
         String toRecipients = email.getTo()
                                    .stream()
                                    .map(EmailRecipient::getAddress)
@@ -554,7 +560,7 @@ public class EmailBoxService {
                                    .collect(Collectors.joining(","));
         message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(toRecipients));
       }
-      if (email.getCc() != null) {
+      if (!CollectionUtils.isEmpty(email.getCc())) {
         String ccRecipients = email.getCc()
                                    .stream()
                                    .map(EmailRecipient::getAddress)
@@ -563,7 +569,7 @@ public class EmailBoxService {
                                    .collect(Collectors.joining(","));
         message.setRecipients(Message.RecipientType.CC, InternetAddress.parse(ccRecipients));
       }
-      if (email.getBcc() != null) {
+      if (!CollectionUtils.isEmpty(email.getBcc())) {
         String bccRecipients = email.getBcc()
                                     .stream()
                                     .map(EmailRecipient::getAddress)
@@ -574,7 +580,14 @@ public class EmailBoxService {
         message.setRecipients(Message.RecipientType.BCC, InternetAddress.parse(bccRecipients));
       }
       message.setSubject(email.getSubject());
-      message.setContent(email.getContent().getBody(), "text/html; charset=UTF-8");
+      String currentDomain = CommonsUtils.getCurrentDomain();
+      Document contentDoc = Jsoup.parseBodyFragment(HtmlUtils.transform(email.getContent().getBody(), null));
+      for (Element link : contentDoc.select("a[href^=/portal]")) {
+        link.select("i").remove();
+        String href = link.attr("href");
+        link.attr("href", currentDomain + href);
+      }
+      message.setContent(contentDoc.body().html(), "text/html; charset=UTF-8");
       if (!StringUtils.isEmpty(email.getMailHeaderId())) {
         message.setHeader("In-Reply-To", email.getMailHeaderId());
         message.setHeader("References", email.getMailHeaderId());
