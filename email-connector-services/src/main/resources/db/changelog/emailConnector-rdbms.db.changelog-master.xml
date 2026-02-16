@@ -161,4 +161,9 @@
       <column name="SMTP_SECURITY_TYPE" type="NVARCHAR(50)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-11">
+    <addColumn tableName="EMAIL_BOX">
+      <column name="MAIL_HEADER_ID" type="VARCHAR(1024)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>

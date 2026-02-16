@@ -47,6 +47,7 @@ import javax.mail.Session;
 import javax.mail.Store;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
+import javax.mail.internet.MimeMessage;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -114,11 +115,11 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
-    Message message1 = mock(Message.class);
+    MimeMessage message1 = mock(MimeMessage.class);
     when(message1.getSubject()).thenReturn("message1Subject");
-    Message message2 = mock(Message.class);
+    MimeMessage message2 = mock(MimeMessage.class);
     when(message2.getSubject()).thenReturn("message2Subject");
-    Message[] messages = { message1, message2 };
+    MimeMessage[] messages = { message1, message2 };
     when((inbox).getMessages(anyInt(), anyInt())).thenReturn(messages);
     when(emailBoxStorage.getEmails(anyString())).thenReturn(new ArrayList<Email>());
     emailBoxService.synchronize(TEST_USER);
@@ -315,6 +316,7 @@ public class EmailBoxServiceTest {
   private Email email(String username) {
     return new Email(null,
                      1212l,
+                     null,
                      username,
                      "subject",
                      new EmailContent("excerpt"),
