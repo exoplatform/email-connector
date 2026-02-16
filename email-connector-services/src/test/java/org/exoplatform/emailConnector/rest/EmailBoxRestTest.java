@@ -62,7 +62,6 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.service.EmailBoxService;
-import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
@@ -125,7 +124,7 @@ public class EmailBoxRestTest {
   @Test
   void broadcastOpenEmail() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/broadcast").with(testSimpleUser()));
-    verify(emailBoxService).broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, SIMPLE_USER);
+    verify(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
     response.andExpect(status().isOk());
   }
 

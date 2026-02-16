@@ -144,13 +144,14 @@ export default {
       ccEmails: '',
       bccEmails: '',
       email: {
+        mailHeaderId: null,
         to: [],
         cc: [],
         bcc: [],
         subject: '',
         content: {
           body: ''
-        }
+        },
       },
       loading: false,
       title: '',
@@ -177,7 +178,7 @@ export default {
       this.title = email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
       if (email) {
         this.toEmails = email.sender ? email.sender.address : '';
-        this.email.subject = `${this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject}`;
+        this.email.subject = `${this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
         this.email.mailHeaderId = email.mailHeaderId;
       }
       this.$refs.newEmailDrawer.open();
@@ -188,6 +189,7 @@ export default {
       this.bccEmails = '';
       this.email.subject = '';
       this.email.content.body = '';
+      this.email.mailHeaderId = null;
       this.newEmailDrawer = false;
     },
     sendEmail(email) {

@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.listener;
 
 import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.OPEN_EMAIL;
+import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.SEND_EMAIL;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
@@ -41,7 +42,9 @@ public class AnalyticsEmailListener extends Listener<String, String> {
 
   private static final String   OPEN_EMAIL_OPERATION_NAME = "openEmail";
 
-  private static final String[] LISTENER_EVENTS           = { OPEN_EMAIL };
+  private static final String   SEND_EMAIL_OPERATION_NAME = "sendEmail";
+
+  private static final String[] LISTENER_EVENTS           = { OPEN_EMAIL, SEND_EMAIL };
 
   @Autowired
   private IdentityManager       identityManager;
@@ -58,7 +61,7 @@ public class AnalyticsEmailListener extends Listener<String, String> {
 
   @Override
   public void onEvent(Event<String, String> event) throws Exception {
-    String connectorName = event.getData();
+    String eventData = event.getData();
     String operation = mapEventNameToOperation(event.getEventName());
     long userId = 0;
     Identity identity = getIdentityManager().getOrCreateUserIdentity(event.getSource());
@@ -71,13 +74,18 @@ public class AnalyticsEmailListener extends Listener<String, String> {
     statisticData.setSubModule("email");
     statisticData.setOperation(operation);
     statisticData.setUserId(userId);
-    statisticData.addParameter("connectorName", connectorName);
+    if (event.getEventName().equals(OPEN_EMAIL)) {
+      statisticData.addParameter("connectorName", eventData);
+    } else if (event.getEventName().equals(SEND_EMAIL)) {
+      statisticData.addParameter("emailType", eventData);
+    }
     AnalyticsUtils.addStatisticData(statisticData);
   }
 
   private String mapEventNameToOperation(String eventName) {
     return switch (eventName) {
-    case "exo.email.openEmail" -> OPEN_EMAIL_OPERATION_NAME;
+    case OPEN_EMAIL -> OPEN_EMAIL_OPERATION_NAME;
+    case SEND_EMAIL -> SEND_EMAIL_OPERATION_NAME;
     default -> throw new IllegalArgumentException("Unknown event: " + eventName);
     };
   }

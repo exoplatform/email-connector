@@ -115,7 +115,7 @@ public class EmailBoxRest {
     try {
       String eTag = "\"" + Objects.hash(mailRemoteId, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
-        emailBoxService.broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, request.getRemoteUser());
+        emailBoxService.broadcastOpenEmail(request.getRemoteUser());
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
       Email email =
@@ -141,7 +141,7 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public void broadcastOpenEmail(HttpServletRequest request) {
     try {
-      emailBoxService.broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, request.getRemoteUser());
+      emailBoxService.broadcastOpenEmail(request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
