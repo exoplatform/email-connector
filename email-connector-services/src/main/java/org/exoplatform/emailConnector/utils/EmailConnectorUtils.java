@@ -77,6 +77,8 @@ public class EmailConnectorUtils {
                                         Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
 
   public static final String OPEN_EMAIL              = "exo.email.openEmail";
+  
+  public static final String SEND_EMAIL              = "exo.email.sendEmail";
 
   public static final String EMAIL_FEATURE           = "email";
 

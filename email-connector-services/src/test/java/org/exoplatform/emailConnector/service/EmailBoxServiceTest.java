@@ -69,6 +69,7 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.scheduler.JobInfo;
 import org.exoplatform.services.scheduler.JobSchedulerService;
@@ -156,14 +157,14 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void broadcastEvent() throws Exception {
+  void broadcastOpenEmailEvent() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    emailBoxService.broadcastEvent("operation", TEST_USER);
-    verify(listenerService).broadcast("operation", TEST_USER, "connector");
+    emailBoxService.broadcastOpenEmail(TEST_USER);
+    verify(listenerService).broadcast(EmailConnectorUtils.OPEN_EMAIL, TEST_USER, "connector");
   }
 
   @Test

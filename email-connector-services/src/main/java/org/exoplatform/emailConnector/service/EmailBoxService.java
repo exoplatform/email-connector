@@ -298,30 +298,30 @@ public class EmailBoxService {
     }
   }
 
-  public void broadcastEvent(String eventName, String username) throws IllegalAccessException {
+  public void broadcastOpenEmail(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_BROADCAST_EVENT_MESSAGE, username));
     }
     try {
-      listenerService.broadcast(eventName, username, userEmailSetting.getEmailConnectorName());
+      listenerService.broadcast(EmailConnectorUtils.OPEN_EMAIL, username, userEmailSetting.getEmailConnectorName());
     } catch (Exception e) {
-      LOG.warn("Error broadcasting event '" + eventName + "' using source '" + username + "' and data "
+      LOG.warn("Error broadcasting event '" + EmailConnectorUtils.OPEN_EMAIL + "' using source '" + username + "' and data "
           + userEmailSetting.getEmailConnectorName(), e);
     }
   }
 
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
-                                               String userName,
+                                               String username,
                                                boolean withAttachments,
                                                boolean withRecipients,
                                                boolean withProfile,
                                                boolean broadcast) throws IllegalAccessException {
     if (broadcast) {
-      broadcastEvent(EmailConnectorUtils.OPEN_EMAIL, userName);
+      broadcastOpenEmail(username);
     }
-    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, userName, withAttachments, withRecipients, withProfile);
+    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, withAttachments, withRecipients, withProfile);
   }
 
   public void updateEmailReadStatus(List<Long> mailRemoteIds,
@@ -580,6 +580,8 @@ public class EmailBoxService {
         message.setHeader("References", email.getMailHeaderId());
       }
       Transport.send(message);
+      String emailType = StringUtils.isEmpty(email.getMailHeaderId()) ? "newEmail" : "reply";
+      listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL, username, emailType);
     } catch (MessagingException | UnsupportedEncodingException e) {
       LOG.error("Error when sending email for user {}", username, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
