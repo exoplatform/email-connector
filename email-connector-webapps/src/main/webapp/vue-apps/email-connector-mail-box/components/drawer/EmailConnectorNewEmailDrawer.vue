@@ -100,16 +100,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-divider />
       </div>
       <v-list-item class="pa-0 ms-1 me-4">
-        <v-text-field
+        <v-textarea
           v-model="email.subject"
-          class="pt-0"
+          class="pt-0 textarea-no-border"
           autocomplete="subject"
-          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.subject.placeholder')"
-          type="text"
+          auto-grow
+          rows="1"
           solo
           flat
-          single-line
-          hide-details />
+          no-resize
+          hide-details
+          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.subject.placeholder')" />
       </v-list-item>
       <v-divider />
       <rich-editor
