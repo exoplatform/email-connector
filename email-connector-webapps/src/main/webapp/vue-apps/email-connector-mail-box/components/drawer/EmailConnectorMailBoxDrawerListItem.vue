@@ -74,7 +74,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :input-value="selected"
         @click.stop
         @change="onSelectChange" />
-      <div class="flex-grow-1">    
+      <div class="flex-grow-1 no-min-width">    
         <div
           role="button"
           tabindex="0"
