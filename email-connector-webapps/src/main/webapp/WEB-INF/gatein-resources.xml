@@ -109,6 +109,7 @@
 
   <module>
     <name>emailConnectorCommon</name>
+	<load-group>EmailGrp</load-group>
     <script>
       <minify>false</minify>
       <path>/js/emailConnectorCommon.bundle.js</path>

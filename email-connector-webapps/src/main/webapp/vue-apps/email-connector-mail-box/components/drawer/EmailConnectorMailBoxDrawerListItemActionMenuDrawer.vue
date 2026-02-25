@@ -45,9 +45,11 @@ export default {
   },
   created() {
     this.$root.$on('open-email-action-menu-drawer', this.open);
+    this.$root.$on('close-email-action-menu-drawer', this.close);
   },
   beforeDestroy() {
     this.$root.$off('open-email-action-menu-drawer', this.open);
+    this.$root.$off('close-email-action-menu-drawer', this.close);
   },
   methods: {
     open(email) {
