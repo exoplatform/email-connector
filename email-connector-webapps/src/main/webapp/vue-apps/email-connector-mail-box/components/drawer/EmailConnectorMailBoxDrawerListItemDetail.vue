@@ -37,6 +37,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span></span>
     </template>
     <template v-if="!loading" #titleIcons>
+      <extension-registry-components
+        :params="{
+          email,
+        }"
+        name="EmailDetail"
+        type="email-detail-toolbar"
+        parent-element="div"
+        element="div"
+        class="my-auto" /> 
       <v-btn
         :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
         @click="updateEmailReadStatus()"
@@ -168,7 +177,7 @@ export default {
     },
     emailAttachments() {
       return this.email.content?.attachments || [];
-    },
+    }
   },
   methods: {
     open(mailRemoteId) {

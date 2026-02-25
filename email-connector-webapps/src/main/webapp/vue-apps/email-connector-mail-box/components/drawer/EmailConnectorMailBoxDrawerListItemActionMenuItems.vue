@@ -53,6 +53,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
       </span>
     </v-list-item>
+    <extension-registry-components
+      :params="{
+        email,
+      }"
+      name="Email"
+      type="email-menu-action"
+      parent-element="div"
+      element="div"
+      class="my-auto" /> 
     <v-list-item
       v-if="!restricted"
       class="ps-2 pe-3 height-auto"
