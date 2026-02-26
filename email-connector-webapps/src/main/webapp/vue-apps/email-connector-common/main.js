@@ -23,3 +23,4 @@ if (!Vue.prototype.$emailConnectorCommonService) {
     value: emailConnectorCommonService,
   });
 }
+Vue?.prototype?.$utils?.includeExtensions?.('EmailExtension');
