@@ -174,6 +174,12 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void getEmailById() {
+    emailBoxService.getEmailById(121l, TEST_USER);
+    verify(emailBoxStorage).getEmailById(121l, TEST_USER);
+  }
+
+  @Test
   void updateEmailReadStatus() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);

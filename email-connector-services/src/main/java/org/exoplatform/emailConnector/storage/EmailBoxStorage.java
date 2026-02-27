@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.storage;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import javax.mail.internet.InternetAddress;
@@ -36,6 +37,7 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.services.security.ConversationState;
 
 import lombok.SneakyThrows;
 
@@ -80,6 +82,11 @@ public class EmailBoxStorage {
                                                boolean withProfile) {
     EmailBoxEntity emailBoxEntity = emailBoxDao.findByMailRemoteIdAndUserId(mailRemoteId, userId);
     return fromEntity(emailBoxEntity, withAttachments, false, userId, withRecipients, withProfile);
+  }
+
+  public Email getEmailById(long id, String userId) {
+    EmailBoxEntity emailBoxEntity = emailBoxDao.findById(id).orElse(null);
+    return fromEntity(emailBoxEntity, true, false, userId, true, true);
   }
 
   public List<Email> getEmails(String username) {
