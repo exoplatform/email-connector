@@ -81,6 +81,8 @@ public class EmailBoxStorageTest {
                                                                                .toList());
       when(emailBoxDAO.findByMailRemoteIdAndUserId(1212l, "root")).thenReturn(entity);
 
+      when(emailBoxDAO.findById(ID)).thenReturn(Optional.of(entity));
+
       return entity;
     });
 
@@ -141,6 +143,16 @@ public class EmailBoxStorageTest {
     Email email1 = email("root");
     emailBoxStorage.createEmail(email1);
     retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
+    assertNotNull(retrievedEmail);
+  }
+
+  @Test
+  void getEmailById() {
+    Email retrievedEmail = emailBoxStorage.getEmailById(2l, "root");
+    assertNull(retrievedEmail);
+    Email email1 = email("root");
+    emailBoxStorage.createEmail(email1);
+    retrievedEmail = emailBoxStorage.getEmailById(2l, "root");
     assertNotNull(retrievedEmail);
   }
 
