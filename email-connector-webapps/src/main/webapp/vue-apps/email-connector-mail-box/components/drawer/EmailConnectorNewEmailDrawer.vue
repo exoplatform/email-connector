@@ -117,6 +117,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         ref="emailContent"
         v-model="email.content.body"
         :placeholder="$t('emailConnector.mailBox.newEmail.drawer.content.placeholder')"
+        ck-editor-type="email"
         class="mx-4 mt-3"
         content-link-enabled
         hide-chars-count />
