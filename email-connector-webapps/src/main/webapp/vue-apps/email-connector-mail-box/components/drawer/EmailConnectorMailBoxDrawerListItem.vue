@@ -101,7 +101,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item
             class="px-0 height-auto">
             <v-list-item-content class="py-0">
-              <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="email.subject" />
+              <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="subject" />
               <v-list-item-subtitle v-text="excerpt" />
             </v-list-item-content>
             <email-connector-mail-box-drawer-list-item-action-menu
@@ -179,6 +179,9 @@ export default {
     },
     excerpt() {
       return this.email.content?.excerpt || this.$t('emailConnector.mailBox.list.drawer.emptyEmail');
+    },
+    subject() {
+      return this.email.subject || this.$t('emailConnector.mailBox.list.drawer.noSubject');
     },
   },
   methods: {
