@@ -132,7 +132,6 @@ export default {
       minWidth: 0,
       movingLeft: false,
       isSwiping: false,
-      selected: false,
     };
   },
   props: {
@@ -144,22 +143,14 @@ export default {
       type: Boolean,
       default: false,
     },
-  },
-  created() {
-    this.$root.$on('select-email', ({ emailId, selected }) => {
-      if (this.email.mailRemoteId === emailId) {
-        if (this.selected === selected) {
-          return;
-        } 
-        this.selected = selected;
-      }
-    });
-    this.$root.$on('select-all-emails', () => {
-      this.onSelectChange(true);
-    });
-    this.$root.$on('unselect-all-emails', () => {
-      this.selected = false;
-    });
+    selectedEmails: {
+      type: Array,
+      default: () => [],
+    },
+    expanded: {
+      type: Boolean,
+      default: false,
+    },
   },
   computed: {
     gapSize() {
@@ -183,6 +174,9 @@ export default {
     subject() {
       return this.email.subject || this.$t('emailConnector.mailBox.list.drawer.noSubject');
     },
+    selected() {
+      return this.selectedEmails.includes(this.email.mailRemoteId);
+    }
   },
   methods: {
     openDetail() {
@@ -190,7 +184,12 @@ export default {
         this.$root.$emit('select-email', { emailId: this.email.mailRemoteId, selected: !this.selected });
       }
       else {
-        this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+        if (this.expanded) {
+          this.$root.$emit('open-email-detail-content', this.email.mailRemoteId);
+        }
+        else {
+          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+        }
       }
     },
     openActionMenuDrawer() {
@@ -219,9 +218,9 @@ export default {
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
       if (confirm) {
         if (deleteEmail) {
-          this.$root.$emit('delete-email', { emailId: this.email.mailRemoteId });
+          this.$root.$emit('delete-email', this.email.mailRemoteId);
         } else {
-          this.$root.$emit('archive-email', { emailId: this.email.mailRemoteId });
+          this.$root.$emit('archive-email', this.email.mailRemoteId);
         }
       } else {
         this.reset();
