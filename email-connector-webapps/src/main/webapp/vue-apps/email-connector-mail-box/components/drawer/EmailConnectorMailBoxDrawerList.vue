@@ -21,12 +21,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-for="email in emails"
       :key="email.mailRemoteId"
       :email="email"
+      :emails="emails"
+      :sync-in-progress="syncInProgress" 
       :selected-emails="selectedEmails"
       :select-mode="selectMode" 
       :expanded="expanded" />
-    <email-connector-mail-box-drawer-list-item-detail />
-    <email-connector-mail-box-drawer-attachments-drawer />
-    <email-connector-mail-box-drawer-list-item-action-menu-drawer />
   </div>
 </template>
 
@@ -46,6 +45,10 @@ export default {
       default: () => [],
     },
     expanded: {
+      type: Boolean,
+      default: false,
+    },
+    syncInProgress: {
       type: Boolean,
       default: false,
     },

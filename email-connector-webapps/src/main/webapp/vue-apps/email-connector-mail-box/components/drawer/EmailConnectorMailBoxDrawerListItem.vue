@@ -147,6 +147,14 @@ export default {
       type: Array,
       default: () => [],
     },
+    emails: {
+      type: Array,
+      default: () => [],
+    },
+    syncInProgress: {
+      type: Boolean,
+      default: false,
+    },
     expanded: {
       type: Boolean,
       default: false,
@@ -188,7 +196,7 @@ export default {
           this.$root.$emit('open-email-detail-content', this.email.mailRemoteId);
         }
         else {
-          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId);
+          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress);
         }
       }
     },
@@ -218,9 +226,9 @@ export default {
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
       if (confirm) {
         if (deleteEmail) {
-          this.$root.$emit('delete-email', this.email.mailRemoteId);
+          this.$root.$emit('delete-email', [this.email.mailRemoteId]);
         } else {
-          this.$root.$emit('archive-email', this.email.mailRemoteId);
+          this.$root.$emit('archive-email', [this.email.mailRemoteId]);
         }
       } else {
         this.reset();
