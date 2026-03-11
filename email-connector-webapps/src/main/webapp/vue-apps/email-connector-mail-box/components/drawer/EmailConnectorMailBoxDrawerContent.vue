@@ -14,19 +14,23 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
-
 <template>
   <div>
-    <email-connector-mail-box-drawer-list-item
-      v-for="email in emails"
-      :key="email.mailRemoteId"
-      :email="email"
+    <v-checkbox
+      class="ps-4 my-2 pt-0"
+      v-if="selectMode"
+      :indeterminate="indeterminate"
+      color="#707070"
+      :background-color="backgroundColor"
+      hide-details
+      :label="$t('emailConnector.mailBox.list.drawer.selectAll')"
+      v-model="selectedAll"
+      @click.stop />
+    <email-connector-mail-box-drawer-list
+      :emails="emails"
       :selected-emails="selectedEmails"
       :select-mode="selectMode" 
-      :expanded="expanded" />
-    <email-connector-mail-box-drawer-list-item-detail />
-    <email-connector-mail-box-drawer-attachments-drawer />
-    <email-connector-mail-box-drawer-list-item-action-menu-drawer />
+      :expanded="expanded" /> 
   </div>
 </template>
 
@@ -41,6 +45,10 @@ export default {
       type: Boolean,
       default: false,
     },
+    indeterminate: {
+      type: Boolean,
+      default: false,
+    },
     selectedEmails: {
       type: Array,
       default: () => [],
@@ -49,6 +57,25 @@ export default {
       type: Boolean,
       default: false,
     },
+  },
+  computed: {
+    selectedAll: {
+      get() {
+        return this.emails.length > 0 && this.selectedEmails.length === this.emails.length;
+      },
+      set(value) {
+        this.onSelectAllChange(value);
+      }
+    },
+    backgroundColor() {
+      return this.expanded && '#f2f2f2';
+    }
+  },
+  methods: {
+    onSelectAllChange(value) {
+      const newSelection = value ? this.emails.map(e => e.mailRemoteId) : [];
+      this.$emit('update:selected-emails', newSelection);
+    }
   }
 };
 </script>

@@ -16,10 +16,12 @@
  */
 import EmailConnectorMailBoxApp from './components/EmailConnectorMailBoxApp.vue';
 import EmailConnectorMailBoxDrawer from './components/drawer/EmailConnectorMailBoxDrawer.vue';
+import EmailConnectorMailBoxDrawerActions from './components/drawer/EmailConnectorMailBoxDrawerActions.vue';
 import EmailConnectorMailBoxDrawerAttachmentItem from './components/drawer/EmailConnectorMailBoxDrawerAttachmentItem.vue';
 import EmailConnectorMailBoxDrawerAttachmentsDrawer from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsDrawer.vue';
 import EmailConnectorMailBoxDrawerAttachmentsList from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsList.vue';
 import EmailConnectorMailBoxDrawerAttachmentsListItem from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsListItem.vue';
+import EmailConnectorMailBoxDrawerContent from './components/drawer/EmailConnectorMailBoxDrawerContent.vue';
 import EmailConnectorMailBoxDrawerList from './components/drawer/EmailConnectorMailBoxDrawerList.vue';
 import EmailConnectorMailBoxDrawerListItem from './components/drawer/EmailConnectorMailBoxDrawerListItem.vue';
 import EmailConnectorMailBoxDrawerListItemActionMenu from './components/drawer/EmailConnectorMailBoxDrawerListItemActionMenu.vue';
@@ -28,8 +30,10 @@ import EmailConnectorMailBoxDrawerListItemActionMenuItems from './components/dra
 import EmailConnectorMailBoxDrawerListItemAttachments from './components/drawer/EmailConnectorMailBoxDrawerListItemAttachments.vue';
 import EmailConnectorMailBoxDrawerListItemAttachmentsListItem from './components/drawer/EmailConnectorMailBoxDrawerListItemAttachmentsListItem.vue';
 import EmailConnectorMailBoxDrawerListItemDetail from './components/drawer/EmailConnectorMailBoxDrawerListItemDetail.vue';
+import EmailConnectorMailBoxDrawerListItemDetailActions from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailActions.vue';
 import EmailConnectorMailBoxDrawerListItemDetailAttachments from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailAttachments.vue';
 import EmailConnectorMailBoxDrawerListItemDetailBody from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailBody.vue';
+import EmailConnectorMailBoxDrawerListItemDetailContent from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailContent.vue';
 import EmailConnectorMailBoxDrawerListItemDetailHeader from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailHeader.vue';
 import EmailConnectorMailBoxDrawerListItemDetailHeaderItem from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailHeaderItem.vue';
 import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailSenderAvatar.vue';
@@ -39,10 +43,12 @@ import EmailConnectorNewEmailDrawerNoSubjectConfirmPopup from './components/draw
 const components = {
   'email-connector-mail-box-app': EmailConnectorMailBoxApp,
   'email-connector-mail-box-drawer': EmailConnectorMailBoxDrawer,
+  'email-connector-mail-box-drawer-actions': EmailConnectorMailBoxDrawerActions,
   'email-connector-mail-box-drawer-attachment-item': EmailConnectorMailBoxDrawerAttachmentItem,
   'email-connector-mail-box-drawer-attachments-drawer': EmailConnectorMailBoxDrawerAttachmentsDrawer,
   'email-connector-mail-box-drawer-attachments-list': EmailConnectorMailBoxDrawerAttachmentsList,
   'email-connector-mail-box-drawer-attachments-list-item': EmailConnectorMailBoxDrawerAttachmentsListItem,
+  'email-connector-mail-box-drawer-content': EmailConnectorMailBoxDrawerContent,
   'email-connector-mail-box-drawer-list': EmailConnectorMailBoxDrawerList,
   'email-connector-mail-box-drawer-list-item': EmailConnectorMailBoxDrawerListItem,
   'email-connector-mail-box-drawer-list-item-action-menu': EmailConnectorMailBoxDrawerListItemActionMenu,
@@ -51,8 +57,10 @@ const components = {
   'email-connector-mail-box-drawer-list-item-attachments': EmailConnectorMailBoxDrawerListItemAttachments,
   'email-connector-mail-box-drawer-list-item-attachments-list-item': EmailConnectorMailBoxDrawerListItemAttachmentsListItem,
   'email-connector-mail-box-drawer-list-item-detail': EmailConnectorMailBoxDrawerListItemDetail,
+  'email-connector-mail-box-drawer-list-item-detail-actions': EmailConnectorMailBoxDrawerListItemDetailActions,
   'email-connector-mail-box-drawer-list-item-detail-attachments': EmailConnectorMailBoxDrawerListItemDetailAttachments,
   'email-connector-mail-box-drawer-list-item-detail-body': EmailConnectorMailBoxDrawerListItemDetailBody,
+  'email-connector-mail-box-drawer-list-item-detail-content': EmailConnectorMailBoxDrawerListItemDetailContent,
   'email-connector-mail-box-drawer-list-item-detail-header': EmailConnectorMailBoxDrawerListItemDetailHeader,
   'email-connector-mail-box-drawer-list-item-detail-header-item': EmailConnectorMailBoxDrawerListItemDetailHeaderItem,
   'email-connector-mail-box-drawer-list-item-detail-sender-avatar': EmailConnectorMailBoxDrawerListItemDetailSenderAvatar,
