@@ -66,14 +66,14 @@ export default {
   methods: {
     open(emailAttachments) {
       this.emailAttachments = emailAttachments;
-      this.$refs.attachmentsDrawer.open();
+      this.attachmentsDrawer = true;
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
       this.close();
     },
     close() {
-      this.$refs.attachmentsDrawer.close();
+      this.attachmentsDrawer = false;
     }
   }
 };

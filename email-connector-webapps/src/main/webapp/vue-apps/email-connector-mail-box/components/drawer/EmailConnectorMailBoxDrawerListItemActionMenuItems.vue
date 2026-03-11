@@ -124,11 +124,11 @@ export default {
     },
     deleteEmail() {
       this.$emit('close');
-      this.$root.$emit('delete-email', { emailId: this.email.mailRemoteId });
+      this.$root.$emit('delete-email', this.email.mailRemoteId);
     },
     archiveEmail() {
       this.$emit('close');
-      this.$root.$emit('archive-email', { emailId: this.email.mailRemoteId });
+      this.$root.$emit('archive-email', this.email.mailRemoteId);
     },
   }
 };

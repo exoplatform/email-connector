@@ -20,9 +20,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     ref="emailBoxDrawer"
     v-model="emailBoxDrawer"
     right
+    allow-expand
+    @expand-updated="updateExpand"
     :loading="loading"
     :confirm-close="activeDownload"
-    :go-back-button="selectMode"
+    :go-back-button="canGoBack"
     :confirm-close-labels="{
       title: $t('emailConnector.mailBox.attachment.download.confirmAbort.title'),
       message: $t('emailConnector.mailBox.attachment.download.confirmAbort.message'),
@@ -35,111 +37,105 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     style="outline: none;"
     class="no-box-shadow">
     <template #title>
-      <div :class="{ 'd-flex align-center': selectMode }">
+      <div v-if="!hasFullAppLeft" :class="{ 'd-flex align-center': selectMode }">
         <span :class="{ 'text-body': selectMode }">
           {{ title }}
         </span>
       </div>
+      <div v-else>
+        <span></span>
+      </div>
+    </template>
+    <template v-if="hasFullAppLeft" #fullAppLeftTitle>
+      <v-btn
+        v-if="selectMode"
+        icon
+        @click="cancelSelectMode">
+        <v-icon size="20">
+          {{ $vuetify.rtl && 'fa fa-arrow-right' || 'fa fa-arrow-left' }}
+        </v-icon>
+      </v-btn>
+      <div class="d-flex align-center justify-space-between width-full">
+        <span :class="{ 'text-body': selectMode }">
+          {{ title }}
+        </span>
+        <email-connector-mail-box-drawer-actions
+          :emails="emails"
+          :selected-emails="selectedEmails"
+          :select-mode="selectMode" 
+          :sync-in-progress="syncInProgress" />
+      </div>
     </template>
     <template #titleIcons>
-      <div class="align-self-center" v-if="!selectMode">
-        <email-box-sync-loader
-          v-if="syncInProgress"
-          :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
-          loader-class="me-2" />
-        <v-btn
-          v-else
-          :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
-          @click="synchronize()"
-          icon>
-          <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
-        </v-btn>
-        <v-btn
-          :title="$t('emailConnector.mailBox.list.drawer.newEmail.button.title')"
-          @click="openNewEmailDrawer()"
-          icon>
-          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
-        </v-btn>
-      </div>
-      <div class="me-3" v-else>
-        <v-btn
-          v-if="canUpdateEmailsReadStatus(false)"
-          :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
-          @click="updateEmailsReadStatus(false)"
-          icon>
-          <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
-        </v-btn>
-        <v-btn
-          v-if="canUpdateEmailsReadStatus(true)"
-          :title="$t('emailConnector.mailBox.list.drawer.detail.read.label')"
-          @click="updateEmailsReadStatus(true)"
-          icon>
-          <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
-        </v-btn>
-        <v-btn
-          :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
-          @click="archiveEmails()"
-          icon>
-          <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
-        </v-btn>
-        <v-btn
-          :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
-          @click="deleteEmails()"
-          icon>
-          <v-icon size="20" class="error--text">fa-trash</v-icon>
-        </v-btn>
-      </div>
+      <div v-if="hasFullAppLeft">
+        <email-connector-mail-box-drawer-list-item-detail-actions
+          v-if="email"
+          :email="email" />
+      </div> 
+      <email-connector-mail-box-drawer-actions
+        v-else-if="!syncBlocked"
+        class="d-flex align-center"
+        :emails="emails"
+        :selected-emails="selectedEmails"
+        :select-mode="selectMode"
+        :sync-in-progress="syncInProgress" />
+    </template>
+    <template v-if="hasFullAppLeft" #fullAppLeftContent>
+      <email-connector-mail-box-drawer-content
+        :emails="emails"
+        :selected-emails="selectedEmails"
+        :select-mode="selectMode"
+        :indeterminate="indeterminate"
+        expanded
+        @update:selected-emails="selectedEmails = $event" />
     </template>
     <template v-if="emailBoxDrawer && !loading" #content>
-      <div
-        class="fill-height overflow-y-auto specific-scrollbar">
-        <v-list-item v-if="syncBlocked" class="full-height align-center">
+      <v-list-item v-if="syncBlocked" class="full-height align-center">
+        <v-list-item-content>
+          <v-icon
+            size="60"
+            class="orange--text text--darken-2">
+            fas fa-exclamation-triangle
+          </v-icon>
+          <v-list-item-title class="text-wrap mt-5 mb-0">
+            {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.reconnect') }}
+          </v-list-item-title>
+          <div class="mt-8">
+            <v-btn
+              @click="checkSetting"
+              class="btn btn-primary body-2">
+              {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.checkSetting') }}
+            </v-btn>
+          </div>
+        </v-list-item-content>
+      </v-list-item>
+      <template v-else>
+        <template v-if="hasEmails">
+          <email-connector-mail-box-drawer-list-item-detail-content
+            v-if="expanded"
+            :email="email"
+            expanded-drawer />
+          <email-connector-mail-box-drawer-content
+            v-else
+            :emails="emails"
+            :selected-emails="selectedEmails"
+            :select-mode="selectMode" 
+            :indeterminate="indeterminate"
+            @update:selected-emails="selectedEmails = $event" />
+        </template>
+        <v-list-item v-else class="full-height align-center">
           <v-list-item-content>
             <v-icon
               size="60"
-              class="orange--text text--darken-2">
-              fas fa-exclamation-triangle
+              class="tertiary--text">
+              far fa-envelope
             </v-icon>
-            <v-list-item-title class="text-wrap mt-5 mb-0">
-              {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.reconnect') }}
+            <v-list-item-title class="text-wrap mt-5">
+              {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
             </v-list-item-title>
-            <div class="mt-8">
-              <v-btn
-                @click="checkSetting"
-                class="btn btn-primary body-2">
-                {{ $t('emailConnector.mailBox.list.drawer.sync.blocked.checkSetting') }}
-              </v-btn>
-            </div>
           </v-list-item-content>
         </v-list-item>
-        <template v-else>
-          <v-checkbox
-            class="ps-4 my-2 pt-0"
-            v-if="selectMode"
-            :indeterminate="indeterminate"
-            color="#707070"
-            hide-details
-            :label="$t('emailConnector.mailBox.list.drawer.selectAll')"
-            v-model="selectedAll"
-            @click.stop />
-          <email-connector-mail-box-drawer-list
-            v-if="hasEmails"
-            :emails="emails" 
-            :select-mode="selectMode" /> 
-          <v-list-item v-else class="full-height align-center">
-            <v-list-item-content>
-              <v-icon
-                size="60"
-                class="tertiary--text">
-                far fa-envelope
-              </v-icon>
-              <v-list-item-title class="text-wrap mt-5">
-                {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
-              </v-list-item-title>
-            </v-list-item-content>
-          </v-list-item>
-        </template>
-      </div>
+      </template>
     </template>
   </exo-drawer>
 </template>
@@ -157,6 +153,8 @@ export default {
       activeDownload: null,
       selectedEmails: [],
       selectMode: false,
+      expanded: false,
+      email: null
     };
   },
   created() {
@@ -167,11 +165,19 @@ export default {
     this.$root.$on('update-email-read-status', ({ read, mailRemoteId }) => {
       this.updateEmailsReadStatus(read, mailRemoteId);
     });
-    this.$root.$on('delete-email', ({ emailId }) => {
-      this.deleteEmails(emailId);
+    this.$root.$on('delete-email', (mailRemoteId) => {
+      this.deleteEmails(mailRemoteId);
+      if (this.expanded && this.email && (this.email.mailRemoteId === mailRemoteId 
+      || this.selectedEmails.includes(this.email.mailRemoteId))) {
+        this.initializeEmail();
+      }
     });
-    this.$root.$on('archive-email', ({ emailId }) => {
-      this.archiveEmails(emailId);
+    this.$root.$on('archive-email', (mailRemoteId) => {
+      this.archiveEmails(mailRemoteId);
+      if (this.expanded && this.email && (this.email.mailRemoteId === mailRemoteId 
+      || this.selectedEmails.includes(this.email.mailRemoteId))) {
+        this.initializeEmail();
+      }
     });
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
@@ -189,6 +195,12 @@ export default {
       else {
         this.selectedEmails = this.selectedEmails.filter(id => id !== emailId);
       }
+    });
+    this.$root.$on('synchronize-emails', () => {
+      this.synchronize();
+    });
+    this.$root.$on('open-email-detail-content', (mailRemoteId) => {
+      this.openEmailDetailContent(mailRemoteId);
     });
   },
   computed: {
@@ -209,13 +221,11 @@ export default {
     indeterminate() {
       return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
     },
-    selectedAll: {
-      get() {
-        return this.emails.length > 0 && this.selectedEmails.length === this.emails.length;
-      },
-      set(value) {
-        this.onSelectAllChange(value);
-      }
+    hasFullAppLeft() {
+      return this.expanded && this.hasEmails && !this.syncBlocked;
+    },
+    canGoBack() {
+      return this.selectMode && !this.expanded;
     }
   },
   methods: {
@@ -225,25 +235,37 @@ export default {
         await this.$nextTick();
       }
       this.loading = true;
-      this.$refs.emailBoxDrawer.open();
+      this.emailBoxDrawer = true;
       await this.loadEmailBox();
       this.loading = false;
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
     },
-    openNewEmailDrawer() {
-      this.$root.$emit('open-new-email-drawer');
+    openEmailDetailContent(mailRemoteId) {
+      this.loading = true;
+      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
+        this.email = email;
+        this.updateEmailsReadStatus(true, mailRemoteId);
+      }).finally(() => {
+        this.loading = false;
+      });
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
       this.close();
     },
+    initializeEmail() {
+      if (this.emails?.[0]) {
+        this.openEmailDetailContent(this.emails[0].mailRemoteId);
+      }
+    },
     close() {
       this.stopAutoRefresh();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.cancelSelectMode();
-      this.$refs.emailBoxDrawer.close();
+      this.email = null;
+      this.emailBoxDrawer = false;
     },
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
@@ -275,12 +297,6 @@ export default {
           read
         );
       }
-    },
-    canUpdateEmailsReadStatus(read) {
-      return this.selectedEmails.some(emailId => {
-        const email = this.emails.find(e => e.mailRemoteId === emailId);
-        return email && email.read !== read;
-      });
     },
     deleteEmails(emailId = null) {
       const emailIdsToDelete = emailId ? [emailId] : this.selectedEmails;
@@ -386,18 +402,19 @@ export default {
       }
     },
     cancelSelectMode() {
-      this.selectedEmails = [];
       this.selectMode = false;
-      this.$root.$emit('unselect-all-emails');
+      this.selectedEmails = [];
     },
-    onSelectAllChange(value) {
-      if (!value) {
-        this.$root.$emit('unselect-all-emails');
-        this.selectedEmails = [];
+    updateExpand(expanded) {
+      if (expanded) {
+        if (!this.email) {
+          this.initializeEmail();
+        }
+        window.setTimeout(() => this.expanded = expanded, 200);
       } else {
-        this.$root.$emit('select-all-emails');
+        this.expanded = false;
       }
-    }
+    },
   }
 };
 </script>

@@ -183,7 +183,7 @@ export default {
         this.email.subject = `${this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
         this.email.mailHeaderId = email.mailHeaderId;
       }
-      this.$refs.newEmailDrawer.open();
+      this.newEmailDrawer = true;
     },
     close() {
       this.toEmails = '';
