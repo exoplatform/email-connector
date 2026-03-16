@@ -185,8 +185,8 @@ export default {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
-      if (this.expanded && this.email && emails.includes(this.email.mailRemoteId)) {
-        this.initializeEmail();
+      if (this.expanded) {
+        this.selectEmailPlaceHolder = true;
       }
     };
     this.onArchiveEmail = (emails) => {
@@ -194,8 +194,8 @@ export default {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
-      if (this.expanded && this.email && emails.includes(this.email.mailRemoteId)) {
-        this.initializeEmail();
+      if (this.expanded) {
+        this.selectEmailPlaceHolder = true;
       }
     };
     this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
