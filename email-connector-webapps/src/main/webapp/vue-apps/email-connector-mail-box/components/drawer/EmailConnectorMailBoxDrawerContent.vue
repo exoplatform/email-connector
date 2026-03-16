@@ -29,8 +29,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-mail-box-drawer-list
       :emails="emails"
       :selected-emails="selectedEmails"
-      :select-mode="selectMode" 
-      :expanded="expanded" /> 
+      :select-mode="selectMode"
+      :sync-in-progress="syncInProgress"
+      :expanded="expanded" />
   </div>
 </template>
 
@@ -54,6 +55,10 @@ export default {
       default: () => [],
     },
     expanded: {
+      type: Boolean,
+      default: false,
+    },
+    syncInProgress: {
       type: Boolean,
       default: false,
     },

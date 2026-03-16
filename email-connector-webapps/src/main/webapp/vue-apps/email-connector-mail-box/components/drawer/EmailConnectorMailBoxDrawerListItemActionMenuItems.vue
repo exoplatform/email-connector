@@ -120,15 +120,15 @@ export default {
     },
     updateEmailReadStatus() {
       this.$emit('close');
-      this.$root.$emit('update-email-read-status', { mailRemoteId: this.email.mailRemoteId, read: !this.email.read });
+      this.$root.$emit('update-email-read-status', !this.email.read, [this.email.mailRemoteId]);
     },
     deleteEmail() {
       this.$emit('close');
-      this.$root.$emit('delete-email', this.email.mailRemoteId);
+      this.$root.$emit('delete-email', [this.email.mailRemoteId]);
     },
     archiveEmail() {
       this.$emit('close');
-      this.$root.$emit('archive-email', this.email.mailRemoteId);
+      this.$root.$emit('archive-email', [this.email.mailRemoteId]);
     },
   }
 };
