@@ -58,7 +58,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="!loading" #titleIcons>
       <email-connector-mail-box-drawer-list-item-detail-actions
-        v-if="email"
+        v-if="email && (!expanded || !selectEmailPlaceHolder)"
         :email="email" />
     </template>
     <template v-if="expanded" #fullAppLeftContent>
@@ -69,8 +69,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @update:selected-emails="selectedEmails = $event"
         expanded />
     </template>
-    <template v-if="emailDetailDrawer && !loading && email" #content>
+    <template v-if="emailDetailDrawer && !loading" #content>
+      <email-connector-mail-box-drawer-select-email v-if="expanded && selectEmailPlaceHolder" />
       <email-connector-mail-box-drawer-list-item-detail-content
+        v-else
         :email="email"
         :expanded-drawer="expanded" />
     </template>
@@ -90,6 +92,7 @@ export default {
       selectedEmails: [],
       syncInProgress: false,
       selectMode: false,
+      selectEmailPlaceHolder: false,
     };
   },
   created() {
@@ -119,6 +122,9 @@ export default {
       });
       if (this.selectMode) {
         this.cancelSelectMode();
+      }
+      if (this.expanded) {
+        this.selectEmailPlaceHolder = true;
       }
     };
     this.onDeleteEmail = (emails) => {
@@ -208,10 +214,10 @@ export default {
     },
     openEmailDetailContent(mailRemoteId) {
       this.loading = true;
-      this.email = null;
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
         this.email = email;
         this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
+        this.selectEmailPlaceHolder = false;
       }).finally(() => {
         this.loading = false;
       });
@@ -240,6 +246,7 @@ export default {
     close() {
       this.emailDetailDrawer = false;
       this.cancelSelectMode();
+      this.selectEmailPlaceHolder = false;
       this.$root.isDetailDrawerActive = false;
       this.$root.$emit('email-detail-drawer-closed');
     },
