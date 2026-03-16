@@ -121,6 +121,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :selected-emails="selectedEmails"
             :select-mode="selectMode" 
             :indeterminate="indeterminate"
+            :sync-in-progress="syncInProgress"
             @update:selected-emails="selectedEmails = $event" />
         </template>
         <v-list-item v-else class="full-height align-center">
@@ -159,25 +160,39 @@ export default {
   },
   created() {
     this.isRefreshing = false;
+    this.onOpenEmailDetailContent = (mailRemoteId) => {
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return; 
+      }
+      this.openEmailDetailContent(mailRemoteId);
+    };
+    this.onUpdateEmailReadStatus = (read, emails) => {
+      this.updateEmailsReadStatus(read, emails);
+    };
+    this.onDeleteEmail = (emails) => {
+      this.deleteEmails(emails);
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return; 
+      }
+      if (this.expanded && this.email && emails.includes(this.email.mailRemoteId)) {
+        this.initializeEmail();
+      }
+    };
+    this.onArchiveEmail = (emails) => {
+      this.archiveEmails(emails);
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return; 
+      }
+      if (this.expanded && this.email && emails.includes(this.email.mailRemoteId)) {
+        this.initializeEmail();
+      }
+    };
+    this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
+    this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
+    this.$root.$on('delete-email', this.onDeleteEmail);
+    this.$root.$on('archive-email', this.onArchiveEmail);
     this.$root.$on('open-mail-box-drawer', (loading) => {
       this.open(loading); 
-    });
-    this.$root.$on('update-email-read-status', ({ read, mailRemoteId }) => {
-      this.updateEmailsReadStatus(read, mailRemoteId);
-    });
-    this.$root.$on('delete-email', (mailRemoteId) => {
-      this.deleteEmails(mailRemoteId);
-      if (this.expanded && this.email && (this.email.mailRemoteId === mailRemoteId 
-      || this.selectedEmails.includes(this.email.mailRemoteId))) {
-        this.initializeEmail();
-      }
-    });
-    this.$root.$on('archive-email', (mailRemoteId) => {
-      this.archiveEmails(mailRemoteId);
-      if (this.expanded && this.email && (this.email.mailRemoteId === mailRemoteId 
-      || this.selectedEmails.includes(this.email.mailRemoteId))) {
-        this.initializeEmail();
-      }
     });
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
@@ -186,6 +201,9 @@ export default {
       this.activeDownload = null;
     });
     this.$root.$on('select-email', ({ emailId, selected }) => {
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return;
+      }
       this.selectMode = true;
       if (selected) {
         if (!this.selectedEmails.includes(emailId)) {
@@ -196,12 +214,16 @@ export default {
         this.selectedEmails = this.selectedEmails.filter(id => id !== emailId);
       }
     });
-    this.$root.$on('synchronize-emails', () => {
-      this.synchronize();
+    this.$root.$on('synchronize-in-progress', () => {
+      this.syncInProgress = true;
+      this.startAutoRefresh();
     });
-    this.$root.$on('open-email-detail-content', (mailRemoteId) => {
-      this.openEmailDetailContent(mailRemoteId);
-    });
+  },
+  beforeDestroy() {
+    this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
+    this.$root.$off('update-email-read-status', this.onUpdateEmailReadStatus);
+    this.$root.$off('delete-email', this.onDeleteEmail);
+    this.$root.$off('archive-email', this.onArchiveEmail);
   },
   computed: {
     hasEmails() {
@@ -246,7 +268,7 @@ export default {
       this.loading = true;
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
         this.email = email;
-        this.updateEmailsReadStatus(true, mailRemoteId);
+        this.updateEmailsReadStatus(true, [mailRemoteId]);
       }).finally(() => {
         this.loading = false;
       });
@@ -270,17 +292,8 @@ export default {
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
     },
-    synchronize() {
-      this.syncInProgress = true;
-      this.$emailConnectorMailBoxService.synchronize().then(() =>
-      {
-        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
-      });
-      this.startAutoRefresh();
-    },
-    updateEmailsReadStatus(read, mailRemoteId = null) {
-      const remoteEmailIdsSource = mailRemoteId ? [mailRemoteId] : this.selectedEmails;
-      const remoteEmailIdsToUpdate = remoteEmailIdsSource.filter(id => {
+    updateEmailsReadStatus(read, emailIds = []) {
+      const emailIdsToUpdate = emailIds.filter(id => {
         const email = this.emails.find(e => e.mailRemoteId === id);
         if (email && email.read !== read) {
           this.$set(email, 'read', read);
@@ -288,22 +301,21 @@ export default {
         }
         return false;
       });
-      if (!mailRemoteId) {
+      if (this.selectMode) {
         this.cancelSelectMode();
       }
-      if (remoteEmailIdsToUpdate.length > 0) {
+      if (emailIdsToUpdate.length > 0) {
         this.$emailConnectorMailBoxService.updateEmailsReadStatus(
-          remoteEmailIdsToUpdate,
+          emailIdsToUpdate,
           read
         );
       }
     },
-    deleteEmails(emailId = null) {
-      const emailIdsToDelete = emailId ? [emailId] : this.selectedEmails;
+    deleteEmails(emailIdsToDelete = []) {
       this.emails = this.emails.filter(
         e => !emailIdsToDelete.includes(e.mailRemoteId)
       );
-      if (!emailId) {
+      if (this.selectMode) {
         this.cancelSelectMode();
       }
       if (emailIdsToDelete.length > 0) {
@@ -334,12 +346,11 @@ export default {
           });
       }
     },
-    archiveEmails(emailId = null) {
-      const emailIdsToArchive = emailId ? [emailId] : this.selectedEmails;
+    archiveEmails(emailIdsToArchive = []) {
       this.emails = this.emails.filter(
         e => !emailIdsToArchive.includes(e.mailRemoteId)
       );
-      if (!emailId) {
+      if (this.selectMode) {
         this.cancelSelectMode();
       }
       if (emailIdsToArchive.length > 0) {
@@ -374,8 +385,10 @@ export default {
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();
       this.emails = this.emailBox.emails || [];
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
+      this.$root.$emit('refresh-emails', this.emails);
       if (!this.syncInProgress) {
         this.stopAutoRefresh();
+        this.$root.$emit('synchronize-finished');
       }
     },
     startAutoRefresh() {
