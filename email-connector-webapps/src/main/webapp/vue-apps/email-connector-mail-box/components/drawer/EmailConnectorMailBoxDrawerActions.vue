@@ -84,12 +84,12 @@ export default {
     syncInProgress: {
       type: Boolean,
       default: false,
-    },
+    }
   },
   computed: {
     emailsMap() {
       return Object.fromEntries(this.emails.map(e => [e.mailRemoteId, e]));
-    }
+    },
   },
   methods: {
     canUpdateEmailsReadStatus(read) {
@@ -101,20 +101,24 @@ export default {
     openNewEmailDrawer() {
       this.$root.$emit('open-new-email-drawer');
     },
-    synchronize() {
-      this.$root.$emit('synchronize-emails');
-    },
     updateEmailsReadStatus(read) {
-      this.$root.$emit('update-email-read-status', { read: read });
+      this.$root.$emit('update-email-read-status', read, this.selectedEmails);
     },
     archiveEmails() {
-      this.$root.$emit('archive-email');
+      this.$root.$emit('archive-email', this.selectedEmails);
     },
     deleteEmails() {
-      this.$root.$emit('delete-email'); 
+      this.$root.$emit('delete-email', this.selectedEmails); 
     },
     hasSelectedEmails() {
       return this.selectedEmails.length > 0;
+    },
+    synchronize() {
+      this.$root.$emit('synchronize-in-progress');
+      this.$emailConnectorMailBoxService.synchronize().then(() =>
+      {
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
+      });
     }
   }
 };

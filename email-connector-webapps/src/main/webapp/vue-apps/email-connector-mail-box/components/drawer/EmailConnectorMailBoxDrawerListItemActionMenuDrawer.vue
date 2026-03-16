@@ -15,23 +15,17 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <div>
-    <v-overlay
-      z-index="2000"
-      :value="emailBoxActionMenuDrawer"
-      @click.native="close" />
-    <exo-drawer
-      ref="emailBoxActionMenuDrawer"
-      v-model="emailBoxActionMenuDrawer"
-      bottom>
-      <template #content>
-        <email-connector-mail-box-drawer-list-item-action-menu-items
-          @close="close"
-          :email="email" 
-          restricted />
-      </template>
-    </exo-drawer>
-  </div>
+  <exo-drawer
+    ref="emailBoxActionMenuDrawer"
+    v-model="emailBoxActionMenuDrawer"
+    bottom>
+    <template #content>
+      <email-connector-mail-box-drawer-list-item-action-menu-items
+        @close="close"
+        :email="email" 
+        restricted />
+    </template>
+  </exo-drawer>
 </template>
 
 <script>

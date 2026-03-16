@@ -22,8 +22,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-user-setting-connectors-drawer />
     <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
     <email-connector-mail-box-drawer />
+    <email-connector-mail-box-drawer-list-item-detail />
     <email-connector-new-email-drawer />
     <email-connector-new-email-drawer-no-subject-confirm-popup />
+    <email-connector-mail-box-drawer-attachments-drawer />
+    <email-connector-mail-box-drawer-list-item-action-menu-drawer />
   </v-app>
 </template>
 

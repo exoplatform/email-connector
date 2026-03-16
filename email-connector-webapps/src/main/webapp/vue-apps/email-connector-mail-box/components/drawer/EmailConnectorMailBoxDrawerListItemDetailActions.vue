@@ -57,15 +57,15 @@ export default {
   },
   methods: {
     updateEmailReadStatus() {
-      this.$root.$emit('update-email-read-status', { mailRemoteId: this.email.mailRemoteId, read: false });
+      this.$root.$emit('update-email-read-status', false, [this.email.mailRemoteId]);
       this.$root.$emit('close-email-detail-drawer');
     },
     deleteEmail() {
-      this.$root.$emit('delete-email', this.email.mailRemoteId);
+      this.$root.$emit('delete-email', [this.email.mailRemoteId]);
       this.$root.$emit('close-email-detail-drawer');
     },
     archiveEmail() {
-      this.$root.$emit('archive-email', this.email.mailRemoteId);
+      this.$root.$emit('archive-email', [this.email.mailRemoteId]);
       this.$root.$emit('close-email-detail-drawer');
     },
   }
