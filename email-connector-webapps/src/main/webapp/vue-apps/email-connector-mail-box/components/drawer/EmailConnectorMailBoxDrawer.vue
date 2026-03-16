@@ -202,6 +202,9 @@ export default {
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$on('delete-email', this.onDeleteEmail);
     this.$root.$on('archive-email', this.onArchiveEmail);
+    this.$root.$on('open-email-detail-drawer', () => {
+      this.email = null;
+    });
     this.$root.$on('open-mail-box-drawer', (loading) => {
       this.open(loading); 
     });
@@ -434,8 +437,8 @@ export default {
     updateExpand(expanded) {
       window.setTimeout(() => this.expanded = expanded, 200);
       if (expanded) {
-        if (!this.email && !this.selectEmailPlaceHolder) {
-          this.initializeEmail();
+        if (!this.email) {
+          this.selectEmailPlaceHolder = true;
         }
       }
     },
