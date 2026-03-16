@@ -112,7 +112,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template v-else>
         <template v-if="hasEmails">
           <template v-if="expanded">
-            <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
+            <email-connector-mail-box-drawer-multi-select-email
+              v-if="selectMode"
+              :emails="emails"
+              :selected-emails="selectedEmails" />
+            <email-connector-mail-box-drawer-select-email v-else-if="selectEmailPlaceHolder" />
             <email-connector-mail-box-drawer-list-item-detail-content
               v-else
               :email="email"
@@ -169,15 +173,15 @@ export default {
         return; 
       }
       this.openEmailDetailContent(mailRemoteId);
-      this.selectEmailPlaceHolder = false;
     };
     this.onUpdateEmailReadStatus = (read, emails) => {
       this.updateEmailsReadStatus(read, emails);
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
-      if (this.expanded) {
-        this.selectEmailPlaceHolder = true;
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
       }
     };
     this.onDeleteEmail = (emails) => {
@@ -185,8 +189,9 @@ export default {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
-      if (this.expanded) {
-        this.selectEmailPlaceHolder = true;
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
       }
     };
     this.onArchiveEmail = (emails) => {
@@ -194,8 +199,9 @@ export default {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
-      if (this.expanded) {
-        this.selectEmailPlaceHolder = true;
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
       }
     };
     this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
@@ -292,10 +298,8 @@ export default {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
       this.close();
     },
-    initializeEmail() {
-      if (this.emails?.[0]) {
-        this.openEmailDetailContent(this.emails[0].mailRemoteId);
-      }
+    canDisplaySelectEmailPlaceHolder(emails) {
+      return this.expanded && (this.selectMode || this.email && emails.includes(this.email.mailRemoteId));
     },
     close() {
       this.stopAutoRefresh();
@@ -317,9 +321,6 @@ export default {
         }
         return false;
       });
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
       if (emailIdsToUpdate.length > 0) {
         this.$emailConnectorMailBoxService.updateEmailsReadStatus(
           emailIdsToUpdate,
@@ -331,9 +332,6 @@ export default {
       this.emails = this.emails.filter(
         e => !emailIdsToDelete.includes(e.mailRemoteId)
       );
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
       if (emailIdsToDelete.length > 0) {
         this.$emailConnectorMailBoxService.deleteEmails(emailIdsToDelete)
           .then((deleteResult) => {
@@ -366,9 +364,6 @@ export default {
       this.emails = this.emails.filter(
         e => !emailIdsToArchive.includes(e.mailRemoteId)
       );
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
       if (emailIdsToArchive.length > 0) {
         this.$emailConnectorMailBoxService.archiveEmails(emailIdsToArchive)
           .then(archiveResult => {

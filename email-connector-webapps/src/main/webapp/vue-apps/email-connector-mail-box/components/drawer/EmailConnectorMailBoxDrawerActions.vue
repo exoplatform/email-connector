@@ -34,35 +34,82 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
     </v-btn>
   </div>
-  <div v-else>
-    <v-btn
-      v-if="canUpdateEmailsReadStatus(false)"
-      :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
-      @click="updateEmailsReadStatus(false)"
-      icon>
-      <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
-    </v-btn>
-    <v-btn
-      v-if="canUpdateEmailsReadStatus(true)"
-      :title="$t('emailConnector.mailBox.list.drawer.detail.read.label')"
-      @click="updateEmailsReadStatus(true)"
-      icon>
-      <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
-    </v-btn>
-    <v-btn
-      v-if="hasSelectedEmails()"
-      :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
-      @click="archiveEmails()"
-      icon>
-      <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
-    </v-btn>
-    <v-btn
-      v-if="hasSelectedEmails()"
-      :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
-      @click="deleteEmails()"
-      icon>
-      <v-icon size="20" class="error--text">fa-trash</v-icon>
-    </v-btn>
+  <div v-else-if="hasSelectedEmails">
+    <template v-if="top">
+      <v-btn
+        v-if="canUpdateEmailsReadStatus(false)"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
+        @click="updateEmailsReadStatus(false)"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
+      </v-btn>
+      <v-btn
+        v-if="canUpdateEmailsReadStatus(true)"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.read.label')"
+        @click="updateEmailsReadStatus(true)"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
+        @click="archiveEmails()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+        @click="deleteEmails()"
+        icon>
+        <v-icon size="20" class="error--text">fa-trash</v-icon>
+      </v-btn>
+    </template>
+    <template v-else>
+      <v-btn
+        v-if="canUpdateEmailsReadStatus(false)"
+        @click="updateEmailsReadStatus(false)"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-mail-bulk
+        </v-icon>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.unread.label') }}
+      </v-btn>
+      <v-btn
+        v-if="canUpdateEmailsReadStatus(true)"
+        @click="updateEmailsReadStatus(true)"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-envelope-open-text
+        </v-icon>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
+      </v-btn>
+      <v-btn
+        @click="archiveEmails()"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-archive
+        </v-icon>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.archive.label') }}
+      </v-btn>
+      <v-btn
+        @click="deleteEmails()"
+        outlined
+        class="btn error font-weight-bold">
+        <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
+        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
+      </v-btn>
+    </template>  
   </div>
 </template>
 
@@ -84,11 +131,18 @@ export default {
     syncInProgress: {
       type: Boolean,
       default: false,
+    },
+    top: {
+      type: Boolean,
+      default: true,
     }
   },
   computed: {
     emailsMap() {
       return Object.fromEntries(this.emails.map(e => [e.mailRemoteId, e]));
+    },
+    hasSelectedEmails() {
+      return this.selectedEmails.length > 0;
     },
   },
   methods: {
@@ -109,9 +163,6 @@ export default {
     },
     deleteEmails() {
       this.$root.$emit('delete-email', this.selectedEmails); 
-    },
-    hasSelectedEmails() {
-      return this.selectedEmails.length > 0;
     },
     synchronize() {
       this.$root.$emit('synchronize-in-progress');
