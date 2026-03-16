@@ -69,7 +69,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template #titleIcons>
       <div v-if="hasFullAppLeft">
         <email-connector-mail-box-drawer-list-item-detail-actions
-          v-if="email"
+          v-if="email && !selectEmailPlaceHolder"
           :email="email" />
       </div> 
       <email-connector-mail-box-drawer-actions
@@ -111,10 +111,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item>
       <template v-else>
         <template v-if="hasEmails">
-          <email-connector-mail-box-drawer-list-item-detail-content
-            v-if="expanded"
-            :email="email"
-            expanded-drawer />
+          <template v-if="expanded">
+            <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
+            <email-connector-mail-box-drawer-list-item-detail-content
+              v-else
+              :email="email"
+              expanded-drawer />
+          </template>
           <email-connector-mail-box-drawer-content
             v-else
             :emails="emails"
@@ -155,7 +158,8 @@ export default {
       selectedEmails: [],
       selectMode: false,
       expanded: false,
-      email: null
+      email: null,
+      selectEmailPlaceHolder: false,
     };
   },
   created() {
@@ -165,9 +169,16 @@ export default {
         return; 
       }
       this.openEmailDetailContent(mailRemoteId);
+      this.selectEmailPlaceHolder = false;
     };
     this.onUpdateEmailReadStatus = (read, emails) => {
       this.updateEmailsReadStatus(read, emails);
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return; 
+      }
+      if (this.expanded) {
+        this.selectEmailPlaceHolder = true;
+      }
     };
     this.onDeleteEmail = (emails) => {
       this.deleteEmails(emails);
@@ -267,8 +278,9 @@ export default {
     openEmailDetailContent(mailRemoteId) {
       this.loading = true;
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
-        this.email = email;
         this.updateEmailsReadStatus(true, [mailRemoteId]);
+        this.email = email;
+        this.selectEmailPlaceHolder = false;
       }).finally(() => {
         this.loading = false;
       });
@@ -286,6 +298,7 @@ export default {
       this.stopAutoRefresh();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.cancelSelectMode();
+      this.selectEmailPlaceHolder = false;
       this.email = null;
       this.emailBoxDrawer = false;
     },
@@ -419,13 +432,11 @@ export default {
       this.selectedEmails = [];
     },
     updateExpand(expanded) {
+      window.setTimeout(() => this.expanded = expanded, 200);
       if (expanded) {
-        if (!this.email) {
+        if (!this.email && !this.selectEmailPlaceHolder) {
           this.initializeEmail();
         }
-        window.setTimeout(() => this.expanded = expanded, 200);
-      } else {
-        this.expanded = false;
       }
     },
   }
