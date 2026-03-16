@@ -132,8 +132,8 @@ export default {
         return; 
       }
       this.refreshEmails(emails);
-      if (this.expanded && this.email && emails.includes(this.email.mailRemoteId)) {
-        this.initializeEmail();
+      if (this.expanded) {
+        this.selectEmailPlaceHolder = true;
       }
     };
     this.onArchiveEmail = (emails) => {
@@ -141,8 +141,8 @@ export default {
         return; 
       }
       this.refreshEmails(emails);
-      if (this.expanded && this.email && emails.includes(this.email.mailRemoteId)) {
-        this.initializeEmail();
+      if (this.expanded) {
+        this.selectEmailPlaceHolder = true;
       }
     };
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
@@ -221,11 +221,6 @@ export default {
       }).finally(() => {
         this.loading = false;
       });
-    },
-    initializeEmail() {
-      if (this.emails?.[0]) {
-        this.openEmailDetailContent(this.emails[0].mailRemoteId);
-      }
     },
     refreshEmails(emailIds = []) {
       this.emails = this.emails.filter(
