@@ -70,11 +70,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         expanded />
     </template>
     <template v-if="emailDetailDrawer && !loading" #content>
-      <email-connector-mail-box-drawer-select-email v-if="expanded && selectEmailPlaceHolder" />
-      <email-connector-mail-box-drawer-list-item-detail-content
-        v-else
-        :email="email"
-        :expanded-drawer="expanded" />
+      <email-connector-mail-box-drawer-multi-select-email
+        v-if="selectMode"
+        :emails="emails"
+        :selected-emails="selectedEmails" />
+      <template v-else>
+        <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
+        <email-connector-mail-box-drawer-list-item-detail-content
+          v-else
+          :email="email"
+          :expanded-drawer="expanded" />
+      </template>
     </template>
   </exo-drawer>
 </template>
@@ -120,37 +126,27 @@ export default {
           this.$set(email, 'read', read);
         }
       });
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
       if (this.selectMode) {
         this.cancelSelectMode();
       }
-      if (this.expanded) {
-        this.selectEmailPlaceHolder = true;
-      }
     };
-    this.onDeleteEmail = (emails) => {
+    this.onDeleteOrArchiveEmail = (emails) => {
       if (!this.emailDetailDrawer) {
         return; 
       }
       this.refreshEmails(emails);
-      if (this.expanded) {
-        this.selectEmailPlaceHolder = true;
-      }
-    };
-    this.onArchiveEmail = (emails) => {
-      if (!this.emailDetailDrawer) {
-        return; 
-      }
-      this.refreshEmails(emails);
-      if (this.expanded) {
-        this.selectEmailPlaceHolder = true;
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
       }
     };
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
-    this.$root.$on('delete-email', this.onDeleteEmail);
-    this.$root.$on('archive-email', this.onArchiveEmail);
+    this.$root.$on('delete-email', this.onDeleteOrArchiveEmail);
+    this.$root.$on('archive-email', this.onDeleteOrArchiveEmail);
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
     });
@@ -226,13 +222,13 @@ export default {
       this.emails = this.emails.filter(
         e => !emailIds.includes(e.mailRemoteId)
       );
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
     },
     cancelSelectMode() {
       this.selectMode = false;
       this.selectedEmails = [];
+    },
+    canDisplaySelectEmailPlaceHolder(emails) {
+      return this.expanded && (this.selectMode || this.email && emails.includes(this.email.mailRemoteId));
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
@@ -247,7 +243,7 @@ export default {
     },
     updateExpand(expanded) {
       window.setTimeout(() => this.expanded = expanded, 200);
-      if (!expanded && this.selectEmailPlaceHolder) {
+      if (!expanded && (this.selectEmailPlaceHolder || this.selectMode)) {
         this.close();
       }
     },

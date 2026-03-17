@@ -38,6 +38,7 @@ import EmailConnectorMailBoxDrawerListItemDetailHeader from './components/drawer
 import EmailConnectorMailBoxDrawerListItemDetailHeaderItem from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailHeaderItem.vue';
 import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailSenderAvatar.vue';
 import EmailConnectorMailBoxDrawerSelectEmail from './components/drawer/EmailConnectorMailBoxDrawerSelectEmail.vue';
+import EmailConnectorMailBoxDrawerMultiSelectEmail from './components/drawer/EmailConnectorMailBoxDrawerMultiSelectEmail.vue';
 import EmailConnectorNewEmailDrawer from './components/drawer/EmailConnectorNewEmailDrawer.vue';
 import EmailConnectorNewEmailDrawerNoSubjectConfirmPopup from './components/drawer/EmailConnectorNewEmailDrawerNoSubjectConfirmPopup.vue';
 
@@ -65,6 +66,7 @@ const components = {
   'email-connector-mail-box-drawer-list-item-detail-header': EmailConnectorMailBoxDrawerListItemDetailHeader,
   'email-connector-mail-box-drawer-list-item-detail-header-item': EmailConnectorMailBoxDrawerListItemDetailHeaderItem,
   'email-connector-mail-box-drawer-list-item-detail-sender-avatar': EmailConnectorMailBoxDrawerListItemDetailSenderAvatar,
+  'email-connector-mail-box-drawer-multi-select-email': EmailConnectorMailBoxDrawerMultiSelectEmail,
   'email-connector-mail-box-drawer-select-email': EmailConnectorMailBoxDrawerSelectEmail,
   'email-connector-new-email-drawer': EmailConnectorNewEmailDrawer,
   'email-connector-new-email-drawer-no-subject-confirm-popup': EmailConnectorNewEmailDrawerNoSubjectConfirmPopup
