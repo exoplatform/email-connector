@@ -23,7 +23,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @focusin="!isMobile && (isHover = true)"
     @focusout="!isMobile && (isHover = false)"
     :class="[
-      { 'light-grey-background-color': !isMobile && isHover, 'no-select': isMobile },
+      backgroundClass,
       selectMode ? 'ps-4' : 'ps-7'
     ]"
     class="position-relative no-border overflow-hidden pt-3 pb-3 pe-4">
@@ -159,6 +159,10 @@ export default {
       type: Boolean,
       default: false,
     },
+    openedEmailId: {
+      type: String,
+      default: null,
+    },
   },
   computed: {
     gapSize() {
@@ -184,6 +188,21 @@ export default {
     },
     selected() {
       return this.selectedEmails.includes(this.email.mailRemoteId);
+    },
+    opened() {
+      return this.openedEmailId === this.email.mailRemoteId;
+    },
+    backgroundClass() {
+      if (this.isMobile) {
+        return 'no-select';
+      }
+      if (this.expanded && (this.isHover || this.opened)) {
+        return 'grey-lighten1-background-opacity-3';
+      }
+      if (this.isHover) {
+        return 'light-grey-background-color';
+      }
+      return '';
     }
   },
   methods: {
@@ -194,6 +213,7 @@ export default {
       else {
         if (this.expanded) {
           this.$root.$emit('open-email-detail-content', this.email.mailRemoteId);
+          this.$emit('set-opened', this.email.mailRemoteId);
         }
         else {
           this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress);
