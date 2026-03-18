@@ -21,6 +21,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-for="email in emails"
       :key="email.mailRemoteId"
       :email="email"
+      :opened-email-id="openedEmailId"
+      @set-opened="openedEmailId = $event"
       :emails="emails"
       :sync-in-progress="syncInProgress" 
       :selected-emails="selectedEmails"
@@ -31,6 +33,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
+  data() {
+    return {
+      openedEmailId: null
+    };
+  },
   props: {
     emails: {
       type: Array,
