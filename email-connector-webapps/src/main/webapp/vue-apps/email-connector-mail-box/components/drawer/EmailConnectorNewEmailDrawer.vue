@@ -120,6 +120,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         ck-editor-type="email"
         class="mx-4 mt-3"
         content-link-enabled
+        :tag-enabled="false"
+        disable-suggester
         hide-chars-count />
     </template>
     <template #footer>
@@ -217,6 +219,7 @@ export default {
           return;
         }
       }
+      this.email.content.body = this.formatEmailBody(this.email.content.body);
       this.loading = true;
       this.$emailConnectorMailBoxService.sendEmail(this.email).then(() => {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
@@ -224,6 +227,18 @@ export default {
       }).catch(() => { 
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
       }).finally(() => this.loading = false);
+    },
+    formatEmailBody(html) {
+      if (!html) {
+        return html;
+      }
+      return html.replace(/<blockquote>/g, `
+      <blockquote style="
+        margin: 0 0 0 6px;
+        padding-left: 8px;
+        border-left: 1px solid #ccc;
+      ">
+     `);
     }
   }
 };
