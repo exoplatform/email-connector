@@ -166,4 +166,10 @@
       <column name="MAIL_HEADER_ID" type="VARCHAR(1024)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-12" dbms="hsqldb">
+    <modifyDataType tableName="EMAIL_BOX" columnName="BODY" newDataType="CLOB"/>
+    <modifyDataType tableName="EMAIL_BOX" columnName="RECEIVER" newDataType="CLOB"/>
+    <modifyDataType tableName="EMAIL_BOX" columnName="CC" newDataType="CLOB"/>
+    <modifyDataType tableName="EMAIL_BOX" columnName="BCC" newDataType="CLOB"/>
+</changeSet>
 </databaseChangeLog>
