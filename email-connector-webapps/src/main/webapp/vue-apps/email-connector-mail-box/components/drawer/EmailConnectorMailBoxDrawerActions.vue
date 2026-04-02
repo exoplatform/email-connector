@@ -27,6 +27,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       icon>
       <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
     </v-btn>
+    <extension-registry-components
+      name="EmailList"
+      type="email-list-toolbar"
+      parent-element="span"
+      element="span"
+      class="my-auto" /> 
     <v-btn
       :title="$t('emailConnector.mailBox.list.drawer.newEmail.button.title')"
       @click="openNewEmailDrawer()"
