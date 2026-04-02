@@ -16,6 +16,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <div class="align-self-center" v-if="!selectMode">
+    <extension-registry-components
+      name="EmailList"
+      type="email-list-toolbar"
+      parent-element="span"
+      element="span"
+      class="my-auto" /> 
     <email-box-sync-loader
       v-if="syncInProgress"
       :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
