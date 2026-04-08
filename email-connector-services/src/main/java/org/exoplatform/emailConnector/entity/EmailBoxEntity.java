@@ -77,7 +77,10 @@ public class EmailBoxEntity {
 
   @Column(name = "IS_READ")
   private boolean                     read;
-
+  
+  @Column(name = "RECENT")
+  private boolean                     recent;
+  
   @OneToMany(mappedBy = "email", cascade = CascadeType.PERSIST)
   private List<EmailAttachmentEntity> attachments;
 }

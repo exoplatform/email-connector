@@ -145,7 +145,8 @@ public class EmailBoxServiceTest {
   @Test
   void deleteUserEmails() {
     emailBoxService.deleteUserEmails(TEST_USER);
-    verify(emailBoxStorage).deleteEmailsByUserId(TEST_USER);
+    verify(emailBoxStorage).getEmails(TEST_USER);
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
   }
 
   @Test
@@ -330,7 +331,9 @@ public class EmailBoxServiceTest {
                      new Date(),
                      new EmailSender("sender", null, null, null),
                      false,
+                     false,
                      List.of(new EmailRecipient()),
+                     null,
                      null,
                      null);
   }

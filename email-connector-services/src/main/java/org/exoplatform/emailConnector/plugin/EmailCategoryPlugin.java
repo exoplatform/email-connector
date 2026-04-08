@@ -1,0 +1,74 @@
+/**
+/**
+ * Copyright (C) 2026 eXo Platform SAS
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <gnu.org/licenses>.
+ */
+package org.exoplatform.emailConnector.plugin;
+
+import java.util.List;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.portal.config.UserACL;
+
+import io.meeds.social.category.model.CategoryObject;
+import io.meeds.social.category.plugin.CategoryPlugin;
+
+@Component
+public class EmailCategoryPlugin implements CategoryPlugin {
+
+  public static final String OBJECT_TYPE = EmailConnectorUtils.EMAIL_FEATURE;
+
+  @Autowired
+  private UserACL            userAcl;
+
+  @Override
+  public String getType() {
+    return OBJECT_TYPE;
+  }
+
+  @Override
+  public boolean canAccess(String emailId, String username) {
+    return userAcl.hasAccessPermission(OBJECT_TYPE, emailId, username);
+  }
+
+  @Override
+  public boolean canEdit(String emailId, String username) {
+    return userAcl.hasAccessPermission(OBJECT_TYPE, emailId, username);
+  }
+
+  @Override
+  public List<Long> getCategoryIds() {
+    return null;
+  }
+
+  @Override
+  public List<Long> getCategoryIds(long spaceId) {
+    return null;
+  }
+
+  @Override
+  public List<Long> getCategoryIds(long spaceId, String username) {
+    return null;
+  }
+
+  @Override
+  public CategoryObject getObject(CategoryObject categoryObject) {
+    return null;
+  }
+
+}

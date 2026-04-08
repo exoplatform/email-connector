@@ -175,18 +175,6 @@ public class EmailBoxStorageTest {
   }
 
   @Test
-  void deleteEmailsByUserId() {
-    Email email1 = email("root");
-    emailBoxStorage.createEmail(email1);
-    List<Email> retrievedEmailEntities = emailBoxStorage.getEmails("root");
-    assertNotNull(retrievedEmailEntities);
-    assertEquals(1, retrievedEmailEntities.size());
-    emailBoxStorage.deleteEmailsByUserId("root");
-    retrievedEmailEntities = emailBoxStorage.getEmails("root");
-    assertEquals(0, retrievedEmailEntities.size());
-  }
-
-  @Test
   void deleteEmailsByIds() {
     Email email1 = email("root");
     Email storedEmail = emailBoxStorage.createEmail(email1);
@@ -215,6 +203,7 @@ public class EmailBoxStorageTest {
                                                        "bcc",
                                                        new Date(),
                                                        false,
+                                                       false,
                                                        null);
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
@@ -242,6 +231,8 @@ public class EmailBoxStorageTest {
                      new Date(),
                      new EmailSender("sender", null, null, null),
                      false,
+                     false,
+                     null,
                      null,
                      null,
                      null);
