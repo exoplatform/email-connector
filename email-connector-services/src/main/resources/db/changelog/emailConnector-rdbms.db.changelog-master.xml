@@ -171,5 +171,10 @@
     <modifyDataType tableName="EMAIL_BOX" columnName="RECEIVER" newDataType="CLOB"/>
     <modifyDataType tableName="EMAIL_BOX" columnName="CC" newDataType="CLOB"/>
     <modifyDataType tableName="EMAIL_BOX" columnName="BCC" newDataType="CLOB"/>
-</changeSet>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-13">
+    <addColumn tableName="EMAIL_BOX">
+      <column name="RECENT" type="BOOLEAN" defaultValueBoolean="false"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>

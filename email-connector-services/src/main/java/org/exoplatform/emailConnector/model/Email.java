@@ -46,9 +46,13 @@ public class Email {
 
   private boolean              read;
 
+  private boolean              recent;
+
   private List<EmailRecipient> to;
 
   private List<EmailRecipient> cc;
 
   private List<EmailRecipient> bcc;
+
+  private List<Long>           categoryIds;
 }

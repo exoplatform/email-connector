@@ -19,7 +19,6 @@ package org.exoplatform.emailConnector.storage;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 import javax.mail.internet.InternetAddress;
@@ -37,7 +36,6 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
-import org.exoplatform.services.security.ConversationState;
 
 import lombok.SneakyThrows;
 
@@ -96,10 +94,6 @@ public class EmailBoxStorage {
                            .toList();
   }
 
-  public void deleteEmailsByUserId(String username) {
-    emailBoxDao.deleteByUserId(username);
-  }
-
   public void deleteEmailsByIds(List<Long> emailsIds) {
     emailBoxDao.deleteEmailsByIds(emailsIds);
   }
@@ -131,6 +125,7 @@ public class EmailBoxStorage {
                                                          toRecipientsString(email.getBcc()),
                                                          email.getReceivedDate(),
                                                          email.isRead(),
+                                                         email.isRecent(),
                                                          null);
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
@@ -171,9 +166,12 @@ public class EmailBoxStorage {
                               emailBoxEntity.getReceivedDate(),
                               EmailConnectorUtils.getEmailSender(emailSenderAddress, withProfile),
                               emailBoxEntity.isRead(),
+                              emailBoxEntity.isRecent(),
+                              null,
                               null,
                               null,
                               null);
+
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
         InternetAddress[] emailCcRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getCc());

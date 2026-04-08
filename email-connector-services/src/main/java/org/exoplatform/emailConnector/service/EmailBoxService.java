@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -73,6 +74,7 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
+import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
@@ -84,6 +86,8 @@ import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.social.core.identity.model.Profile;
 
+import io.meeds.social.category.model.CategoryObject;
+import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.html.utils.HtmlUtils;
 import jakarta.annotation.PostConstruct;
 
@@ -112,6 +116,8 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE     = "User %s is not allowed to archive email";
 
   private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE        = "User %s is not allowed to send email";
+  
+  private CategoryLinkService     categoryLinkService;
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
@@ -225,7 +231,8 @@ public class EmailBoxService {
    * @param username user whose emails will be deleted
    */
   public void deleteUserEmails(String username) {
-    emailBoxStorage.deleteEmailsByUserId(username);
+    List<Email> emails = emailBoxStorage.getEmails(username);
+    deleteEmails(emails);
   }
 
   /**
@@ -407,7 +414,7 @@ public class EmailBoxService {
           return null;
         }
       }).filter(Objects::nonNull).collect(Collectors.toList());
-      deleteEmails(emails);
+      List<Email> deletedEmails = deleteEmails(emails);
       Store store = null;
       IMAPFolder inbox = null;
       boolean needExpunge = false;
@@ -428,19 +435,37 @@ public class EmailBoxService {
               }
             }
           } catch (Exception e) {
-            emails.stream().filter(mail -> mail.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
+            deletedEmails.stream().filter(deletedEmail -> deletedEmail.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
               email.setId(null);
               return email;
-            }).ifPresent(emailBoxStorage::createEmail);
+            }).ifPresent(email -> {
+              emailBoxStorage.createEmail(email);
+              if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
+                email.getCategoryIds().stream().forEach(emailCategoryId -> {
+                  getCategoryLinkService().link(emailCategoryId,
+                                                new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
+                                                                   String.valueOf(email.getId()),
+                                                                   0));
+                });
+              }
+            });
             failedEmailDeletions++;
             LOG.error("Error when deleting email {} for user {}", mailRemoteId, username, e);
           }
         }
       } catch (Exception e) {
         LOG.error("Error when connecting store for user {}", username, e);
-        emails.stream().forEach(email -> {
+        deletedEmails.stream().forEach(email -> {
           email.setId(null);
           emailBoxStorage.createEmail(email);
+          if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
+            email.getCategoryIds().stream().forEach(emailCategoryId -> {
+              getCategoryLinkService().link(emailCategoryId,
+                                            new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
+                                                               String.valueOf(email.getId()),
+                                                               0));
+            });
+          }
         });
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
@@ -479,7 +504,7 @@ public class EmailBoxService {
           return null;
         }
       }).filter(Objects::nonNull).collect(Collectors.toList());
-      deleteEmails(emails);
+      List<Email> deletedEmails = deleteEmails(emails);
       Store store = null;
       IMAPFolder inbox = null;
       try {
@@ -497,19 +522,37 @@ public class EmailBoxService {
               }
             }
           } catch (Exception e) {
-            emails.stream().filter(mail -> mail.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
+            deletedEmails.stream().filter(mail -> mail.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
               email.setId(null);
               return email;
-            }).ifPresent(emailBoxStorage::createEmail);
+            }).ifPresent(email -> {
+              emailBoxStorage.createEmail(email);
+              if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
+                email.getCategoryIds().stream().forEach(emailCategoryId -> {
+                  getCategoryLinkService().link(emailCategoryId,
+                                                new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
+                                                                   String.valueOf(email.getId()),
+                                                                   0));
+                });
+              }
+            });
             failedEmailArchives++;
             LOG.error("Error when archiving email {} for user {}", mailRemoteId, username, e);
           }
         }
       } catch (Exception e) {
         LOG.error("Error when connecting store for user {}", username, e);
-        emails.stream().forEach(email -> {
+        deletedEmails.stream().forEach(email -> {
           email.setId(null);
           emailBoxStorage.createEmail(email);
+          if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
+            email.getCategoryIds().stream().forEach(emailCategoryId -> {
+              getCategoryLinkService().link(emailCategoryId,
+                                            new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
+                                                               String.valueOf(email.getId()),
+                                                               0));
+            });
+          }
         });
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
@@ -641,12 +684,16 @@ public class EmailBoxService {
                                                 message.getReceivedDate(),
                                                 emailSender,
                                                 message.isSet(Flags.Flag.SEEN),
+                                                true,
                                                 emailToRecipients,
                                                 emailCcRecipients,
-                                                emailBccRecipients));
+                                                emailBccRecipients,
+                                                null));
 
         } else {
           updateEmailReadStatus(List.of(messageUid), username, message.isSet(Flags.Flag.SEEN), false);
+          email.setRecent(false);
+          emailBoxStorage.updateEmail(email);
         }
       } catch (Exception e) {
         LOG.warn("Error when storing email with subject {} for user {}", message.getSubject(), username, e);
@@ -691,9 +738,23 @@ public class EmailBoxService {
     }
   }
 
-  private void deleteEmails(List<Email> emails) {
-    List<Long> emailsIdsToDelete = emails.stream().map(Email::getId).toList();
+  private List<Email> deleteEmails(List<Email> emails) {
+    List<Long> emailsIdsToDelete = new ArrayList<Long>();
+    for (Email email : emails) {
+      emailsIdsToDelete.add(email.getId());
+      List<Long> categoryIds = getCategoryLinkService().getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
+                                                                                        String.valueOf(email.getId()),
+                                                                                        0));
+      if (!CollectionUtils.isEmpty(categoryIds)) {
+        email.setCategoryIds(categoryIds);
+        categoryIds.stream().forEach(emailCategoryId -> {
+          getCategoryLinkService().unlink(emailCategoryId,
+                                          new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
+        });
+      }
+    }
     emailBoxStorage.deleteEmailsByIds(emailsIdsToDelete);
+    return emails;
   }
 
   private void updateEmailSyncStatus(String username, SyncStatus syncStatus) {
@@ -785,5 +846,12 @@ public class EmailBoxService {
       }
     }
     return null;
+  }
+  
+  private CategoryLinkService getCategoryLinkService() {
+    if (categoryLinkService == null) {
+      categoryLinkService = CommonsUtils.getService(CategoryLinkService.class);
+    }
+    return categoryLinkService;
   }
 }
