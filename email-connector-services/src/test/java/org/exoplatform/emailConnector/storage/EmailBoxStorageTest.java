@@ -26,6 +26,8 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 import java.util.Collections;
@@ -36,11 +38,13 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 
+import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
@@ -49,6 +53,8 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
+
+import io.meeds.social.category.service.CategoryLinkService;
 
 @SpringBootTest(classes = { EmailBoxStorage.class })
 @ExtendWith(MockitoExtension.class)
@@ -64,6 +70,8 @@ public class EmailBoxStorageTest {
 
   @Autowired
   private EmailBoxStorage    emailBoxStorage;
+  
+  private static final MockedStatic<CommonsUtils>        COMMONS_UTILS_UTIL    = mockStatic(CommonsUtils.class);
 
   @BeforeEach
   void setup() {
@@ -104,6 +112,9 @@ public class EmailBoxStorageTest {
       }
       return null;
     }).when(emailBoxDAO).updateReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean());
+    
+    CategoryLinkService categoryLinkService = mock(CategoryLinkService.class);
+    COMMONS_UTILS_UTIL.when(() -> CommonsUtils.getService(CategoryLinkService.class)).thenReturn(categoryLinkService);
   }
 
   @Test

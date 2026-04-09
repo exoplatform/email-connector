@@ -50,7 +50,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ title }}
         </span>
         <email-connector-mail-box-drawer-actions
-          :emails="emails"
+          :emails="filteredEmails"
           :selected-emails="selectedEmails"
           :select-mode="selectMode" 
           :sync-in-progress="syncInProgress" />
@@ -62,8 +62,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :email="email" />
     </template>
     <template v-if="expanded" #fullAppLeftContent>
+      <categories-filter
+        v-model="selectedCategoryId"
+        class="full-width border-box-sizing application-border application-border-radius py-3 pe-4 ps-7"
+        object-type="email"
+        hide-on-empty />
       <email-connector-mail-box-drawer-content
-        :emails="emails"
+        :emails="filteredEmails"
         :selected-emails="selectedEmails"
         :select-mode="selectMode"
         @update:selected-emails="selectedEmails = $event"
@@ -72,14 +77,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="emailDetailDrawer && !loading" #content>
       <email-connector-mail-box-drawer-multi-select-email
         v-if="selectMode"
-        :emails="emails"
+        :emails="filteredEmails"
         :selected-emails="selectedEmails" />
       <template v-else>
-        <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
-        <email-connector-mail-box-drawer-list-item-detail-content
-          v-else
-          :email="email"
-          :expanded-drawer="expanded" />
+        <email-connector-mail-box-drawer-no-email v-if="filteredEmails.length === 0" />
+        <template v-else>
+          <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
+          <email-connector-mail-box-drawer-list-item-detail-content
+            v-else
+            :email="email"
+            :expanded-drawer="expanded" />
+        </template>
       </template>
     </template>
   </exo-drawer>
@@ -99,6 +107,7 @@ export default {
       syncInProgress: false,
       selectMode: false,
       selectEmailPlaceHolder: false,
+      selectedCategoryId: this.$root.selectedCategoryId
     };
   },
   created() {
@@ -193,6 +202,22 @@ export default {
         this.$t('emailConnector.mailBox.list.drawer.emailSelected') : 
         this.$t('emailConnector.mailBox.list.drawer.emailsSelected')}`;
     },
+    filteredEmails() {
+      let filteredEmails = this.emails || [];
+      if (this.selectedCategoryId) {
+        filteredEmails = filteredEmails.filter(e => e.categoryIds.includes(this.selectedCategoryId));
+      }
+      return filteredEmails;
+    }
+  },
+  watch: {
+    selectedCategoryId(val) {
+      this.$root.selectedCategoryId = val;
+      if (this.email && !this.filteredEmails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
+        this.selectEmailPlaceHolder = true;
+      }
+      this.cancelSelectMode();
+    }
   },
   methods: {
     open(mailRemoteId, emails, syncInProgress) {
@@ -240,6 +265,7 @@ export default {
       this.selectEmailPlaceHolder = false;
       this.$root.isDetailDrawerActive = false;
       this.$root.$emit('email-detail-drawer-closed');
+      this.selectedCategoryId = null;
     },
     updateExpand(expanded) {
       window.setTimeout(() => this.expanded = expanded, 200);

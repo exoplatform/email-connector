@@ -27,6 +27,7 @@ import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
@@ -35,8 +36,11 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
+import io.meeds.social.category.model.CategoryObject;
+import io.meeds.social.category.service.CategoryLinkService;
 import lombok.SneakyThrows;
 
 /**
@@ -157,6 +161,10 @@ public class EmailBoxStorage {
       }
       String[] emailSenderParts = emailBoxEntity.getSender().split(",");
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
+      CategoryLinkService categoryLinkService = CommonsUtils.getService(CategoryLinkService.class);
+      List<Long> categoryIds = categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
+                                                                                        String.valueOf(emailBoxEntity.getId()),
+                                                                                        0));
       Email email = new Email(emailBoxEntity.getId(),
                               emailBoxEntity.getMailRemoteId(),
                               emailBoxEntity.getMailHeaderId(),
@@ -170,7 +178,7 @@ public class EmailBoxStorage {
                               null,
                               null,
                               null,
-                              null);
+                              categoryIds);
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
@@ -218,7 +226,7 @@ public class EmailBoxStorage {
                      .collect(Collectors.joining(";"));
   }
 
-  public static InternetAddress[] toRecipientsInternetAddresses(String recipientsString) {
+  private static InternetAddress[] toRecipientsInternetAddresses(String recipientsString) {
     if (recipientsString == null || recipientsString.trim().isEmpty()) {
       return new InternetAddress[0];
     }

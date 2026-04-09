@@ -22,6 +22,8 @@ import java.util.List;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.emailConnector.model.EmailBox;
+import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
 
@@ -35,6 +37,9 @@ public class EmailCategoryPlugin implements CategoryPlugin {
 
   @Autowired
   private UserACL            userAcl;
+
+  @Autowired
+  private EmailBoxService    emailBoxService;
 
   @Override
   public String getType() {
@@ -63,7 +68,17 @@ public class EmailCategoryPlugin implements CategoryPlugin {
 
   @Override
   public List<Long> getCategoryIds(long spaceId, String username) {
-    return null;
+    try {
+      EmailBox emailBox = emailBoxService.getEmailBox(username);
+      return emailBox.getEmails()
+                     .stream()
+                     .filter(email -> email.getCategoryIds() != null)
+                     .flatMap(email -> email.getCategoryIds().stream())
+                     .distinct()
+                     .toList();
+    } catch (IllegalAccessException e) {
+      return null;
+    }
   }
 
   @Override
