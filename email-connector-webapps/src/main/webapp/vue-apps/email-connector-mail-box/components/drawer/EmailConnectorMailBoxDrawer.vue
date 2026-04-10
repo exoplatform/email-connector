@@ -81,6 +81,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :sync-in-progress="syncInProgress" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
+      <categories-filter
+        v-model="selectedCategoryId"
+        class="full-width border-box-sizing application-border application-border-radius py-3 pe-4 ps-7"
+        object-type="email"
+        hide-on-empty />
       <email-connector-mail-box-drawer-content
         :emails="emails"
         :selected-emails="selectedEmails"
@@ -110,6 +115,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item-content>
       </v-list-item>
       <template v-else>
+        <categories-filter
+          v-if="!expanded"
+          v-model="selectedCategoryId"
+          class="full-width border-box-sizing application-border application-border-radius py-3 pe-4 ps-7"
+          object-type="email"
+          hide-on-empty />
         <template v-if="hasEmails">
           <template v-if="expanded">
             <email-connector-mail-box-drawer-multi-select-email
@@ -131,18 +142,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :sync-in-progress="syncInProgress"
             @update:selected-emails="selectedEmails = $event" />
         </template>
-        <v-list-item v-else class="full-height align-center">
-          <v-list-item-content>
-            <v-icon
-              size="60"
-              class="tertiary--text">
-              far fa-envelope
-            </v-icon>
-            <v-list-item-title class="text-wrap mt-5">
-              {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
-            </v-list-item-title>
-          </v-list-item-content>
-        </v-list-item>
+        <email-connector-mail-box-drawer-no-email v-else />
       </template>
     </template>
   </exo-drawer>
@@ -154,7 +154,6 @@ export default {
     return {
       emailBoxDrawer: false,
       emailBox: null,
-      emails: [],
       loading: false,
       syncInProgress: false,
       refreshInterval: null,
@@ -164,6 +163,10 @@ export default {
       expanded: false,
       email: null,
       selectEmailPlaceHolder: false,
+      selectedCategoryId: null,
+      selectedCategoryIds: [],
+      deletedEmailIds: [],
+      archivedEmailIds: []
     };
   },
   created() {
@@ -264,10 +267,30 @@ export default {
       return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
     },
     hasFullAppLeft() {
-      return this.expanded && this.hasEmails && !this.syncBlocked;
+      return this.expanded && (this.hasEmails || this.selectedCategoryId) && !this.syncBlocked;
     },
     canGoBack() {
       return this.selectMode && !this.expanded;
+    },
+    emails() {
+      let emails = this.emailBox?.emails || [];
+      emails = emails.filter(e => !this.deletedEmailIds.includes(e.mailRemoteId));
+      emails = emails.filter(e => !this.archivedEmailIds.includes(e.mailRemoteId));
+      if (this.selectedCategoryIds.length > 0) {
+        emails = emails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
+      }
+      return emails;
+    },
+  },
+  watch: {
+    async selectedCategoryId(val) {
+      this.cancelSelectMode();
+      this.selectedCategoryIds = val && await this.$emailConnectorMailBoxService.getSubcategoryIds(val) || [];
+    },
+    emails() {
+      if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
+        this.selectEmailPlaceHolder = true;
+      }
     }
   },
   methods: {
@@ -308,6 +331,10 @@ export default {
       this.selectEmailPlaceHolder = false;
       this.email = null;
       this.emailBoxDrawer = false;
+      this.selectedCategoryId = null;
+      this.selectedCategoryIds = [];
+      this.deletedEmailIds = [];
+      this.archivedEmailIds = [];
     },
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
@@ -329,9 +356,7 @@ export default {
       }
     },
     deleteEmails(emailIdsToDelete = []) {
-      this.emails = this.emails.filter(
-        e => !emailIdsToDelete.includes(e.mailRemoteId)
-      );
+      this.deletedEmailIds.push(...emailIdsToDelete);
       if (emailIdsToDelete.length > 0) {
         this.$emailConnectorMailBoxService.deleteEmails(emailIdsToDelete)
           .then((deleteResult) => {
@@ -361,9 +386,7 @@ export default {
       }
     },
     archiveEmails(emailIdsToArchive = []) {
-      this.emails = this.emails.filter(
-        e => !emailIdsToArchive.includes(e.mailRemoteId)
-      );
+      this.archivedEmailIds.push(...emailIdsToArchive);
       if (emailIdsToArchive.length > 0) {
         this.$emailConnectorMailBoxService.archiveEmails(emailIdsToArchive)
           .then(archiveResult => {
