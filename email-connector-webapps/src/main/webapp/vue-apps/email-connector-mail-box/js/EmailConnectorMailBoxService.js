@@ -305,3 +305,15 @@ export function triggerDownload(fileUrl, filename) {
   link.click();
   link.remove();
 }
+
+export async function getSubcategoryIds(categoryId) {
+  if (!categoryId) {
+    return [];
+  }
+  const subcategoyIds = await Vue.prototype.$categoryService.getSubcategoryIds(categoryId, {
+    offset: 0,
+    limit: -1,
+    depth: -1
+  });
+  return [...new Set([categoryId, ...subcategoyIds])];
+}

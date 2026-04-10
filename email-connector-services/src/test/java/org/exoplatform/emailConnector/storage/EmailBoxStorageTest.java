@@ -50,20 +50,25 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
 
+import io.meeds.social.category.service.CategoryLinkService;
+
 @SpringBootTest(classes = { EmailBoxStorage.class })
 @ExtendWith(MockitoExtension.class)
 public class EmailBoxStorageTest {
 
-  private static final Long  ID = 2l;
+  private static final Long   ID = 2l;
 
   @MockBean
-  private EmailBoxDAO        emailBoxDAO;
+  private EmailBoxDAO         emailBoxDAO;
 
   @MockBean
-  private EmailAttachmentDAO emailAttachmentDAO;
+  private EmailAttachmentDAO  emailAttachmentDAO;
+
+  @MockBean
+  private CategoryLinkService categoryLinkService;
 
   @Autowired
-  private EmailBoxStorage    emailBoxStorage;
+  private EmailBoxStorage     emailBoxStorage;
 
   @BeforeEach
   void setup() {

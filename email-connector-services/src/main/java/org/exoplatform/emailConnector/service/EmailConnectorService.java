@@ -50,41 +50,42 @@ import lombok.SneakyThrows;
 @Service
 public class EmailConnectorService {
 
-  public static final String    EMAIL_CONNECTOR_SCOPE_ID                     = "EMAIL_CONNECTOR_SCOPE";
+  public static final String        EMAIL_CONNECTOR_SCOPE_ID                     = "EMAIL_CONNECTOR_SCOPE";
 
-  public static final Scope     EMAIL_CONNECTOR_SCOPE                        = Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
+  public static final Scope         EMAIL_CONNECTOR_SCOPE                        = Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
 
-  public static final String    USER_EMAIL_SETTING_KEY                       = "userEmailSetting";
+  public static final String        USER_EMAIL_SETTING_KEY                       = "userEmailSetting";
 
-  private static final String   EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
+  private static final String       EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
 
-  private static final String   FEATURE_ACTIVE_IS_MANDATORY_MESSAGE          = "Feature active is mandatory";
+  private static final String       FEATURE_ACTIVE_IS_MANDATORY_MESSAGE          = "Feature active is mandatory";
 
-  private static final String   USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE =
-                                                                             "User %s is not allowed to save email connector : %s";
+  private static final String       USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE =
+                                                                                 "User %s is not allowed to save email connector : %s";
 
-  private static final String   USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE  = "User %s is not allowed to activate email feature";
+  private static final String       USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE  =
+                                                                                "User %s is not allowed to activate email feature";
 
-  private static final String   EMAIL_CONNECTOR_NOT_FOUND_MESSAGE            = "Email connector with id %s doesn't exist";
-
-  @Autowired
-  private UserACL               userAcl;
+  private static final String       EMAIL_CONNECTOR_NOT_FOUND_MESSAGE            = "Email connector with id %s doesn't exist";
 
   @Autowired
-  private TranslationService    translationService;
+  private UserACL                   userAcl;
 
   @Autowired
-  ApplicationCenterService      applicationCenterService;
+  private TranslationService        translationService;
 
   @Autowired
-  private ExoFeatureService     featureService;
+  ApplicationCenterService          applicationCenterService;
 
   @Autowired
-  private EmailConnectorStorage emailConnectorStorage;
+  private ExoFeatureService         featureService;
 
   @Autowired
-  private FileService           fileService;
-  
+  private EmailConnectorStorage     emailConnectorStorage;
+
+  @Autowired
+  private FileService               fileService;
+
   @Autowired
   private ApplicationEventPublisher eventPublisher;
 

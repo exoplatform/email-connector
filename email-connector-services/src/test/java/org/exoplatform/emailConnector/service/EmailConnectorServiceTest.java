@@ -191,6 +191,19 @@ public class EmailConnectorServiceTest {
   }
 
   private EmailConnector emailConnector() {
-    return new EmailConnector(null, "testName", null, 1L, null, "testImapUrl", "8000", "testSmtpUrl", "9000", "STARTTLS", true, false, true, "testUploadId");
+    return new EmailConnector(null,
+                              "testName",
+                              null,
+                              1L,
+                              null,
+                              "testImapUrl",
+                              "8000",
+                              "testSmtpUrl",
+                              "9000",
+                              "STARTTLS",
+                              true,
+                              false,
+                              true,
+                              "testUploadId");
   }
 }
