@@ -28,13 +28,13 @@ import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 
 public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :username ORDER BY email.receivedDate DESC")
-  List<EmailBoxEntity> findByUserIdWithAttachments(@Param("username")
-  String username);
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByUserIdWithAttachments(@Param("userId")
+  String userId);
 
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :username AND email.mailRemoteId = :mailRemoteId ORDER BY email.receivedDate DESC")
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.mailRemoteId = :mailRemoteId ORDER BY email.receivedDate DESC")
   EmailBoxEntity findByMailRemoteIdAndUserId(@Param("mailRemoteId")
-  long mailRemoteId, @Param("username")
+  long mailRemoteId, @Param("userId")
   String userId);
 
   void deleteByUserId(String userId);
@@ -47,10 +47,17 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   @Transactional
   @Modifying
-  @Query("UPDATE EmailBoxEntity email SET email.read = :readStatus WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :username AND (email.read IS NULL OR email.read <> :readStatus)")
+  @Query("UPDATE EmailBoxEntity email SET email.read = :readStatus WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :userId AND (email.read IS NULL OR email.read <> :readStatus)")
   void updateReadStatusByMailRemoteIds(@Param("mailRemoteIds")
-  List<Long> mailRemoteIds, @Param("username")
-  String username, @Param("readStatus")
+  List<Long> mailRemoteIds, @Param("userId")
+  String userId, @Param("readStatus")
   boolean readStatus);
+
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.recent = false WHERE email.mailRemoteId = :mailRemoteId AND email.userId = :userId")
+  void markEmailAsNotRecent(@Param("mailRemoteId")
+  Long mailRemoteId, @Param("userId")
+  String userId);
 
 }

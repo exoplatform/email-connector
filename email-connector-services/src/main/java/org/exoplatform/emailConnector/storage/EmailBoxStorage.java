@@ -27,7 +27,6 @@ import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
@@ -68,12 +67,8 @@ public class EmailBoxStorage {
     return fromEntity(emailBoxEntity, false, false, null, true, false);
   }
 
-  public void updateEmail(Email email) {
-    if (email == null) {
-      throw new IllegalArgumentException("email is mandatory");
-    }
-    EmailBoxEntity emailBoxEntity = toEntity(email);
-    emailBoxDao.save(emailBoxEntity);
+  public void markEmailAsNotRecent(Long mailRemoteId, String userId) {
+    emailBoxDao.markEmailAsNotRecent(mailRemoteId, userId);
   }
 
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus) {
@@ -94,11 +89,9 @@ public class EmailBoxStorage {
     return fromEntity(emailBoxEntity, true, false, userId, true, true);
   }
 
-  public List<Email> getEmails(String username) {
-    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(username);
-    return emailBoxEntities.stream()
-                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, username, false, false))
-                           .toList();
+  public List<Email> getEmails(String userId) {
+    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(userId);
+    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, false, false)).toList();
   }
 
   public void deleteEmailsByIds(List<Long> emailsIds) {
