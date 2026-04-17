@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -24,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
@@ -77,8 +79,6 @@ public class EmailBoxStorageTest {
       EmailBoxEntity entity = invocation.getArgument(0);
       if (entity.getId() == null) {
         entity.setId(ID);
-      } else {
-        entity.setSubject(entity.getSubject() + " (updated)");
       }
       when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(Optional.of(entity)
                                                                                .stream()
@@ -109,6 +109,14 @@ public class EmailBoxStorageTest {
       }
       return null;
     }).when(emailBoxDAO).updateReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean());
+
+    doAnswer(invocation -> {
+      EmailBoxEntity entity = emailBoxDAO.findByMailRemoteIdAndUserId(1212L, "root");
+      if (entity != null) {
+        entity.setRecent(false);
+      }
+      return null;
+    }).when(emailBoxDAO).markEmailAsNotRecent(anyLong(), anyString());
   }
 
   @Test
@@ -122,13 +130,13 @@ public class EmailBoxStorageTest {
   }
 
   @Test
-  void updateEmail() {
+  void markEmailAsNotRecent() {
     Email email = email("root");
-    Email createdEmail = emailBoxStorage.createEmail(email);
-    emailBoxStorage.updateEmail(createdEmail);
+    emailBoxStorage.createEmail(email);
+    emailBoxStorage.markEmailAsNotRecent(1212l, "root");
     Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
     assertNotNull(updatedEmail);
-    assertEquals("subject (updated)", updatedEmail.getSubject());
+    assertFalse(updatedEmail.isRecent());
   }
 
   @Test
