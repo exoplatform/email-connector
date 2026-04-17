@@ -370,9 +370,7 @@ public class EmailBoxService {
               remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
             }
           } catch (Exception e) {
-            Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
-            email.setRead(!readStatus);
-            emailBoxStorage.updateEmail(email);
+            emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus);
             LOG.error("Error when updating email {} read status for user {}", mailRemoteId, username, e);
           }
         }
@@ -693,8 +691,7 @@ public class EmailBoxService {
 
         } else {
           updateEmailReadStatus(List.of(messageUid), username, message.isSet(Flags.Flag.SEEN), false);
-          email.setRecent(false);
-          emailBoxStorage.updateEmail(email);
+          emailBoxStorage.markEmailAsNotRecent(messageUid, username);
         }
       } catch (Exception e) {
         LOG.warn("Error when storing email with subject {} for user {}", message.getSubject(), username, e);
