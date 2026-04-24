@@ -36,6 +36,8 @@ public class Email {
 
   private String               userId;
 
+  private String               userEmail;
+
   private String               subject;
 
   private EmailContent         content;

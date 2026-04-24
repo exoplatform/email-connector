@@ -162,8 +162,8 @@ export default {
     };
   },
   created() {
-    this.$root.$on('open-new-email-drawer', (email, forward) => {
-      this.open(email, forward);
+    this.$root.$on('open-new-email-drawer', (email, forward, replyAll) => {
+      this.open(email, forward, replyAll);
     });
     this.$root.$on('send-email', (email) => {
       this.sendEmail(email);
@@ -178,11 +178,17 @@ export default {
     }
   },
   methods: {
-    open(email, forward) {
+    open(email, forward, replyAll) {
       this.title = forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.title') : email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
       if (email) {
         if (!forward) {
           this.toEmails = email.sender ? email.sender.address : '';
+          if (replyAll) {
+            this.ccEmails = [...new Set([...(email.to || []), ...(email.cc || [])]
+              .filter(item => item.address !== email.userEmail)
+              .map(item => item.address?.trim())
+              .filter(Boolean))].join(', ');
+          }
           this.email.mailHeaderId = email.mailHeaderId;
         }
         else {

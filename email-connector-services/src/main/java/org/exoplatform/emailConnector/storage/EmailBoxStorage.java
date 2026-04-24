@@ -37,6 +37,9 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 import io.meeds.social.category.model.CategoryObject;
 import io.meeds.social.category.service.CategoryLinkService;
@@ -57,6 +60,9 @@ public class EmailBoxStorage {
 
   @Autowired
   private CategoryLinkService categoryLinkService;
+
+  @Autowired
+  private IdentityManager     identityManager;
 
   public Email createEmail(Email email) {
     if (email == null) {
@@ -160,10 +166,12 @@ public class EmailBoxStorage {
       List<Long> categoryIds = categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
                                                                                    String.valueOf(emailBoxEntity.getId()),
                                                                                    0));
+      Identity currentIdentity = identityManager.getOrCreateUserIdentity(userId);
       Email email = new Email(emailBoxEntity.getId(),
                               emailBoxEntity.getMailRemoteId(),
                               emailBoxEntity.getMailHeaderId(),
                               emailBoxEntity.getUserId(),
+                              currentIdentity != null ? currentIdentity.getProfile().getEmail() : null,
                               emailBoxEntity.getSubject(),
                               new EmailContent(emailBoxEntity.getBody(), excerpt, attachments),
                               emailBoxEntity.getReceivedDate(),
