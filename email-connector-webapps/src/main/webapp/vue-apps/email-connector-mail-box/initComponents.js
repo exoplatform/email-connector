@@ -30,6 +30,8 @@ import EmailConnectorMailBoxDrawerListItemActionMenuItems from './components/dra
 import EmailConnectorMailBoxDrawerListItemAttachments from './components/drawer/EmailConnectorMailBoxDrawerListItemAttachments.vue';
 import EmailConnectorMailBoxDrawerListItemAttachmentsListItem from './components/drawer/EmailConnectorMailBoxDrawerListItemAttachmentsListItem.vue';
 import EmailConnectorMailBoxDrawerListItemDetail from './components/drawer/EmailConnectorMailBoxDrawerListItemDetail.vue';
+import EmailConnectorMailBoxDrawerListItemDetailActionMenu from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailActionMenu.vue';
+import EmailConnectorMailBoxDrawerListItemDetailActionMenuItems from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailActionMenuItems.vue';
 import EmailConnectorMailBoxDrawerListItemDetailActions from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailActions.vue';
 import EmailConnectorMailBoxDrawerListItemDetailAttachments from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailAttachments.vue';
 import EmailConnectorMailBoxDrawerListItemDetailBody from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailBody.vue';
@@ -60,6 +62,8 @@ const components = {
   'email-connector-mail-box-drawer-list-item-attachments': EmailConnectorMailBoxDrawerListItemAttachments,
   'email-connector-mail-box-drawer-list-item-attachments-list-item': EmailConnectorMailBoxDrawerListItemAttachmentsListItem,
   'email-connector-mail-box-drawer-list-item-detail': EmailConnectorMailBoxDrawerListItemDetail,
+  'email-connector-mail-box-drawer-list-item-detail-action-menu': EmailConnectorMailBoxDrawerListItemDetailActionMenu,
+  'email-connector-mail-box-drawer-list-item-detail-action-menu-items': EmailConnectorMailBoxDrawerListItemDetailActionMenuItems,
   'email-connector-mail-box-drawer-list-item-detail-actions': EmailConnectorMailBoxDrawerListItemDetailActions,
   'email-connector-mail-box-drawer-list-item-detail-attachments': EmailConnectorMailBoxDrawerListItemDetailAttachments,
   'email-connector-mail-box-drawer-list-item-detail-body': EmailConnectorMailBoxDrawerListItemDetailBody,
