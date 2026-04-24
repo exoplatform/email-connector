@@ -162,8 +162,8 @@ export default {
     };
   },
   created() {
-    this.$root.$on('open-new-email-drawer', (email) => {
-      this.open(email);
+    this.$root.$on('open-new-email-drawer', (email, forward) => {
+      this.open(email, forward);
     });
     this.$root.$on('send-email', (email) => {
       this.sendEmail(email);
@@ -178,12 +178,39 @@ export default {
     }
   },
   methods: {
-    open(email) {
-      this.title = email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
+    open(email, forward) {
+      this.title = forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.title') : email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
       if (email) {
-        this.toEmails = email.sender ? email.sender.address : '';
-        this.email.subject = `${this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
-        this.email.mailHeaderId = email.mailHeaderId;
+        if (!forward) {
+          this.toEmails = email.sender ? email.sender.address : '';
+          this.email.mailHeaderId = email.mailHeaderId;
+        }
+        else {
+          const bodyParts = [ 
+            '<br><br>',
+            this.$t('emailConnector.mailBox.forwardEmail.drawer.forwardedMessage'),
+            '<br>',
+            `${this.$t('emailConnector.mailBox.forwardEmail.drawer.from')} ${email.sender.name?.trim()} &lt;${email.sender.address?.trim()}&gt;`,
+            '<br>',
+            `${this.$t('emailConnector.mailBox.forwardEmail.drawer.date')} ${this.$emailConnectorMailBoxService.formatDateString(email.receivedDate, '', this.$t('emailConnector.mailBox.forwardEmail.drawer.date.at'), true)}`
+          ];
+          if (email.subject) {
+            bodyParts.push('<br>');
+            bodyParts.push(`${this.$t('emailConnector.mailBox.forwardEmail.drawer.subject')} ${email.subject}`);
+          }
+          if (email.to?.length) {
+            bodyParts.push('<br>');
+            bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.to.label')} ${email.to.map(item => `${item.name?.trim()} <span>&lt;<a href="mailto:${item.address?.trim()}">${item.address?.trim()}</a>&gt;</span>`).join(', ')}`);
+          }
+          if (email.cc?.length) {
+            bodyParts.push('<br>');
+            bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${email.cc.map(item => `${item.name?.trim()} <span>&lt;<a href="mailto:${item.address?.trim()}">${item.address?.trim()}</a>&gt;</span>`).join(', ')}`);
+          }
+          bodyParts.push('<br><br><br>');
+          bodyParts.push(email.content.body || '');
+          this.email.content.body = bodyParts.join('\n');
+        }
+        this.email.subject = `${forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.subject.prefix') : this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
       }
       this.newEmailDrawer = true;
     },

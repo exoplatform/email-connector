@@ -207,7 +207,7 @@ export function sendEmail(email) {
   });
 }
 
-export function formatDateString(dateToFormat, yesterdayLabel) {
+export function formatDateString(dateToFormat, yesterdayLabel, atLabel, fullDate) {
   const today = new Date();
   today.setHours(0,0,0,0);
   const resetDateToFormat = new Date(dateToFormat);
@@ -215,6 +215,23 @@ export function formatDateString(dateToFormat, yesterdayLabel) {
   let options = {};
   const localeOfUser = eXo.env.portal.language.replace('_', '-');
   const differenceInDays = Math.abs(today.getTime() - resetDateToFormat.getTime()) / (24*60*60*1000);
+
+  if (fullDate) {
+    const dateOptions = {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    };
+    const timeOptions = {
+      hour: '2-digit',
+      minute: '2-digit'
+    };
+    const datePart = new Intl.DateTimeFormat(localeOfUser, dateOptions).format(new Date(dateToFormat));
+    const timePart = new Intl.DateTimeFormat(localeOfUser, timeOptions).format(new Date(dateToFormat));
+    return atLabel ? `${datePart} ${atLabel} ${timePart}` : `${datePart} ${timePart}`;
+  }
+
   if (differenceInDays === 0) { // In today
     options = {
       hour: '2-digit', 
