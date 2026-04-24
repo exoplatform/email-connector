@@ -51,6 +51,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 import io.meeds.social.category.service.CategoryLinkService;
 
@@ -68,6 +69,9 @@ public class EmailBoxStorageTest {
 
   @MockBean
   private CategoryLinkService categoryLinkService;
+
+  @MockBean
+  private IdentityManager     identityManager;
 
   @Autowired
   private EmailBoxStorage     emailBoxStorage;
@@ -239,6 +243,7 @@ public class EmailBoxStorageTest {
                      1212l,
                      null,
                      username,
+                     null,
                      "subject",
                      new EmailContent("body", null, List.of(emailAttachment)),
                      new Date(),

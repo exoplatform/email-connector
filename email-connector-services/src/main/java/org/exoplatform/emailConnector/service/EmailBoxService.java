@@ -678,6 +678,7 @@ public class EmailBoxService {
                                                 messageUid,
                                                 mailHeaderId,
                                                 username,
+                                                null,
                                                 subject,
                                                 emailContent,
                                                 message.getReceivedDate(),

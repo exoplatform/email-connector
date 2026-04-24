@@ -330,6 +330,7 @@ public class EmailBoxServiceTest {
                      1212l,
                      null,
                      username,
+                     null,
                      "subject",
                      new EmailContent("excerpt"),
                      new Date(),
