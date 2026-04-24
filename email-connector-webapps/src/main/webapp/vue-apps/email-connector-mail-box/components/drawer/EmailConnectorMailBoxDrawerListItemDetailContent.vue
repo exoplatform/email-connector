@@ -32,7 +32,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item-subtitle class="text-wrap overflow-visible d-flex">
           <span class="me-1 text-wrap text-break-all">{{ recipients }}</span>
           <v-btn
-            @click="toggleDetails()"
+            @click="toggleDetails"
             :title="recipientsToggleTooltip"
             width="20"
             height="20"
@@ -43,14 +43,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-btn>
         </v-list-item-subtitle>
       </v-list-item-content>
-      <v-list-item-action class="pt-4 my-0">
+      <v-list-item-action class="pt-4 my-0 d-flex flex-column align-end">
         <v-list-item-subtitle class="pb-1" v-text="receivedDate" />
-        <v-btn
-          @click="openReplyEmailDrawer()"
-          :title="$t('emailConnector.mailBox.list.drawer.detail.reply.button.title')"
-          icon>
-          <v-icon size="20" class="icon-default-color">fa-reply</v-icon>
-        </v-btn>
+        <div class="d-flex flex-row align-center">
+          <v-btn
+            @click="openReplyEmailDrawer"
+            :title="$t('emailConnector.mailBox.list.drawer.detail.reply.button.title')"
+            icon>
+            <v-icon size="20" class="icon-default-color">fa-reply</v-icon>
+          </v-btn>
+          <email-connector-mail-box-drawer-list-item-detail-action-menu
+            :email="email" />
+        </div> 
       </v-list-item-action>
     </v-list-item>
     <email-connector-mail-box-drawer-list-item-detail-header 
@@ -119,7 +123,10 @@ export default {
     },
     emailAttachments() {
       return this.email.content?.attachments || [];
-    }
+    },
+    isMobile() {
+      return this.$vuetify.breakpoint.smAndDown;
+    },
   },
   methods: {
     toggleDetails() {
