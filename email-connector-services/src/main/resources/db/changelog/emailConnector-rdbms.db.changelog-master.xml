@@ -177,4 +177,9 @@
       <column name="RECENT" type="BOOLEAN" defaultValueBoolean="false"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-14">
+    <addColumn tableName="EMAIL_BOX">
+      <column name="REPLY_TO" type="VARCHAR(1024)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>

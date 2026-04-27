@@ -182,7 +182,9 @@ export default {
       this.title = forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.title') : email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
       if (email) {
         if (!forward) {
-          this.toEmails = email.sender ? email.sender.address : '';
+          this.toEmails = email.replyTo?.length > 0
+            ? email.replyTo.map(item => item.address?.trim()).filter(Boolean).join(', ')
+            : email.sender.address;
           if (replyAll) {
             this.ccEmails = [...new Set([...(email.to || []), ...(email.cc || [])]
               .filter(item => item.address !== email.userEmail)
