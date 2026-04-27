@@ -340,6 +340,7 @@ public class EmailBoxServiceTest {
                      List.of(new EmailRecipient()),
                      null,
                      null,
+                     null,
                      null);
   }
 
