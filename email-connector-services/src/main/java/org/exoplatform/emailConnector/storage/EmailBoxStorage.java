@@ -123,6 +123,7 @@ public class EmailBoxStorage {
                                                          toRecipientsString(email.getTo()),
                                                          toRecipientsString(email.getCc()),
                                                          toRecipientsString(email.getBcc()),
+                                                         toRecipientsString(email.getReplyTo()),
                                                          email.getReceivedDate(),
                                                          email.isRead(),
                                                          email.isRecent(),
@@ -173,15 +174,18 @@ public class EmailBoxStorage {
                               null,
                               null,
                               null,
+                              null,
                               categoryIds);
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
         InternetAddress[] emailCcRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getCc());
         InternetAddress[] emailBccRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getBcc());
+        InternetAddress[] emailReplyToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getReplyTo());
         email.setTo(EmailConnectorUtils.getEmailRecipients(emailToRecipientsInternetAddresses, userId, withProfile));
         email.setCc(EmailConnectorUtils.getEmailRecipients(emailCcRecipientsInternetAddresses, userId, withProfile));
         email.setBcc(EmailConnectorUtils.getEmailRecipients(emailBccRecipientsInternetAddresses, userId, withProfile));
+        email.setReplyTo(EmailConnectorUtils.getEmailRecipients(emailReplyToRecipientsInternetAddresses, userId, false));
       }
       return email;
     }

@@ -54,5 +54,7 @@ public class Email {
 
   private List<EmailRecipient> bcc;
 
+  private List<EmailRecipient> replyTo;
+
   private List<Long>           categoryIds;
 }

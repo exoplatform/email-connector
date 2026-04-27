@@ -116,7 +116,7 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE     = "User %s is not allowed to archive email";
 
   private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE        = "User %s is not allowed to send email";
-  
+
   @Autowired
   private CategoryLinkService     categoryLinkService;
 
@@ -442,9 +442,7 @@ public class EmailBoxService {
               if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
                 email.getCategoryIds().stream().forEach(emailCategoryId -> {
                   categoryLinkService.link(emailCategoryId,
-                                                new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
-                                                                   String.valueOf(email.getId()),
-                                                                   0));
+                                           new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
                 });
               }
             });
@@ -460,9 +458,7 @@ public class EmailBoxService {
           if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
             email.getCategoryIds().stream().forEach(emailCategoryId -> {
               categoryLinkService.link(emailCategoryId,
-                                            new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
-                                                               String.valueOf(email.getId()),
-                                                               0));
+                                       new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
             });
           }
         });
@@ -529,9 +525,7 @@ public class EmailBoxService {
               if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
                 email.getCategoryIds().stream().forEach(emailCategoryId -> {
                   categoryLinkService.link(emailCategoryId,
-                                                new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
-                                                                   String.valueOf(email.getId()),
-                                                                   0));
+                                           new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
                 });
               }
             });
@@ -547,9 +541,7 @@ public class EmailBoxService {
           if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
             email.getCategoryIds().stream().forEach(emailCategoryId -> {
               categoryLinkService.link(emailCategoryId,
-                                            new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
-                                                               String.valueOf(email.getId()),
-                                                               0));
+                                       new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
             });
           }
         });
@@ -673,6 +665,10 @@ public class EmailBoxService {
                                                   EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC),
                                                                                          username,
                                                                                          false);
+
+          List<EmailRecipient> emailReplyToRecipients = EmailConnectorUtils.getEmailRecipients(message.getReplyTo(),
+                                                                                               username,
+                                                                                               false);
           String mailHeaderId = ((MimeMessage) message).getMessageID();
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
@@ -687,6 +683,7 @@ public class EmailBoxService {
                                                 emailToRecipients,
                                                 emailCcRecipients,
                                                 emailBccRecipients,
+                                                emailReplyToRecipients,
                                                 null));
 
         } else {
@@ -743,7 +740,7 @@ public class EmailBoxService {
       if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
         email.getCategoryIds().stream().forEach(emailCategoryId -> {
           categoryLinkService.unlink(emailCategoryId,
-                                          new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
+                                     new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
         });
       }
     }
