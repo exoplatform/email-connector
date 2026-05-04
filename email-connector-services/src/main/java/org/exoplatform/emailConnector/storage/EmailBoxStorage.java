@@ -37,9 +37,6 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
-import org.exoplatform.social.core.identity.model.Identity;
-import org.exoplatform.social.core.identity.model.Profile;
-import org.exoplatform.social.core.manager.IdentityManager;
 
 import io.meeds.social.category.model.CategoryObject;
 import io.meeds.social.category.service.CategoryLinkService;
@@ -61,16 +58,13 @@ public class EmailBoxStorage {
   @Autowired
   private CategoryLinkService categoryLinkService;
 
-  @Autowired
-  private IdentityManager     identityManager;
-
   public Email createEmail(Email email) {
     if (email == null) {
       throw new IllegalArgumentException("email is mandatory");
     }
     EmailBoxEntity emailBoxEntity = toEntity(email);
     emailBoxEntity = emailBoxDao.save(emailBoxEntity);
-    return fromEntity(emailBoxEntity, false, false, null, true, false);
+    return fromEntity(emailBoxEntity, false, false, null, null, true, false);
   }
 
   public void markEmailAsNotRecent(Long mailRemoteId, String userId) {
@@ -83,21 +77,24 @@ public class EmailBoxStorage {
 
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
                                                String userId,
+                                               String userEmail,
                                                boolean withAttachments,
                                                boolean withRecipients,
                                                boolean withProfile) {
     EmailBoxEntity emailBoxEntity = emailBoxDao.findByMailRemoteIdAndUserId(mailRemoteId, userId);
-    return fromEntity(emailBoxEntity, withAttachments, false, userId, withRecipients, withProfile);
+    return fromEntity(emailBoxEntity, withAttachments, false, userId, userEmail, withRecipients, withProfile);
   }
 
-  public Email getEmailById(long id, String userId) {
+  public Email getEmailById(long id, String userId, String userEmail) {
     EmailBoxEntity emailBoxEntity = emailBoxDao.findById(id).orElse(null);
-    return fromEntity(emailBoxEntity, true, false, userId, true, true);
+    return fromEntity(emailBoxEntity, true, false, userId, userEmail, true, true);
   }
 
   public List<Email> getEmails(String userId) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(userId);
-    return emailBoxEntities.stream().map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, false, false)).toList();
+    return emailBoxEntities.stream()
+                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, null, false, false))
+                           .toList();
   }
 
   public void deleteEmailsByIds(List<Long> emailsIds) {
@@ -148,6 +145,7 @@ public class EmailBoxStorage {
                            boolean withAttachments,
                            boolean isExcerpt,
                            String userId,
+                           String userEmail,
                            boolean withRecipients,
                            boolean withProfile) {
     if (emailBoxEntity == null) {
@@ -167,12 +165,11 @@ public class EmailBoxStorage {
       List<Long> categoryIds = categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
                                                                                    String.valueOf(emailBoxEntity.getId()),
                                                                                    0));
-      Identity currentIdentity = identityManager.getOrCreateUserIdentity(userId);
       Email email = new Email(emailBoxEntity.getId(),
                               emailBoxEntity.getMailRemoteId(),
                               emailBoxEntity.getMailHeaderId(),
                               emailBoxEntity.getUserId(),
-                              currentIdentity != null ? currentIdentity.getProfile().getEmail() : null,
+                              userEmail,
                               emailBoxEntity.getSubject(),
                               new EmailContent(emailBoxEntity.getBody(), excerpt, attachments),
                               emailBoxEntity.getReceivedDate(),

@@ -51,7 +51,6 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
-import org.exoplatform.social.core.manager.IdentityManager;
 
 import io.meeds.social.category.service.CategoryLinkService;
 
@@ -69,9 +68,6 @@ public class EmailBoxStorageTest {
 
   @MockBean
   private CategoryLinkService categoryLinkService;
-
-  @MockBean
-  private IdentityManager     identityManager;
 
   @Autowired
   private EmailBoxStorage     emailBoxStorage;
@@ -138,7 +134,7 @@ public class EmailBoxStorageTest {
     Email email = email("root");
     emailBoxStorage.createEmail(email);
     emailBoxStorage.markEmailAsNotRecent(1212l, "root");
-    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
+    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, false, false, false);
     assertNotNull(updatedEmail);
     assertFalse(updatedEmail.isRecent());
   }
@@ -148,28 +144,28 @@ public class EmailBoxStorageTest {
     Email email = email("root");
     emailBoxStorage.createEmail(email);
     emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(1212l), "root", true);
-    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
+    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, false, false, false);
     assertNotNull(updatedEmail);
     assertTrue(updatedEmail.isRead());
   }
 
   @Test
   void getEmailByMailRemoteIdAndUserId() {
-    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
+    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, false, false, false);
     assertNull(retrievedEmail);
     Email email1 = email("root");
     emailBoxStorage.createEmail(email1);
-    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", false, false, false);
+    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, false, false, false);
     assertNotNull(retrievedEmail);
   }
 
   @Test
   void getEmailById() {
-    Email retrievedEmail = emailBoxStorage.getEmailById(2l, "root");
+    Email retrievedEmail = emailBoxStorage.getEmailById(2l, "root", null);
     assertNull(retrievedEmail);
     Email email1 = email("root");
     emailBoxStorage.createEmail(email1);
-    retrievedEmail = emailBoxStorage.getEmailById(2l, "root");
+    retrievedEmail = emailBoxStorage.getEmailById(2l, "root", null);
     assertNotNull(retrievedEmail);
   }
 
