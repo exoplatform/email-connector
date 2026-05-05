@@ -657,8 +657,6 @@ public class EmailBoxService {
         Email email = getEmailByMailRemoteIdAndUserId(messageUid, username, false, false, false, false);
         if (email == null) {
           EmailContent emailContent = EmailConnectorUtils.getMessageContent(messageUid, message);
-          String subject = message.getSubject() != null
-              && message.getSubject().length() > 50 ? message.getSubject().substring(0, 50) + "..." : message.getSubject();
           EmailSender emailSender = message.getFrom() != null
               && message.getFrom().length != 0 ? EmailConnectorUtils.getEmailSender(message.getFrom()[0], false) : null;
           List<EmailRecipient> emailToRecipients =
@@ -683,7 +681,7 @@ public class EmailBoxService {
                                                 mailHeaderId,
                                                 username,
                                                 null,
-                                                subject,
+                                                message.getSubject(),
                                                 emailContent,
                                                 message.getReceivedDate(),
                                                 emailSender,

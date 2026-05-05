@@ -15,9 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
+  <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
   <div
-    role="button"
-    tabindex="0"
     @mouseenter="!isMobile && (isHover = true)"
     @mouseleave="!isMobile && (isHover = false)"
     @focusin="!isMobile && (isHover = true)"
@@ -78,7 +77,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <div
           role="button"
           tabindex="0"
-          aria-label="Open email"
+          :aria-label="ariaLabel"
           @click="openDetail"
           @keydown.enter="openDetail"
           v-touch-hold="openActionMenuDrawer">
@@ -203,7 +202,10 @@ export default {
         return 'light-grey-background-color';
       }
       return '';
-    }
+    },
+    ariaLabel() {
+      return `Open email from ${this.email.sender.name} about ${this.email.subject}`;
+    },
   },
   methods: {
     openDetail() {
