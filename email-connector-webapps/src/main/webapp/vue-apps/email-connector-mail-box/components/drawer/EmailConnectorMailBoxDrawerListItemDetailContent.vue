@@ -18,8 +18,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-list class="my-5 py-0 mx-4">
     <v-list-item
       class="px-0 pb-1 height-auto">
-      <v-list-item-content class="py-0 text-title text-wrap overflow-visible">
-        <v-list-item-title v-text="email.subject" class="text-wrap overflow-visible" />
+      <v-list-item-content class="py-0 text-title">
+        <v-list-item-title v-text="email.subject" />
       </v-list-item-content>
     </v-list-item>
     <v-list-item

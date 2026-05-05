@@ -182,4 +182,16 @@
       <column name="REPLY_TO" type="VARCHAR(1024)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-15">
+     <modifyDataType 
+      tableName="EMAIL_BOX" 
+      columnName="SUBJECT" 
+      newDataType="TEXT" />
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-16" dbms="postgresql">
+    <modifyDataType 
+      tableName="EMAIL_BOX" 
+      columnName="BODY" 
+      newDataType="TEXT" />
+  </changeSet>
 </databaseChangeLog>

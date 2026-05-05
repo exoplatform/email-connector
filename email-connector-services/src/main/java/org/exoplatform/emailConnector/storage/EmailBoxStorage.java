@@ -156,9 +156,6 @@ public class EmailBoxStorage {
       String excerpt = null;
       if (isExcerpt) {
         excerpt = Jsoup.parse(emailBoxEntity.getBody()).text().trim();
-        if (excerpt.length() > 50) {
-          excerpt = excerpt.substring(0, 50) + "...";
-        }
       }
       String[] emailSenderParts = emailBoxEntity.getSender().split(",");
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
