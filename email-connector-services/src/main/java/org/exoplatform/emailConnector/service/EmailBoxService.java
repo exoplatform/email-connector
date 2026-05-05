@@ -313,7 +313,7 @@ public class EmailBoxService {
     }
   }
 
-  public void broadcastOpenEmail(String username) throws IllegalAccessException {
+  public String broadcastOpenEmail(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -325,6 +325,7 @@ public class EmailBoxService {
       LOG.warn("Error broadcasting event '" + EmailConnectorUtils.OPEN_EMAIL + "' using source '" + username + "' and data "
           + userEmailSetting.getEmailConnectorName(), e);
     }
+    return userEmailSetting.getEmailAddress();
   }
 
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
@@ -333,15 +334,22 @@ public class EmailBoxService {
                                                boolean withRecipients,
                                                boolean withProfile,
                                                boolean broadcast) throws IllegalAccessException {
+    String userEmail = null;
     if (broadcast) {
-      broadcastOpenEmail(username);
+      userEmail = broadcastOpenEmail(username);
     }
-    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, withAttachments, withRecipients, withProfile);
+    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId,
+                                                           username,
+                                                           userEmail,
+                                                           withAttachments,
+                                                           withRecipients,
+                                                           withProfile);
   }
 
   @Transactional
   public Email getEmailById(long id, String username) {
-    return emailBoxStorage.getEmailById(id, username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    return emailBoxStorage.getEmailById(id, username, userEmailSetting.getEmailAddress());
   }
 
   public void updateEmailReadStatus(List<Long> mailRemoteIds,

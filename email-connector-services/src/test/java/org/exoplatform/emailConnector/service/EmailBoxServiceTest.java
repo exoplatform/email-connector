@@ -175,13 +175,15 @@ public class EmailBoxServiceTest {
   @Test
   void getEmailByMailRemoteIdAndUserId() throws IllegalAccessException {
     emailBoxService.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false, false);
-    verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false);
+    verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, false, false, false);
   }
 
   @Test
   void getEmailById() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     emailBoxService.getEmailById(121l, TEST_USER);
-    verify(emailBoxStorage).getEmailById(121l, TEST_USER);
+    verify(emailBoxStorage).getEmailById(121l, TEST_USER, "testEmail");
   }
 
   @Test
@@ -217,7 +219,7 @@ public class EmailBoxServiceTest {
     assertThrows(IllegalAccessException.class, () -> emailBoxService.deleteEmail(emailIds, TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, true, true, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, true, true, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -246,7 +248,7 @@ public class EmailBoxServiceTest {
     assertThrows(IllegalAccessException.class, () -> emailBoxService.archiveEmail(emailIds, TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, true, true, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, true, true, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
