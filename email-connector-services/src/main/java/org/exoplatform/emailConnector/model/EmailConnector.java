@@ -52,6 +52,8 @@ public class EmailConnector {
   private Boolean canConnect;
 
   private String  imageUploadId;
+  
+  private String  webmailUrl;
 
   public EmailConnector(Long id,
                         String name,

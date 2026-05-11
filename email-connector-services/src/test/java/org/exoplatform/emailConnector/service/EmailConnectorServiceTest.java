@@ -204,6 +204,7 @@ public class EmailConnectorServiceTest {
                               true,
                               false,
                               true,
-                              "testUploadId");
+                              "testUploadId",
+                              "");
   }
 }

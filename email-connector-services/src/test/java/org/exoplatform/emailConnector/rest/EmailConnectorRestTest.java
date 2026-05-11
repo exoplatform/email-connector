@@ -180,7 +180,8 @@ public class EmailConnectorRestTest {
                               false,
                               false,
                               true,
-                              "testUploadId");
+                              "testUploadId",
+                              "");
   }
 
   @SneakyThrows

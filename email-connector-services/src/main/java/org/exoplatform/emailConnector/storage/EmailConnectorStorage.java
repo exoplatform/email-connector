@@ -134,7 +134,8 @@ public class EmailConnectorStorage {
                                       emailConnector.getSmtpUrl(),
                                       emailConnector.getSmtpPort(),
                                       emailConnector.getSmtpSecurityType(),
-                                      emailConnector.isActive());
+                                      emailConnector.isActive(),
+                                      emailConnector.getWebmailUrl());
     }
   }
 
@@ -164,7 +165,8 @@ public class EmailConnectorStorage {
                                                          emailConnectorEntity.isActive(),
                                                          null,
                                                          null,
-                                                         null);
+                                                         null,
+                                                         emailConnectorEntity.getWebmailUrl());
       return emailConnector;
     }
   }
