@@ -27,18 +27,32 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       icon>
       <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
     </v-btn>
-    <extension-registry-components
-      name="EmailList"
-      type="email-list-toolbar"
-      parent-element="span"
-      element="span"
-      class="my-auto" /> 
     <v-btn
       :title="$t('emailConnector.mailBox.list.drawer.newEmail.button.title')"
       @click="openNewEmailDrawer()"
       icon>
       <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
     </v-btn>
+    <email-connector-mail-box-drawer-action-menu
+      v-if="hasWebmailAccess && hasEmailListToolbarExtension"
+      :webmail-url="webmailUrl" />
+    <template v-else>
+      <extension-registry-components
+        ref="emailListToolbarExtension"
+        name="EmailList"
+        type="email-list-toolbar"
+        parent-element="span"
+        element="span"
+        class="my-auto" /> 
+      <v-btn
+        v-if="hasWebmailAccess"
+        :href="webmailUrl"
+        target="_blank"
+        :title="$t('emailConnector.mailBox.list.drawer.webmail.button.title')"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-external-link-alt</v-icon>
+      </v-btn>
+    </template>
   </div>
   <div v-else-if="hasSelectedEmails">
     <template v-if="top">
@@ -121,6 +135,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
+  data() {
+    return {
+      hasEmailListToolbarExtension: false,
+    };
+  },
   props: {
     emails: {
       type: Array,
@@ -138,6 +157,10 @@ export default {
       type: Boolean,
       default: false,
     },
+    webmailUrl: {
+      type: String,
+      default: null,
+    },
     top: {
       type: Boolean,
       default: true,
@@ -150,6 +173,14 @@ export default {
     hasSelectedEmails() {
       return this.selectedEmails.length > 0;
     },
+    hasWebmailAccess() {
+      return !!this.webmailUrl;
+    },
+  },
+  created() {
+    document.addEventListener('email-list-toolbar-extension-loaded', () => {
+      this.hasEmailListToolbarExtension = true;
+    });
   },
   methods: {
     canUpdateEmailsReadStatus(read) {
