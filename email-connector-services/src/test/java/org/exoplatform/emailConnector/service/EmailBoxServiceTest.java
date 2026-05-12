@@ -360,6 +360,7 @@ public class EmailBoxServiceTest {
                               true,
                               false,
                               true,
-                              "testUploadId");
+                              "testUploadId",
+                              "");
   }
 }

@@ -194,4 +194,9 @@
       columnName="BODY" 
       newDataType="TEXT" />
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-17">
+    <addColumn tableName="EMAIL_CONNECTOR">
+      <column name="WEB_MAIL_URL" type="NVARCHAR(250)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>

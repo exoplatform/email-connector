@@ -137,6 +137,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               dense />
           </v-list-item-content>
         </v-list-item>
+        <v-list-item-title class="pa-0 mt-7 mb-4 text-header">
+          {{ $t('emailConnector.admin.connectors.drawer.connector.advancedSettings') }}
+        </v-list-item-title>
+        <v-list-item class="pa-0 height-auto" dense>
+          <v-list-item-content class="py-0">
+            <v-list-item-title class="my-0">
+              {{ $t('emailConnector.admin.connectors.drawer.connector.activeWebmailAccess') }}
+            </v-list-item-title>
+          </v-list-item-content>
+          <v-list-item-action class="my-0">
+            <v-switch
+              v-model="activeWebmailAccess"
+              @click="switchActiveWebmailAccess" />
+          </v-list-item-action>
+        </v-list-item>
+        <v-list-item class="pa-0" dense>
+          <v-list-item-content class="py-0">
+            <v-text-field
+              v-if="activeWebmailAccess"
+              v-model="emailConnector.webmailUrl"
+              :aria-label="$t('emailConnector.admin.connectors.drawer.connector.webmailUrl')"
+              :placeholder="$t('emailConnector.admin.connectors.drawer.connector.placeHolder.webmailUrl')"
+              class="pt-3"
+              type="text"
+              required="required"
+              outlined
+              dense />
+          </v-list-item-content>
+        </v-list-item>
       </form>
     </template>
     <template #footer>
@@ -162,6 +191,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     emailConnectorDrawer: false,
+    activeWebmailAccess: false,
     emailConnectorNameTranslations: {},
     loading: false,
     smtpSecurityTypes: [],
@@ -176,7 +206,8 @@ export default {
       smtpSecurityType: 'starttls',
       imageUploadId: null,
       imageFileId: null,
-      imageUrl: null
+      imageUrl: null,
+      webmailUrl: ''
     }   
   }),
   computed: {
@@ -185,7 +216,8 @@ export default {
     },
     disabled() {
       return !this.emailConnectorName || !this.emailConnector.imapUrl || !this.emailConnector.imapPort 
-      || !this.emailConnector.smtpUrl || !this.emailConnector.smtpPort || !this.emailConnector.smtpSecurityType;
+      || !this.emailConnector.smtpUrl || !this.emailConnector.smtpPort || !this.emailConnector.smtpSecurityType
+      || (this.activeWebmailAccess && !this.emailConnector.webmailUrl);
     },
     drawerTitle() {
       return this.emailConnector.id && this.$t('emailConnector.admin.connectors.drawer.edit.title', {
@@ -215,6 +247,7 @@ export default {
         this.emailConnectorNameTranslations = await this.$translationService.getTranslations('emailConnector', emailConnector.id, 'name');
         this.emailConnector.name = this.emailConnectorNameTranslations[eXo.env.portal.defaultLanguage];
       }
+      this.activeWebmailAccess = !!this.emailConnector.webmailUrl;
       this.$refs.emailConnectorDrawer.open();
     },
     close() {
@@ -230,6 +263,7 @@ export default {
       this.emailConnector.imageUploadId = null;
       this.emailConnector.imageFileId = null;
       this.emailConnector.imageUrl = null;
+      this.emailConnector.webmailUrl = '';
       this.$refs.emailConnectorDrawer.close();
     },
     resetImage() {
@@ -239,6 +273,9 @@ export default {
     async saveConnector() {
       this.loading = true;
       const isNew = !this.emailConnector.id;
+      if (!this.activeWebmailAccess) {
+        this.emailConnector.webmailUrl = '';
+      }
       let emailConnector = this.emailConnector;
       try {
         this.emailConnector.icon = this.emailConnector.icon || 'fa-envelope';
