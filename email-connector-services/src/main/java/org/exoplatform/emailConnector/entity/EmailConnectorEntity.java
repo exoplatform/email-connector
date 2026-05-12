@@ -66,4 +66,7 @@ public class EmailConnectorEntity {
 
   @Column(name = "ACTIVE")
   private boolean active;
+
+  @Column(name = "WEB_MAIL_URL")
+  private String  webmailUrl;
 }

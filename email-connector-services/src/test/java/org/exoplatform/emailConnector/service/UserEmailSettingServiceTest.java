@@ -241,7 +241,8 @@ public class UserEmailSettingServiceTest {
                               true,
                               false,
                               true,
-                              "testUploadId");
+                              "testUploadId",
+                              "");
   }
 
   private UserEmailSetting userEmailSetting() {
