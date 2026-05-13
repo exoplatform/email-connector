@@ -169,6 +169,7 @@ public class UserEmailSettingService {
           userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
           userEmailSetting.setEmailConnectorIcon(emailConnector.getIcon());
           userEmailSetting.setEmailConnectorName(emailConnector.getName());
+          userEmailSetting.setEmailConnectorWebmailUrl(emailConnector.getWebmailUrl());
           userEmailSetting.setConnected(emailConnector.isActive());
         }
       }

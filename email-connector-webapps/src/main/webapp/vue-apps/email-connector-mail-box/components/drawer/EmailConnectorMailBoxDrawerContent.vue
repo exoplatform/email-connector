@@ -31,7 +31,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :selected-emails="selectedEmails"
       :select-mode="selectMode"
       :sync-in-progress="syncInProgress"
-      :expanded="expanded" />
+      :expanded="expanded"
+      :webmail-url="webmailUrl" />
   </div>
 </template>
 
@@ -61,6 +62,10 @@ export default {
     syncInProgress: {
       type: Boolean,
       default: false,
+    },
+    webmailUrl: {
+      type: String,
+      default: null,
     },
   },
   computed: {

@@ -33,6 +33,8 @@ public class UserEmailSetting extends UserEmailSettingEntity {
 
   private String  emailConnectorName;
 
+  private String  emailConnectorWebmailUrl;
+
   private boolean connected;
 
   public UserEmailSetting(String emailConnectorId,

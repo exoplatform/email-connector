@@ -27,7 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-btn
           v-bind="attrs"
           class="pa-0"
-          :title="$t('emailConnector.mailBox.list.drawer.detail.options.tooltip')"
+          :title="$t('emailConnector.mailBox.list.drawer.options.tooltip')"
           icon
           v-on="on"
           @click.stop.prevent>
