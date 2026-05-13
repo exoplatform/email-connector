@@ -97,25 +97,35 @@ import jakarta.annotation.PostConstruct;
 @Service
 public class EmailBoxService {
 
-  private static final Log        LOG                                            = ExoLogger.getLogger(EmailBoxService.class);
+  private static final Log        LOG                                                         =
+                                      ExoLogger.getLogger(EmailBoxService.class);
 
-  private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE = "User %s is not allowed to synchronize email";
+  private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE              =
+                                                                                 "User %s is not allowed to synchronize email";
 
-  private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE         = "User %s is not allowed to get email";
+  private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE                      =
+                                                                         "User %s is not allowed to get email";
 
-  private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT      =
+  private static final String     USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT                   =
                                                                             "User %s is not allowed to get email attachment";
 
-  private static final String     USER_NOT_ALLOWED_FOR_BROADCAST_EVENT_MESSAGE   =
-                                                                               "User %s is not allowed to broadcast open email event";
+  private static final String     USER_NOT_ALLOWED_FOR_BROADCAST_OPEN_EMAIL_EVENT_MESSAGE     =
+                                                                                          "User %s is not allowed to broadcast open email event";
 
-  private static final String     USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE      = "User %s is not allowed to update email";
+  private static final String     USER_NOT_ALLOWED_FOR_BROADCAST_ACCESS_WEBMAIL_EVENT_MESSAGE =
+                                                                                              "User %s is not allowed to broadcast access webmail event";
 
-  private static final String     USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE      = "User %s is not allowed to delete email";
+  private static final String     USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE                   =
+                                                                            "User %s is not allowed to update email";
 
-  private static final String     USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE     = "User %s is not allowed to archive email";
+  private static final String     USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE                   =
+                                                                            "User %s is not allowed to delete email";
 
-  private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE        = "User %s is not allowed to send email";
+  private static final String     USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE                  =
+                                                                             "User %s is not allowed to archive email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE                     =
+                                                                          "User %s is not allowed to send email";
 
   @Autowired
   private CategoryLinkService     categoryLinkService;
@@ -317,7 +327,7 @@ public class EmailBoxService {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_BROADCAST_EVENT_MESSAGE, username));
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_BROADCAST_OPEN_EMAIL_EVENT_MESSAGE, username));
     }
     try {
       listenerService.broadcast(EmailConnectorUtils.OPEN_EMAIL, username, userEmailSetting.getEmailConnectorName());
@@ -326,6 +336,20 @@ public class EmailBoxService {
           + userEmailSetting.getEmailConnectorName(), e);
     }
     return userEmailSetting.getEmailAddress();
+  }
+
+  public void broadcastAccessWebmail(String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_BROADCAST_ACCESS_WEBMAIL_EVENT_MESSAGE, username));
+    }
+    try {
+      listenerService.broadcast(EmailConnectorUtils.ACCESS_WEBMAIL, username, userEmailSetting.getEmailConnectorName());
+    } catch (Exception e) {
+      LOG.warn("Error broadcasting event '" + EmailConnectorUtils.ACCESS_WEBMAIL + "' using source '" + username + "' and data "
+          + userEmailSetting.getEmailConnectorName(), e);
+    }
   }
 
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,

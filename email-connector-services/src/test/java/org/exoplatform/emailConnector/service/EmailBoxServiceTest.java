@@ -162,7 +162,7 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void broadcastOpenEmailEvent() throws Exception {
+  void broadcastOpenEmail() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
@@ -170,6 +170,17 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     emailBoxService.broadcastOpenEmail(TEST_USER);
     verify(listenerService).broadcast(EmailConnectorUtils.OPEN_EMAIL, TEST_USER, "connector");
+  }
+
+  @Test
+  void broadcastAccessWebmail() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    emailBoxService.broadcastAccessWebmail(TEST_USER);
+    verify(listenerService).broadcast(EmailConnectorUtils.ACCESS_WEBMAIL, TEST_USER, "connector");
   }
 
   @Test

@@ -38,19 +38,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-icon>
         </v-btn>
       </template>
-      <email-connector-mail-box-drawer-action-menu-items
-        :webmail-url="webmailUrl" />
+      <email-connector-mail-box-drawer-action-menu-items />
     </v-menu>
   </v-list-item-action>
 </template>
-
-<script>
-export default {
-  props: {
-    webmailUrl: {
-      type: String,
-      default: null,
-    },
-  }
-};
-</script>

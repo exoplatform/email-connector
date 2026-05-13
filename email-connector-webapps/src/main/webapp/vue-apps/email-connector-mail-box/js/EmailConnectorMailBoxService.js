@@ -207,6 +207,20 @@ export function sendEmail(email) {
   });
 }
 
+export function broadcastAccessWebmail() {
+  return fetch('/email-connector/rest/email-box/webmail/broadcast', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when broadcasting access to webmail');
+    }
+  });
+}
+
 export function formatDateString(dateToFormat, yesterdayLabel, atLabel, fullDate) {
   const today = new Date();
   today.setHours(0,0,0,0);
