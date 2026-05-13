@@ -46,7 +46,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="my-auto" /> 
       <v-btn
         v-if="hasWebmailAccess"
-        :href="webmailUrl"
+        @click="openWebmail()"
         target="_blank"
         :title="$t('emailConnector.mailBox.list.drawer.webmail.button.title')"
         icon>
@@ -181,6 +181,7 @@ export default {
     document.addEventListener('email-list-toolbar-extension-loaded', () => {
       this.hasEmailListToolbarExtension = true;
     });
+    this.$root.$on('open-webmail', this.openWebmail);
   },
   methods: {
     canUpdateEmailsReadStatus(read) {
@@ -203,10 +204,13 @@ export default {
     },
     synchronize() {
       this.$root.$emit('synchronize-in-progress');
-      this.$emailConnectorMailBoxService.synchronize().then(() =>
-      {
+      this.$emailConnectorMailBoxService.synchronize().then(() => {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
       });
+    },
+    openWebmail() {
+      this.$emailConnectorMailBoxService.broadcastAccessWebmail();
+      window.open(this.webmailUrl, '_blank');
     }
   }
 };

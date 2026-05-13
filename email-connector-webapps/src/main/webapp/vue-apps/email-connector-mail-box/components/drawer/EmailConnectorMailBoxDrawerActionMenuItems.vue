@@ -46,15 +46,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  props: {
-    webmailUrl: {
-      type: String,
-      default: null,
-    },
-  },
   methods: {
     openWebmail() {
-      window.open(this.webmailUrl, '_blank');
+      this.$root.$emit('open-webmail');
     },
   }
 };
