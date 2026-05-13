@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.listener;
 
+import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.ACCESS_WEBMAIL;
 import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.OPEN_EMAIL;
 import static org.exoplatform.emailConnector.utils.EmailConnectorUtils.SEND_EMAIL;
 
@@ -40,11 +41,13 @@ import jakarta.annotation.PostConstruct;
 @Profile("analytics")
 public class AnalyticsEmailListener extends Listener<String, String> {
 
-  private static final String   OPEN_EMAIL_OPERATION_NAME = "openEmail";
+  private static final String   OPEN_EMAIL_OPERATION_NAME     = "openEmail";
 
-  private static final String   SEND_EMAIL_OPERATION_NAME = "sendEmail";
+  private static final String   SEND_EMAIL_OPERATION_NAME     = "sendEmail";
 
-  private static final String[] LISTENER_EVENTS           = { OPEN_EMAIL, SEND_EMAIL };
+  private static final String   ACCESS_WEBMAIL_OPERATION_NAME = "accessWebmail";
+
+  private static final String[] LISTENER_EVENTS               = { OPEN_EMAIL, SEND_EMAIL, ACCESS_WEBMAIL };
 
   @Autowired
   private IdentityManager       identityManager;
@@ -74,7 +77,7 @@ public class AnalyticsEmailListener extends Listener<String, String> {
     statisticData.setSubModule("email");
     statisticData.setOperation(operation);
     statisticData.setUserId(userId);
-    if (event.getEventName().equals(OPEN_EMAIL)) {
+    if (event.getEventName().equals(OPEN_EMAIL) || event.getEventName().equals(ACCESS_WEBMAIL)) {
       statisticData.addParameter("connectorName", eventData);
     } else if (event.getEventName().equals(SEND_EMAIL)) {
       statisticData.addParameter("emailType", eventData);
@@ -86,6 +89,7 @@ public class AnalyticsEmailListener extends Listener<String, String> {
     return switch (eventName) {
     case OPEN_EMAIL -> OPEN_EMAIL_OPERATION_NAME;
     case SEND_EMAIL -> SEND_EMAIL_OPERATION_NAME;
+    case ACCESS_WEBMAIL -> ACCESS_WEBMAIL_OPERATION_NAME;
     default -> throw new IllegalArgumentException("Unknown event: " + eventName);
     };
   }

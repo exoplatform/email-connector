@@ -122,9 +122,9 @@ public class EmailBoxRestTest {
   }
 
   @Test
-  void broadcastOpenEmail() throws Exception {
-    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/broadcast").with(testSimpleUser()));
-    verify(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
+  void broadcastAccessWebmail() throws Exception {
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/webmail/broadcast").with(testSimpleUser()));
+    verify(emailBoxService).broadcastAccessWebmail(SIMPLE_USER);
     response.andExpect(status().isOk());
   }
 

@@ -78,7 +78,7 @@ public class EmailBoxRest {
     }
   }
 
-  @PostMapping("synchronization")
+  @PostMapping("/synchronization")
   @Secured("users")
   @Operation(summary = "Synchronizes email box", method = "POST", description = "This will synchronize email box")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -130,17 +130,17 @@ public class EmailBoxRest {
     }
   }
 
-  @PostMapping("broadcast")
+  @PostMapping("/webmail/broadcast")
   @Secured("users")
-  @Operation(summary = "Broadcasts open email", method = "POST", description = "This will broadcast open email")
+  @Operation(summary = "Broadcasts access webmail", method = "POST", description = "This will broadcast access webmail")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void broadcastOpenEmail(HttpServletRequest request) {
+  public void broadcastOpenWebmail(HttpServletRequest request) {
     try {
-      emailBoxService.broadcastOpenEmail(request.getRemoteUser());
+      emailBoxService.broadcastAccessWebmail(request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -202,7 +202,7 @@ public class EmailBoxRest {
     }
   }
 
-  @DeleteMapping("archive")
+  @DeleteMapping("/archive")
   @Secured("users")
   @Operation(summary = "Archives email", method = "DELETE", description = "This will archive email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
@@ -229,7 +229,7 @@ public class EmailBoxRest {
     }
   }
 
-  @PostMapping("send")
+  @PostMapping("/send")
   @Secured("users")
   @Operation(summary = "Sends email", method = "POST", description = "This will send email")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
