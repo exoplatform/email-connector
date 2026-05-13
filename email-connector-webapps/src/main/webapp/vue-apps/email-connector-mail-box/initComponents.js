@@ -16,6 +16,8 @@
  */
 import EmailConnectorMailBoxApp from './components/EmailConnectorMailBoxApp.vue';
 import EmailConnectorMailBoxDrawer from './components/drawer/EmailConnectorMailBoxDrawer.vue';
+import EmailConnectorMailBoxDrawerActionMenu from './components/drawer/EmailConnectorMailBoxDrawerActionMenu.vue';
+import EmailConnectorMailBoxDrawerActionMenuItems from './components/drawer/EmailConnectorMailBoxDrawerActionMenuItems.vue';
 import EmailConnectorMailBoxDrawerActions from './components/drawer/EmailConnectorMailBoxDrawerActions.vue';
 import EmailConnectorMailBoxDrawerAttachmentItem from './components/drawer/EmailConnectorMailBoxDrawerAttachmentItem.vue';
 import EmailConnectorMailBoxDrawerAttachmentsDrawer from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsDrawer.vue';
@@ -48,6 +50,8 @@ import EmailConnectorNewEmailDrawerNoSubjectConfirmPopup from './components/draw
 const components = {
   'email-connector-mail-box-app': EmailConnectorMailBoxApp,
   'email-connector-mail-box-drawer': EmailConnectorMailBoxDrawer,
+  'email-connector-mail-box-drawer-action-menu': EmailConnectorMailBoxDrawerActionMenu,
+  'email-connector-mail-box-drawer-action-menu-items': EmailConnectorMailBoxDrawerActionMenuItems,
   'email-connector-mail-box-drawer-actions': EmailConnectorMailBoxDrawerActions,
   'email-connector-mail-box-drawer-attachment-item': EmailConnectorMailBoxDrawerAttachmentItem,
   'email-connector-mail-box-drawer-attachments-drawer': EmailConnectorMailBoxDrawerAttachmentsDrawer,

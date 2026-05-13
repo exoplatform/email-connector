@@ -61,6 +61,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </span>
         <email-connector-mail-box-drawer-actions
           :emails="emails"
+          class="d-flex align-center"
+          :webmail-url="webmailUrl"
           :selected-emails="selectedEmails"
           :select-mode="selectMode" 
           :sync-in-progress="syncInProgress" />
@@ -76,6 +78,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-else-if="!syncBlocked"
         class="d-flex align-center"
         :emails="emails"
+        :webmail-url="webmailUrl"
         :selected-emails="selectedEmails"
         :select-mode="selectMode"
         :sync-in-progress="syncInProgress" />
@@ -140,6 +143,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :select-mode="selectMode" 
             :indeterminate="indeterminate"
             :sync-in-progress="syncInProgress"
+            :webmail-url="webmailUrl"
             @update:selected-emails="selectedEmails = $event" />
         </template>
         <email-connector-mail-box-drawer-no-email v-else />
@@ -156,6 +160,7 @@ export default {
       emailBox: null,
       loading: false,
       syncInProgress: false,
+      webmailUrl: null,
       refreshInterval: null,
       activeDownload: null,
       selectedEmails: [],
@@ -280,7 +285,7 @@ export default {
         emails = emails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
       }
       return emails;
-    },
+    }
   },
   watch: {
     async selectedCategoryId(val) {
@@ -419,6 +424,7 @@ export default {
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();
       this.emails = this.emailBox.emails || [];
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
+      this.webmailUrl = this.emailBox.webmailUrl;
       this.$root.$emit('refresh-emails', this.emails);
       if (!this.syncInProgress) {
         this.stopAutoRefresh();

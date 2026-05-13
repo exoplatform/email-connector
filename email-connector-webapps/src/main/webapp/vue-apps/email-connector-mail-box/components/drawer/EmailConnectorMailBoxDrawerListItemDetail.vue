@@ -50,7 +50,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ title }}
         </span>
         <email-connector-mail-box-drawer-actions
+          class="d-flex align-center"
           :emails="filteredEmails"
+          :webmail-url="webmailUrl"
           :selected-emails="selectedEmails"
           :select-mode="selectMode" 
           :sync-in-progress="syncInProgress" />
@@ -105,6 +107,7 @@ export default {
       emails: [],
       selectedEmails: [],
       syncInProgress: false,
+      webmailUrl: null,
       selectMode: false,
       selectEmailPlaceHolder: false,
       selectedCategoryId: null,
@@ -112,8 +115,8 @@ export default {
     };
   },
   created() {
-    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress) => {
-      this.open(mailRemoteId, emails, syncInProgress);
+    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl) => {
+      this.open(mailRemoteId, emails, syncInProgress, webmailUrl);
     };
     this.onCloseEmailDetailDrawer = () => {
       if (!this.expanded) {
@@ -223,10 +226,11 @@ export default {
     }
   },
   methods: {
-    open(mailRemoteId, emails, syncInProgress) {
+    open(mailRemoteId, emails, syncInProgress, webmailUrl) {
       this.loading = true;
       this.emailDetailDrawer = true;
       this.emails = emails;
+      this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
       this.$root.isDetailDrawerActive = true;
       this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
