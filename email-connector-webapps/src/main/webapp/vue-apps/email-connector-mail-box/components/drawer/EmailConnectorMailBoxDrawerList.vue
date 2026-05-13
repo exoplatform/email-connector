@@ -24,6 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :opened-email-id="openedEmailId"
       @set-opened="openedEmailId = $event"
       :emails="emails"
+      :webmail-url="webmailUrl"
       :sync-in-progress="syncInProgress" 
       :selected-emails="selectedEmails"
       :select-mode="selectMode" 
@@ -58,6 +59,10 @@ export default {
     syncInProgress: {
       type: Boolean,
       default: false,
+    },
+    webmailUrl: {
+      type: String,
+      default: null,
     },
   }
 };

@@ -1,5 +1,5 @@
 <!--
-Copyright (C) 2025 eXo Platform SAS.
+Copyright (C) 2026 eXo Platform SAS.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -15,10 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item-action class="my-0">
+  <v-list-item-action class="ma-0">
     <v-menu
-      ref="menu"
-      v-model="menu"
       :nudge-top="-1"
       content-class="no-min-width border-radius z-index-modal overflow-hidden"
       close-on-content-click
@@ -29,9 +27,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-btn
           v-bind="attrs"
           class="pa-0"
-          width="28"
-          min-width="28"
-          height="28"
           :title="$t('emailConnector.mailBox.list.drawer.options.tooltip')"
           icon
           v-on="on"
@@ -43,34 +38,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-icon>
         </v-btn>
       </template>
-      <email-connector-mail-box-drawer-list-item-action-menu-items
-        @close="menu = false"
-        :email="email" />
+      <email-connector-mail-box-drawer-action-menu-items
+        :webmail-url="webmailUrl" />
     </v-menu>
   </v-list-item-action>
 </template>
 
 <script>
 export default {
-  data() {
-    return {
-      menu: false,
-    };
-  },
   props: {
-    email: {
-      type: Object,
-      default: () => null,
-    }
-  },
-  watch: {
-    menu() {
-      if (this.menu) {
-        this.$emit('open');
-      } else {
-        this.$emit('close');
-      }
-    }
+    webmailUrl: {
+      type: String,
+      default: null,
+    },
   }
 };
 </script>

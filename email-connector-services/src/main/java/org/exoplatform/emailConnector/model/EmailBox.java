@@ -27,7 +27,9 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class EmailBox {
 
-  private List<Email>   emails;
+  private List<Email> emails;
 
-  private SyncStatus emailSyncStatus;
+  private SyncStatus  emailSyncStatus;
+
+  private String      webmailUrl;
 }

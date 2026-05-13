@@ -162,6 +162,10 @@ export default {
       type: String,
       default: null,
     },
+    webmailUrl: {
+      type: String,
+      default: null,
+    },
   },
   computed: {
     gapSize() {
@@ -218,7 +222,7 @@ export default {
           this.$emit('set-opened', this.email.mailRemoteId);
         }
         else {
-          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress);
+          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl);
         }
       }
     },
