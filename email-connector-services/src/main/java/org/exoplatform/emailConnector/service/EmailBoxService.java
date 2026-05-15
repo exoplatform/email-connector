@@ -448,7 +448,6 @@ public class EmailBoxService {
       deleteEmails(emails);
       Store store = null;
       IMAPFolder inbox = null;
-      boolean needExpunge = false;
       try {
         store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
         inbox = (IMAPFolder) store.getFolder("INBOX");
@@ -458,12 +457,10 @@ public class EmailBoxService {
           try {
             Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
             if (remoteMessage != null) {
-              remoteMessage.setFlag(Flags.Flag.DELETED, true);
               if (trash != null) {
-                inbox.moveMessages(new Message[] { remoteMessage }, trash);
-              } else {
-                needExpunge = true;
+                inbox.copyMessages(new Message[] { remoteMessage }, trash);
               }
+              remoteMessage.setFlag(Flags.Flag.DELETED, true);
             }
           } catch (Exception e) {
             emails.stream().filter(email -> email.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
@@ -498,7 +495,7 @@ public class EmailBoxService {
       } finally {
         try {
           if (inbox != null && inbox.isOpen()) {
-            inbox.close(needExpunge);
+            inbox.close(true);
           }
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing inbox", messagingException);
@@ -537,15 +534,15 @@ public class EmailBoxService {
       try {
         store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
         inbox = (IMAPFolder) store.getFolder("INBOX");
-        inbox.open(Folder.READ_WRITE);
         IMAPFolder archive = findArchiveFolder(store);
+        inbox.open(Folder.READ_WRITE);
         for (Long mailRemoteId : mailRemoteIds) {
           try {
             Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
             if (remoteMessage != null) {
-              remoteMessage.setFlag(Flags.Flag.DELETED, true);
               if (archive != null) {
-                inbox.moveMessages(new Message[] { remoteMessage }, archive);
+                inbox.copyMessages(new Message[] { remoteMessage }, archive);
+                remoteMessage.setFlag(Flags.Flag.DELETED, true);
               }
             }
           } catch (Exception e) {
@@ -581,7 +578,7 @@ public class EmailBoxService {
       } finally {
         try {
           if (inbox != null && inbox.isOpen()) {
-            inbox.close(false);
+            inbox.close(true);
           }
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing inbox", messagingException);
@@ -844,8 +841,9 @@ public class EmailBoxService {
   @SuppressWarnings("resource")
   private IMAPFolder findTrashFolder(Store store) throws MessagingException {
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
-      if (!(folder instanceof IMAPFolder))
+      if (!(folder instanceof IMAPFolder)) {
         continue;
+      }
       IMAPFolder imapFolder = (IMAPFolder) folder;
       String name = imapFolder.getFullName().toLowerCase();
       if (name.contains("trash") || name.contains("corbeille") || name.contains("deleted")) {
@@ -858,11 +856,12 @@ public class EmailBoxService {
   @SuppressWarnings("resource")
   private IMAPFolder findArchiveFolder(Store store) throws MessagingException {
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
-      if (!(folder instanceof IMAPFolder))
+      if (!(folder instanceof IMAPFolder)){
         continue;
+      }
       IMAPFolder imapFolder = (IMAPFolder) folder;
       String name = imapFolder.getFullName().toLowerCase();
-      if (name.contains("archive") || name.contains("archivage")) {
+      if (name.contains("archive") || name.contains("archivage") || name.contains("all") || name.contains("tous")) {
         return imapFolder;
       }
     }

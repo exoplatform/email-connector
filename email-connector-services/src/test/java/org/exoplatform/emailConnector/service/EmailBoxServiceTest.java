@@ -247,11 +247,11 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.DELETED, true);
-    verify(inbox).moveMessages(any(Message[].class), any(Folder.class));
+    verify(inbox).copyMessages(any(Message[].class), any(Folder.class));
   }
 
   @Test
-  void archiveEmailByMailRemoteIdAndUserId() throws Exception {
+  void archiveEmail() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
@@ -275,7 +275,7 @@ public class EmailBoxServiceTest {
     emailBoxService.archiveEmail(emailIds, TEST_USER);
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
-    verify(inbox).moveMessages(any(Message[].class), any(Folder.class));
+    verify(inbox).copyMessages(any(Message[].class), any(Folder.class));
   }
 
   @Test
