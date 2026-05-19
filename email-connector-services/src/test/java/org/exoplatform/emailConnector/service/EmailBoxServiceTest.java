@@ -32,6 +32,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
 import java.io.InputStream;
+import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -49,6 +50,7 @@ import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.MimeMessage;
 
+import org.apache.commons.lang3.ArrayUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.MockedStatic;
@@ -243,6 +245,8 @@ public class EmailBoxServiceTest {
     when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    when(trashFolder.exists()).thenReturn(true);
+    when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     emailBoxService.deleteEmail(emailIds, TEST_USER);
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
@@ -272,6 +276,8 @@ public class EmailBoxServiceTest {
     when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    when(archiveFolder.exists()).thenReturn(true);
+    when(archiveFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     emailBoxService.archiveEmail(emailIds, TEST_USER);
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
