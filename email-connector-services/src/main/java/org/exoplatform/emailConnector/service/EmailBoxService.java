@@ -838,13 +838,21 @@ public class EmailBoxService {
     return (BodyPart) current;
   }
 
-  @SuppressWarnings("resource")
   private IMAPFolder findTrashFolder(Store store) throws MessagingException {
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
       if (!(folder instanceof IMAPFolder)) {
         continue;
       }
       IMAPFolder imapFolder = (IMAPFolder) folder;
+      if (!imapFolder.exists()) {
+        continue;
+      }
+      String[] attributes = imapFolder.getAttributes();
+      for (String attr : attributes) {
+        if (attr.equalsIgnoreCase("\\Trash")) {
+          return imapFolder;
+        }
+      }
       String name = imapFolder.getFullName().toLowerCase();
       if (name.contains("trash") || name.contains("corbeille") || name.contains("deleted")) {
         return imapFolder;
@@ -853,13 +861,21 @@ public class EmailBoxService {
     return null;
   }
 
-  @SuppressWarnings("resource")
   private IMAPFolder findArchiveFolder(Store store) throws MessagingException {
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
-      if (!(folder instanceof IMAPFolder)){
+      if (!(folder instanceof IMAPFolder)) {
         continue;
       }
       IMAPFolder imapFolder = (IMAPFolder) folder;
+      if (!imapFolder.exists()) {
+        continue;
+      }
+      String[] attributes = imapFolder.getAttributes();
+      for (String attr : attributes) {
+        if (attr.equalsIgnoreCase("\\Archive") || attr.equalsIgnoreCase("\\All")) {
+          return imapFolder;
+        }
+      }
       String name = imapFolder.getFullName().toLowerCase();
       if (name.contains("archive") || name.contains("archivage") || name.contains("all") || name.contains("tous")) {
         return imapFolder;
