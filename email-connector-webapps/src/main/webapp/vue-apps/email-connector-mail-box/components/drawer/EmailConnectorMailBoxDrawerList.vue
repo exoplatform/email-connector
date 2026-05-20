@@ -22,7 +22,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :key="email.mailRemoteId"
       :email="email"
       :opened-email-id="openedEmailId"
-      @set-opened="openedEmailId = $event"
       :emails="emails"
       :webmail-url="webmailUrl"
       :sync-in-progress="syncInProgress" 
@@ -68,6 +67,11 @@ export default {
       type: Object,
       default: () => null,
     }
-  }
+  },
+  created() {
+    this.$root.$on('set-opened', (mailRemoteId) => {
+      this.openedEmailId = mailRemoteId;
+    });
+  },
 };
 </script>
