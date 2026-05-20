@@ -297,6 +297,11 @@ export default {
       if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
         this.selectEmailPlaceHolder = true;
       }
+    },
+    selectEmailPlaceHolder() {
+      if (this.selectEmailPlaceHolder) {
+        this.$root.$emit('set-opened', null);
+      }
     }
   },
   methods: {
@@ -328,7 +333,7 @@ export default {
       this.close();
     },
     canDisplaySelectEmailPlaceHolder(emails) {
-      return this.expanded && (this.selectMode || this.email && emails.includes(this.email.mailRemoteId));
+      return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
     close() {
       this.stopAutoRefresh();
