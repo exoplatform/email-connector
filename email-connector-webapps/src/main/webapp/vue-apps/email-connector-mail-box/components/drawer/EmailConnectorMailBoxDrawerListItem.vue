@@ -104,7 +104,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <v-list-item-subtitle v-text="excerpt" />
             </v-list-item-content>
             <email-connector-mail-box-drawer-list-item-action-menu
-              v-if="(!isMobile && isHover && !selectMode) || menuOpen"
+              v-if="!selectMode && !isMobile"
+              :style="{
+                opacity: isHover || menuOpen ? 1 : 0,
+                pointerEvents: isHover || menuOpen ? 'auto' : 'none'
+              }"
               ref="menu"
               :email="email"
               @open="menuOpen = true"
