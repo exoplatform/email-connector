@@ -225,7 +225,7 @@ export default {
       else {
         if (this.expanded) {
           this.$root.$emit('open-email-detail-content', this.email.mailRemoteId);
-          this.$emit('set-opened', this.email.mailRemoteId);
+          this.$root.$emit('set-opened', this.email.mailRemoteId);
         }
         else {
           this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl);
