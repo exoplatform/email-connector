@@ -24,6 +24,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,6 +33,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import javax.activation.DataHandler;
@@ -44,6 +46,7 @@ import javax.mail.Part;
 import javax.mail.internet.ContentType;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeMultipart;
+import javax.mail.internet.MimeUtility;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -71,24 +74,26 @@ import lombok.SneakyThrows;
 
 public class EmailConnectorUtils {
 
-  public static final String EMAIL_BOX_SYNC_JOB_NAME = "EmailBoxSyncJob";
+  public static final String   EMAIL_BOX_SYNC_JOB_NAME = "EmailBoxSyncJob";
 
-  public static final int    MAX_EMAILS              =
-                                        Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
+  public static final int      MAX_EMAILS              =
+                                          Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
 
-  public static final String OPEN_EMAIL              = "exo.email.openEmail";
+  public static final String   OPEN_EMAIL              = "exo.email.openEmail";
 
-  public static final String SEND_EMAIL              = "exo.email.sendEmail";
+  public static final String   SEND_EMAIL              = "exo.email.sendEmail";
 
-  public static final String ACCESS_WEBMAIL          = "exo.email.accessWebmail";
+  public static final String   ACCESS_WEBMAIL          = "exo.email.accessWebmail";
 
-  public static final String EMAIL_FEATURE           = "email";
+  public static final String   EMAIL_FEATURE           = "email";
 
-  private static final int   DEFAULT_AVATAR_WIDTH    = 350;
+  private static final int     DEFAULT_AVATAR_WIDTH    = 350;
 
-  private static final int   DEFAULT_AVATAR_HEIGHT   = 350;
+  private static final int     DEFAULT_AVATAR_HEIGHT   = 350;
 
-  private static final Log   LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
+  private static final Pattern MOJIBAKE_PATTERN        = Pattern.compile("[ÃÂâ][\u0080-\u00BF]");
+
+  private static final Log     LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
   @SneakyThrows
   public static EmailContent getMessageContent(long messageUid, Message message) {
@@ -139,7 +144,8 @@ public class EmailConnectorUtils {
     if (messageSenderAddress instanceof InternetAddress internetAddress) {
       String avatarUrl = null;
       String profileUrl = null;
-      String senderName = internetAddress.getPersonal() != null ? internetAddress.getPersonal() : internetAddress.getAddress();
+      String senderName = internetAddress.getPersonal() != null ? decodeHeader(internetAddress.getPersonal())
+                                                                : internetAddress.getAddress();
       if (withProfile) {
         Profile userProfile = getUserProfileByEmail(internetAddress.getAddress());
         if (userProfile != null) {
@@ -350,6 +356,22 @@ public class EmailConnectorUtils {
       return "data:" + mimeType + ";base64," + base64;
     } catch (Exception e) {
       return "";
+    }
+  }
+
+  private static String decodeHeader(String raw) {
+    if (raw == null) {
+      return null;
+    }
+    try {
+      String decoded = MimeUtility.decodeText(raw);
+      if (!MOJIBAKE_PATTERN.matcher(decoded).find()) {
+        return decoded;
+      }
+      String reencoded = new String(decoded.getBytes(StandardCharsets.ISO_8859_1), StandardCharsets.UTF_8);
+      return reencoded.equals(decoded) ? decoded : reencoded;
+    } catch (UnsupportedEncodingException e) {
+      return raw;
     }
   }
 }
