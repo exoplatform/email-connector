@@ -28,6 +28,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       @click.stop />
     <email-connector-mail-box-drawer-list
       :emails="emails"
+      :current-email="email"
       :selected-emails="selectedEmails"
       :select-mode="selectMode"
       :sync-in-progress="syncInProgress"
@@ -67,6 +68,10 @@ export default {
       type: String,
       default: null,
     },
+    email: {
+      type: Object,
+      default: () => null,
+    }
   },
   computed: {
     selectedAll: {

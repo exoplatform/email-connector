@@ -36,7 +36,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data() {
     return {
-      openedEmailId: null
+      openedEmailId: this.currentEmail?.mailRemoteId,
     };
   },
   props: {
@@ -64,6 +64,10 @@ export default {
       type: String,
       default: null,
     },
+    currentEmail: {
+      type: Object,
+      default: () => null,
+    }
   }
 };
 </script>
