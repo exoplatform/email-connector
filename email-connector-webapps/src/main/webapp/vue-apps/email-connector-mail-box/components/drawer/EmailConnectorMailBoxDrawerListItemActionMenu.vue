@@ -35,7 +35,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :title="$t('emailConnector.mailBox.list.drawer.options.tooltip')"
           icon
           v-on="on"
-          @click.stop.prevent>
+          @click.stop.prevent
+          @keydown.enter.stop
+          @keydown.space.stop>
           <v-icon
             size="20"
             class="icon-default-color">
