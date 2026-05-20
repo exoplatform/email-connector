@@ -74,12 +74,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @click.stop
         @change="onSelectChange" />
       <div class="flex-grow-1 no-min-width">    
+        <!-- eslint-disable vuejs-accessibility/no-static-element-interactions -->
         <div
-          role="button"
+          class="clickable"
           tabindex="0"
           :aria-label="ariaLabel"
           @click="openDetail"
           @keydown.enter="openDetail"
+          @keydown.space.prevent="openDetail"
           v-touch-hold="openActionMenuDrawer">
           <v-list-item
             ref="mail"
@@ -104,7 +106,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <v-list-item-subtitle v-text="excerpt" />
             </v-list-item-content>
             <email-connector-mail-box-drawer-list-item-action-menu
-              v-if="(!isMobile && isHover && !selectMode) || menuOpen"
+              v-if="!selectMode && !isMobile"
+              :style="{
+                opacity: isHover || menuOpen ? 1 : 0,
+                pointerEvents: isHover || menuOpen ? 'auto' : 'none'
+              }"
               ref="menu"
               :email="email"
               @open="menuOpen = true"
