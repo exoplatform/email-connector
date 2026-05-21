@@ -302,6 +302,14 @@ export default {
       if (this.selectEmailPlaceHolder) {
         this.$root.$emit('set-opened', null);
       }
+    },
+    selectMode() {
+      if (this.selectMode) {
+        this.$root.$emit('set-opened', null);
+      }
+      else if (!this.selectEmailPlaceHolder) {
+        this.$root.$emit('set-opened', this.email.mailRemoteId);
+      }
     }
   },
   methods: {
