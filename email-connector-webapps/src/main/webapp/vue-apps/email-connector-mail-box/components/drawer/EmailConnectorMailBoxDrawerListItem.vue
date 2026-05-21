@@ -205,7 +205,7 @@ export default {
       if (this.isMobile) {
         return 'no-select';
       }
-      if (this.expanded && (this.isHover || this.opened)) {
+      if (this.expanded && (this.isHover || this.opened || this.selected)) {
         return 'grey-lighten1-background-opacity-3';
       }
       if (this.isHover) {
