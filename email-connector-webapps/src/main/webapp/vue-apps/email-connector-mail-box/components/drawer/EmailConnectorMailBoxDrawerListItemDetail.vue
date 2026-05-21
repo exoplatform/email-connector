@@ -224,6 +224,11 @@ export default {
       if (this.email && !this.filteredEmails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
         this.selectEmailPlaceHolder = true;
       }
+    },
+    selectEmailPlaceHolder() {
+      if (this.selectEmailPlaceHolder) {
+        this.$root.$emit('set-opened', null);
+      }
     }
   },
   methods: {
@@ -261,7 +266,7 @@ export default {
       this.selectedEmails = [];
     },
     canDisplaySelectEmailPlaceHolder(emails) {
-      return this.expanded && (this.selectMode || this.email && emails.includes(this.email.mailRemoteId));
+      return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
