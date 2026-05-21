@@ -91,6 +91,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         hide-on-empty />
       <email-connector-mail-box-drawer-content
         :emails="emails"
+        :email="email"
         :selected-emails="selectedEmails"
         :select-mode="selectMode"
         :indeterminate="indeterminate"
