@@ -22,7 +22,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       close-on-content-click
       offset-y
       left
-      bottom>
+      bottom
+      attach>
       <template #activator="{ on, attrs }">
         <v-btn
           v-bind="attrs"
