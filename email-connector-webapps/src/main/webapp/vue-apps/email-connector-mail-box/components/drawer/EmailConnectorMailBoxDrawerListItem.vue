@@ -25,7 +25,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       backgroundClass,
       selectMode ? 'ps-4' : 'ps-7'
     ]"
-    class="position-relative no-border overflow-hidden pt-3 pb-3 pe-4">
+    class="position-relative no-border pt-3 pb-3 pe-4">
     <div
       v-if="absolute"
       :class="[

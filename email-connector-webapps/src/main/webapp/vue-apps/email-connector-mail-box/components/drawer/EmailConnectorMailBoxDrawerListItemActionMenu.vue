@@ -20,11 +20,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       ref="menu"
       v-model="menu"
       :nudge-top="-1"
-      content-class="no-min-width border-radius z-index-modal overflow-hidden"
+      content-class="no-min-width border-radius z-index-modal overflow-hidden text-no-wrap"
       close-on-content-click
       offset-y
       left
-      bottom>
+      bottom
+      attach>
       <template #activator="{ on, attrs }">
         <v-btn
           v-bind="attrs"
