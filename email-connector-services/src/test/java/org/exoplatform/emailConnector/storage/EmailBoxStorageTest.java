@@ -49,7 +49,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailThreadAiSummaryDAO;
@@ -81,31 +81,31 @@ public class EmailBoxStorageTest {
   // never be labelled with.
   private static final String OWNER_ADDRESS = "owner@example.org";
 
-  @MockBean
+  @MockitoBean
   private EmailBoxDAO         emailBoxDAO;
 
-  @MockBean
+  @MockitoBean
   private EmailAttachmentDAO  emailAttachmentDAO;
 
-  @MockBean
+  @MockitoBean
   private CategoryLinkService categoryLinkService;
 
   // The storage records a file as unreferenced before deleting the rows that named it,
   // and writes attachment bytes through the platform's file service. Both are mocked
   // here: this class is the fully-mocked rig, and the behaviours that use them are
   // pinned in EmailBoxDraftAttachmentStorageTest against a real database.
-  @MockBean
+  @MockitoBean
   private EmailOrphanFileDAO  emailOrphanFileDAO;
 
   // Nothing in this class touches a conversation summary; the storage now holds this
   // repository, so the context would simply refuse to start without it.
-  @MockBean
+  @MockitoBean
   private EmailThreadAiSummaryDAO emailThreadAiSummaryDAO;
 
-  @MockBean
+  @MockitoBean
   private FileService         fileService;
 
-  @MockBean
+  @MockitoBean
   private UploadService       uploadService;
 
   @Autowired

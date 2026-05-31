@@ -21,16 +21,15 @@ import java.util.List;
 
 import org.exoplatform.emailConnector.model.DraftState;
 
+import io.meeds.common.persistence.PortableSequence;
+
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
-import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -44,8 +43,7 @@ import lombok.NoArgsConstructor;
 public class EmailBoxEntity {
 
   @Id
-  @SequenceGenerator(name = "SEQ_EMAIL_ID", sequenceName = "SEQ_EMAIL_ID", allocationSize = 1)
-  @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_EMAIL_ID")
+  @PortableSequence(name = "SEQ_EMAIL_ID")
   @Column(name = "ID")
   private Long                        id;
 

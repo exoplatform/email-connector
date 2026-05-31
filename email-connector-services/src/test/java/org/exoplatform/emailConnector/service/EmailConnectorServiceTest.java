@@ -35,7 +35,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -52,6 +52,7 @@ import org.exoplatform.services.security.Identity;
 import io.meeds.appcenter.model.ApplicationList;
 import io.meeds.appcenter.service.ApplicationCenterService;
 import io.meeds.social.translation.service.TranslationService;
+
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { EmailConnectorService.class })
@@ -60,25 +61,25 @@ public class EmailConnectorServiceTest {
 
   private static final String      TEST_USER = "testuser";
 
-  @MockBean
+  @MockitoBean
   private UserACL                  userAcl;
 
-  @MockBean
+  @MockitoBean
   private TranslationService       translationService;
 
-  @MockBean
+  @MockitoBean
   private ApplicationCenterService applicationCenterService;
 
-  @MockBean
+  @MockitoBean
   private ExoFeatureService        featureService;
 
-  @MockBean
+  @MockitoBean
   private EmailConnectorStorage    emailConnectorStorage;
 
-  @MockBean
+  @MockitoBean
   private FileService              fileService;
 
-  @MockBean
+  @MockitoBean
   private SettingService           settingService;
 
   @Autowired

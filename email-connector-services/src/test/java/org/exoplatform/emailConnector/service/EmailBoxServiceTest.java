@@ -125,8 +125,8 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.sun.mail.imap.AppendUID;
@@ -204,37 +204,37 @@ public class EmailBoxServiceTest {
 
   private static final long       FAR_DEADLINE = SUBMITTED_AT + 10 * 60_000L;
 
-  @MockBean
+  @MockitoBean
   private UserEmailSettingService userEmailSettingService;
 
-  @MockBean
+  @MockitoBean
   private EmailBoxStorage         emailBoxStorage;
 
-  @MockBean
+  @MockitoBean
   private SettingService          settingService;
 
-  @MockBean
+  @MockitoBean
   private JobSchedulerService     jobSchedulerService;
 
-  @MockBean
+  @MockitoBean
   private ListenerService         listenerService;
 
-  @MockBean
+  @MockitoBean
   private EmailConnectorService   emailConnectorService;
 
-  @MockBean
+  @MockitoBean
   private CategoryLinkService     categoryLinkService;
 
-  @MockBean
+  @MockitoBean
   private CategoryService         categoryService;
 
-  @MockBean
+  @MockitoBean
   private ApplicationEventPublisher eventPublisher;
 
-  @MockBean
+  @MockitoBean
   private EmailFavoriteService    emailFavoriteService;
 
-  @MockBean
+  @MockitoBean
   private EmailSignatureService   emailSignatureService;
 
   @Autowired
@@ -1383,7 +1383,7 @@ public class EmailBoxServiceTest {
     // site, not in the consumers.
     // The mock is pinned into the service by hand: for ApplicationEventPublisher the
     // context registers ITSELF as a resolvable dependency, and that candidate can win
-    // the @Autowired resolution over the @MockBean, leaving the mock unobserved.
+    // the @Autowired resolution over the @MockitoBean, leaving the mock unobserved.
     ReflectionTestUtils.setField(emailBoxService, "eventPublisher", eventPublisher);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);

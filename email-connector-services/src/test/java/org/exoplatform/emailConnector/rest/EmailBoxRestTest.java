@@ -48,14 +48,15 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureWebMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureWebMvc;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
@@ -65,6 +66,7 @@ import org.springframework.web.context.WebApplicationContext;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 
 import com.fasterxml.jackson.core.json.JsonReadFeature;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
@@ -84,11 +86,13 @@ import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
+
 import jakarta.servlet.Filter;
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { EmailBoxRest.class, PortalAuthenticationManager.class })
 @ContextConfiguration(classes = { WebSecurityConfiguration.class })
+@TestPropertySource(properties = "spring.jackson.deserialization.fail-on-null-for-primitives=false")
 @AutoConfigureWebMvc
 @AutoConfigureMockMvc(addFilters = false)
 @ExtendWith(MockitoExtension.class)
@@ -108,11 +112,12 @@ public class EmailBoxRestTest {
     OBJECT_MAPPER = JsonMapper.builder()
                               .configure(JsonReadFeature.ALLOW_MISSING_VALUES, true)
                               .configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false)
+                              .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                               .build();
     OBJECT_MAPPER.registerModule(new JavaTimeModule());
   }
 
-  @MockBean
+  @MockitoBean
   private EmailBoxService       emailBoxService;
 
   @Autowired
@@ -310,7 +315,7 @@ public class EmailBoxRestTest {
                                                              .contentType(MediaType.APPLICATION_JSON)
                                                              .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isNotFound());
-    email.setTo(List.of(mock(EmailRecipient.class)));
+    email.setTo(List.of(new EmailRecipient()));
     response = mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser())
                                                              .content(asJsonString(email))
                                                              .contentType(MediaType.APPLICATION_JSON)

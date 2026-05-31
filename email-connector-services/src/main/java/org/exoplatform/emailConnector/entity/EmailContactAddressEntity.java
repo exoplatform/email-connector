@@ -17,12 +17,11 @@
 
 package org.exoplatform.emailConnector.entity;
 
+import io.meeds.common.persistence.PortableSequence;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 
 import lombok.AllArgsConstructor;
@@ -49,8 +48,7 @@ import lombok.NoArgsConstructor;
 public class EmailContactAddressEntity {
 
   @Id
-  @SequenceGenerator(name = "SEQ_EMAIL_CONTACT_ADDRESS_ID", sequenceName = "SEQ_EMAIL_CONTACT_ADDRESS_ID", allocationSize = 1)
-  @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_EMAIL_CONTACT_ADDRESS_ID")
+  @PortableSequence(name = "SEQ_EMAIL_CONTACT_ADDRESS_ID")
   @Column(name = "ID")
   private Long   id;
 

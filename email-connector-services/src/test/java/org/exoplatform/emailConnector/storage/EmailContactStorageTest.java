@@ -29,11 +29,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-
-import java.util.Date;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -41,11 +40,11 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.dao.EmailContactAddressDAO;
@@ -67,16 +66,16 @@ public class EmailContactStorageTest {
 
   private static final String USERNAME = "alice";
 
-  @MockBean
+  @MockitoBean
   private EmailContactDAO     emailContactDAO;
 
-  @MockBean
+  @MockitoBean
   private EmailContactAddressDAO emailContactAddressDAO;
 
-  @MockBean
+  @MockitoBean
   private UploadService       uploadService;
 
-  @MockBean
+  @MockitoBean
   private FileService         fileService;
 
   @Autowired

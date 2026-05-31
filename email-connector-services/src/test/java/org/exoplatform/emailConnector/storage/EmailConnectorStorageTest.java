@@ -34,7 +34,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.dao.EmailConnectorDAO;
@@ -48,13 +48,13 @@ public class EmailConnectorStorageTest {
 
   private static final Long     ID = 2l;
 
-  @MockBean
+  @MockitoBean
   private EmailConnectorDAO     emailConnectorDAO;
 
-  @MockBean
+  @MockitoBean
   private UploadService         uploadService;
 
-  @MockBean
+  @MockitoBean
   private FileService           fileService;
 
   @Autowired

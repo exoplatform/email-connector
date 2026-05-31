@@ -28,13 +28,13 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.domain.EntityScan;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -119,15 +119,15 @@ public class EmailBoxTrashExclusionStorageTest {
   @Autowired
   private EmailBoxStorage     emailBoxStorage;
 
-  @MockBean
+  @MockitoBean
   private CategoryLinkService categoryLinkService;
 
   // Mocked rather than exercised: nothing here attaches a file, and an unmocked bean
   // would simply fail to start the context.
-  @MockBean
+  @MockitoBean
   private FileService         fileService;
 
-  @MockBean
+  @MockitoBean
   private UploadService       uploadService;
 
   /**

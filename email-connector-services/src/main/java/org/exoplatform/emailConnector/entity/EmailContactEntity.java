@@ -19,15 +19,14 @@ package org.exoplatform.emailConnector.entity;
 import java.util.Date;
 import java.util.List;
 
+import io.meeds.common.persistence.PortableSequence;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 
 import org.exoplatform.emailConnector.model.PhotoOrigin;
@@ -48,8 +47,7 @@ import org.exoplatform.emailConnector.utils.SemicolonListConverter;
 public class EmailContactEntity {
 
   @Id
-  @SequenceGenerator(name = "SEQ_EMAIL_CONTACT_ID", sequenceName = "SEQ_EMAIL_CONTACT_ID", allocationSize = 1)
-  @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_EMAIL_CONTACT_ID")
+  @PortableSequence(name = "SEQ_EMAIL_CONTACT_ID")
   @Column(name = "ID")
   private Long    id;
 
