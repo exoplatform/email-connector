@@ -78,9 +78,9 @@ public class AnalyticsEmailListener extends Listener<String, String> {
     statisticData.setOperation(operation);
     statisticData.setUserId(userId);
     if (event.getEventName().equals(OPEN_EMAIL) || event.getEventName().equals(ACCESS_WEBMAIL)) {
-      statisticData.addParameter("connectorName", eventData);
+      statisticData.addKeyword("connectorName", eventData);
     } else if (event.getEventName().equals(SEND_EMAIL)) {
-      statisticData.addParameter("emailType", eventData);
+      statisticData.addKeyword("emailType", eventData);
     }
     AnalyticsUtils.addStatisticData(statisticData);
   }
