@@ -332,8 +332,8 @@ public class EmailBoxService {
     try {
       listenerService.broadcast(EmailConnectorUtils.OPEN_EMAIL, username, userEmailSetting.getEmailConnectorName());
     } catch (Exception e) {
-      LOG.warn("Error broadcasting event '" + EmailConnectorUtils.OPEN_EMAIL + "' using source '" + username + "' and data "
-          + userEmailSetting.getEmailConnectorName(), e);
+      LOG.warn("Error broadcasting event '" + EmailConnectorUtils.OPEN_EMAIL + "' using source '" + username + "' and data " +
+          userEmailSetting.getEmailConnectorName(), e);
     }
     return userEmailSetting.getEmailAddress();
   }
@@ -347,8 +347,8 @@ public class EmailBoxService {
     try {
       listenerService.broadcast(EmailConnectorUtils.ACCESS_WEBMAIL, username, userEmailSetting.getEmailConnectorName());
     } catch (Exception e) {
-      LOG.warn("Error broadcasting event '" + EmailConnectorUtils.ACCESS_WEBMAIL + "' using source '" + username + "' and data "
-          + userEmailSetting.getEmailConnectorName(), e);
+      LOG.warn("Error broadcasting event '" + EmailConnectorUtils.ACCESS_WEBMAIL + "' using source '" + username + "' and data " +
+          userEmailSetting.getEmailConnectorName(), e);
     }
   }
 
@@ -664,6 +664,11 @@ public class EmailBoxService {
       Transport.send(message);
       String emailType = StringUtils.isEmpty(email.getMailHeaderId()) ? "newEmail" : "reply";
       listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL, username, emailType);
+      try {
+        copyToSentFolder(message, username, userEmailSetting);
+      } catch (IllegalStateException e) {
+        LOG.warn("Email sent but could not be copied to Sent folder for user {}", username, e);
+      }
     } catch (MessagingException | UnsupportedEncodingException e) {
       LOG.error("Error when sending email for user {}", username, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
@@ -679,7 +684,10 @@ public class EmailBoxService {
         if (email == null) {
           EmailContent emailContent = EmailConnectorUtils.getMessageContent(messageUid, message);
           EmailSender emailSender = message.getFrom() != null
-              && message.getFrom().length != 0 ? EmailConnectorUtils.getEmailSender(message.getFrom()[0], false) : null;
+                                    && message.getFrom().length != 0 ?
+                                                                     EmailConnectorUtils.getEmailSender(message.getFrom()[0],
+                                                                                                        false) :
+                                                                     null;
           List<EmailRecipient> emailToRecipients =
                                                  EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO),
                                                                                         username,
@@ -733,8 +741,8 @@ public class EmailBoxService {
       return false;
     }
     if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
-      long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate()
-          + EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
+      long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate() +
+          EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
       return System.currentTimeMillis() > nextAllowedSync;
     }
     return true;
@@ -882,5 +890,61 @@ public class EmailBoxService {
       }
     }
     return null;
+  }
+
+  private IMAPFolder findSentFolder(Store store) throws MessagingException {
+    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
+      if (!(folder instanceof IMAPFolder)) {
+        continue;
+      }
+      IMAPFolder imapFolder = (IMAPFolder) folder;
+      if (!imapFolder.exists()) {
+        continue;
+      }
+      String[] attributes = imapFolder.getAttributes();
+      for (String attr : attributes) {
+        if (attr.equalsIgnoreCase("\\Sent")) {
+          return imapFolder;
+        }
+      }
+      String name = imapFolder.getFullName().toLowerCase();
+      if (name.contains("sent") || name.contains("envoyé") || name.contains("envoye")) {
+        return imapFolder;
+      }
+    }
+    return null;
+  }
+
+  private void copyToSentFolder(Message message, String username, UserEmailSetting userEmailSetting) {
+    Store store = null;
+    IMAPFolder sentFolder = null;
+    try {
+      store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
+      sentFolder = findSentFolder(store);
+      if (sentFolder != null) {
+        sentFolder.open(Folder.READ_WRITE);
+        sentFolder.appendMessages(new Message[] { message });
+      } else {
+        LOG.warn("No Sent folder found via SPECIAL-USE or fallback names for user {}", username);
+      }
+    } catch (Exception e) {
+      LOG.error("Error when connecting store for user {}", username, e);
+      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+    } finally {
+      try {
+        if (sentFolder != null && sentFolder.isOpen()) {
+          sentFolder.close(false);
+        }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing sent folder", messagingException);
+      }
+      try {
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing store", messagingException);
+      }
+    }
   }
 }
