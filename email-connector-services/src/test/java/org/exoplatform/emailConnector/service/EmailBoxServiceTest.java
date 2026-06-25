@@ -32,7 +32,6 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
 import java.io.InputStream;
-import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -122,6 +121,8 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
     MimeMessage message1 = mock(MimeMessage.class);
     when(message1.getSubject()).thenReturn("message1Subject");
     MimeMessage message2 = mock(MimeMessage.class);
@@ -134,6 +135,8 @@ public class EmailBoxServiceTest {
     when(inbox.getMessageCount()).thenReturn(1000);
     emailBoxService.synchronize(TEST_USER);
     verify(emailBoxStorage, times(2)).createEmail(any(Email.class));
+    verify(inbox, times(2)).close(false);
+    verify(store, times(2)).close();
   }
 
   @Test
@@ -215,12 +218,16 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
     emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, false, true);
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, false);
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.SEEN, false);
+    verify(inbox).close(false);
+    verify(store).close();
   }
 
   @Test
@@ -237,8 +244,10 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
     Folder folder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(folder);
+    when(store.isConnected()).thenReturn(true);
     IMAPFolder trashFolder = mock(IMAPFolder.class);
     when(trashFolder.getFullName()).thenReturn("trash");
     Folder[] folders = new Folder[] { trashFolder };
@@ -252,6 +261,8 @@ public class EmailBoxServiceTest {
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.DELETED, true);
     verify(inbox).copyMessages(any(Message[].class), any(Folder.class));
+    verify(inbox).close(true);
+    verify(store).close();
   }
 
   @Test
@@ -268,8 +279,10 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
     Folder folder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(folder);
+    when(store.isConnected()).thenReturn(true);
     IMAPFolder archiveFolder = mock(IMAPFolder.class);
     when(archiveFolder.getFullName()).thenReturn("archive");
     Folder[] folders = new Folder[] { archiveFolder };
@@ -282,6 +295,8 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
     verify(inbox).copyMessages(any(Message[].class), any(Folder.class));
+    verify(inbox).close(true);
+    verify(store).close();
   }
 
   @Test
@@ -295,11 +310,27 @@ public class EmailBoxServiceTest {
     when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
     Session session = mock(Session.class);
     when(session.getProperties()).thenReturn(new Properties());
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    when(store.isConnected()).thenReturn(true);
+    IMAPFolder sentFolder = mock(IMAPFolder.class);
+    when(sentFolder.getFullName()).thenReturn("sent");
+    Folder[] folders = new Folder[] { sentFolder };
+    when(folder.listSubscribed("*")).thenReturn(folders);
+    when(sentFolder.exists()).thenReturn(true);
+    when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    when(sentFolder.isOpen()).thenReturn(true);
     try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
         MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
       sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
       emailBoxService.sendEmail(email, TEST_USER);
-      transportMock.verify(() -> Transport.send(any(Message.class)), times(1));
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+      verify(sentFolder).open(Folder.READ_WRITE);
+      verify(sentFolder).appendMessages(any(Message[].class));
+      verify(sentFolder).close(false);
+      verify(store).close();
     }
   }
 
