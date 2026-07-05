@@ -4,7 +4,7 @@
   <parent>
     <groupId>org.exoplatform.addons.email-connector</groupId>
     <artifactId>email-connector-parent</artifactId>
-    <version>7.3.x-SNAPSHOT</version>
+    <version>7.3.0-20260705</version>
   </parent>
   <artifactId>email-connector-webapps</artifactId>
   <packaging>war</packaging>
