@@ -1,0 +1,27 @@
+{
+  "tools": [
+    {
+      "name": "get_email_by_id",
+      "title": "Get an email",
+      "description": "Retrieve email content identified by its id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "email_id": { "type": "integer" }
+        },
+        "required": ["email_id"]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_emails",
+      "description": "Retrieve the list of current user emails.",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ]
+}
