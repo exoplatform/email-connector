@@ -119,6 +119,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :placeholder="$t('emailConnector.mailBox.newEmail.drawer.content.placeholder')"
         ck-editor-type="email"
         class="mx-4 mt-3"
+        :auto-grow-max-height="editorMaxHeight"
         content-link-enabled
         :tag-enabled="false"
         disable-suggester
@@ -159,6 +160,7 @@ export default {
       },
       loading: false,
       title: '',
+      editorMaxHeight: 300,
     };
   },
   created() {
@@ -168,6 +170,12 @@ export default {
     this.$root.$on('send-email', (email) => {
       this.sendEmail(email);
     });
+  },
+  mounted() {
+    window.addEventListener('resize', this.computeEditorMaxHeight);
+  },
+  beforeDestroy() {
+    window.removeEventListener('resize', this.computeEditorMaxHeight);
   },
   computed: {
     disabled() {
@@ -221,6 +229,19 @@ export default {
         this.email.subject = `${forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.subject.prefix') : this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
       }
       this.newEmailDrawer = true;
+      this.$nextTick(() => this.computeEditorMaxHeight());
+    },
+    computeEditorMaxHeight() {
+      const editorEl = this.$refs.emailContent?.$el;
+      const drawerEl = this.$refs.newEmailDrawer?.$el;
+      if (!editorEl || !drawerEl) {
+        return;
+      }
+      const footerEl = drawerEl.querySelector('.drawerFooter');
+      const footerHeight = footerEl ? footerEl.offsetHeight : 52;
+      const editorTop = editorEl.getBoundingClientRect().top;
+      const drawerBottom = drawerEl.getBoundingClientRect().bottom;
+      this.editorMaxHeight = drawerBottom - editorTop - footerHeight - 16;
     },
     close() {
       this.toEmails = '';
