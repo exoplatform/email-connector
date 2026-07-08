@@ -28,6 +28,7 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
+import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -143,6 +144,26 @@ public class EmailMcpTool implements McpToolPlugin {
     return toEmailModel(email, true);
   }
 
+  // List the metadata of a given email's attachments (by IMAP mailRemoteId):
+  // name, mime type, MIME part path and a ready authenticated download URL served
+  // by EmailBoxRest. No attachment bytes ever pass through the tool - the user
+  // opens the URL in their own authenticated browser. Empty list if none.
+  public List<EmailAttachmentModel> listAttachments(long mailRemoteId) throws IllegalAccessException {
+    Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), true, false, false, false);
+    if (email == null || email.getContent() == null || email.getContent().getAttachments() == null) {
+      return List.of();
+    }
+    return email.getContent()
+                .getAttachments()
+                .stream()
+                .map(attachment -> new EmailAttachmentModel(attachment.getName(),
+                                                            attachment.getMimeType(),
+                                                            attachment.getAttachmentRemoteId(),
+                                                            buildAttachmentDownloadUrl(mailRemoteId,
+                                                                                       attachment.getAttachmentRemoteId())))
+                .toList();
+  }
+
   // Mark one or more emails (by IMAP mailRemoteId) as read, locally and on the
   // IMAP server.
   public String markRead(List<Long> mailRemoteIds) throws IllegalAccessException {
@@ -248,6 +269,12 @@ public class EmailMcpTool implements McpToolPlugin {
     model.setCc(email.getCc());
     model.setBcc(email.getBcc());
     return model;
+  }
+
+  // Build the authenticated download URL for an attachment served by the existing
+  // EmailBoxRest endpoint (GET /email-box/attachments/{mailRemoteId}/{attachmentId}).
+  private String buildAttachmentDownloadUrl(long mailRemoteId, String attachmentId) {
+    return String.format("/portal/rest/email-box/attachments/%d/%s", mailRemoteId, attachmentId);
   }
 
   // Case-insensitive match of a free-text term against subject, sender and body.

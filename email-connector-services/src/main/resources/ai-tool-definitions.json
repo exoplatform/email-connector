@@ -85,6 +85,24 @@
       }
     },
     {
+      "name": "list_attachments",
+      "title": "List email attachments",
+      "description": "List the attachments of an email (identified by its IMAP mail_remote_id). Returns for each attachment its name, mime_type, attachment_id (the MIME part path) and a ready download_url pointing at the add-on's authenticated endpoint. The assistant should surface the attachment names and the download_url as a link the user opens in their own authenticated browser; the attachment bytes never pass through this tool. Returns an empty list if the email has no attachments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_id": { "type": "integer" }
+        },
+        "required": ["mail_remote_id"]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "mark_read",
       "title": "Mark emails read",
       "description": "Mark one or more emails as read, both locally and on the IMAP server. Identify emails by their IMAP mail_remote_id (from list_emails/search_emails).",

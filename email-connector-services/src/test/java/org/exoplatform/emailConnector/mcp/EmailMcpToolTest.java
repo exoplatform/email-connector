@@ -37,8 +37,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
+import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -189,6 +191,38 @@ class EmailMcpToolTest {
     List<EmailModel> byFrom = emailMcpTool.searchEmails(null, null, "alice@");
     assertEquals(1, byFrom.size());
     assertEquals("Invoice due", byFrom.get(0).getSubject());
+  }
+
+  // --- list_attachments ----------------------------------------------------
+
+  @Test
+  void listAttachmentsReturnsMetadataAndDownloadUrlWithoutBytes() throws Exception {
+    Email email = buildEmail(EMAIL_ID);
+    EmailAttachment attachment = new EmailAttachment(1L, REMOTE_ID, "1.2", "invoice.pdf", "application/pdf", new byte[] { 1, 2, 3 });
+    email.getContent().setAttachments(List.of(attachment));
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
+
+    List<EmailAttachmentModel> attachments = emailMcpTool.listAttachments(REMOTE_ID);
+
+    assertEquals(1, attachments.size());
+    EmailAttachmentModel model = attachments.get(0);
+    assertEquals("invoice.pdf", model.getName());
+    assertEquals("application/pdf", model.getMimeType());
+    assertEquals("1.2", model.getAttachmentId());
+    // download_url is the existing authenticated EmailBoxRest endpoint
+    assertEquals("/portal/rest/email-box/attachments/" + REMOTE_ID + "/1.2", model.getDownloadUrl());
+    // No attachment bytes ever leave the tool: the model must have no data field
+    String json = new ObjectMapper().writeValueAsString(model);
+    assertFalse(json.toLowerCase().contains("data"), "Attachment payload must not carry bytes");
+  }
+
+  @Test
+  void listAttachmentsReturnsEmptyWhenNone() throws Exception {
+    Email email = buildEmail(EMAIL_ID);
+    email.getContent().setAttachments(null);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
+
+    assertTrue(emailMcpTool.listAttachments(REMOTE_ID).isEmpty());
   }
 
   // --- mark_read / mark_unread ---------------------------------------------
