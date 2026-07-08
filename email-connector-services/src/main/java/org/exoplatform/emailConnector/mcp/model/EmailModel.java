@@ -40,6 +40,12 @@ public class EmailModel {
   @JsonProperty("email_id")
   private Long                 id;
 
+  // IMAP UID of the message. Read tools surface it so the agent can chain it
+  // into write tools (mark_read, reply_email, archive_email, delete_email...),
+  // which all key off mailRemoteId rather than the local database id.
+  @JsonProperty("mail_remote_id")
+  private Long                 mailRemoteId;
+
   private String               userId;
 
   private String               userEmail;

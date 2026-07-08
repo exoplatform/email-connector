@@ -17,38 +17,56 @@
 package org.exoplatform.emailConnector.mcp;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.SyncStatus;
+import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 class EmailMcpToolTest {
 
-  private static final String   USERNAME = "testuser1";
+  private static final String     USERNAME  = "testuser1";
 
-  private static final long     EMAIL_ID = 42L;
+  private static final long       EMAIL_ID  = 42L;
 
-  private EmailBoxService        emailBoxService;
+  private static final long       REMOTE_ID = 777L;
 
-  private EmailMcpTool           emailMcpTool;
+  private EmailBoxService         emailBoxService;
+
+  private UserEmailSettingService userEmailSettingService;
+
+  private EmailMcpTool            emailMcpTool;
 
   @BeforeEach
   void setUp() {
     emailBoxService = Mockito.mock(EmailBoxService.class);
-    emailMcpTool = new EmailMcpTool(emailBoxService) {
+    userEmailSettingService = Mockito.mock(UserEmailSettingService.class);
+    emailMcpTool = new EmailMcpTool(emailBoxService, userEmailSettingService) {
       @Override
       public String getCurrentUserName() {
         return USERNAME;
@@ -59,6 +77,7 @@ class EmailMcpToolTest {
   private Email buildEmail(long id) {
     Email email = new Email();
     email.setId(id);
+    email.setMailRemoteId(REMOTE_ID);
     email.setUserId(USERNAME);
     email.setUserEmail("testuser1@example.com");
     email.setSubject("Hello");
@@ -79,6 +98,8 @@ class EmailMcpToolTest {
     assertNotNull(model);
     assertEquals(EMAIL_ID, model.getId());
     assertEquals("Hello", model.getSubject());
+    // mailRemoteId is now surfaced so write tools can be chained
+    assertEquals(REMOTE_ID, model.getMailRemoteId());
     // Body HTML is stripped down to plain text
     assertEquals("Hello world", model.getContent().getBody());
   }
@@ -106,4 +127,172 @@ class EmailMcpToolTest {
     assertEquals(null, emails.get(0).getUserEmail());
   }
 
+  // --- get_my_email_account ------------------------------------------------
+
+  @Test
+  void getMyEmailAccountNeverExposesPassword() throws Exception {
+    UserEmailSetting setting = new UserEmailSetting();
+    setting.setEmailConnectorId("1");
+    setting.setEmailAddress("testuser1@example.com");
+    setting.setEmailPassword("super-secret-password");
+    setting.setEmailConnectorName("Gmail");
+    setting.setEmailConnectorWebmailUrl("https://mail.example.com");
+    setting.setEmailSyncStatus(SyncStatus.SUCCESS);
+    setting.setConnected(true);
+    when(userEmailSettingService.getUserEmailSetting(eq(USERNAME))).thenReturn(setting);
+
+    EmailAccountModel account = emailMcpTool.getMyEmailAccount();
+
+    assertNotNull(account);
+    assertEquals("testuser1@example.com", account.getEmailAddress());
+    assertEquals("Gmail", account.getConnectorName());
+    assertEquals("SUCCESS", account.getSyncStatus());
+    assertTrue(account.isConnected());
+    // The serialized account must never carry the stored password
+    String json = new ObjectMapper().writeValueAsString(account);
+    assertFalse(json.contains("super-secret-password"), "Account payload must not leak the password");
+    assertFalse(json.toLowerCase().contains("password"), "Account payload must not have any password field");
+  }
+
+  @Test
+  void getMyEmailAccountFailsWhenNoAccountConnected() {
+    when(userEmailSettingService.getUserEmailSetting(eq(USERNAME))).thenReturn(new UserEmailSetting());
+    assertThrows(IllegalStateException.class, () -> emailMcpTool.getMyEmailAccount());
+  }
+
+  // --- search_emails -------------------------------------------------------
+
+  @Test
+  void searchEmailsFiltersInMemory() throws Exception {
+    Email read = buildEmail(1L);
+    read.setRead(true);
+    read.setSubject("Weekly report");
+    Email unread = buildEmail(2L);
+    unread.setRead(false);
+    unread.setSubject("Invoice due");
+    unread.setSender(new EmailSender("Alice", "alice@example.com", null, null));
+    EmailBox emailBox = new EmailBox();
+    emailBox.setEmails(List.of(read, unread));
+    when(emailBoxService.getEmailBox(eq(USERNAME))).thenReturn(emailBox);
+
+    // unread only
+    List<EmailModel> unreadOnly = emailMcpTool.searchEmails(null, true, null);
+    assertEquals(1, unreadOnly.size());
+    assertEquals("Invoice due", unreadOnly.get(0).getSubject());
+
+    // query over subject
+    List<EmailModel> byQuery = emailMcpTool.searchEmails("weekly", null, null);
+    assertEquals(1, byQuery.size());
+    assertEquals("Weekly report", byQuery.get(0).getSubject());
+
+    // from filter over sender address
+    List<EmailModel> byFrom = emailMcpTool.searchEmails(null, null, "alice@");
+    assertEquals(1, byFrom.size());
+    assertEquals("Invoice due", byFrom.get(0).getSubject());
+  }
+
+  // --- mark_read / mark_unread ---------------------------------------------
+
+  @Test
+  void markReadDelegatesToService() throws Exception {
+    emailMcpTool.markRead(List.of(REMOTE_ID));
+    verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(true), eq(true));
+  }
+
+  @Test
+  void markUnreadDelegatesToService() throws Exception {
+    emailMcpTool.markUnread(List.of(REMOTE_ID));
+    verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(false), eq(true));
+  }
+
+  // --- send_email ----------------------------------------------------------
+
+  @Test
+  void sendEmailBuildsMessageAndSends() throws Exception {
+    emailMcpTool.sendEmail(List.of("bob@example.com"), "Hi", "<p>Body</p>", List.of("carol@example.com"));
+
+    ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
+    Email sent = captor.getValue();
+    assertEquals("Hi", sent.getSubject());
+    assertEquals("bob@example.com", sent.getTo().get(0).getAddress());
+    assertEquals("carol@example.com", sent.getCc().get(0).getAddress());
+    assertTrue(sent.getContent().isHtml());
+  }
+
+  @Test
+  void sendEmailFailsWithoutRecipient() {
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.sendEmail(List.of(), "Hi", "<p>Body</p>", null));
+  }
+
+  // --- reply_email ---------------------------------------------------------
+
+  @Test
+  void replyEmailThreadsAndTargetsSender() throws Exception {
+    Email original = buildEmail(EMAIL_ID);
+    original.setMailHeaderId("<original-message-id@server>");
+    original.setSubject("Question");
+    original.setSender(new EmailSender("Alice", "alice@example.com", null, null));
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
+
+    emailMcpTool.replyEmail(REMOTE_ID, "<p>My answer</p>");
+
+    ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
+    Email reply = captor.getValue();
+    // The reply carries the original Message-ID so the service sets In-Reply-To/References
+    assertEquals("<original-message-id@server>", reply.getMailHeaderId());
+    assertEquals("Re: Question", reply.getSubject());
+    assertEquals("alice@example.com", reply.getTo().get(0).getAddress());
+  }
+
+  // --- reply_all -----------------------------------------------------------
+
+  @Test
+  void replyAllCcsOthersButNotSelf() throws Exception {
+    Email original = buildEmail(EMAIL_ID);
+    original.setMailHeaderId("<mid@server>");
+    original.setSubject("Re: Team sync");
+    original.setSender(new EmailSender("Alice", "alice@example.com", null, null));
+    original.setTo(List.of(new EmailRecipient(null, "testuser1@example.com", null, true),
+                           new EmailRecipient(null, "dave@example.com", null, false)));
+    original.setCc(List.of(new EmailRecipient(null, "erin@example.com", null, false)));
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
+
+    UserEmailSetting setting = new UserEmailSetting();
+    setting.setEmailAddress("testuser1@example.com");
+    when(userEmailSettingService.getUserEmailSetting(eq(USERNAME))).thenReturn(setting);
+
+    emailMcpTool.replyAll(REMOTE_ID, "<p>Reply all body</p>");
+
+    ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
+    Email reply = captor.getValue();
+    assertEquals("alice@example.com", reply.getTo().get(0).getAddress());
+    // Subject already starts with Re: so it is not doubled
+    assertEquals("Re: Team sync", reply.getSubject());
+    List<String> ccAddresses = reply.getCc().stream().map(EmailRecipient::getAddress).toList();
+    assertTrue(ccAddresses.contains("dave@example.com"));
+    assertTrue(ccAddresses.contains("erin@example.com"));
+    // The current user must not be CC'd back on their own reply-all
+    assertFalse(ccAddresses.contains("testuser1@example.com"));
+  }
+
+  // --- archive_email / delete_email ----------------------------------------
+
+  @Test
+  void archiveEmailDelegatesToService() throws Exception {
+    when(emailBoxService.archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME))).thenReturn(0);
+    String result = emailMcpTool.archiveEmail(List.of(REMOTE_ID));
+    verify(emailBoxService).archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME));
+    assertTrue(result.contains("Archived 1 of 1"));
+  }
+
+  @Test
+  void deleteEmailDelegatesToService() throws Exception {
+    when(emailBoxService.deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME))).thenReturn(0);
+    String result = emailMcpTool.deleteEmail(List.of(REMOTE_ID));
+    verify(emailBoxService).deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME));
+    assertTrue(result.contains("Deleted 1 of 1"));
+  }
 }
