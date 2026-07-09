@@ -120,7 +120,7 @@ class EmailMcpToolTest {
     emailBox.setEmails(List.of(buildEmail(1L), buildEmail(2L)));
     when(emailBoxService.getEmailBox(eq(USERNAME))).thenReturn(emailBox);
 
-    List<EmailModel> emails = emailMcpTool.listEmails();
+    List<EmailModel> emails = emailMcpTool.listEmails(null, null, null);
 
     assertNotNull(emails);
     assertEquals(2, emails.size());
@@ -243,7 +243,11 @@ class EmailMcpToolTest {
 
   @Test
   void sendEmailBuildsMessageAndSends() throws Exception {
-    emailMcpTool.sendEmail(List.of("bob@example.com"), "Hi", "<p>Body</p>", List.of("carol@example.com"));
+    emailMcpTool.sendEmail(List.of("bob@example.com"),
+                           "Hi",
+                           "<p>Body</p>",
+                           List.of("carol@example.com"),
+                           List.of("dan@example.com"));
 
     ArgumentCaptor<Email> captor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxService).sendEmail(captor.capture(), eq(USERNAME));
@@ -251,12 +255,13 @@ class EmailMcpToolTest {
     assertEquals("Hi", sent.getSubject());
     assertEquals("bob@example.com", sent.getTo().get(0).getAddress());
     assertEquals("carol@example.com", sent.getCc().get(0).getAddress());
+    assertEquals("dan@example.com", sent.getBcc().get(0).getAddress());
     assertTrue(sent.getContent().isHtml());
   }
 
   @Test
   void sendEmailFailsWithoutRecipient() {
-    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.sendEmail(List.of(), "Hi", "<p>Body</p>", null));
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.sendEmail(List.of(), "Hi", "<p>Body</p>", null, null));
   }
 
   // --- reply_email ---------------------------------------------------------

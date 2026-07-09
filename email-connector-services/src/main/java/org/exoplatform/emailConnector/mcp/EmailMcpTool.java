@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.mcp;
 
+import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -32,6 +34,7 @@ import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
+import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
@@ -76,10 +79,33 @@ public class EmailMcpTool implements McpToolPlugin {
     return toEmailModel(email, true);
   }
 
-  // Retrieve the current user's synced INBOX mirror as a list of emails.
-  public List<EmailModel> listEmails() throws ObjectNotFoundException, IllegalAccessException {
+  /*
+   * Retrieve a page of the current user's synced INBOX mirror. Supports paging
+   * (offset/limit, defaulting to the first 10) and an unread-only filter so the
+   * agent triages incrementally instead of pulling the whole mirror at once.
+   */
+  public List<EmailModel> listEmails(Integer offset, Integer limit, Boolean unreadOnly) throws ObjectNotFoundException,
+                                                                                        IllegalAccessException {
     EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName());
-    return emailBox.getEmails().stream().map(email -> toEmailModel(email, false)).toList();
+    return emailBox.getEmails()
+                   .stream()
+                   .filter(email -> !Boolean.TRUE.equals(unreadOnly) || !email.isRead())
+                   .skip(getInteger(offset, DEFAULT_OFFSET))
+                   .limit(getInteger(limit, DEFAULT_LIMIT))
+                   .map(email -> toEmailModel(email, false))
+                   .toList();
+  }
+
+  /*
+   * Report how many emails in the synced INBOX mirror are unread, out of the total
+   * mirrored. Fast triage summary that never returns bodies.
+   */
+  public String getUnreadCount() throws IllegalAccessException {
+    EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName());
+    List<Email> emails = emailBox.getEmails();
+    long total = emails == null ? 0 : emails.size();
+    long unread = emails == null ? 0 : emails.stream().filter(email -> !email.isRead()).count();
+    return String.format("%d unread email(s) out of %d in the inbox mirror.", unread, total);
   }
 
   // ---------------------------------------------------------------------------
@@ -182,9 +208,16 @@ public class EmailMcpTool implements McpToolPlugin {
   // Slice 2 - compose (approval-gated, outward facing, irreversible)
   // ---------------------------------------------------------------------------
 
-  // Send a brand new email over real SMTP (also copied to the Sent folder).
-  // Body is HTML. Attachments are NOT supported by the backing service.
-  public String sendEmail(List<String> to, String subject, String bodyHtml, List<String> cc) throws IllegalAccessException {
+  /*
+   * Send a brand new email over real SMTP (also copied to the Sent folder).
+   * Body is HTML. Optional cc/bcc recipients. Attachments are NOT supported by the
+   * backing service.
+   */
+  public String sendEmail(List<String> to,
+                          String subject,
+                          String bodyHtml,
+                          List<String> cc,
+                          List<String> bcc) throws IllegalAccessException {
     if (to == null || to.stream().filter(StringUtils::isNotBlank).findAny().isEmpty()) {
       throw new IllegalArgumentException("At least one recipient is required in 'to'");
     }
@@ -193,6 +226,7 @@ public class EmailMcpTool implements McpToolPlugin {
     email.setContent(buildHtmlContent(bodyHtml));
     email.setTo(toRecipients(to));
     email.setCc(toRecipients(cc));
+    email.setBcc(toRecipients(bcc));
     emailBoxService.sendEmail(email, getCurrentUserName());
     return String.format("Email sent to %s with subject \"%s\".", String.join(", ", to), subject);
   }
@@ -224,6 +258,34 @@ public class EmailMcpTool implements McpToolPlugin {
     return String.format("Reply-all sent to %s.", senderAddress(original));
   }
 
+  /*
+   * Forward an existing email (by IMAP mailRemoteId) to brand new recipients. The
+   * subject is prefixed with "Fwd:" and the original message is quoted below the
+   * optional new note. Attachments are NOT carried over (the backing service cannot
+   * attach files).
+   */
+  public String forwardEmail(long mailRemoteId,
+                             List<String> to,
+                             String bodyHtml,
+                             List<String> cc) throws ObjectNotFoundException, IllegalAccessException {
+    if (to == null || to.stream().filter(StringUtils::isNotBlank).findAny().isEmpty()) {
+      throw new IllegalArgumentException("At least one recipient is required in 'to'");
+    }
+    String username = getCurrentUserName();
+    Email original = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, true, false, false);
+    if (original == null) {
+      throw new ObjectNotFoundException("Email with mail_remote_id %s not found");
+    }
+    Email forward = new Email();
+    String subject = original.getSubject() == null ? "" : original.getSubject();
+    forward.setSubject(StringUtils.startsWithIgnoreCase(subject, "Fwd:") ? subject : "Fwd: " + subject);
+    forward.setContent(buildHtmlContent(buildForwardBody(original, bodyHtml)));
+    forward.setTo(toRecipients(to));
+    forward.setCc(toRecipients(cc));
+    emailBoxService.sendEmail(forward, username);
+    return String.format("Email forwarded to %s with subject \"%s\".", String.join(", ", to), forward.getSubject());
+  }
+
   // ---------------------------------------------------------------------------
   // Slice 3 - organize (approval-gated)
   // ---------------------------------------------------------------------------
@@ -241,6 +303,38 @@ public class EmailMcpTool implements McpToolPlugin {
     int failed = emailBoxService.deleteEmail(mailRemoteIds, getCurrentUserName());
     int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
     return String.format("Deleted %d of %d email(s)%s.", total - failed, total, failed > 0 ? " (" + failed + " failed)" : "");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slice 4 - categories / labels (approval-gated for writes)
+  // ---------------------------------------------------------------------------
+
+  /*
+   * List the categories (labels) currently applied to the user's emails, each with
+   * its id and display name. Use it to resolve a category name to the id needed by
+   * add_email_category / remove_email_category. Categories not yet used on any email
+   * are not listed - create them from the mailbox UI first.
+   */
+  public List<EmailCategory> listEmailCategories() throws IllegalAccessException {
+    return emailBoxService.getEmailCategories(getCurrentUserName(), getCurrentUserLocale());
+  }
+
+  /*
+   * Tag one or more emails (by IMAP mailRemoteId) with an existing category id
+   * (from list_email_categories). Emails already in the category are skipped.
+   */
+  public String addEmailCategory(List<Long> mailRemoteIds, long categoryId) throws IllegalAccessException {
+    int linked = emailBoxService.linkEmailsToCategory(mailRemoteIds, categoryId, getCurrentUserName());
+    return String.format("Added category %d to %d email(s).", categoryId, linked);
+  }
+
+  /*
+   * Remove a category id from one or more emails (by IMAP mailRemoteId). Emails not
+   * currently in the category are skipped.
+   */
+  public String removeEmailCategory(List<Long> mailRemoteIds, long categoryId) throws IllegalAccessException {
+    int unlinked = emailBoxService.unlinkEmailsFromCategory(mailRemoteIds, categoryId, getCurrentUserName());
+    return String.format("Removed category %d from %d email(s).", categoryId, unlinked);
   }
 
   // ---------------------------------------------------------------------------
@@ -332,6 +426,30 @@ public class EmailMcpTool implements McpToolPlugin {
     String subject = original.getSubject() == null ? "" : original.getSubject();
     reply.setSubject(StringUtils.startsWithIgnoreCase(subject, "Re:") ? subject : "Re: " + subject);
     return reply;
+  }
+
+  /*
+   * Build the HTML body of a forwarded email: the optional new note on top, then a
+   * quoted block with the original sender/subject header and the original HTML body.
+   */
+  private String buildForwardBody(Email original, String bodyHtml) {
+    StringBuilder body = new StringBuilder();
+    if (StringUtils.isNotBlank(bodyHtml)) {
+      body.append(bodyHtml);
+    }
+    body.append("<br/><hr/><div>---------- Forwarded message ----------</div>");
+    if (original.getSender() != null) {
+      body.append("<div>From: ")
+          .append(StringUtils.defaultString(original.getSender().getName()))
+          .append(" &lt;")
+          .append(StringUtils.defaultString(original.getSender().getAddress()))
+          .append("&gt;</div>");
+    }
+    body.append("<div>Subject: ").append(StringUtils.defaultString(original.getSubject())).append("</div><br/>");
+    if (original.getContent() != null && original.getContent().getBody() != null) {
+      body.append(original.getContent().getBody());
+    }
+    return body.toString();
   }
 
   // Wrap the original sender as the single recipient of a reply.

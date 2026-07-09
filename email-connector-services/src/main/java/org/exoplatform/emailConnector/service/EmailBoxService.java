@@ -21,7 +21,9 @@ import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
@@ -56,15 +58,18 @@ import org.springframework.transaction.annotation.Transactional;
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 
+import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
@@ -87,7 +92,9 @@ import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.social.core.identity.model.Profile;
 
 import io.meeds.social.category.model.CategoryObject;
+import io.meeds.social.category.model.CategoryWithName;
 import io.meeds.social.category.service.CategoryLinkService;
+import io.meeds.social.category.service.CategoryService;
 import io.meeds.social.html.utils.HtmlUtils;
 import jakarta.annotation.PostConstruct;
 
@@ -129,6 +136,9 @@ public class EmailBoxService {
 
   @Autowired
   private CategoryLinkService     categoryLinkService;
+
+  @Autowired
+  private CategoryService         categoryService;
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
@@ -593,6 +603,91 @@ public class EmailBoxService {
       }
     }
     return failedEmailArchives;
+  }
+
+  /*
+   * Link one or more emails (by IMAP mailRemoteId) to an existing category, acting
+   * as the given user (the category ACL is enforced by CategoryLinkService). Emails
+   * already in the category are skipped. Returns the number of emails newly linked.
+   */
+  public int linkEmailsToCategory(List<Long> mailRemoteIds, long categoryId, String username) throws IllegalAccessException {
+    if (CollectionUtils.isEmpty(mailRemoteIds)) {
+      return 0;
+    }
+    if (categoryService.getCategory(categoryId) == null) {
+      throw new IllegalArgumentException("emailConnector.category.notFound");
+    }
+    int linked = 0;
+    for (Long mailRemoteId : mailRemoteIds) {
+      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
+      if (email == null) {
+        continue;
+      }
+      try {
+        categoryLinkService.link(categoryId,
+                                 new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0),
+                                 username);
+        linked++;
+      } catch (ObjectAlreadyExistsException e) {
+        // Idempotent: the email is already in this category, nothing to do.
+      } catch (ObjectNotFoundException e) {
+        throw new IllegalArgumentException("emailConnector.category.notFound");
+      }
+    }
+    return linked;
+  }
+
+  /*
+   * Remove one or more emails (by IMAP mailRemoteId) from a category, acting as the
+   * given user. Emails not currently in the category are skipped. Returns the number
+   * of emails effectively unlinked.
+   */
+  public int unlinkEmailsFromCategory(List<Long> mailRemoteIds, long categoryId, String username) throws IllegalAccessException {
+    if (CollectionUtils.isEmpty(mailRemoteIds)) {
+      return 0;
+    }
+    int unlinked = 0;
+    for (Long mailRemoteId : mailRemoteIds) {
+      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
+      if (email == null) {
+        continue;
+      }
+      try {
+        categoryLinkService.unlink(categoryId,
+                                   new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0),
+                                   username);
+        unlinked++;
+      } catch (ObjectNotFoundException e) {
+        // Idempotent: the email was not linked to this category, nothing to remove.
+      }
+    }
+    return unlinked;
+  }
+
+  /*
+   * List the categories currently applied to the user's emails, resolved to their
+   * display name in the given locale. Categories never used on any email are not
+   * returned. Useful to discover a category id before tagging emails.
+   */
+  public List<EmailCategory> getEmailCategories(String username, Locale locale) throws IllegalAccessException {
+    EmailBox emailBox = getEmailBox(username);
+    Set<Long> categoryIds = emailBox.getEmails()
+                                    .stream()
+                                    .filter(email -> email.getCategoryIds() != null)
+                                    .flatMap(email -> email.getCategoryIds().stream())
+                                    .collect(Collectors.toCollection(LinkedHashSet::new));
+    List<EmailCategory> categories = new ArrayList<>();
+    for (Long categoryId : categoryIds) {
+      try {
+        CategoryWithName category = categoryService.getCategory(categoryId, username, locale);
+        if (category != null) {
+          categories.add(new EmailCategory(categoryId, category.getName()));
+        }
+      } catch (ObjectNotFoundException | IllegalAccessException e) {
+        // Skip categories that were deleted or are no longer visible to the user.
+      }
+    }
+    return categories;
   }
 
   public void sendEmail(Email email, String username) throws IllegalAccessException {

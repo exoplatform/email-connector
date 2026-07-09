@@ -77,6 +77,7 @@ import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
 
 import io.meeds.social.category.service.CategoryLinkService;
+import io.meeds.social.category.service.CategoryService;
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { EmailBoxService.class })
@@ -105,6 +106,9 @@ public class EmailBoxServiceTest {
 
   @MockBean
   private CategoryLinkService     categoryLinkService;
+
+  @MockBean
+  private CategoryService         categoryService;
 
   @Autowired
   private EmailBoxService         emailBoxService;
