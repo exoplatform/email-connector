@@ -20,7 +20,7 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/*
+/**
  * Lightweight DTO exposing an email category by its technical id and its
  * locale-resolved display name (used to tag/untag emails from the MCP tools).
  */

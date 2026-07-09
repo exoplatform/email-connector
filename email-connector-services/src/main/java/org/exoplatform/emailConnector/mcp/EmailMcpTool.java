@@ -70,7 +70,9 @@ public class EmailMcpTool implements McpToolPlugin {
   // Slice 0 / existing reads (keyed off the local database id)
   // ---------------------------------------------------------------------------
 
-  // Retrieve one stored email by its local database id (plain-text body).
+  /**
+   * Retrieve one stored email by its local database id (plain-text body).
+   */
   public EmailModel getEmailById(long emailId) throws ObjectNotFoundException, IllegalAccessException {
     Email email = emailBoxService.getEmailById(emailId, getCurrentUserName());
     if (email == null) {
@@ -79,7 +81,7 @@ public class EmailMcpTool implements McpToolPlugin {
     return toEmailModel(email, true);
   }
 
-  /*
+  /**
    * Retrieve a page of the current user's synced INBOX mirror. Supports paging
    * (offset/limit, defaulting to the first 10) and an unread-only filter so the
    * agent triages incrementally instead of pulling the whole mirror at once.
@@ -96,7 +98,7 @@ public class EmailMcpTool implements McpToolPlugin {
                    .toList();
   }
 
-  /*
+  /**
    * Report how many emails in the synced INBOX mirror are unread, out of the total
    * mirrored. Fast triage summary that never returns bodies.
    */
@@ -112,8 +114,10 @@ public class EmailMcpTool implements McpToolPlugin {
   // Slice 1 - read / triage (no approval)
   // ---------------------------------------------------------------------------
 
-  // Return the current user's connected mailbox state (address, connector, sync
-  // status, webmail url, connected flag). Never exposes the stored password.
+  /**
+   * Return the current user's connected mailbox state (address, connector, sync
+   * status, webmail url, connected flag). Never exposes the stored password.
+   */
   public EmailAccountModel getMyEmailAccount() {
     UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(getCurrentUserName());
     if (setting == null || setting.getEmailConnectorId() == null) {
@@ -127,8 +131,10 @@ public class EmailMcpTool implements McpToolPlugin {
                                  setting.isConnected());
   }
 
-  // Pull fresh messages from the IMAP INBOX before triage, then report the
-  // resulting sync status and the number of emails now in the local mirror.
+  /**
+   * Pull fresh messages from the IMAP INBOX before triage, then report the
+   * resulting sync status and the number of emails now in the local mirror.
+   */
   public String syncNow() throws IllegalAccessException {
     String username = getCurrentUserName();
     emailBoxService.synchronize(username);
@@ -139,9 +145,11 @@ public class EmailMcpTool implements McpToolPlugin {
                          emailBox.getEmails() != null ? emailBox.getEmails().size() : 0);
   }
 
-  // Filter the synced INBOX mirror IN MEMORY (there is no server-side search):
-  // free-text query over subject/sender/body, an unread-only flag, and a sender
-  // address/name filter. Only covers already-synced emails, not the whole server.
+  /**
+   * Filter the synced INBOX mirror IN MEMORY (there is no server-side search):
+   * free-text query over subject/sender/body, an unread-only flag, and a sender
+   * address/name filter. Only covers already-synced emails, not the whole server.
+   */
   public List<EmailModel> searchEmails(String query, Boolean unread, String from) throws IllegalAccessException {
     EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName());
     String normalizedQuery = query == null ? null : query.toLowerCase().trim();
@@ -160,8 +168,10 @@ public class EmailMcpTool implements McpToolPlugin {
     }).map(email -> toEmailModel(email, false)).toList();
   }
 
-  // Fetch a single email in full by its IMAP mailRemoteId, including recipients,
-  // content and attachment metadata (plain-text body).
+  /**
+   * Fetch a single email in full by its IMAP mailRemoteId, including recipients,
+   * content and attachment metadata (plain-text body).
+   */
   public EmailModel getEmailFull(long mailRemoteId) throws ObjectNotFoundException, IllegalAccessException {
     Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), true, true, true, false);
     if (email == null) {
@@ -170,10 +180,12 @@ public class EmailMcpTool implements McpToolPlugin {
     return toEmailModel(email, true);
   }
 
-  // List the metadata of a given email's attachments (by IMAP mailRemoteId):
-  // name, mime type, MIME part path and a ready authenticated download URL served
-  // by EmailBoxRest. No attachment bytes ever pass through the tool - the user
-  // opens the URL in their own authenticated browser. Empty list if none.
+  /**
+   * List the metadata of a given email's attachments (by IMAP mailRemoteId):
+   * name, mime type, MIME part path and a ready authenticated download URL served
+   * by EmailBoxRest. No attachment bytes ever pass through the tool - the user
+   * opens the URL in their own authenticated browser. Empty list if none.
+   */
   public List<EmailAttachmentModel> listAttachments(long mailRemoteId) throws IllegalAccessException {
     Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), true, false, false, false);
     if (email == null || email.getContent() == null || email.getContent().getAttachments() == null) {
@@ -190,15 +202,19 @@ public class EmailMcpTool implements McpToolPlugin {
                 .toList();
   }
 
-  // Mark one or more emails (by IMAP mailRemoteId) as read, locally and on the
-  // IMAP server.
+  /**
+   * Mark one or more emails (by IMAP mailRemoteId) as read, locally and on the
+   * IMAP server.
+   */
   public String markRead(List<Long> mailRemoteIds) throws IllegalAccessException {
     emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), true, true);
     return String.format("Marked %d email(s) as read.", mailRemoteIds == null ? 0 : mailRemoteIds.size());
   }
 
-  // Mark one or more emails (by IMAP mailRemoteId) as unread, locally and on the
-  // IMAP server.
+  /**
+   * Mark one or more emails (by IMAP mailRemoteId) as unread, locally and on the
+   * IMAP server.
+   */
   public String markUnread(List<Long> mailRemoteIds) throws IllegalAccessException {
     emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), false, true);
     return String.format("Marked %d email(s) as unread.", mailRemoteIds == null ? 0 : mailRemoteIds.size());
@@ -208,7 +224,7 @@ public class EmailMcpTool implements McpToolPlugin {
   // Slice 2 - compose (approval-gated, outward facing, irreversible)
   // ---------------------------------------------------------------------------
 
-  /*
+  /**
    * Send a brand new email over real SMTP (also copied to the Sent folder).
    * Body is HTML. Optional cc/bcc recipients. Attachments are NOT supported by the
    * backing service.
@@ -231,8 +247,10 @@ public class EmailMcpTool implements McpToolPlugin {
     return String.format("Email sent to %s with subject \"%s\".", String.join(", ", to), subject);
   }
 
-  // Reply to the sender of an existing email (by IMAP mailRemoteId). Threads the
-  // reply by copying the original Message-ID into In-Reply-To/References.
+  /**
+   * Reply to the sender of an existing email (by IMAP mailRemoteId). Threads the
+   * reply by copying the original Message-ID into In-Reply-To/References.
+   */
   public String replyEmail(long mailRemoteId, String bodyHtml) throws IllegalAccessException {
     String username = getCurrentUserName();
     Email original = fetchOriginalOrFail(mailRemoteId, username);
@@ -242,8 +260,10 @@ public class EmailMcpTool implements McpToolPlugin {
     return String.format("Reply sent to %s.", senderAddress(original));
   }
 
-  // Reply to everyone on an existing email (by IMAP mailRemoteId): To = original
-  // sender, Cc = original To + Cc minus the current user's own address.
+  /**
+   * Reply to everyone on an existing email (by IMAP mailRemoteId): To = original
+   * sender, Cc = original To + Cc minus the current user's own address.
+   */
   public String replyAll(long mailRemoteId, String bodyHtml) throws IllegalAccessException {
     String username = getCurrentUserName();
     Email original = fetchOriginalOrFail(mailRemoteId, username);
@@ -258,7 +278,7 @@ public class EmailMcpTool implements McpToolPlugin {
     return String.format("Reply-all sent to %s.", senderAddress(original));
   }
 
-  /*
+  /**
    * Forward an existing email (by IMAP mailRemoteId) to brand new recipients. The
    * subject is prefixed with "Fwd:" and the original message is quoted below the
    * optional new note. Attachments are NOT carried over (the backing service cannot
@@ -290,15 +310,19 @@ public class EmailMcpTool implements McpToolPlugin {
   // Slice 3 - organize (approval-gated)
   // ---------------------------------------------------------------------------
 
-  // Move one or more emails (by IMAP mailRemoteId) to the Archive folder.
+  /**
+   * Move one or more emails (by IMAP mailRemoteId) to the Archive folder.
+   */
   public String archiveEmail(List<Long> mailRemoteIds) throws IllegalAccessException {
     int failed = emailBoxService.archiveEmail(mailRemoteIds, getCurrentUserName());
     int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
     return String.format("Archived %d of %d email(s)%s.", total - failed, total, failed > 0 ? " (" + failed + " failed)" : "");
   }
 
-  // Delete one or more emails (by IMAP mailRemoteId): copies them to Trash then
-  // expunges them from the INBOX. Destructive and irreversible.
+  /**
+   * Delete one or more emails (by IMAP mailRemoteId): copies them to Trash then
+   * expunges them from the INBOX. Destructive and irreversible.
+   */
   public String deleteEmail(List<Long> mailRemoteIds) throws IllegalAccessException {
     int failed = emailBoxService.deleteEmail(mailRemoteIds, getCurrentUserName());
     int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
@@ -309,7 +333,7 @@ public class EmailMcpTool implements McpToolPlugin {
   // Slice 4 - categories / labels (approval-gated for writes)
   // ---------------------------------------------------------------------------
 
-  /*
+  /**
    * List the categories (labels) currently applied to the user's emails, each with
    * its id and display name. Use it to resolve a category name to the id needed by
    * add_email_category / remove_email_category. Categories not yet used on any email
@@ -319,7 +343,7 @@ public class EmailMcpTool implements McpToolPlugin {
     return emailBoxService.getEmailCategories(getCurrentUserName(), getCurrentUserLocale());
   }
 
-  /*
+  /**
    * Tag one or more emails (by IMAP mailRemoteId) with an existing category id
    * (from list_email_categories). Emails already in the category are skipped.
    */
@@ -328,7 +352,7 @@ public class EmailMcpTool implements McpToolPlugin {
     return String.format("Added category %d to %d email(s).", categoryId, linked);
   }
 
-  /*
+  /**
    * Remove a category id from one or more emails (by IMAP mailRemoteId). Emails not
    * currently in the category are skipped.
    */
@@ -341,8 +365,10 @@ public class EmailMcpTool implements McpToolPlugin {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  // Map an Email domain object to the MCP EmailModel, flattening the HTML body to
-  // plain text and surfacing the mailRemoteId needed to chain write tools.
+  /**
+   * Map an Email domain object to the MCP EmailModel, flattening the HTML body to
+   * plain text and surfacing the mailRemoteId needed to chain write tools.
+   */
   private EmailModel toEmailModel(Email email, boolean includeUserEmail) {
     EmailContent content = email.getContent();
     if (content != null && content.getBody() != null) {
@@ -365,13 +391,17 @@ public class EmailMcpTool implements McpToolPlugin {
     return model;
   }
 
-  // Build the authenticated download URL for an attachment served by the existing
-  // EmailBoxRest endpoint (GET /email-box/attachments/{mailRemoteId}/{attachmentId}).
+  /**
+   * Build the authenticated download URL for an attachment served by the existing
+   * EmailBoxRest endpoint (GET /email-box/attachments/{mailRemoteId}/{attachmentId}).
+   */
   private String buildAttachmentDownloadUrl(long mailRemoteId, String attachmentId) {
     return String.format("/portal/rest/email-box/attachments/%d/%s", mailRemoteId, attachmentId);
   }
 
-  // Case-insensitive match of a free-text term against subject, sender and body.
+  /**
+   * Case-insensitive match of a free-text term against subject, sender and body.
+   */
   private boolean matchesQuery(Email email, String query) {
     if (StringUtils.containsIgnoreCase(email.getSubject(), query)) {
       return true;
@@ -382,14 +412,18 @@ public class EmailMcpTool implements McpToolPlugin {
     return email.getContent() != null && StringUtils.containsIgnoreCase(email.getContent().getBody(), query);
   }
 
-  // Case-insensitive match of a term against a sender's name and address.
+  /**
+   * Case-insensitive match of a term against a sender's name and address.
+   */
   private boolean matchesSender(EmailSender sender, String term) {
     return sender != null
         && (StringUtils.containsIgnoreCase(sender.getAddress(), term)
             || StringUtils.containsIgnoreCase(sender.getName(), term));
   }
 
-  // Build an HTML EmailContent body for an outgoing message.
+  /**
+   * Build an HTML EmailContent body for an outgoing message.
+   */
   private EmailContent buildHtmlContent(String bodyHtml) {
     EmailContent content = new EmailContent();
     content.setBody(bodyHtml == null ? "" : bodyHtml);
@@ -397,7 +431,9 @@ public class EmailMcpTool implements McpToolPlugin {
     return content;
   }
 
-  // Turn a list of raw email addresses into EmailRecipient objects (address only).
+  /**
+   * Turn a list of raw email addresses into EmailRecipient objects (address only).
+   */
   private List<EmailRecipient> toRecipients(List<String> addresses) {
     if (addresses == null) {
       return List.of();
@@ -408,7 +444,9 @@ public class EmailMcpTool implements McpToolPlugin {
                     .toList();
   }
 
-  // Fetch the original email (with recipients) or fail if it cannot be found.
+  /**
+   * Fetch the original email (with recipients) or fail if it cannot be found.
+   */
   private Email fetchOriginalOrFail(long mailRemoteId, String username) throws IllegalAccessException {
     Email original = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, true, false, false);
     if (original == null) {
@@ -417,8 +455,10 @@ public class EmailMcpTool implements McpToolPlugin {
     return original;
   }
 
-  // Build the shared shell of a reply: HTML body, "Re:" subject, and the original
-  // Message-ID copied into mailHeaderId so the service sets In-Reply-To/References.
+  /**
+   * Build the shared shell of a reply: HTML body, "Re:" subject, and the original
+   * Message-ID copied into mailHeaderId so the service sets In-Reply-To/References.
+   */
   private Email buildReplyShell(Email original, String bodyHtml) {
     Email reply = new Email();
     reply.setContent(buildHtmlContent(bodyHtml));
@@ -428,7 +468,7 @@ public class EmailMcpTool implements McpToolPlugin {
     return reply;
   }
 
-  /*
+  /**
    * Build the HTML body of a forwarded email: the optional new note on top, then a
    * quoted block with the original sender/subject header and the original HTML body.
    */
@@ -452,7 +492,9 @@ public class EmailMcpTool implements McpToolPlugin {
     return body.toString();
   }
 
-  // Wrap the original sender as the single recipient of a reply.
+  /**
+   * Wrap the original sender as the single recipient of a reply.
+   */
   private List<EmailRecipient> senderAsRecipients(Email original) {
     String address = senderAddress(original);
     if (StringUtils.isBlank(address)) {
@@ -462,13 +504,17 @@ public class EmailMcpTool implements McpToolPlugin {
     return List.of(new EmailRecipient(sender != null ? sender.getName() : null, address, null, false));
   }
 
-  // Extract the sender email address from the original email.
+  /**
+   * Extract the sender email address from the original email.
+   */
   private String senderAddress(Email original) {
     return original.getSender() != null ? original.getSender().getAddress() : null;
   }
 
-  // Append recipients to the target list, skipping blanks and the excluded (self)
-  // address so the current user is never CC'd back on their own reply-all.
+  /**
+   * Append recipients to the target list, skipping blanks and the excluded (self)
+   * address so the current user is never CC'd back on their own reply-all.
+   */
   private void addRecipientsExcluding(List<EmailRecipient> target, List<EmailRecipient> source, String excludedAddress) {
     if (source == null) {
       return;

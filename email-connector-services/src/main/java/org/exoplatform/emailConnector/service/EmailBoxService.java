@@ -605,7 +605,7 @@ public class EmailBoxService {
     return failedEmailArchives;
   }
 
-  /*
+  /**
    * Link one or more emails (by IMAP mailRemoteId) to an existing category, acting
    * as the given user (the category ACL is enforced by CategoryLinkService). Emails
    * already in the category are skipped. Returns the number of emails newly linked.
@@ -637,7 +637,7 @@ public class EmailBoxService {
     return linked;
   }
 
-  /*
+  /**
    * Remove one or more emails (by IMAP mailRemoteId) from a category, acting as the
    * given user. Emails not currently in the category are skipped. Returns the number
    * of emails effectively unlinked.
@@ -664,7 +664,7 @@ public class EmailBoxService {
     return unlinked;
   }
 
-  /*
+  /**
    * List the categories currently applied to the user's emails, resolved to their
    * display name in the given locale. Categories never used on any email are not
    * returned. Useful to discover a category id before tagging emails.
