@@ -229,36 +229,14 @@ class EmailMcpToolTest {
 
   @Test
   void markReadDelegatesToService() throws Exception {
-    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(true), eq(true))).thenReturn(0);
-    String message = emailMcpTool.markRead(List.of(REMOTE_ID));
+    emailMcpTool.markRead(List.of(REMOTE_ID));
     verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(true), eq(true));
-    assertEquals("Marked 1 email(s) as read.", message);
   }
 
   @Test
   void markUnreadDelegatesToService() throws Exception {
-    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(false), eq(true))).thenReturn(0);
-    String message = emailMcpTool.markUnread(List.of(REMOTE_ID));
+    emailMcpTool.markUnread(List.of(REMOTE_ID));
     verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(false), eq(true));
-    assertEquals("Marked 1 email(s) as unread.", message);
-  }
-
-  @Test
-  void markReadReportsAllFailuresAsFailure() throws Exception {
-    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(true), eq(true))).thenReturn(1);
-    String message = emailMcpTool.markRead(List.of(REMOTE_ID));
-    // When every email fails, the message must be phrased as a clear failure and
-    // must not claim any success.
-    assertTrue(message.startsWith("Failed to mark 1 email(s) as read"), message);
-    assertFalse(message.contains("Marked 1"), message);
-  }
-
-  @Test
-  void markReadReportsPartialFailure() throws Exception {
-    List<Long> ids = List.of(REMOTE_ID, 888L);
-    when(emailBoxService.updateEmailReadStatus(eq(ids), eq(USERNAME), eq(true), eq(true))).thenReturn(1);
-    String message = emailMcpTool.markRead(ids);
-    assertEquals("Marked 1 of 2 email(s) as read; 1 failed (message not found on server or IMAP write denied).", message);
   }
 
   // --- send_email ----------------------------------------------------------
