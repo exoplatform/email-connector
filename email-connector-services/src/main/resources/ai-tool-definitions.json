@@ -1,0 +1,343 @@
+{
+  "tools": [
+    {
+      "name": "get_email_by_id",
+      "title": "Get an email",
+      "description": "Retrieve email content identified by its local id.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "email_id": { "type": "integer" }
+        },
+        "required": ["email_id"]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_emails",
+      "title": "List emails",
+      "description": "Retrieve a page of the current user's emails from the synced inbox mirror. Paginated: 'offset' (default 0) and 'limit' (default 10) page through the mirror, and 'unread_only' keeps only unread emails. Each email carries its mail_remote_id to chain into other tools. Call sync_now first if you need the freshest messages.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "offset": { "type": "integer" },
+          "limit": { "type": "integer" },
+          "unread_only": { "type": "boolean" }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_unread_count",
+      "title": "Get unread count",
+      "description": "Return how many emails in the synced inbox mirror are unread, out of the total mirrored. Fast triage summary that never returns email bodies. Call sync_now first for an up-to-date count.",
+      "input_schema": { "type": "object", "properties": {} },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_my_email_account",
+      "title": "Get my email account",
+      "description": "Return the current user's connected mailbox state: connected email address, connector name, webmail url, sync status and connected flag. Use this to discover which mailbox the user has connected before triaging. Never returns the account password.",
+      "input_schema": { "type": "object", "properties": {} },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "sync_now",
+      "title": "Sync inbox now",
+      "description": "Pull fresh messages from the IMAP server into the local inbox mirror, then report the resulting sync status and email count. Call this before triaging to make sure the mirror is up to date.",
+      "input_schema": { "type": "object", "properties": {} },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "search_emails",
+      "title": "Search emails",
+      "description": "Search the current user's inbox by filtering the already-synced inbox mirror in memory (there is NO server-side search, so results only cover the recently synced INBOX, not the whole mailbox or other folders). Optional filters: 'query' matches subject/sender/body, 'unread' keeps only unread emails, 'from' matches the sender name or address. Returns each email with its mail_remote_id to chain into other tools.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "unread": { "type": "boolean" },
+          "from": { "type": "string" }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_email_full",
+      "title": "Get full email",
+      "description": "Fetch a single email in full by its IMAP mail_remote_id, including recipients, body and attachment metadata. Binary attachment content is not returned.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_id": { "type": "integer" }
+        },
+        "required": ["mail_remote_id"]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_attachments",
+      "title": "List email attachments",
+      "description": "List the attachments of an email (identified by its IMAP mail_remote_id). Returns for each attachment its name, mime_type, attachment_id (the MIME part path) and a ready download_url pointing at the add-on's authenticated endpoint. The assistant should surface the attachment names and the download_url as a link the user opens in their own authenticated browser; the attachment bytes never pass through this tool. Returns an empty list if the email has no attachments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_id": { "type": "integer" }
+        },
+        "required": ["mail_remote_id"]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "mark_read",
+      "title": "Mark emails read",
+      "description": "Mark one or more emails as read, both locally and on the IMAP server. Identify emails by their IMAP mail_remote_id (from list_emails/search_emails).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_ids": { "type": "array", "items": { "type": "integer" } }
+        },
+        "required": ["mail_remote_ids"]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "mark_unread",
+      "title": "Mark emails unread",
+      "description": "Mark one or more emails as unread, both locally and on the IMAP server. Identify emails by their IMAP mail_remote_id (from list_emails/search_emails).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_ids": { "type": "array", "items": { "type": "integer" } }
+        },
+        "required": ["mail_remote_ids"]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "send_email",
+      "title": "Send a new email",
+      "description": "Send a brand new email over real SMTP on behalf of the current user (a copy is stored in the Sent folder). The body is HTML. Optional 'cc' and 'bcc' recipient lists. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the message, always surface the exact recipient(s) (including any cc and bcc), subject and body to the user for explicit confirmation, and never send without that confirmation. Never invent or add recipients the user did not explicitly name. Attachments are not supported.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "to": { "type": "array", "items": { "type": "string" } },
+          "subject": { "type": "string" },
+          "body_html": { "type": "string" },
+          "cc": { "type": "array", "items": { "type": "string" } },
+          "bcc": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["to", "subject", "body_html"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "reply_email",
+      "title": "Reply to an email",
+      "description": "Reply to the sender of an existing email (identified by its IMAP mail_remote_id). The reply is threaded to the original and the subject is prefixed with 'Re:'. The body is HTML. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the reply, surface the recipient, subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_id": { "type": "integer" },
+          "body_html": { "type": "string" }
+        },
+        "required": ["mail_remote_id", "body_html"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "reply_all",
+      "title": "Reply all to an email",
+      "description": "Reply to everyone on an existing email (identified by its IMAP mail_remote_id): To = original sender, Cc = the original To and Cc minus the current user. The reply is threaded and the subject prefixed with 'Re:'. The body is HTML. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the reply, surface ALL recipients (To and Cc), subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_id": { "type": "integer" },
+          "body_html": { "type": "string" }
+        },
+        "required": ["mail_remote_id", "body_html"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "forward_email",
+      "title": "Forward an email",
+      "description": "Forward an existing email (identified by its IMAP mail_remote_id) to brand new recipients. The subject is prefixed with 'Fwd:' and the original message is quoted below the optional new note ('body_html', HTML). Attachments of the original are NOT carried over. IMPORTANT: this action is outward-facing and irreversible - only DRAFT the forward, surface the exact recipient(s) (to and cc), subject and body to the user for explicit confirmation, never auto-send, and never add recipients the user did not name.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_id": { "type": "integer" },
+          "to": { "type": "array", "items": { "type": "string" } },
+          "body_html": { "type": "string" },
+          "cc": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["mail_remote_id", "to"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "archive_email",
+      "title": "Archive emails",
+      "description": "Move one or more emails (identified by their IMAP mail_remote_id) from the inbox to the Archive folder. Confirm the affected emails with the user before archiving.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_ids": { "type": "array", "items": { "type": "integer" } }
+        },
+        "required": ["mail_remote_ids"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "delete_email",
+      "title": "Delete emails",
+      "description": "Delete one or more emails (identified by their IMAP mail_remote_id): they are copied to Trash and expunged from the inbox. This is destructive and irreversible - always confirm the exact emails with the user before deleting.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_ids": { "type": "array", "items": { "type": "integer" } }
+        },
+        "required": ["mail_remote_ids"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_email_categories",
+      "title": "List email categories",
+      "description": "List the categories (labels) currently applied to the user's emails, each with its id and display name. Use this to resolve a category name to the id needed by add_email_category / remove_email_category. Categories not yet used on any email are not listed - the user creates categories from the mailbox UI.",
+      "input_schema": { "type": "object", "properties": {} },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "add_email_category",
+      "title": "Add a category to emails",
+      "description": "Tag one or more emails (identified by their IMAP mail_remote_id) with an existing category id obtained from list_email_categories. Emails already in the category are skipped. Confirm the affected emails and the category with the user before tagging.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
+          "category_id": { "type": "integer" }
+        },
+        "required": ["mail_remote_ids", "category_id"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "remove_email_category",
+      "title": "Remove a category from emails",
+      "description": "Remove a category id from one or more emails (identified by their IMAP mail_remote_id). Emails not currently in the category are skipped. Confirm the affected emails and the category with the user before removing.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mail_remote_ids": { "type": "array", "items": { "type": "integer" } },
+          "category_id": { "type": "integer" }
+        },
+        "required": ["mail_remote_ids", "category_id"]
+      },
+      "require_approval": true,
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}
