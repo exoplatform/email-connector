@@ -386,10 +386,27 @@ public class EmailBoxService {
     return emailBoxStorage.getEmailById(id, username, userEmailSetting.getEmailAddress());
   }
 
-  public void updateEmailReadStatus(List<Long> mailRemoteIds,
-                                    String username,
-                                    boolean readStatus,
-                                    boolean updateRemoteReadStatus) throws IllegalAccessException {
+  /**
+   * Update the read/unread status of one or more emails (by IMAP mailRemoteId),
+   * optimistically in the local mirror first and then, when requested, on the IMAP
+   * server. Each per-message remote failure (including a message that no longer
+   * exists on the server) reverts the local change for that email and is counted so
+   * the caller can report a truthful outcome instead of silently claiming success.
+   *
+   * @param mailRemoteIds the IMAP UIDs of the emails to update
+   * @param username the user acting on their own mailbox
+   * @param readStatus {@code true} to mark as read, {@code false} to mark as unread
+   * @param updateRemoteReadStatus whether the flag must also be pushed to the IMAP
+   *          server (skipped, e.g., during sync where the flag comes from the server)
+   * @return the number of emails whose remote update failed (0 when everything
+   *         succeeded or when no remote update was requested)
+   * @throws IllegalAccessException if the user is not allowed to update email
+   */
+  public int updateEmailReadStatus(List<Long> mailRemoteIds,
+                                   String username,
+                                   boolean readStatus,
+                                   boolean updateRemoteReadStatus) throws IllegalAccessException {
+    int failedEmailUpdates = 0;
     if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
       UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
       if (userEmailSetting.getEmailConnectorId() == null
@@ -409,10 +426,19 @@ public class EmailBoxService {
           try {
             if (updateRemoteReadStatus) {
               Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
+              // Guard the not-found case explicitly: getMessageByUID returns null
+              // (rather than throwing) when the UID is unknown to the server.
+              if (remoteMessage == null) {
+                emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus);
+                failedEmailUpdates++;
+                LOG.warn("Email {} not found on IMAP server for user {}, read status update reverted", mailRemoteId, username);
+                continue;
+              }
               remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
             }
           } catch (Exception e) {
             emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus);
+            failedEmailUpdates++;
             LOG.error("Error when updating email {} read status for user {}", mailRemoteId, username, e);
           }
         }
@@ -437,6 +463,7 @@ public class EmailBoxService {
         }
       }
     }
+    return failedEmailUpdates;
   }
 
   public int deleteEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {

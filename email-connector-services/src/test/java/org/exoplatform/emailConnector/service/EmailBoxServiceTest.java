@@ -226,12 +226,22 @@ public class EmailBoxServiceTest {
     when(store.isConnected()).thenReturn(true);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, false, true);
+    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, false, true);
+    org.junit.jupiter.api.Assertions.assertEquals(0, failed);
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, false);
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.SEEN, false);
     verify(inbox).close(false);
     verify(store).close();
+
+    // getMessageByUID returns null (UID unknown to the server): the remote update
+    // must be counted as a failure and the optimistic local change reverted.
+    reset(emailBoxStorage);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(null);
+    int failedWhenNotFound = emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, true);
+    org.junit.jupiter.api.Assertions.assertEquals(1, failedWhenNotFound);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1212l), TEST_USER, false);
   }
 
   @Test
