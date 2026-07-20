@@ -283,20 +283,26 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Mark one or more emails (by IMAP mailRemoteId) as read, locally and on the
-   * IMAP server.
+   * IMAP server. Reports the true outcome: emails whose server flag could not be
+   * written (message not found on server or IMAP write denied) are counted as
+   * failed rather than reported as success.
    */
   public String markRead(List<Long> mailRemoteIds) throws IllegalAccessException {
-    emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), true, true);
-    return String.format("Marked %d email(s) as read.", mailRemoteIds == null ? 0 : mailRemoteIds.size());
+    int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
+    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), true, true);
+    return buildReadStatusMessage(total, failed, "read");
   }
 
   /**
    * Mark one or more emails (by IMAP mailRemoteId) as unread, locally and on the
-   * IMAP server.
+   * IMAP server. Reports the true outcome: emails whose server flag could not be
+   * written (message not found on server or IMAP write denied) are counted as
+   * failed rather than reported as success.
    */
   public String markUnread(List<Long> mailRemoteIds) throws IllegalAccessException {
-    emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), false, true);
-    return String.format("Marked %d email(s) as unread.", mailRemoteIds == null ? 0 : mailRemoteIds.size());
+    int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
+    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), false, true);
+    return buildReadStatusMessage(total, failed, "unread");
   }
 
   // ---------------------------------------------------------------------------
@@ -468,6 +474,32 @@ public class EmailMcpTool implements McpToolPlugin {
     model.setCc(email.getCc());
     model.setBcc(email.getBcc());
     return model;
+  }
+
+  /**
+   * Build a truthful mark-read/unread outcome message from the total requested and
+   * the number that failed. Never claims success when everything failed: when all
+   * emails failed the message is phrased as a clear failure, and when some failed it
+   * surfaces the count and the likely cause.
+   */
+  private String buildReadStatusMessage(int total, int failed, String state) {
+    int succeeded = total - failed;
+    if (total == 0) {
+      return String.format("No email to mark as %s.", state);
+    }
+    if (failed == 0) {
+      return String.format("Marked %d email(s) as %s.", succeeded, state);
+    }
+    if (failed == total) {
+      return String.format("Failed to mark %d email(s) as %s (message not found on server or IMAP write denied).",
+                           total,
+                           state);
+    }
+    return String.format("Marked %d of %d email(s) as %s; %d failed (message not found on server or IMAP write denied).",
+                         succeeded,
+                         total,
+                         state,
+                         failed);
   }
 
   /**
