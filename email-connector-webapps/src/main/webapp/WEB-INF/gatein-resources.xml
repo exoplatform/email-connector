@@ -153,4 +153,31 @@
       <module>extensionRegistry</module>
     </depends>
   </module>
+
+  <!-- Contributes the "Send by email" action to the Documents file menu. The name
+       MUST contain "DocumentsExtension": the Documents app discovers it via
+       includeExtensions('DocumentsExtension'). In the DocumentsGRP load-group so it
+       is present on the Documents pages. Present only when this webapp is deployed. -->
+  <module>
+    <name>EmailConnectorDocumentsExtension</name>
+    <load-group>DocumentsGRP</load-group>
+    <script>
+      <path>/js/emailConnectorDocumentsExtension.bundle.js</path>
+    </script>
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>vuetify</module>
+    </depends>
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+    <depends>
+      <module>commonVueComponents</module>
+    </depends>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+  </module>
 </gatein-resources>
