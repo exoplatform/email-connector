@@ -192,6 +192,14 @@ export function synchronize() {
   });
 }
 
+/**
+ * Sends (or replies/forwards) an email. The whole email object is serialized, so
+ * it also carries email.attachments = [{ uploadId, name, mimeType, size }], the
+ * commons upload ids the backend resolves to bytes and attaches to the message.
+ *
+ * @param {Object} email the composed email, including its optional attachments
+ * @returns {Promise} resolves once the email has been sent
+ */
 export function sendEmail(email) {
   return fetch('/email-connector/rest/email-box/send', {
     headers: {
@@ -347,4 +355,499 @@ export async function getSubcategoryIds(categoryId) {
     depth: -1
   });
   return [...new Set([categoryId, ...subcategoyIds])];
+}
+// Attachment types the platform can show without any copy in the Drive: the
+// preview dialog shipped by social listens globally for open-attachments-preview
+// and renders straight from a URL.
+const URL_PREVIEWABLE_TYPES = ['image/', 'audio/', 'video/'];
+
+/**
+ * The types OnlyOffice declares it can open. Registered by the OnlyOffice add-on
+ * into the shared 'documents' extension point, so this works without any build
+ * dependency on documents; when that add-on isn't installed the list is empty and
+ * every attachment simply keeps downloading, which is the right degradation.
+ *
+ * @returns {Array} the supported document type descriptors, empty when none
+ */
+function supportedDocumentTypes() {
+  // extensionRegistry is injected into the bundle as a shared module, it is not a
+  // window global: reading it from window silently yields nothing at all.
+  return extensionRegistry?.loadExtensions('documents', 'supported-document-types') || [];
+}
+
+/**
+ * Whether the Documents add-on is deployed, hence whether its attachments drawer
+ * can be opened at all. Same probe the composer uses: the picker is contributed by
+ * Documents at runtime, so its absence is detected rather than declared.
+ *
+ * @returns {Boolean} true when the Documents add-on is on the page
+ */
+export function isDocumentsDeployed() {
+  return extensionRegistry?.loadExtensions('RichEditor', 'ckeditor-extensions').some(extension => extension.id === 'attachFile')
+    || !!Vue.prototype.$attachmentService;
+}
+
+/**
+ * The address the attachment bytes are served from. No portal context prefix: the
+ * add-on mounts its own REST context, and prefixing it lands on the portal itself,
+ * which answers a page with 200 instead of the file.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {String} the URL its content can be read from
+ */
+export function getAttachmentUrl(attachment) {
+  return `/email-connector/rest/email-box/attachments/${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
+}
+
+/**
+ * The content type of an attachment, in the shape the rest of the platform uses.
+ * A mail header is not normalised: the server hands back things like 'IMAGE/PNG'
+ * and may append parameters, as in 'text/plain; charset=UTF-8'. Comparing that
+ * raw is why nothing ever matched, so keep every comparison going through here.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {String} the bare content type, lower case, without its parameters
+ */
+function normaliseMimeType(attachment) {
+  return (attachment?.mimeType || '').split(';')[0].trim().toLowerCase();
+}
+
+/**
+ * Whether the platform preview dialog can render the attachment from its URL alone.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {Boolean} true for an image, a sound or a video
+ */
+export function isUrlPreviewable(attachment) {
+  const mimeType = normaliseMimeType(attachment);
+  return URL_PREVIEWABLE_TYPES.some(type => mimeType.startsWith(type));
+}
+
+/**
+ * Whether OnlyOffice declares it can open the attachment, which also means the
+ * add-on is installed at all.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {Boolean} true when a registered document type matches
+ */
+export function isEditorPreviewable(attachment) {
+  const mimeType = normaliseMimeType(attachment);
+  return supportedDocumentTypes().some(type => (type.mimeType || '').toLowerCase() === mimeType);
+}
+
+/**
+ * Opens an image, audio or video attachment in the platform preview dialog,
+ * straight from its URL. Nothing is written to the Drive.
+ *
+ * @param {Object} attachment the received attachment to preview
+ * @returns {void}
+ */
+export function previewAttachmentFromUrl(attachment) {
+  const id = String(attachment.attachmentRemoteId);
+  document.dispatchEvent(new CustomEvent('open-attachments-preview', {
+    detail: {
+      id,
+      attachments: [{
+        id,
+        filename: attachment.name,
+        downloadUrl: getAttachmentUrl(attachment),
+        // the preview dialog reads 'mimetype', not 'mimeType', and picks its
+        // renderer by matching the type as-is, so hand it the normalised one
+        mimetype: normaliseMimeType(attachment),
+      }],
+    },
+  }));
+}
+
+// Where a received attachment is stored when it has to become a real document.
+// Two spellings on purpose: the platform keeps the capitalised title for display
+// but stores the node under a lower-cased name, and the attachments service
+// resolves the destination it is given as a JCR path verbatim.
+const RECEIVED_FOLDER_TITLE = 'Received';
+
+export const ATTACHMENTS_FOLDER_TITLE = 'Mail Attachments';
+
+const RECEIVED_FOLDER_TITLES = [ATTACHMENTS_FOLDER_TITLE, RECEIVED_FOLDER_TITLE];
+
+// The node path 'Mail Attachments' resolves to. The platform keeps the capitalised
+// title for display but stores the node under a lower-cased name, and both the ECMS
+// upload endpoint and the folder picker match path segments verbatim — so a display
+// title handed to either would create a second, differently-cased duplicate folder.
+export const ATTACHMENTS_FOLDER_PATH = ATTACHMENTS_FOLDER_TITLE.toLowerCase();
+
+// The user's own Drive, where received attachments land by default.
+const PERSONAL_DRIVE_NAME = 'Personal Documents';
+
+const DEFAULT_WORKSPACE = 'collaboration';
+
+// Documents already materialised in this page, keyed by mail id + part id AND by
+// destination, so opening the same attachment twice reuses its document instead of
+// copying it again — while storing it somewhere else really does store it there
+// rather than hand back the copy made for another folder.
+const materialisedDocuments = {};
+
+/**
+ * Creates a folder in the user's Drive, ignoring the answer: it is called to make
+ * sure the folder is there, and it already existing is the expected outcome.
+ *
+ * @param {String} ownerId the identity the Drive belongs to
+ * @param {String} name the folder title
+ * @param {String} parentId the id of the folder it goes in, root when absent
+ * @returns {Promise} resolved once the server has answered, never rejected
+ */
+function createFolder(ownerId, name, parentId) {
+  const params = new URLSearchParams({ ownerId, name });
+  if (parentId) {
+    params.append('parentid', parentId);
+  } else {
+    params.append('folderPath', '');
+  }
+  return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/documents/folder?${params}`, {
+    credentials: 'include',
+    method: 'POST',
+  }).catch(() => null);
+}
+
+/**
+ * Looks a folder up by title among the folders of a parent.
+ *
+ * @param {String} ownerId the identity the Drive belongs to
+ * @param {String} name the folder title to look for
+ * @param {String} parentFolderId the folder to look into, root when absent
+ * @returns {Promise} resolved with the folder, or null when it isn't there
+ */
+function findFolder(ownerId, name, parentFolderId) {
+  const params = new URLSearchParams({ ownerId, listingType: 'FOLDER', limit: '200' });
+  if (parentFolderId) {
+    params.append('parentFolderId', parentFolderId);
+  }
+  return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/documents?${params}`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  }).then(response => response.json())
+    .then(body => {
+      const items = Array.isArray(body) && body || body.documents || body.items || [];
+      return items.find(item => (item.name || item.title) === name);
+    })
+    .catch(() => null);
+}
+
+/**
+ * The JCR path a chain of folder titles resolves to. The platform keeps the
+ * capitalised title for display but stores the node under a lower-cased name, and
+ * the attachments service resolves the destination it is given verbatim.
+ *
+ * @param {Array} folderTitles the folder titles, outermost first
+ * @returns {String} the path to hand to the upload service
+ */
+function toFolderPath(folderTitles) {
+  return folderTitles.map(title => title.toLowerCase()).join('/');
+}
+
+/**
+ * Makes sure a whole chain of folders exists in the user's Drive, creating each
+ * level under the previous one. The folders are addressed by path afterwards, so
+ * this only guarantees they are there.
+ *
+ * @param {Array} folderTitles the folder titles, outermost first
+ * @returns {Promise} resolved once every level is known to exist
+ */
+function ensureFolderPath(folderTitles) {
+  const ownerId = eXo.env.portal.userIdentityId;
+  if (!ownerId) {
+    return Promise.resolve();
+  }
+  return ensureFolder(ownerId, folderTitles, 0, null);
+}
+
+/**
+ * Creates one level of a folder chain, then goes on with the next one under it.
+ * Recursive rather than a loop because a level can only be created once the id of
+ * its parent is known, hence one round trip after the other.
+ *
+ * @param {String} ownerId the identity the Drive belongs to
+ * @param {Array} folderTitles the folder titles, outermost first
+ * @param {Number} index the level being created
+ * @param {String} parentId the id of the level above, null at the root
+ * @returns {Promise} resolved once this level and the ones below it exist
+ */
+function ensureFolder(ownerId, folderTitles, index, parentId) {
+  const title = folderTitles[index];
+  // Look the level up first and only create it when it is missing. Creating it blindly
+  // works — the server answers 409 for an existing folder and fetch does not reject on
+  // it — but the browser still logs that 409 to the console on every save, which reads
+  // as an error to anyone watching. A lookup first keeps the console clean.
+  return findFolder(ownerId, title, parentId)
+    .then(existing => existing || createFolder(ownerId, title, parentId)
+      .then(() => findFolder(ownerId, title, parentId)))
+    .then(folder => {
+      if (!folder || index === folderTitles.length - 1) {
+        return null;
+      }
+      return ensureFolder(ownerId, folderTitles, index + 1, folder.id);
+    });
+}
+
+/**
+ * Reads a received attachment back as a File, the shape every upload path of the
+ * platform takes, whether it is the commons upload service or the Documents drawer.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {Promise} resolved with the attachment content as a File
+ */
+export async function fetchAttachmentFile(attachment) {
+  const response = await fetch(getAttachmentUrl(attachment), { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`Could not read the attachment (${response.status})`);
+  }
+  const blob = await response.blob();
+  return new File([blob], attachment.name, { type: attachment.mimeType || blob.type });
+}
+
+/**
+ * Copies a received attachment into the Drive and returns its document id, going
+ * through the very same upload the Documents picker uses so the file is ingested
+ * exactly like any other upload rather than through a side door.
+ *
+ * The result is memoised on the attachment AND on its destination: the same
+ * attachment asked for twice is copied once, but asking for it in another folder
+ * really stores it there instead of handing back the copy made for the first one.
+ *
+ * @param {Object} attachment the received attachment to materialise
+ * @param {Array} folderTitles the destination folder titles, outermost first
+ * @param {String} driveName the Drive to store into, the user's own by default
+ * @param {String} workspace the JCR workspace of that Drive
+ * @returns {Promise} resolved with the id of the created document
+ */
+export function materialiseAttachment(attachment, folderTitles = RECEIVED_FOLDER_TITLES, driveName = PERSONAL_DRIVE_NAME, workspace = DEFAULT_WORKSPACE) {
+  // Only the user's own Drive is addressed by identity and can be created through
+  // the documents folder REST; anywhere else the folder is one the picker returned,
+  // so it already exists and there is nothing to create.
+  const titlesToEnsure = driveName === PERSONAL_DRIVE_NAME && folderTitles.length ? folderTitles : null;
+  return materialiseAttachmentAt(attachment, toFolderPath(folderTitles), driveName, workspace, titlesToEnsure);
+}
+
+/**
+ * Copies a received attachment into an already-known Drive folder and returns its
+ * document id. This is the picker-facing variant of materialiseAttachment: the
+ * destination is a drive-root-relative node path used VERBATIM — exactly what the
+ * revamped Documents folder picker returns — so no title lower-casing is applied
+ * and, unless a folder chain is explicitly given, nothing is created: the picker
+ * only ever returns folders that exist.
+ *
+ * @param {Object} attachment the received attachment to materialise
+ * @param {String} destination the drive-root-relative node path ('' for the root)
+ * @param {String} driveName the legacy ECMS Drive name to store into
+ * @param {String} workspace the JCR workspace of that Drive
+ * @param {Array} folderTitlesToEnsure folder titles to create first, or null
+ * @returns {Promise} resolved with the id of the created document
+ */
+export function materialiseAttachmentAt(attachment, destination, driveName = PERSONAL_DRIVE_NAME, workspace = DEFAULT_WORKSPACE, folderTitlesToEnsure = null) {
+  const key = `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}@${driveName}:${workspace}:${destination}`;
+  if (materialisedDocuments[key]) {
+    return materialisedDocuments[key];
+  }
+  const promise = (async () => {
+    if (folderTitlesToEnsure && folderTitlesToEnsure.length) {
+      await ensureFolderPath(folderTitlesToEnsure);
+    }
+    const file = await fetchAttachmentFile(attachment);
+    const uploadId = Vue.prototype.$uploadService.generateRandomId();
+    await Vue.prototype.$uploadService.upload(file, uploadId);
+
+    const params = new URLSearchParams({
+      workspaceName: workspace,
+      driveName: driveName,
+      currentFolder: destination,
+      currentPortal: eXo.env.portal.portalName,
+      uploadId,
+      fileName: attachment.name,
+      language: eXo.env.portal.language,
+      // keep both copies rather than overwrite a same-named file from another mail
+      existenceAction: 'keep',
+      action: 'save',
+    });
+    const saved = await fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/managedocument/uploadFile/control?${params}`, {
+      credentials: 'include',
+    });
+    if (!saved.ok) {
+      throw new Error(`Could not store the attachment (${saved.status})`);
+    }
+    // the upload service answers in XML, the document id is its UUID
+    const document = new DOMParser().parseFromString(await saved.text(), 'text/xml');
+    const documentId = document.querySelector('UUID')?.textContent
+      || document.documentElement?.getAttribute('UUID');
+    if (!documentId) {
+      throw new Error('The stored attachment has no document id');
+    }
+    return documentId;
+  })();
+  materialisedDocuments[key] = promise;
+  promise.catch(() => delete materialisedDocuments[key]);
+  return promise;
+}
+
+/**
+ * The address of the OnlyOffice editor for a stored document. Built the way the
+ * Documents add-on builds it: on the meta portal, since the mail box is opened
+ * from any page and the current portal can be a space, which has no editor.
+ *
+ * @param {String} documentId the id of the stored document
+ * @param {String} mode 'view' to open read only, editable when absent
+ * @returns {String} the editor URL, coming back to the current page when closed
+ */
+export function getEditorUrl(documentId, mode) {
+  const portal = eXo.env.portal.metaPortalName || eXo.env.portal.portalName;
+  const modeParam = mode && `&mode=${mode}` || '';
+  return `${eXo.env.portal.context}/${portal}/oeditor?docId=${documentId}${modeParam}&backTo=${window.location.pathname}`;
+}
+
+/**
+ * Shows a toast through the platform's global alert bus. Used from here rather than a
+ * component's $root because the save completes asynchronously, after the user has
+ * picked a folder, when the click that started it is long gone.
+ *
+ * When a link is given the toast carries a link button (the platform alert's
+ * alertLink / alertLinkText pair, opened in a new tab) so the user can jump
+ * straight to what the toast talks about, e.g. the freshly stored document.
+ *
+ * @param {String} alertMessage the already-translated message to show
+ * @param {String} alertType 'success' or 'error'
+ * @param {String} alertLink the address the toast's link button opens, or null
+ * @param {String} alertLinkText the already-translated link button text
+ * @returns {void}
+ */
+function notify(alertMessage, alertType, alertLink = null, alertLinkText = null) {
+  document.dispatchEvent(new CustomEvent('alert-message', {
+    detail: {
+      alertType,
+      alertMessage,
+      alertLink: alertLink || null,
+      alertLinkText: alertLink && alertLinkText || null,
+      alertLinkTarget: alertLink && '_blank' || null,
+    },
+  }));
+}
+
+/**
+ * The address of the Documents application showing the given folder. A folder in a
+ * space drive opens the Documents app of that space (its own context); a folder in
+ * the personal drive opens the user's own Documents (their workspace's Drive, i.e.
+ * eXo.env.portal.defaultPath) — NOT the meta portal, which is a different Drive the
+ * saved folder does not live in. Both read folderId from the URL.
+ *
+ * @param {Object} pickerDetail the folder picker's selection event detail
+ * @returns {String} the documents page URL for the picked folder
+ */
+function getDocumentsFolderUrl(pickerDetail) {
+  const params = new URLSearchParams({ folderId: pickerDetail.folderId });
+  if (pickerDetail.spaceId) {
+    // the space's own Documents app
+    return `${eXo.env.portal.context}/s/${pickerDetail.spaceId}/documents?${params}`;
+  }
+  // the user's personal Documents (their workspace Drive), where the folder lives
+  return `${eXo.env.portal.defaultPath}/documents?${params}`;
+}
+
+/**
+ * Where a completed save can be seen: the destination folder opened in Documents,
+ * whether one attachment or several were saved. It opens the folder listing rather
+ * than a document preview on purpose — the user asked to land in the folder, not in
+ * the editor. Null — meaning a plain toast — when the picker did not hand back the
+ * folder id.
+ *
+ * @param {Array} documentIds the ids of the stored documents
+ * @param {Object} pickerDetail the folder picker's selection event detail
+ * @returns {String} the URL opening the destination folder in Documents, or null
+ */
+function savedLocationUrl(documentIds, pickerDetail) {
+  if (!pickerDetail.folderId) {
+    return null;
+  }
+  return getDocumentsFolderUrl(pickerDetail);
+}
+
+/**
+ * Saves received attachments into the Drive in one shot. Opens the reusable Documents
+ * folder picker (the very same folders-only explorer Documents uses for "change
+ * location"), then, on the folder the user confirms, uploads every attachment straight
+ * there — no staging drawer, no second upload click. Closing the picker without
+ * choosing cancels silently.
+ *
+ * The picker hands back BOTH the /v1/documents folder id and the legacy addressing:
+ * the ECMS drive name plus the drive-root-relative node path of the chosen folder.
+ * The upload endpoint (managedocument/uploadFile/control) wants exactly that legacy
+ * pair, so both are used VERBATIM — the picker's answer is authoritative, nothing is
+ * re-derived, lower-cased or created on top of it.
+ *
+ * @param {Array} attachments the received attachments to store
+ * @param {Object} messages the translated toasts: { success, error, see } — see
+ *                 being the success toast's link text to the saved location
+ * @returns {Promise} resolved once the picker has been opened (not once saved)
+ */
+export async function saveAttachmentsInDocuments(attachments, messages = {}) {
+  // make the default folder exist first, so the picker opens right inside it rather
+  // than at the drive root; the upload would create it too, but not as the default
+  await ensureFolderPath([ATTACHMENTS_FOLDER_TITLE]);
+
+  const onCancelled = () => cleanup();
+  const onSelected = (event) => {
+    cleanup();
+    const detail = event.detail || {};
+    // drive-root-relative node path, '' when the drive root itself was picked
+    const destination = detail.relativePath ?? detail.path ?? '';
+    const driveName = detail.driveName || detail.drive?.name || PERSONAL_DRIVE_NAME;
+    const workspace = detail.workspace || DEFAULT_WORKSPACE;
+    Promise.all(attachments.map(attachment => materialiseAttachmentAt(attachment, destination, driveName, workspace)))
+      // the success toast links to the result: the stored document itself for a
+      // single attachment, the destination folder for a whole set
+      .then(documentIds => notify(messages.success, 'success', savedLocationUrl(documentIds, detail), messages.see))
+      .catch(() => notify(messages.error, 'error'));
+  };
+  const cleanup = () => {
+    document.removeEventListener('documents-folder-picker-selected', onSelected);
+    document.removeEventListener('documents-folder-picker-cancelled', onCancelled);
+  };
+
+  // one-shot: a single pick answers a single save request, then the listeners go away
+  document.addEventListener('documents-folder-picker-selected', onSelected);
+  document.addEventListener('documents-folder-picker-cancelled', onCancelled);
+
+  document.dispatchEvent(new CustomEvent('open-documents-folder-picker', {
+    detail: {
+      // no title on purpose: the picker localises the personal drive's display name
+      defaultDrive: { name: PERSONAL_DRIVE_NAME },
+      // The node name, not the title: the picker navigates by JCR node path and the
+      // upload uses the picked path verbatim, so starting from the capitalised title
+      // would make a second 'Mail Attachments' node next to the lower-cased one —
+      // see EXO-88779.
+      defaultFolder: ATTACHMENTS_FOLDER_PATH,
+      workspace: DEFAULT_WORKSPACE,
+    },
+  }));
+}
+
+/**
+ * Opens the composer on a new email carrying this attachment alone. It travels as a
+ * download URL rather than as bytes: the composer already knows how to turn a URL
+ * into a commons upload id, which is what the backend attaches to the message.
+ *
+ * @param {Object} attachment the received attachment to forward
+ * @returns {void}
+ */
+export function forwardAttachment(attachment) {
+  const mimeType = normaliseMimeType(attachment);
+  document.dispatchEvent(new CustomEvent('open-email-compose-with-attachment', {
+    detail: {
+      attachment: {
+        id: null,
+        name: attachment.name,
+        title: attachment.name,
+        mimeType,
+        mimetype: mimeType,
+        size: attachment.size || 0,
+        downloadUrl: getAttachmentUrl(attachment),
+      },
+    },
+  }));
 }

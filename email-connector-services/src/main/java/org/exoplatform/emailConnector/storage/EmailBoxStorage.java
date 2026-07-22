@@ -177,7 +177,8 @@ public class EmailBoxStorage {
                               null,
                               null,
                               null,
-                              categoryIds);
+                              categoryIds,
+                              null);
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());

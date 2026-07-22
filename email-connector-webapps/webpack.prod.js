@@ -28,6 +28,7 @@ const config = {
     emailConnectorCommon : './src/main/webapp/vue-apps/email-connector-common/main.js',
     emailConnectorMailBox: './src/main/webapp/vue-apps/email-connector-mail-box/main.js',
     emailConnectorNotificationExtension: './src/main/webapp/vue-apps/email-connector-notification-extension/main.js',
+    emailConnectorDocumentsExtension: './src/main/webapp/vue-apps/email-connector-documents-extension/main.js',
   },
   output: {
     path: path.join(__dirname, 'target/email-connector/'),
