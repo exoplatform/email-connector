@@ -59,4 +59,6 @@ public class Email {
   private List<EmailRecipient> replyTo;
 
   private List<Long>           categoryIds;
+
+  private List<EmailOutgoingAttachment> attachments;
 }

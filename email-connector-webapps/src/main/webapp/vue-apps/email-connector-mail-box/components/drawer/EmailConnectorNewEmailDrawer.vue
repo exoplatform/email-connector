@@ -123,6 +123,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :tag-enabled="false"
         disable-suggester
         hide-chars-count />
+      <email-connector-new-email-drawer-attachments
+        v-model="attachments"
+        :active="newEmailDrawer" />
     </template>
     <template #footer>
       <div class="d-flex">
@@ -157,6 +160,7 @@ export default {
           body: ''
         },
       },
+      attachments: [],
       loading: false,
       title: '',
     };
@@ -171,7 +175,7 @@ export default {
   },
   computed: {
     disabled() {
-      return !this.toEmails;
+      return !this.toEmails || this.attachments.some(attachment => attachment.uploading);
     },
     confirmClose() {
       return !!(this.email.content.body || this.email.subject || this.toEmails || this.ccEmails || this.bccEmails);
@@ -179,6 +183,7 @@ export default {
   },
   methods: {
     open(email, forward, replyAll) {
+      this.attachments = [];
       this.title = forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.title') : email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
       if (email) {
         if (!forward) {
@@ -229,6 +234,8 @@ export default {
       this.email.subject = '';
       this.email.content.body = '';
       this.email.mailHeaderId = null;
+      this.email.attachments = [];
+      this.attachments = [];
       this.newEmailDrawer = false;
     },
     sendEmail(email) {
@@ -254,6 +261,14 @@ export default {
           return;
         }
       }
+      this.email.attachments = this.attachments
+        .filter(attachment => attachment.uploadId)
+        .map(attachment => ({
+          uploadId: attachment.uploadId,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+        }));
       this.email.content.body = this.formatEmailBody(this.email.content.body);
       this.loading = true;
       this.$emailConnectorMailBoxService.sendEmail(this.email).then(() => {
