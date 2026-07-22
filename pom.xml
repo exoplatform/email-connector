@@ -28,7 +28,6 @@
     <!-- 3rd party libraries versions -->
     <org.exoplatform.commons-exo.version>7.3.x-ai-contribution-SNAPSHOT</org.exoplatform.commons-exo.version>
     <io.meeds.mcp-server.version>7.3.x-SNAPSHOT</io.meeds.mcp-server.version>
-
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
   </properties>
