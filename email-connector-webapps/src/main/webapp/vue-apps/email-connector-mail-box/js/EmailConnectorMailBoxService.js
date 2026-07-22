@@ -192,6 +192,14 @@ export function synchronize() {
   });
 }
 
+/**
+ * Sends (or replies/forwards) an email. The whole email object is serialized, so
+ * it also carries email.attachments = [{ uploadId, name, mimeType, size }], the
+ * commons upload ids the backend resolves to bytes and attaches to the message.
+ *
+ * @param {Object} email the composed email, including its optional attachments
+ * @returns {Promise} resolves once the email has been sent
+ */
 export function sendEmail(email) {
   return fetch('/email-connector/rest/email-box/send', {
     headers: {
