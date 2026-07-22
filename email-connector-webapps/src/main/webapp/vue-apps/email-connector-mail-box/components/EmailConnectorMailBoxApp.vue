@@ -45,9 +45,11 @@ export default {
   },
   mounted() {
     document.addEventListener('quick-action-mailBox-drawer', this.openDrawer);
+    document.addEventListener('open-email-compose-with-attachment', this.openComposeWithAttachment);
   },
   beforeDestroy() {
     document.removeEventListener('quick-action-mailBox-drawer', this.openDrawer);
+    document.removeEventListener('open-email-compose-with-attachment', this.openComposeWithAttachment);
   },
   methods: {
     openDrawer(event) {
@@ -58,6 +60,27 @@ export default {
         }
         else {
           this.$root.$emit('open-user-setting-connectors-drawer');
+        }
+      });
+    },
+    // Entry point used by other apps (e.g. the Documents "Send by email" action) to
+    // open a NEW email pre-seeded with a document as an attachment. Same connected
+    // gate as openDrawer; once the compose drawer is open its attachments component
+    // becomes active, so we seed via the existing 'attachment-added' DOM event (the
+    // very path the CKEditor picker uses) on the next tick.
+    openComposeWithAttachment(event) {
+      const attachment = event?.detail?.attachment;
+      this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
+        this.userEmailSetting = userEmailSetting;
+        if (!this.userEmailSetting.connected) {
+          this.$root.$emit('open-user-setting-connectors-drawer');
+          return;
+        }
+        this.$root.$emit('open-new-email-drawer');
+        if (attachment) {
+          this.$nextTick(() => setTimeout(() => document.dispatchEvent(new CustomEvent('attachment-added', {
+            detail: { attachment },
+          })), 400));
         }
       });
     },
