@@ -23,6 +23,12 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import io.meeds.spring.AvailableIntegration;
 import io.meeds.spring.kernel.PortalApplicationContextInitializer;
 
+/**
+ * Spring Boot bootstrap of the Email Connector add-on webapp. Extending
+ * {@link PortalApplicationContextInitializer} registers this WAR's Spring
+ * context with the eXo Kernel before the portal container boots, so that beans
+ * of this add-on and of the platform are mutually injectable.
+ */
 @SpringBootApplication(scanBasePackages = { EmailConnectorApplication.MODULE_NAME, AvailableIntegration.KERNEL_MODULE,
     AvailableIntegration.JPA_MODULE, AvailableIntegration.LIQUIBASE_MODULE, AvailableIntegration.WEB_MODULE })
 @EnableJpaRepositories(basePackages = { EmailConnectorApplication.MODULE_NAME })
@@ -31,6 +37,10 @@ import io.meeds.spring.kernel.PortalApplicationContextInitializer;
 @PropertySource("classpath:emailConnector.properties")
 public class EmailConnectorApplication extends PortalApplicationContextInitializer {
 
+  /**
+   * Base package of the add-on, used both as the Spring component scan root and
+   * as the base package of its JPA repositories.
+   */
   public static final String MODULE_NAME = "org.exoplatform.emailConnector";
 
 }

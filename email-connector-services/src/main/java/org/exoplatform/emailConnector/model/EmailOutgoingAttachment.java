@@ -16,49 +16,28 @@
  */
 package org.exoplatform.emailConnector.model;
 
-import java.util.Date;
-import java.util.List;
-
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+/**
+ * DTO describing an attachment the user adds while composing an outgoing email.
+ * Unlike {@link EmailAttachment} (which references a <em>received</em> message
+ * part by its MIME path), an outgoing attachment is carried as a commons upload
+ * id: the browser uploads every file (device upload or picked platform document)
+ * through the commons upload service, and the backend resolves the id to bytes
+ * at send time. This keeps the send path free of any ecms/documents dependency.
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class Email {
+public class EmailOutgoingAttachment {
 
-  private Long                 id;
+  private String uploadId;
 
-  private Long                 mailRemoteId;
+  private String name;
 
-  private String               mailHeaderId;
+  private String mimeType;
 
-  private String               userId;
-
-  private String               userEmail;
-
-  private String               subject;
-
-  private EmailContent         content;
-
-  private Date                 receivedDate;
-
-  private EmailSender          sender;
-
-  private boolean              read;
-
-  private boolean              recent;
-
-  private List<EmailRecipient> to;
-
-  private List<EmailRecipient> cc;
-
-  private List<EmailRecipient> bcc;
-
-  private List<EmailRecipient> replyTo;
-
-  private List<Long>           categoryIds;
-
-  private List<EmailOutgoingAttachment> attachments;
+  private long   size;
 }

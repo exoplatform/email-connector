@@ -25,6 +25,38 @@ extensionRegistry.registerExtension('QuickAction', 'Extension', {
   },
 });
 
+/*
+ * Whether the Documents add-on is deployed. The whole picker (paperclip + drawer)
+ * is provided by Documents at runtime, exactly like the activity composer: when the
+ * add-on is absent nothing is registered and the button never appears (a native
+ * <v-file-input> fallback handles uploads instead). No compile/gatein dependency.
+ */
+function isDocumentsDeployed() {
+  return extensionRegistry.loadExtensions('RichEditor', 'ckeditor-extensions').some(ext => ext.id === 'attachFile')
+    || !!Vue.prototype.$attachmentService;
+}
+
+/*
+ * Adds an "attach file" button to the email CKEditor (ck-editor-type="email") only
+ * when Documents is deployed. The enabled() gate lets the button show without forcing
+ * use-extra-plugins on the editor (which would pull unrelated global plugins), and
+ * getExtension() registers our dedicated plugin lazily once CKEDITOR is loaded.
+ */
+extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
+  id: 'attachEmailFile',
+  rank: 30,
+  enabled: () => isDocumentsDeployed(),
+  getExtension: () => {
+    if (window.CKEDITOR) {
+      CKEDITOR.plugins.addExternal('attachEmailFile', '/email-connector/ckeditor/attachEmailFile/', 'plugin.js');
+    }
+    return {
+      extraPlugin: 'attachEmailFile',
+      extraToolbarItem: 'attachEmailFile',
+    };
+  },
+});
+
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
   const urlParams = new URLSearchParams(window.location.search);
   const shouldOpenEmailBox = urlParams.get('openEmailBox') === 'true';
