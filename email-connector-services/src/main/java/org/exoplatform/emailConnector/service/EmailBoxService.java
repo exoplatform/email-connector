@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
@@ -30,6 +31,8 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.activation.DataHandler;
+import javax.activation.FileDataSource;
 import javax.mail.Authenticator;
 import javax.mail.BodyPart;
 import javax.mail.Flags;
@@ -44,7 +47,10 @@ import javax.mail.Store;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.InternetAddress;
+import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
+import javax.mail.internet.MimeMultipart;
+import javax.mail.internet.MimeUtility;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -71,6 +77,7 @@ import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
@@ -90,6 +97,8 @@ import org.exoplatform.services.scheduler.JobInfo;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.upload.UploadResource;
+import org.exoplatform.upload.UploadService;
 
 import io.meeds.social.category.model.CategoryObject;
 import io.meeds.social.category.model.CategoryWithName;
@@ -133,6 +142,9 @@ public class EmailBoxService {
 
   private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE                     =
                                                                           "User %s is not allowed to send email";
+
+  // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email (SMTP-friendly, 25 MB).
+  private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = 25L * 1024 * 1024;
 
   @Autowired
   private CategoryLinkService     categoryLinkService;
@@ -738,6 +750,7 @@ public class EmailBoxService {
         return new PasswordAuthentication(emailAddress, emailPassword);
       }
     });
+    List<String> uploadIds = new ArrayList<>();
     try {
       Message message = new MimeMessage(session);
       Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
@@ -778,7 +791,7 @@ public class EmailBoxService {
         String href = link.attr("href");
         link.attr("href", currentDomain + href);
       }
-      message.setContent(contentDoc.body().html(), "text/html; charset=UTF-8");
+      applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds);
       if (!StringUtils.isEmpty(email.getMailHeaderId())) {
         message.setHeader("In-Reply-To", email.getMailHeaderId());
         message.setHeader("References", email.getMailHeaderId());
@@ -794,6 +807,90 @@ public class EmailBoxService {
     } catch (MessagingException | UnsupportedEncodingException e) {
       LOG.error("Error when sending email for user {}", username, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
+    } finally {
+      // Free the commons temporary upload resources only after the message (and its Sent-folder copy) has been built,
+      // since the attachment body parts stream their bytes lazily from those temporary files.
+      removeUploadResources(uploadIds);
+    }
+  }
+
+  /**
+   * Sets the body of an outgoing message. When the composed email carries no
+   * attachment the body is a single {@code text/html} part; otherwise a
+   * {@code multipart/mixed} is built with the HTML body followed by one part per
+   * attachment. Each attachment is resolved from its commons upload id to the
+   * temporary file backing it, so no ecms/documents dependency is required. The
+   * resolved upload ids are collected into {@code uploadIds} for later cleanup.
+   *
+   * @param message the message being composed
+   * @param email the composed email holding the optional {@code attachments}
+   * @param bodyHtml the sanitized HTML body
+   * @param uploadIds mutable list populated with the upload ids that were attached
+   * @throws MessagingException if a body part cannot be built
+   */
+  private void applyContentAndAttachments(Message message,
+                                          Email email,
+                                          String bodyHtml,
+                                          List<String> uploadIds) throws MessagingException {
+    if (CollectionUtils.isEmpty(email.getAttachments())) {
+      message.setContent(bodyHtml, "text/html; charset=UTF-8");
+      return;
+    }
+    UploadService uploadService = CommonsUtils.getService(UploadService.class);
+    MimeMultipart multipart = new MimeMultipart("mixed");
+    MimeBodyPart htmlPart = new MimeBodyPart();
+    htmlPart.setContent(bodyHtml, "text/html; charset=UTF-8");
+    multipart.addBodyPart(htmlPart);
+    long totalSize = 0;
+    for (EmailOutgoingAttachment attachment : email.getAttachments()) {
+      if (attachment == null || StringUtils.isEmpty(attachment.getUploadId())) {
+        continue;
+      }
+      UploadResource uploadResource = uploadService.getUploadResource(attachment.getUploadId());
+      if (uploadResource == null || uploadResource.getStoreLocation() == null) {
+        throw new IllegalStateException(String.format("Upload resource %s is no longer available", attachment.getUploadId()));
+      }
+      uploadIds.add(attachment.getUploadId());
+      File file = new File(uploadResource.getStoreLocation());
+      totalSize += file.length();
+      if (totalSize > MAX_OUTGOING_ATTACHMENTS_SIZE) {
+        throw new IllegalStateException("emailConnector.mailBox.newEmail.attach.maxSize.error");
+      }
+      MimeBodyPart attachmentPart = new MimeBodyPart();
+      attachmentPart.setDataHandler(new DataHandler(new FileDataSource(file)));
+      String fileName = StringUtils.isNotBlank(attachment.getName()) ? attachment.getName() : uploadResource.getFileName();
+      try {
+        attachmentPart.setFileName(MimeUtility.encodeText(fileName, "UTF-8", null));
+      } catch (UnsupportedEncodingException e) {
+        attachmentPart.setFileName(fileName);
+      }
+      attachmentPart.setDisposition(Part.ATTACHMENT);
+      if (StringUtils.isNotBlank(attachment.getMimeType())) {
+        attachmentPart.setHeader("Content-Type", attachment.getMimeType());
+      }
+      multipart.addBodyPart(attachmentPart);
+    }
+    message.setContent(multipart);
+  }
+
+  /**
+   * Removes the commons temporary upload resources that backed the attachments
+   * of an outgoing email. Failures are swallowed (logged at debug level) since
+   * they are not incidents and must not fail an email that was already sent.
+   *
+   * @param uploadIds the upload ids to release (may be empty)
+   */
+  private void removeUploadResources(List<String> uploadIds) {
+    if (CollectionUtils.isEmpty(uploadIds)) {
+      return;
+    }
+    UploadService uploadService = CommonsUtils.getService(UploadService.class);
+    for (String uploadId : uploadIds) {
+      try {
+        uploadService.removeUploadResource(uploadId);
+      } catch (Exception e) {
+        LOG.debug("Could not remove upload resource {}", uploadId, e);
+      }
     }
   }
 
@@ -842,6 +939,7 @@ public class EmailBoxService {
                                                 emailCcRecipients,
                                                 emailBccRecipients,
                                                 emailReplyToRecipients,
+                                                null,
                                                 null));
 
         } else {

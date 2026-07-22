@@ -243,6 +243,8 @@ export default {
     open(mailRemoteId, emails, syncInProgress, webmailUrl) {
       this.loading = true;
       this.emailDetailDrawer = true;
+      this.email = null;
+      this.selectEmailPlaceHolder = false;
       this.emails = emails;
       this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
@@ -250,6 +252,7 @@ export default {
       this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
         this.email = email;
+        this.selectEmailPlaceHolder = false;
       }).finally(() => {
         this.loading = false;
       });
@@ -284,6 +287,7 @@ export default {
       this.emailDetailDrawer = false;
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
+      this.email = null;
       this.$root.isDetailDrawerActive = false;
       this.$root.$emit('email-detail-drawer-closed');
       this.selectedCategoryId = null;
