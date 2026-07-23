@@ -88,16 +88,9 @@ extensionRegistry.registerExtension(EXTENSION_TYPE, EXTENSION_NAME, {
   click: attachment => service.forwardAttachment(attachment),
 });
 
-// Read only rather than editable on purpose: the copy stored in the Drive is a copy
-// of somebody else's file, and editing it would only ever change that copy.
-extensionRegistry.registerExtension(EXTENSION_TYPE, EXTENSION_NAME, {
-  id: 'openReadOnly',
-  rank: 40,
-  labelKey: 'emailConnector.mailBox.attachment.action.openReadOnly.label',
-  icon: 'fa-book-open',
-  enabled: attachment => service.isEditorPreviewable(attachment),
-  click: (attachment, context) => context.openInEditor('view'),
-});
+// No "Open read-only" action: clicking the attachment already opens it read only in
+// the editor (see EmailConnectorAttachmentOpenMixin), so a menu entry doing the same
+// would only be a duplicate. Editing means Save in Documents first.
 
 // "Analyse with AI" is deliberately absent. The AI add-on binds a menu action by
 // reading its UX bindings for an application (aiUxBindingService.getUxBindings) then

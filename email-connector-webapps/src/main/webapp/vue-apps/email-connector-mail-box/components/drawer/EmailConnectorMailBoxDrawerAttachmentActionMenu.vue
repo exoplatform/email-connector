@@ -20,7 +20,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <div v-if="actions.length" class="flex-shrink-0 position-relative">
     <v-menu
       :nudge-top="-1"
-      content-class="no-min-width border-radius z-index-modal overflow-hidden"
+      min-width="220"
+      content-class="border-radius z-index-modal overflow-hidden"
       close-on-content-click
       offset-y
       left
@@ -52,17 +53,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item
             v-else
             :key="action.id"
-            class="ps-2 pe-3 height-auto"
+            class="ps-2 pe-4"
+            dense
             @click.stop="execute(action)">
             <v-sheet
-              class="d-flex"
+              class="d-flex flex-shrink-0"
               width="28"
-              height="36">
+              height="32">
               <v-icon class="icon-default-color mx-auto" size="16">
                 {{ action.icon }}
               </v-icon>
             </v-sheet>
-            <span>{{ $t(action.labelKey) }}</span>
+            <span class="text-no-wrap">{{ $t(action.labelKey) }}</span>
           </v-list-item>
         </template>
       </v-list>

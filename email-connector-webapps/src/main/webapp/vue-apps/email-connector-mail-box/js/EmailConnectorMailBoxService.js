@@ -467,6 +467,10 @@ const RECEIVED_FOLDER_TITLE = 'Received';
 
 export const ATTACHMENTS_FOLDER_TITLE = 'Mail Attachments';
 
+// The node name the platform actually creates for that title, which is what any
+// path-based endpoint has to be given.
+const ATTACHMENTS_FOLDER_PATH = ATTACHMENTS_FOLDER_TITLE.toLowerCase();
+
 const RECEIVED_FOLDER_TITLES = [ATTACHMENTS_FOLDER_TITLE, RECEIVED_FOLDER_TITLE];
 
 // Documents already materialised in this page, keyed by mail id + part id AND by
@@ -675,7 +679,12 @@ export async function saveAttachmentsInDocuments(attachments) {
       entityId: '',
       attachToEntity: false,
       sourceApp: 'emailConnector',
-      defaultFolder: ATTACHMENTS_FOLDER_TITLE,
+      // The node name, not the title: the drawer forwards this straight to the
+      // ECMS upload endpoint, which matches path segments verbatim and creates
+      // whatever it does not find. Handing it the capitalised title makes a
+      // second 'Mail Attachments' node next to the one Documents created lower
+      // cased, and both render with the same label — see EXO-88779.
+      defaultFolder: ATTACHMENTS_FOLDER_PATH,
       attachments: [],
       spaceId: null,
       files,

@@ -53,7 +53,11 @@ export default {
         this.downloadAttachment();
         return;
       }
-      this.openInEditor();
+      // Read only on purpose: opening the attachment stores a throwaway copy under
+      // Mail Attachments/Received just so the editor has a document to address, and
+      // letting that copy be edited would strand the edits in a cache the user never
+      // chose. Editing means Save in Documents first, into a folder they picked.
+      this.openInEditor('view');
     },
     /**
      * Stores the attachment in the Drive and hands the document over to the editor.
