@@ -356,3 +356,224 @@ export async function getSubcategoryIds(categoryId) {
   });
   return [...new Set([categoryId, ...subcategoyIds])];
 }
+// Attachment types the platform can show without any copy in the Drive: the
+// preview dialog shipped by social listens globally for open-attachments-preview
+// and renders straight from a URL.
+const URL_PREVIEWABLE_TYPES = ['image/', 'audio/', 'video/'];
+
+/**
+ * The types OnlyOffice declares it can open. Registered by the OnlyOffice add-on
+ * into the shared 'documents' extension point, so this works without any build
+ * dependency on documents; when that add-on isn't installed the list is empty and
+ * every attachment simply keeps downloading, which is the right degradation.
+ *
+ * @returns {Array} the supported document type descriptors, empty when none
+ */
+function supportedDocumentTypes() {
+  // extensionRegistry is injected into the bundle as a shared module, it is not a
+  // window global: reading it from window silently yields nothing at all.
+  return extensionRegistry?.loadExtensions('documents', 'supported-document-types') || [];
+}
+
+/**
+ * The address the attachment bytes are served from. No portal context prefix: the
+ * add-on mounts its own REST context, and prefixing it lands on the portal itself,
+ * which answers a page with 200 instead of the file.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {String} the URL its content can be read from
+ */
+export function getAttachmentUrl(attachment) {
+  return `/email-connector/rest/email-box/attachments/${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
+}
+
+/**
+ * The content type of an attachment, in the shape the rest of the platform uses.
+ * A mail header is not normalised: the server hands back things like 'IMAGE/PNG'
+ * and may append parameters, as in 'text/plain; charset=UTF-8'. Comparing that
+ * raw is why nothing ever matched, so keep every comparison going through here.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {String} the bare content type, lower case, without its parameters
+ */
+function normaliseMimeType(attachment) {
+  return (attachment?.mimeType || '').split(';')[0].trim().toLowerCase();
+}
+
+/**
+ * Whether the platform preview dialog can render the attachment from its URL alone.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {Boolean} true for an image, a sound or a video
+ */
+export function isUrlPreviewable(attachment) {
+  const mimeType = normaliseMimeType(attachment);
+  return URL_PREVIEWABLE_TYPES.some(type => mimeType.startsWith(type));
+}
+
+/**
+ * Whether OnlyOffice declares it can open the attachment, which also means the
+ * add-on is installed at all.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {Boolean} true when a registered document type matches
+ */
+export function isEditorPreviewable(attachment) {
+  const mimeType = normaliseMimeType(attachment);
+  return supportedDocumentTypes().some(type => (type.mimeType || '').toLowerCase() === mimeType);
+}
+
+/**
+ * Opens an image, audio or video attachment in the platform preview dialog,
+ * straight from its URL. Nothing is written to the Drive.
+ *
+ * @param {Object} attachment the received attachment to preview
+ * @returns {void}
+ */
+export function previewAttachmentFromUrl(attachment) {
+  const id = String(attachment.attachmentRemoteId);
+  document.dispatchEvent(new CustomEvent('open-attachments-preview', {
+    detail: {
+      id,
+      attachments: [{
+        id,
+        filename: attachment.name,
+        downloadUrl: getAttachmentUrl(attachment),
+        // the preview dialog reads 'mimetype', not 'mimeType', and picks its
+        // renderer by matching the type as-is, so hand it the normalised one
+        mimetype: normaliseMimeType(attachment),
+      }],
+    },
+  }));
+}
+
+// Where a received attachment is stored when it has to become a real document.
+// Two spellings on purpose: the platform keeps the capitalised title for display
+// but stores the node under a lower-cased name, and the attachments service
+// resolves the destination it is given as a JCR path verbatim.
+const RECEIVED_FOLDER_TITLE = 'Received';
+
+const ATTACHMENTS_FOLDER_TITLE = 'Mail Attachments';
+
+const RECEIVED_FOLDER_PATH = `${ATTACHMENTS_FOLDER_TITLE.toLowerCase()}/${RECEIVED_FOLDER_TITLE.toLowerCase()}`;
+
+// Documents already materialised in this page, keyed by mail id + part id, so
+// opening the same attachment twice reuses its document instead of copying it again.
+const materialisedDocuments = {};
+
+function createFolder(ownerId, name, parentId) {
+  const params = new URLSearchParams({ ownerId, name });
+  if (parentId) {
+    params.append('parentid', parentId);
+  } else {
+    params.append('folderPath', '');
+  }
+  return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/documents/folder?${params}`, {
+    credentials: 'include',
+    method: 'POST',
+  }).catch(() => null);
+}
+
+function findFolder(ownerId, name, parentFolderId) {
+  const params = new URLSearchParams({ ownerId, listingType: 'FOLDER', limit: '200' });
+  if (parentFolderId) {
+    params.append('parentFolderId', parentFolderId);
+  }
+  return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/documents?${params}`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  }).then(response => response.json())
+    .then(body => {
+      const items = Array.isArray(body) && body || body.documents || body.items || [];
+      return items.find(item => (item.name || item.title) === name);
+    })
+    .catch(() => null);
+}
+
+/**
+ * Makes sure "Mail Attachments/Received" exists. The folders are addressed by path
+ * afterwards, so this only guarantees they are there. Received attachments are kept
+ * apart from what the composer stores in the parent folder.
+ *
+ * @returns {Promise} resolved once both folders are known to exist
+ */
+async function ensureReceivedFolder() {
+  const ownerId = eXo.env.portal.userIdentityId;
+  if (!ownerId) {
+    return;
+  }
+  await createFolder(ownerId, ATTACHMENTS_FOLDER_TITLE);
+  const parent = await findFolder(ownerId, ATTACHMENTS_FOLDER_TITLE);
+  if (parent) {
+    await createFolder(ownerId, RECEIVED_FOLDER_TITLE, parent.id);
+  }
+}
+
+/**
+ * Copies a received attachment into the Drive and returns its document id, going
+ * through the very same upload the Documents picker uses so the file is ingested
+ * exactly like any other upload rather than through a side door.
+ *
+ * @param {Object} attachment the received attachment to materialise
+ * @returns {Promise} resolved with the id of the created document
+ */
+export function materialiseAttachment(attachment) {
+  const key = `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
+  if (materialisedDocuments[key]) {
+    return materialisedDocuments[key];
+  }
+  const promise = (async () => {
+    await ensureReceivedFolder();
+    const response = await fetch(getAttachmentUrl(attachment), { credentials: 'include' });
+    if (!response.ok) {
+      throw new Error(`Could not read the attachment (${response.status})`);
+    }
+    const blob = await response.blob();
+    const file = new File([blob], attachment.name, { type: attachment.mimeType || blob.type });
+    const uploadId = Vue.prototype.$uploadService.generateRandomId();
+    await Vue.prototype.$uploadService.upload(file, uploadId);
+
+    const params = new URLSearchParams({
+      workspaceName: 'collaboration',
+      driveName: 'Personal Documents',
+      currentFolder: RECEIVED_FOLDER_PATH,
+      currentPortal: eXo.env.portal.portalName,
+      uploadId,
+      fileName: attachment.name,
+      language: eXo.env.portal.language,
+      // keep both copies rather than overwrite a same-named file from another mail
+      existenceAction: 'keep',
+      action: 'save',
+    });
+    const saved = await fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/managedocument/uploadFile/control?${params}`, {
+      credentials: 'include',
+    });
+    if (!saved.ok) {
+      throw new Error(`Could not store the attachment (${saved.status})`);
+    }
+    // the upload service answers in XML, the document id is its UUID
+    const document = new DOMParser().parseFromString(await saved.text(), 'text/xml');
+    const documentId = document.querySelector('UUID')?.textContent
+      || document.documentElement?.getAttribute('UUID');
+    if (!documentId) {
+      throw new Error('The stored attachment has no document id');
+    }
+    return documentId;
+  })();
+  materialisedDocuments[key] = promise;
+  promise.catch(() => delete materialisedDocuments[key]);
+  return promise;
+}
+
+/**
+ * The address of the OnlyOffice editor for a stored document. Built the way the
+ * Documents add-on builds it: on the meta portal, since the mail box is opened
+ * from any page and the current portal can be a space, which has no editor.
+ *
+ * @param {String} documentId the id of the stored document
+ * @returns {String} the editor URL, coming back to the current page when closed
+ */
+export function getEditorUrl(documentId) {
+  const portal = eXo.env.portal.metaPortalName || eXo.env.portal.portalName;
+  return `${eXo.env.portal.context}/${portal}/oeditor?docId=${documentId}&backTo=${window.location.pathname}`;
+}
