@@ -84,6 +84,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// Folder at the root of the user's Personal Documents where mail attachments land.
+// Two spellings on purpose: the platform stores a folder under a lower-cased JCR
+// node name while keeping the capitalised title for display. The attachments
+// service resolves the destination as a JCR path verbatim, so it has to be given
+// the node name — passing the title makes creating a document fail with
+// "Can't find path: .../Private/Mail Attachments" even when the folder is there.
+const ATTACHMENTS_FOLDER_TITLE = 'Mail Attachments';
+
+const ATTACHMENTS_FOLDER_PATH = ATTACHMENTS_FOLDER_TITLE.toLowerCase();
+
 export default {
   props: {
     value: {
@@ -140,17 +150,41 @@ export default {
       if (!this.active) {
         return;
       }
-      document.dispatchEvent(new CustomEvent('open-attachments-app-drawer', {
-        detail: {
-          entityType: '',
-          entityId: '',
-          attachToEntity: false,
-          sourceApp: 'emailConnector',
-          defaultFolder: 'Mail Attachments',
-          attachments: [],
-          spaceId: null,
-        },
-      }));
+      // Make sure the destination folder exists before the picker opens, so the
+      // very first attachment doesn't land in a folder that has yet to be created.
+      this.ensureAttachmentsFolder().finally(() => {
+        document.dispatchEvent(new CustomEvent('open-attachments-app-drawer', {
+          detail: {
+            entityType: '',
+            entityId: '',
+            attachToEntity: false,
+            sourceApp: 'emailConnector',
+            defaultFolder: ATTACHMENTS_FOLDER_PATH,
+            attachments: [],
+            spaceId: null,
+          },
+        }));
+      });
+    },
+    // Creates the mail attachments folder at the root of the user's Personal
+    // Documents when it isn't there yet, using the capitalised title so the Drive
+    // shows a clean label (the platform lower-cases the node name underneath). Never rejects: an existing folder answers
+    // with a conflict, and any other failure must not stop the user from attaching
+    // a file, since only the create-a-document path depends on it.
+    ensureAttachmentsFolder() {
+      const ownerId = eXo.env.portal.userIdentityId;
+      if (!ownerId) {
+        return Promise.resolve();
+      }
+      const params = new URLSearchParams({
+        ownerId,
+        folderPath: '',
+        name: ATTACHMENTS_FOLDER_TITLE,
+      });
+      return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/documents/folder?${params}`, {
+        credentials: 'include',
+        method: 'POST',
+      }).catch(() => null);
     },
     // Opens the shared Documents list drawer to review/remove the composed mail's
     // attachments. A clone is passed so the drawer mutates its own copy; removals
