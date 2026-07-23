@@ -33,13 +33,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
+
 export default {
   data() {
     return {
       iframeHeight: 0,
       iframeVisible: false,
       resizeObserver: null
-    };   
+    };
   },
   props: {
     emailBody: {
@@ -69,6 +71,16 @@ export default {
     }
   },
   methods: {
+    /**
+     * Wrap the (untrusted) email body into a self-contained HTML document for the
+     * iframe, first folding the quoted history behind a Gmail-style "···" toggle so
+     * the reader lands on the latest message and reaches the attachments row without
+     * scrolling past the quoted thread. Folding degrades to the untouched body when
+     * no clear quoted boundary is found.
+     *
+     * @param {string} html the sanitized email body HTML
+     * @returns {string} the full HTML document served to the iframe srcdoc
+     */
     makeMailHtml(html) {
       const baseCSS = `
         html, body {
@@ -92,6 +104,22 @@ export default {
         td, th { word-break: break-word; }
         p, div { margin:0; }
         a { color:#1a73e8; text-decoration:none; word-break: break-word; }
+        .ec-quoted-toggle {
+          display: inline-block;
+          margin: 8px 0;
+          padding: 0 6px;
+          line-height: 1;
+          border-radius: 10px;
+          background: #f1f3f4;
+          color: #5f6368;
+          cursor: pointer;
+          user-select: none;
+          font-size: 18px;
+          letter-spacing: 1px;
+        }
+        .ec-quoted-toggle:hover { background: #e4e6e8; }
+        .ec-quoted-toggle .ec-quoted-dots { position: relative; top: -3px; }
+        .ec-quoted-history { margin-top: 4px; }
       `;
       const responsiveCSS = `
         * { max-width: 100% !important; box-sizing: border-box !important; }
@@ -111,13 +139,17 @@ export default {
         }
       `;
       const finalCSS = this.expandedDrawer ? baseCSS : baseCSS + responsiveCSS;
+      const foldedHtml = foldQuotedHistory(html, {
+        show: this.$t('emailConnector.mailBox.list.drawer.detail.showQuotedText'),
+        hide: this.$t('emailConnector.mailBox.list.drawer.detail.hideQuotedText'),
+      });
       return `
         <html>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>${finalCSS}</style>
           </head>
-          <body>${html}</body>
+          <body>${foldedHtml}</body>
         </html>
       `;
     },
