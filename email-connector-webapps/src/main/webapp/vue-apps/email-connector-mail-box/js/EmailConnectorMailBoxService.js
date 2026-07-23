@@ -620,17 +620,36 @@ export async function fetchAttachmentFile(attachment) {
  * @returns {Promise} resolved with the id of the created document
  */
 export function materialiseAttachment(attachment, folderTitles = RECEIVED_FOLDER_TITLES, driveName = PERSONAL_DRIVE_NAME, workspace = DEFAULT_WORKSPACE) {
-  const destination = toFolderPath(folderTitles);
+  // Only the user's own Drive is addressed by identity and can be created through
+  // the documents folder REST; anywhere else the folder is one the picker returned,
+  // so it already exists and there is nothing to create.
+  const titlesToEnsure = driveName === PERSONAL_DRIVE_NAME && folderTitles.length ? folderTitles : null;
+  return materialiseAttachmentAt(attachment, toFolderPath(folderTitles), driveName, workspace, titlesToEnsure);
+}
+
+/**
+ * Copies a received attachment into an already-known Drive folder and returns its
+ * document id. This is the picker-facing variant of materialiseAttachment: the
+ * destination is a drive-root-relative node path used VERBATIM — exactly what the
+ * revamped Documents folder picker returns — so no title lower-casing is applied
+ * and, unless a folder chain is explicitly given, nothing is created: the picker
+ * only ever returns folders that exist.
+ *
+ * @param {Object} attachment the received attachment to materialise
+ * @param {String} destination the drive-root-relative node path ('' for the root)
+ * @param {String} driveName the legacy ECMS Drive name to store into
+ * @param {String} workspace the JCR workspace of that Drive
+ * @param {Array} folderTitlesToEnsure folder titles to create first, or null
+ * @returns {Promise} resolved with the id of the created document
+ */
+export function materialiseAttachmentAt(attachment, destination, driveName = PERSONAL_DRIVE_NAME, workspace = DEFAULT_WORKSPACE, folderTitlesToEnsure = null) {
   const key = `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}@${driveName}:${workspace}:${destination}`;
   if (materialisedDocuments[key]) {
     return materialisedDocuments[key];
   }
   const promise = (async () => {
-    // Only the user's own Drive is addressed by identity and can be created through
-    // the documents folder REST; anywhere else the folder is one the picker returned,
-    // so it already exists and there is nothing to create.
-    if (driveName === PERSONAL_DRIVE_NAME && folderTitles.length) {
-      await ensureFolderPath(folderTitles);
+    if (folderTitlesToEnsure && folderTitlesToEnsure.length) {
+      await ensureFolderPath(folderTitlesToEnsure);
     }
     const file = await fetchAttachmentFile(attachment);
     const uploadId = Vue.prototype.$uploadService.generateRandomId();
@@ -703,9 +722,11 @@ function notify(alertMessage, alertType) {
  * there — no staging drawer, no second upload click. Closing the picker without
  * choosing cancels silently.
  *
- * The picker hands back the JCR node path of the chosen folder (node names, lower-cased
- * on this platform), which is exactly what the upload wants, so the destination is used
- * verbatim and never recreates a differently-cased duplicate folder.
+ * The picker hands back BOTH the /v1/documents folder id and the legacy addressing:
+ * the ECMS drive name plus the drive-root-relative node path of the chosen folder.
+ * The upload endpoint (managedocument/uploadFile/control) wants exactly that legacy
+ * pair, so both are used VERBATIM — the picker's answer is authoritative, nothing is
+ * re-derived, lower-cased or created on top of it.
  *
  * @param {Array} attachments the received attachments to store
  * @param {Object} messages the translated toasts: { success, error }
@@ -720,10 +741,11 @@ export async function saveAttachmentsInDocuments(attachments, messages = {}) {
   const onSelected = (event) => {
     cleanup();
     const detail = event.detail || {};
-    const segments = (detail.path || '').split('/').filter(segment => segment.length);
-    const driveName = detail.driveName || PERSONAL_DRIVE_NAME;
+    // drive-root-relative node path, '' when the drive root itself was picked
+    const destination = detail.relativePath ?? detail.path ?? '';
+    const driveName = detail.driveName || detail.drive?.name || PERSONAL_DRIVE_NAME;
     const workspace = detail.workspace || DEFAULT_WORKSPACE;
-    Promise.all(attachments.map(attachment => materialiseAttachment(attachment, segments, driveName, workspace)))
+    Promise.all(attachments.map(attachment => materialiseAttachmentAt(attachment, destination, driveName, workspace)))
       .then(() => notify(messages.success, 'success'))
       .catch(() => notify(messages.error, 'error'));
   };
@@ -738,10 +760,12 @@ export async function saveAttachmentsInDocuments(attachments, messages = {}) {
 
   document.dispatchEvent(new CustomEvent('open-documents-folder-picker', {
     detail: {
-      defaultDrive: { name: PERSONAL_DRIVE_NAME, title: PERSONAL_DRIVE_NAME },
-      // The node name, not the title: the picker returns and the upload uses the
-      // JCR node path verbatim, so starting from the capitalised title would make a
-      // second 'Mail Attachments' node next to the lower-cased one — see EXO-88779.
+      // no title on purpose: the picker localises the personal drive's display name
+      defaultDrive: { name: PERSONAL_DRIVE_NAME },
+      // The node name, not the title: the picker navigates by JCR node path and the
+      // upload uses the picked path verbatim, so starting from the capitalised title
+      // would make a second 'Mail Attachments' node next to the lower-cased one —
+      // see EXO-88779.
       defaultFolder: ATTACHMENTS_FOLDER_PATH,
       workspace: DEFAULT_WORKSPACE,
     },
