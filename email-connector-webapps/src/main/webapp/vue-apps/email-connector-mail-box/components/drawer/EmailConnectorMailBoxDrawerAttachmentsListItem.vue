@@ -18,20 +18,36 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <div
     role="button"
     tabindex="0"
-    @click="downloadAttachment"
-    @keydown.enter="downloadAttachment"
-    class="pt-3"
+    @click="openAttachment"
+    @keydown.enter="openAttachment"
+    class="pt-3 d-flex align-center"
     :title="attachmentTitle">
     <email-connector-mail-box-drawer-attachment-item
-      :downloading="downloading" 
+      :downloading="downloading || opening" 
       :attachment="attachment" 
       :attachment-icon-size="attachmentIconSize" 
       attachment-name-class="ms-3" />
+    <!-- Clicking the row opens the attachment, so downloading it to the device
+         keeps its own control here. The compact chips of the mail list have no
+         room for one, which is why this lives in the row only. -->
+    <v-btn
+      icon
+      small
+      class="ms-auto flex-shrink-0"
+      :title="downloadTitle"
+      :aria-label="downloadTitle"
+      @click.stop="downloadAttachment"
+      @keydown.enter.stop="downloadAttachment">
+      <v-icon size="18" class="text-light-color">fa-download</v-icon>
+    </v-btn>
   </div>
 </template>
 
 <script>
+import attachmentOpenMixin from '../../js/EmailConnectorAttachmentOpenMixin.js';
+
 export default {
+  mixins: [attachmentOpenMixin],
   data() {
     return {
       downloading: false,
@@ -63,6 +79,11 @@ export default {
   },
   computed: {
     attachmentTitle() {
+      return this.$t('emailConnector.mailBox.attachment.open.title', {
+        0: this.attachment.name,
+      });
+    },
+    downloadTitle() {
       return this.$t('emailConnector.mailBox.list.drawer.detail.attachment.download.title', {
         0: this.attachment.name,
       });
