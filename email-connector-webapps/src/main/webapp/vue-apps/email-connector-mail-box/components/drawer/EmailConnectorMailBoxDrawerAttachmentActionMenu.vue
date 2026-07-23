@@ -119,6 +119,7 @@ export default {
         saveInDocuments: attachments => this.$emailConnectorMailBoxService.saveAttachmentsInDocuments(attachments, {
           success: this.$t('emailConnector.mailBox.attachment.saveInDocuments.success'),
           error: this.$t('emailConnector.mailBox.attachment.action.error'),
+          see: this.$t('emailConnector.mailBox.attachment.saveInDocuments.see'),
         }),
       };
       try {

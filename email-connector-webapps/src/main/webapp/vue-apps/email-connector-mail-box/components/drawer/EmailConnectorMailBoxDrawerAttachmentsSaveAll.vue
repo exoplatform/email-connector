@@ -69,6 +69,7 @@ export default {
       this.$emailConnectorMailBoxService.saveAttachmentsInDocuments(this.emailAttachments, {
         success: this.$t('emailConnector.mailBox.attachments.saveAll.success'),
         error: this.$t('emailConnector.mailBox.attachment.action.error'),
+        see: this.$t('emailConnector.mailBox.attachment.saveInDocuments.see'),
       })
         .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.attachment.action.error'), 'error'))
         .finally(() => this.saving = false);

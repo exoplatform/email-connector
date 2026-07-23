@@ -707,12 +707,65 @@ export function getEditorUrl(documentId, mode) {
  * component's $root because the save completes asynchronously, after the user has
  * picked a folder, when the click that started it is long gone.
  *
+ * When a link is given the toast carries a link button (the platform alert's
+ * alertLink / alertLinkText pair, opened in a new tab) so the user can jump
+ * straight to what the toast talks about, e.g. the freshly stored document.
+ *
  * @param {String} alertMessage the already-translated message to show
  * @param {String} alertType 'success' or 'error'
+ * @param {String} alertLink the address the toast's link button opens, or null
+ * @param {String} alertLinkText the already-translated link button text
  * @returns {void}
  */
-function notify(alertMessage, alertType) {
-  document.dispatchEvent(new CustomEvent('alert-message', { detail: { alertType, alertMessage } }));
+function notify(alertMessage, alertType, alertLink = null, alertLinkText = null) {
+  document.dispatchEvent(new CustomEvent('alert-message', {
+    detail: {
+      alertType,
+      alertMessage,
+      alertLink: alertLink || null,
+      alertLinkText: alertLink && alertLinkText || null,
+      alertLinkTarget: alertLink && '_blank' || null,
+    },
+  }));
+}
+
+/**
+ * The address of the Documents application on the meta portal, opened on whatever
+ * the given parameters point at. The documents page reads documentPreviewId (opens
+ * that document's preview) and folderId [+ ownerId] (opens that folder's listing)
+ * from its URL, which is exactly how the Documents add-on builds its own permanent
+ * links and notification links.
+ *
+ * @param {Object} params the documents page URL parameters
+ * @returns {String} the documents page URL
+ */
+function getDocumentsPageUrl(params) {
+  const portal = eXo.env.portal.metaPortalName || eXo.env.portal.portalName;
+  return `${eXo.env.portal.context}/${portal}/documents?${new URLSearchParams(params)}`;
+}
+
+/**
+ * Where a completed save can be seen: the stored document's preview when a single
+ * attachment was saved, the destination folder when several landed together (one
+ * toast cannot point at each of them). Null — meaning a plain toast — when several
+ * were saved but the picker did not hand back the folder id.
+ *
+ * @param {Array} documentIds the ids of the stored documents
+ * @param {Object} pickerDetail the folder picker's selection event detail
+ * @returns {String} the URL showing the saved documents, or null
+ */
+function savedLocationUrl(documentIds, pickerDetail) {
+  if (documentIds.length === 1) {
+    return getDocumentsPageUrl({ documentPreviewId: documentIds[0] });
+  }
+  if (pickerDetail.folderId) {
+    const params = { folderId: pickerDetail.folderId };
+    if (pickerDetail.ownerId) {
+      params.ownerId = pickerDetail.ownerId;
+    }
+    return getDocumentsPageUrl(params);
+  }
+  return null;
 }
 
 /**
@@ -729,7 +782,8 @@ function notify(alertMessage, alertType) {
  * re-derived, lower-cased or created on top of it.
  *
  * @param {Array} attachments the received attachments to store
- * @param {Object} messages the translated toasts: { success, error }
+ * @param {Object} messages the translated toasts: { success, error, see } — see
+ *                 being the success toast's link text to the saved location
  * @returns {Promise} resolved once the picker has been opened (not once saved)
  */
 export async function saveAttachmentsInDocuments(attachments, messages = {}) {
@@ -746,7 +800,9 @@ export async function saveAttachmentsInDocuments(attachments, messages = {}) {
     const driveName = detail.driveName || detail.drive?.name || PERSONAL_DRIVE_NAME;
     const workspace = detail.workspace || DEFAULT_WORKSPACE;
     Promise.all(attachments.map(attachment => materialiseAttachmentAt(attachment, destination, driveName, workspace)))
-      .then(() => notify(messages.success, 'success'))
+      // the success toast links to the result: the stored document itself for a
+      // single attachment, the destination folder for a whole set
+      .then(documentIds => notify(messages.success, 'success', savedLocationUrl(documentIds, detail), messages.see))
       .catch(() => notify(messages.error, 'error'));
   };
   const cleanup = () => {
