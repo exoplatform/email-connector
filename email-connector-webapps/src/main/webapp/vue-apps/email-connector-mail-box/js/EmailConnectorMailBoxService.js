@@ -573,12 +573,19 @@ function ensureFolderPath(folderTitles) {
  */
 function ensureFolder(ownerId, folderTitles, index, parentId) {
   const title = folderTitles[index];
-  return createFolder(ownerId, title, parentId)
-    // the deepest level is only created, never looked up: nothing goes under it
-    .then(() => {
-      return index === folderTitles.length - 1 ? null : findFolder(ownerId, title, parentId);
-    })
-    .then(folder => folder && ensureFolder(ownerId, folderTitles, index + 1, folder.id));
+  // Look the level up first and only create it when it is missing. Creating it blindly
+  // works — the server answers 409 for an existing folder and fetch does not reject on
+  // it — but the browser still logs that 409 to the console on every save, which reads
+  // as an error to anyone watching. A lookup first keeps the console clean.
+  return findFolder(ownerId, title, parentId)
+    .then(existing => existing || createFolder(ownerId, title, parentId)
+      .then(() => findFolder(ownerId, title, parentId)))
+    .then(folder => {
+      if (!folder || index === folderTitles.length - 1) {
+        return null;
+      }
+      return ensureFolder(ownerId, folderTitles, index + 1, folder.id);
+    });
 }
 
 /**

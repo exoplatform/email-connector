@@ -19,13 +19,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        the element its content is placed against. -->
   <div v-if="actions.length" class="flex-shrink-0 position-relative">
     <v-menu
-      :nudge-top="-1"
       min-width="220"
       content-class="border-radius z-index-modal overflow-hidden"
       close-on-content-click
       offset-y
       left
-      bottom
+      top
       attach
       @input="refreshActions">
       <template #activator="{ on, attrs }">
