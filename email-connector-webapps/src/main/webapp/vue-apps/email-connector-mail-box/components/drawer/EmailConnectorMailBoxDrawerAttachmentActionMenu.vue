@@ -117,6 +117,10 @@ export default {
       const context = {
         download: () => this.$emit('download'),
         openInEditor: mode => this.$emit('open-in-editor', mode),
+        saveInDocuments: attachments => this.$emailConnectorMailBoxService.saveAttachmentsInDocuments(attachments, {
+          success: this.$t('emailConnector.mailBox.attachment.saveInDocuments.success'),
+          error: this.$t('emailConnector.mailBox.attachment.action.error'),
+        }),
       };
       try {
         Promise.resolve(action.click(this.attachment, context)).catch(() => this.reportFailure());

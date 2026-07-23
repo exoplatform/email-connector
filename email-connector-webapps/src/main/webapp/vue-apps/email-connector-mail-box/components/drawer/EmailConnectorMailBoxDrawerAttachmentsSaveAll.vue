@@ -55,8 +55,9 @@ export default {
   },
   methods: {
     /**
-     * Reads every attachment of the mail and hands the whole set to the Documents
-     * drawer, where the user picks the folder they all go in.
+     * Opens the Documents folder picker once for the whole mail and, on the folder the
+     * user picks, saves every attachment there in one shot. The picker is opened by the
+     * same call the row menu uses, so the whole set lands in the single chosen folder.
      *
      * @returns {void}
      */
@@ -65,7 +66,10 @@ export default {
         return;
       }
       this.saving = true;
-      this.$emailConnectorMailBoxService.saveAttachmentsInDocuments(this.emailAttachments)
+      this.$emailConnectorMailBoxService.saveAttachmentsInDocuments(this.emailAttachments, {
+        success: this.$t('emailConnector.mailBox.attachments.saveAll.success'),
+        error: this.$t('emailConnector.mailBox.attachment.action.error'),
+      })
         .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.attachment.action.error'), 'error'))
         .finally(() => this.saving = false);
     },

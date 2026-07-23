@@ -467,11 +467,18 @@ const RECEIVED_FOLDER_TITLE = 'Received';
 
 export const ATTACHMENTS_FOLDER_TITLE = 'Mail Attachments';
 
-// The node name the platform actually creates for that title, which is what any
-// path-based endpoint has to be given.
-const ATTACHMENTS_FOLDER_PATH = ATTACHMENTS_FOLDER_TITLE.toLowerCase();
-
 const RECEIVED_FOLDER_TITLES = [ATTACHMENTS_FOLDER_TITLE, RECEIVED_FOLDER_TITLE];
+
+// The node path 'Mail Attachments' resolves to. The platform keeps the capitalised
+// title for display but stores the node under a lower-cased name, and both the ECMS
+// upload endpoint and the folder picker match path segments verbatim — so a display
+// title handed to either would create a second, differently-cased duplicate folder.
+export const ATTACHMENTS_FOLDER_PATH = ATTACHMENTS_FOLDER_TITLE.toLowerCase();
+
+// The user's own Drive, where received attachments land by default.
+const PERSONAL_DRIVE_NAME = 'Personal Documents';
+
+const DEFAULT_WORKSPACE = 'collaboration';
 
 // Documents already materialised in this page, keyed by mail id + part id AND by
 // destination, so opening the same attachment twice reuses its document instead of
@@ -601,23 +608,30 @@ export async function fetchAttachmentFile(attachment) {
  *
  * @param {Object} attachment the received attachment to materialise
  * @param {Array} folderTitles the destination folder titles, outermost first
+ * @param {String} driveName the Drive to store into, the user's own by default
+ * @param {String} workspace the JCR workspace of that Drive
  * @returns {Promise} resolved with the id of the created document
  */
-export function materialiseAttachment(attachment, folderTitles = RECEIVED_FOLDER_TITLES) {
+export function materialiseAttachment(attachment, folderTitles = RECEIVED_FOLDER_TITLES, driveName = PERSONAL_DRIVE_NAME, workspace = DEFAULT_WORKSPACE) {
   const destination = toFolderPath(folderTitles);
-  const key = `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}@${destination}`;
+  const key = `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}@${driveName}:${workspace}:${destination}`;
   if (materialisedDocuments[key]) {
     return materialisedDocuments[key];
   }
   const promise = (async () => {
-    await ensureFolderPath(folderTitles);
+    // Only the user's own Drive is addressed by identity and can be created through
+    // the documents folder REST; anywhere else the folder is one the picker returned,
+    // so it already exists and there is nothing to create.
+    if (driveName === PERSONAL_DRIVE_NAME && folderTitles.length) {
+      await ensureFolderPath(folderTitles);
+    }
     const file = await fetchAttachmentFile(attachment);
     const uploadId = Vue.prototype.$uploadService.generateRandomId();
     await Vue.prototype.$uploadService.upload(file, uploadId);
 
     const params = new URLSearchParams({
-      workspaceName: 'collaboration',
-      driveName: 'Personal Documents',
+      workspaceName: workspace,
+      driveName: driveName,
       currentFolder: destination,
       currentPortal: eXo.env.portal.portalName,
       uploadId,
@@ -663,31 +677,66 @@ export function getEditorUrl(documentId, mode) {
 }
 
 /**
- * Hands received attachments over to the Documents drawer, which is where the user
- * browses the drives and picks the folder to store them in. The drawer is given the
- * files themselves rather than a destination, so the copy is Documents' own upload
- * — nothing is written anywhere until the user confirms in that drawer.
+ * Shows a toast through the platform's global alert bus. Used from here rather than a
+ * component's $root because the save completes asynchronously, after the user has
+ * picked a folder, when the click that started it is long gone.
+ *
+ * @param {String} alertMessage the already-translated message to show
+ * @param {String} alertType 'success' or 'error'
+ * @returns {void}
+ */
+function notify(alertMessage, alertType) {
+  document.dispatchEvent(new CustomEvent('alert-message', { detail: { alertType, alertMessage } }));
+}
+
+/**
+ * Saves received attachments into the Drive in one shot. Opens the reusable Documents
+ * folder picker (the very same folders-only explorer Documents uses for "change
+ * location"), then, on the folder the user confirms, uploads every attachment straight
+ * there — no staging drawer, no second upload click. Closing the picker without
+ * choosing cancels silently.
+ *
+ * The picker hands back the JCR node path of the chosen folder (node names, lower-cased
+ * on this platform), which is exactly what the upload wants, so the destination is used
+ * verbatim and never recreates a differently-cased duplicate folder.
  *
  * @param {Array} attachments the received attachments to store
- * @returns {Promise} resolved once the drawer has been handed the files
+ * @param {Object} messages the translated toasts: { success, error }
+ * @returns {Promise} resolved once the picker has been opened (not once saved)
  */
-export async function saveAttachmentsInDocuments(attachments) {
-  const files = await Promise.all(attachments.map(attachment => fetchAttachmentFile(attachment)));
-  document.dispatchEvent(new CustomEvent('open-attachments-app-drawer', {
+export async function saveAttachmentsInDocuments(attachments, messages = {}) {
+  // make the default folder exist first, so the picker opens right inside it rather
+  // than at the drive root; the upload would create it too, but not as the default
+  await ensureFolderPath([ATTACHMENTS_FOLDER_TITLE]);
+
+  const onCancelled = () => cleanup();
+  const onSelected = (event) => {
+    cleanup();
+    const detail = event.detail || {};
+    const segments = (detail.path || '').split('/').filter(segment => segment.length);
+    const driveName = detail.driveName || PERSONAL_DRIVE_NAME;
+    const workspace = detail.workspace || DEFAULT_WORKSPACE;
+    Promise.all(attachments.map(attachment => materialiseAttachment(attachment, segments, driveName, workspace)))
+      .then(() => notify(messages.success, 'success'))
+      .catch(() => notify(messages.error, 'error'));
+  };
+  const cleanup = () => {
+    document.removeEventListener('documents-folder-picker-selected', onSelected);
+    document.removeEventListener('documents-folder-picker-cancelled', onCancelled);
+  };
+
+  // one-shot: a single pick answers a single save request, then the listeners go away
+  document.addEventListener('documents-folder-picker-selected', onSelected);
+  document.addEventListener('documents-folder-picker-cancelled', onCancelled);
+
+  document.dispatchEvent(new CustomEvent('open-documents-folder-picker', {
     detail: {
-      entityType: '',
-      entityId: '',
-      attachToEntity: false,
-      sourceApp: 'emailConnector',
-      // The node name, not the title: the drawer forwards this straight to the
-      // ECMS upload endpoint, which matches path segments verbatim and creates
-      // whatever it does not find. Handing it the capitalised title makes a
-      // second 'Mail Attachments' node next to the one Documents created lower
-      // cased, and both render with the same label — see EXO-88779.
+      defaultDrive: { name: PERSONAL_DRIVE_NAME, title: PERSONAL_DRIVE_NAME },
+      // The node name, not the title: the picker returns and the upload uses the
+      // JCR node path verbatim, so starting from the capitalised title would make a
+      // second 'Mail Attachments' node next to the lower-cased one — see EXO-88779.
       defaultFolder: ATTACHMENTS_FOLDER_PATH,
-      attachments: [],
-      spaceId: null,
-      files,
+      workspace: DEFAULT_WORKSPACE,
     },
   }));
 }

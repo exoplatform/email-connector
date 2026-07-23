@@ -45,7 +45,9 @@ import * as service from './EmailConnectorMailBoxService.js';
  *
  * The `context` handed to click() carries what only the row itself can do:
  * - download(): download to the device, with the row's progress and abort handling;
- * - openInEditor(mode): store the attachment in the Drive then open the editor on it.
+ * - openInEditor(mode): store the attachment in the Drive then open the editor on it;
+ * - saveInDocuments(attachments): open the Documents folder picker and, on the folder
+ *   the user picks, save the given attachments there, reporting the outcome as a toast.
  */
 const EXTENSION_TYPE = 'emailConnector';
 
@@ -77,7 +79,7 @@ extensionRegistry.registerExtension(EXTENSION_TYPE, EXTENSION_NAME, {
   labelKey: 'emailConnector.mailBox.attachment.action.saveInDocuments.label',
   icon: 'fa-hdd',
   enabled: () => service.isDocumentsDeployed(),
-  click: attachment => service.saveAttachmentsInDocuments([attachment]),
+  click: (attachment, context) => context.saveInDocuments([attachment]),
 });
 
 extensionRegistry.registerExtension(EXTENSION_TYPE, EXTENSION_NAME, {
