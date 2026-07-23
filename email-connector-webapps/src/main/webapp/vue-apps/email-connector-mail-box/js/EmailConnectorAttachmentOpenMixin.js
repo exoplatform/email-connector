@@ -35,6 +35,11 @@ export default {
     };
   },
   methods: {
+    /**
+     * Opens the attachment the cheapest way the platform allows, see above.
+     *
+     * @returns {void}
+     */
     openAttachment() {
       if (this.opening || this.downloading) {
         return;
@@ -48,6 +53,20 @@ export default {
         this.downloadAttachment();
         return;
       }
+      this.openInEditor();
+    },
+    /**
+     * Stores the attachment in the Drive and hands the document over to the editor.
+     * Only ever called for a type the editor declares it can open.
+     *
+     * @param {String} mode 'view' to open read only, editable when absent
+     * @returns {void}
+     */
+    openInEditor(mode) {
+      if (this.opening) {
+        return;
+      }
+      const service = this.$emailConnectorMailBoxService;
       this.opening = true;
       // The tab is opened now, while the click is still being handled: storing the
       // attachment first would spend the user gesture and the browser would then
@@ -57,7 +76,7 @@ export default {
       this.showOpeningPlaceholder(editorTab);
       service.materialiseAttachment(this.attachment)
         .then(documentId => {
-          const url = service.getEditorUrl(documentId);
+          const url = service.getEditorUrl(documentId, mode);
           if (editorTab) {
             editorTab.location = url;
           } else {

@@ -376,6 +376,18 @@ function supportedDocumentTypes() {
 }
 
 /**
+ * Whether the Documents add-on is deployed, hence whether its attachments drawer
+ * can be opened at all. Same probe the composer uses: the picker is contributed by
+ * Documents at runtime, so its absence is detected rather than declared.
+ *
+ * @returns {Boolean} true when the Documents add-on is on the page
+ */
+export function isDocumentsDeployed() {
+  return extensionRegistry?.loadExtensions('RichEditor', 'ckeditor-extensions').some(extension => extension.id === 'attachFile')
+    || !!Vue.prototype.$attachmentService;
+}
+
+/**
  * The address the attachment bytes are served from. No portal context prefix: the
  * add-on mounts its own REST context, and prefixing it lands on the portal itself,
  * which answers a page with 200 instead of the file.
@@ -453,14 +465,25 @@ export function previewAttachmentFromUrl(attachment) {
 // resolves the destination it is given as a JCR path verbatim.
 const RECEIVED_FOLDER_TITLE = 'Received';
 
-const ATTACHMENTS_FOLDER_TITLE = 'Mail Attachments';
+export const ATTACHMENTS_FOLDER_TITLE = 'Mail Attachments';
 
-const RECEIVED_FOLDER_PATH = `${ATTACHMENTS_FOLDER_TITLE.toLowerCase()}/${RECEIVED_FOLDER_TITLE.toLowerCase()}`;
+const RECEIVED_FOLDER_TITLES = [ATTACHMENTS_FOLDER_TITLE, RECEIVED_FOLDER_TITLE];
 
-// Documents already materialised in this page, keyed by mail id + part id, so
-// opening the same attachment twice reuses its document instead of copying it again.
+// Documents already materialised in this page, keyed by mail id + part id AND by
+// destination, so opening the same attachment twice reuses its document instead of
+// copying it again — while storing it somewhere else really does store it there
+// rather than hand back the copy made for another folder.
 const materialisedDocuments = {};
 
+/**
+ * Creates a folder in the user's Drive, ignoring the answer: it is called to make
+ * sure the folder is there, and it already existing is the expected outcome.
+ *
+ * @param {String} ownerId the identity the Drive belongs to
+ * @param {String} name the folder title
+ * @param {String} parentId the id of the folder it goes in, root when absent
+ * @returns {Promise} resolved once the server has answered, never rejected
+ */
 function createFolder(ownerId, name, parentId) {
   const params = new URLSearchParams({ ownerId, name });
   if (parentId) {
@@ -474,6 +497,14 @@ function createFolder(ownerId, name, parentId) {
   }).catch(() => null);
 }
 
+/**
+ * Looks a folder up by title among the folders of a parent.
+ *
+ * @param {String} ownerId the identity the Drive belongs to
+ * @param {String} name the folder title to look for
+ * @param {String} parentFolderId the folder to look into, root when absent
+ * @returns {Promise} resolved with the folder, or null when it isn't there
+ */
 function findFolder(ownerId, name, parentFolderId) {
   const params = new URLSearchParams({ ownerId, listingType: 'FOLDER', limit: '200' });
   if (parentFolderId) {
@@ -491,22 +522,68 @@ function findFolder(ownerId, name, parentFolderId) {
 }
 
 /**
- * Makes sure "Mail Attachments/Received" exists. The folders are addressed by path
- * afterwards, so this only guarantees they are there. Received attachments are kept
- * apart from what the composer stores in the parent folder.
+ * The JCR path a chain of folder titles resolves to. The platform keeps the
+ * capitalised title for display but stores the node under a lower-cased name, and
+ * the attachments service resolves the destination it is given verbatim.
  *
- * @returns {Promise} resolved once both folders are known to exist
+ * @param {Array} folderTitles the folder titles, outermost first
+ * @returns {String} the path to hand to the upload service
  */
-async function ensureReceivedFolder() {
+function toFolderPath(folderTitles) {
+  return folderTitles.map(title => title.toLowerCase()).join('/');
+}
+
+/**
+ * Makes sure a whole chain of folders exists in the user's Drive, creating each
+ * level under the previous one. The folders are addressed by path afterwards, so
+ * this only guarantees they are there.
+ *
+ * @param {Array} folderTitles the folder titles, outermost first
+ * @returns {Promise} resolved once every level is known to exist
+ */
+function ensureFolderPath(folderTitles) {
   const ownerId = eXo.env.portal.userIdentityId;
   if (!ownerId) {
-    return;
+    return Promise.resolve();
   }
-  await createFolder(ownerId, ATTACHMENTS_FOLDER_TITLE);
-  const parent = await findFolder(ownerId, ATTACHMENTS_FOLDER_TITLE);
-  if (parent) {
-    await createFolder(ownerId, RECEIVED_FOLDER_TITLE, parent.id);
+  return ensureFolder(ownerId, folderTitles, 0, null);
+}
+
+/**
+ * Creates one level of a folder chain, then goes on with the next one under it.
+ * Recursive rather than a loop because a level can only be created once the id of
+ * its parent is known, hence one round trip after the other.
+ *
+ * @param {String} ownerId the identity the Drive belongs to
+ * @param {Array} folderTitles the folder titles, outermost first
+ * @param {Number} index the level being created
+ * @param {String} parentId the id of the level above, null at the root
+ * @returns {Promise} resolved once this level and the ones below it exist
+ */
+function ensureFolder(ownerId, folderTitles, index, parentId) {
+  const title = folderTitles[index];
+  return createFolder(ownerId, title, parentId)
+    // the deepest level is only created, never looked up: nothing goes under it
+    .then(() => {
+      return index === folderTitles.length - 1 ? null : findFolder(ownerId, title, parentId);
+    })
+    .then(folder => folder && ensureFolder(ownerId, folderTitles, index + 1, folder.id));
+}
+
+/**
+ * Reads a received attachment back as a File, the shape every upload path of the
+ * platform takes, whether it is the commons upload service or the Documents drawer.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {Promise} resolved with the attachment content as a File
+ */
+export async function fetchAttachmentFile(attachment) {
+  const response = await fetch(getAttachmentUrl(attachment), { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`Could not read the attachment (${response.status})`);
   }
+  const blob = await response.blob();
+  return new File([blob], attachment.name, { type: attachment.mimeType || blob.type });
 }
 
 /**
@@ -514,29 +591,30 @@ async function ensureReceivedFolder() {
  * through the very same upload the Documents picker uses so the file is ingested
  * exactly like any other upload rather than through a side door.
  *
+ * The result is memoised on the attachment AND on its destination: the same
+ * attachment asked for twice is copied once, but asking for it in another folder
+ * really stores it there instead of handing back the copy made for the first one.
+ *
  * @param {Object} attachment the received attachment to materialise
+ * @param {Array} folderTitles the destination folder titles, outermost first
  * @returns {Promise} resolved with the id of the created document
  */
-export function materialiseAttachment(attachment) {
-  const key = `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
+export function materialiseAttachment(attachment, folderTitles = RECEIVED_FOLDER_TITLES) {
+  const destination = toFolderPath(folderTitles);
+  const key = `${attachment.mailRemoteId}/${attachment.attachmentRemoteId}@${destination}`;
   if (materialisedDocuments[key]) {
     return materialisedDocuments[key];
   }
   const promise = (async () => {
-    await ensureReceivedFolder();
-    const response = await fetch(getAttachmentUrl(attachment), { credentials: 'include' });
-    if (!response.ok) {
-      throw new Error(`Could not read the attachment (${response.status})`);
-    }
-    const blob = await response.blob();
-    const file = new File([blob], attachment.name, { type: attachment.mimeType || blob.type });
+    await ensureFolderPath(folderTitles);
+    const file = await fetchAttachmentFile(attachment);
     const uploadId = Vue.prototype.$uploadService.generateRandomId();
     await Vue.prototype.$uploadService.upload(file, uploadId);
 
     const params = new URLSearchParams({
       workspaceName: 'collaboration',
       driveName: 'Personal Documents',
-      currentFolder: RECEIVED_FOLDER_PATH,
+      currentFolder: destination,
       currentPortal: eXo.env.portal.portalName,
       uploadId,
       fileName: attachment.name,
@@ -571,9 +649,61 @@ export function materialiseAttachment(attachment) {
  * from any page and the current portal can be a space, which has no editor.
  *
  * @param {String} documentId the id of the stored document
+ * @param {String} mode 'view' to open read only, editable when absent
  * @returns {String} the editor URL, coming back to the current page when closed
  */
-export function getEditorUrl(documentId) {
+export function getEditorUrl(documentId, mode) {
   const portal = eXo.env.portal.metaPortalName || eXo.env.portal.portalName;
-  return `${eXo.env.portal.context}/${portal}/oeditor?docId=${documentId}&backTo=${window.location.pathname}`;
+  const modeParam = mode && `&mode=${mode}` || '';
+  return `${eXo.env.portal.context}/${portal}/oeditor?docId=${documentId}${modeParam}&backTo=${window.location.pathname}`;
+}
+
+/**
+ * Hands received attachments over to the Documents drawer, which is where the user
+ * browses the drives and picks the folder to store them in. The drawer is given the
+ * files themselves rather than a destination, so the copy is Documents' own upload
+ * — nothing is written anywhere until the user confirms in that drawer.
+ *
+ * @param {Array} attachments the received attachments to store
+ * @returns {Promise} resolved once the drawer has been handed the files
+ */
+export async function saveAttachmentsInDocuments(attachments) {
+  const files = await Promise.all(attachments.map(attachment => fetchAttachmentFile(attachment)));
+  document.dispatchEvent(new CustomEvent('open-attachments-app-drawer', {
+    detail: {
+      entityType: '',
+      entityId: '',
+      attachToEntity: false,
+      sourceApp: 'emailConnector',
+      defaultFolder: ATTACHMENTS_FOLDER_TITLE,
+      attachments: [],
+      spaceId: null,
+      files,
+    },
+  }));
+}
+
+/**
+ * Opens the composer on a new email carrying this attachment alone. It travels as a
+ * download URL rather than as bytes: the composer already knows how to turn a URL
+ * into a commons upload id, which is what the backend attaches to the message.
+ *
+ * @param {Object} attachment the received attachment to forward
+ * @returns {void}
+ */
+export function forwardAttachment(attachment) {
+  const mimeType = normaliseMimeType(attachment);
+  document.dispatchEvent(new CustomEvent('open-email-compose-with-attachment', {
+    detail: {
+      attachment: {
+        id: null,
+        name: attachment.name,
+        title: attachment.name,
+        mimeType,
+        mimetype: mimeType,
+        size: attachment.size || 0,
+        downloadUrl: getAttachmentUrl(attachment),
+      },
+    },
+  }));
 }

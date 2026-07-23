@@ -15,6 +15,12 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+// The actions of a received attachment are themselves extensions, so that another
+// add-on contributes one without this app knowing about it. Registered here rather
+// than by the menu component: they exist as soon as the app is loaded, and other
+// add-ons can look the point up before any mail is opened.
+import './js/EmailConnectorAttachmentActions.js';
+
 extensionRegistry.registerExtension('QuickAction', 'Extension', {
   id: 'email',
   icon: 'fa-envelope',

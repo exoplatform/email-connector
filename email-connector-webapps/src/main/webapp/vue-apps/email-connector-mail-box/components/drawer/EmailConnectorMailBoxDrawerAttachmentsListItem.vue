@@ -40,6 +40,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       @keydown.enter.stop="downloadAttachment">
       <v-icon size="18" class="text-light-color">fa-download</v-icon>
     </v-btn>
+    <!-- Everything else an attachment can be done with, contributed as extensions.
+         Rows only: a chip of the mail list has no room for a menu and its only job
+         is to open the attachment. -->
+    <email-connector-mail-box-drawer-attachment-action-menu
+      :attachment="attachment"
+      @download="downloadAttachment"
+      @open-in-editor="openInEditor" />
   </div>
 </template>
 
@@ -90,6 +97,12 @@ export default {
     },
   },
   methods: {
+    /**
+     * Downloads the attachment to the device, telling the drawer about it so closing
+     * it while the download runs asks for a confirmation.
+     *
+     * @returns {void}
+     */
     downloadAttachment() {
       if (this.downloading) {
         return;
@@ -108,6 +121,14 @@ export default {
           this.$root.$emit('attachment-download-finished');
         });
     },
+    /**
+     * Aborts the running download, when it is this row's one.
+     *
+     * @param {Number} mailRemoteId the mail the aborted download belongs to
+     * @param {String} attachmentRemoteId the aborted attachment part id
+     * @param {AbortController} abortController the controller of the running download
+     * @returns {void}
+     */
     abortDownloadAttachment(mailRemoteId, attachmentRemoteId, abortController) {
       if (this.attachment.mailRemoteId === mailRemoteId && this.attachment.attachmentRemoteId === attachmentRemoteId) {
         this.abortController = abortController;
