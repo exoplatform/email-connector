@@ -16,14 +16,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-chip
-    @click="downloadAttachment"
+    @click="openAttachment"
     :title="attachmentTitle"
     style="max-width:132px; height:24px"
     color="primary"
     class="me-2"
     outlined>
     <email-connector-mail-box-drawer-attachment-item
-      :downloading="downloading" 
+      :downloading="downloading || opening" 
       :attachment="attachment" 
       :loader-width="2"
       attachment-icon-size="12"
@@ -32,7 +32,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import attachmentOpenMixin from '../../js/EmailConnectorAttachmentOpenMixin.js';
+
 export default {
+  mixins: [attachmentOpenMixin],
   data() {
     return {
       downloading: false,
@@ -51,7 +54,7 @@ export default {
   },
   computed: {
     attachmentTitle() {
-      return this.$t('emailConnector.mailBox.list.drawer.detail.attachment.download.title', {
+      return this.$t('emailConnector.mailBox.attachment.open.title', {
         0: this.attachment.name,
       });
     },
