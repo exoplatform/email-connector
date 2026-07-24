@@ -19,16 +19,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        mail carrying eight files must not mean eight trips through the row menu. -->
   <v-btn
     v-if="available"
-    text
+    icon
     small
-    color="primary"
-    class="px-2 text-none"
     :loading="saving"
     :title="label"
     :aria-label="label"
     @click.stop="saveAll">
-    <v-icon size="16" class="pe-1">fa-hdd</v-icon>
-    {{ label }}
+    <v-icon size="18" class="text-light-color">fa-hdd</v-icon>
   </v-btn>
 </template>
 

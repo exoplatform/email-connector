@@ -15,8 +15,10 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- position-relative: the menu is attached to this wrapper, which then has to be
-       the element its content is placed against. -->
+  <!-- position-relative because the menu is attached to this wrapper (attach) — it
+       has to render inside the teleported drawer or it comes out empty. Which way it
+       opens is decided per click by openUpward, so a row near the bottom opens above
+       and a row near the top opens below. -->
   <div v-if="actions.length" class="flex-shrink-0 position-relative">
     <v-menu
       min-width="220"
@@ -24,8 +26,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       close-on-content-click
       offset-y
       left
-      top
       attach
+      :top="openUpward"
+      :bottom="!openUpward"
       @input="refreshActions">
       <template #activator="{ on, attrs }">
         <v-btn
@@ -35,8 +38,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :title="$t('emailConnector.mailBox.attachment.actions.tooltip')"
           :aria-label="$t('emailConnector.mailBox.attachment.actions.tooltip')"
           v-on="on"
-          @click.stop.prevent
-          @keydown.enter.stop>
+          @click.stop.prevent="chooseDirection"
+          @keydown.enter.stop="chooseDirection">
           <v-icon size="18" class="text-light-color">fa-ellipsis-v</v-icon>
         </v-btn>
       </template>
@@ -84,6 +87,7 @@ export default {
   data() {
     return {
       actions: [],
+      openUpward: false,
     };
   },
   created() {
@@ -94,6 +98,22 @@ export default {
     document.removeEventListener('extension-emailConnector-mail-attachment-action-updated', this.refreshActions);
   },
   methods: {
+    /**
+     * Decides which way the menu opens before it opens, run on the activator click.
+     * An attached menu does not flip itself, so a row near the bottom of the viewport
+     * (a mail whose attachments sit under a long body) opens above the button and a
+     * row with room beneath (the attachments list drawer) opens below it.
+     *
+     * @param {Event} event the activator click/keydown event
+     * @returns {void}
+     */
+    chooseDirection(event) {
+      const button = event && event.currentTarget;
+      const rect = button && button.getBoundingClientRect();
+      // a rough menu height (per row) is enough to know whether it would overflow
+      const estimatedHeight = 40 * this.actions.length + 16;
+      this.openUpward = !!rect && (rect.bottom + estimatedHeight) > window.innerHeight;
+    },
     /**
      * Recomputes what this attachment can be done with. Also done when the menu is
      * opened: an action can become applicable while the mail stays on screen, the
