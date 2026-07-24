@@ -27,19 +27,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :attachment="attachment" 
       :attachment-icon-size="attachmentIconSize" 
       attachment-name-class="ms-3" />
-    <!-- Clicking the row opens the attachment, so downloading it to the device
-         keeps its own control here. The compact chips of the mail list have no
-         room for one, which is why this lives in the row only. -->
-    <v-btn
-      icon
-      small
-      class="ms-auto flex-shrink-0"
-      :title="downloadTitle"
-      :aria-label="downloadTitle"
-      @click.stop="downloadAttachment"
-      @keydown.enter.stop="downloadAttachment">
-      <v-icon size="18" class="text-light-color">fa-download</v-icon>
-    </v-btn>
+    <!-- Everything an attachment can be done with, download included, contributed as
+         extensions in one menu. Rows only: a chip of the mail list has no room for a
+         menu and its only job is to open the attachment. -->
+    <email-connector-mail-box-drawer-attachment-action-menu
+      class="ms-auto"
+      :attachment="attachment"
+      @download="downloadAttachment"
+      @open-in-editor="openInEditor" />
   </div>
 </template>
 
@@ -83,13 +78,14 @@ export default {
         0: this.attachment.name,
       });
     },
-    downloadTitle() {
-      return this.$t('emailConnector.mailBox.list.drawer.detail.attachment.download.title', {
-        0: this.attachment.name,
-      });
-    },
   },
   methods: {
+    /**
+     * Downloads the attachment to the device, telling the drawer about it so closing
+     * it while the download runs asks for a confirmation.
+     *
+     * @returns {void}
+     */
     downloadAttachment() {
       if (this.downloading) {
         return;
@@ -108,6 +104,14 @@ export default {
           this.$root.$emit('attachment-download-finished');
         });
     },
+    /**
+     * Aborts the running download, when it is this row's one.
+     *
+     * @param {Number} mailRemoteId the mail the aborted download belongs to
+     * @param {String} attachmentRemoteId the aborted attachment part id
+     * @param {AbortController} abortController the controller of the running download
+     * @returns {void}
+     */
     abortDownloadAttachment(mailRemoteId, attachmentRemoteId, abortController) {
       if (this.attachment.mailRemoteId === mailRemoteId && this.attachment.attachmentRemoteId === attachmentRemoteId) {
         this.abortController = abortController;
