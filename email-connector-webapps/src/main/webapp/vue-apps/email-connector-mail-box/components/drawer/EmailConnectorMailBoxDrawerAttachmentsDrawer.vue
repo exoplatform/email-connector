@@ -33,6 +33,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     go-back-button>
     <template #title>
       <span class="me-3">{{ $t('emailConnector.mailBox.attachments.label') }}</span>
+      <email-connector-mail-box-drawer-attachments-save-all
+        :email-attachments="emailAttachments || []" />
     </template>
     <template v-if="attachmentsDrawer" #content>
       <email-connector-mail-box-drawer-attachments-list
@@ -64,14 +66,31 @@ export default {
     this.$root.$off('open-email-attachments-drawer', this.open);
   },
   methods: {
+    /**
+     * Opens the drawer on the attachments of a mail.
+     *
+     * @param {Array} emailAttachments the attachments to list
+     * @returns {void}
+     */
     open(emailAttachments) {
       this.emailAttachments = emailAttachments;
       this.attachmentsDrawer = true;
     },
+    /**
+     * Aborts the running download the user has just confirmed cancelling, then
+     * closes the drawer.
+     *
+     * @returns {void}
+     */
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
       this.close();
     },
+    /**
+     * Closes the drawer.
+     *
+     * @returns {void}
+     */
     close() {
       this.attachmentsDrawer = false;
     }

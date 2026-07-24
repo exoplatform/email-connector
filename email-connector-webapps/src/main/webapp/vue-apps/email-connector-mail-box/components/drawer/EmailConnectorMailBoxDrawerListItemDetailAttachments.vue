@@ -17,17 +17,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <div
     class="mt-5">
-    <div
-      role="button"
-      tabindex="0"
-      @click="openAttachmentsDrawer"
-      @keydown.enter="openAttachmentsDrawer">
-      <v-icon size="20" class="icon-default-color">
-        fa-paperclip
-      </v-icon>
-      <span class="ms-3 font-weight-bold">
-        {{ attachmentsLabel }}
-      </span>
+    <div class="d-flex align-center">
+      <div
+        role="button"
+        tabindex="0"
+        @click="openAttachmentsDrawer"
+        @keydown.enter="openAttachmentsDrawer">
+        <v-icon size="20" class="icon-default-color">
+          fa-paperclip
+        </v-icon>
+        <span class="ms-3 font-weight-bold">
+          {{ attachmentsLabel }}
+        </span>
+      </div>
+      <email-connector-mail-box-drawer-attachments-save-all
+        class="ms-auto"
+        :email-attachments="emailAttachments" />
     </div>
     <email-connector-mail-box-drawer-attachments-list
       :email-attachments="emailAttachmentsList" />
@@ -51,6 +56,12 @@ export default {
     },
   },
   methods: {
+    /**
+     * Opens the drawer listing every attachment of the mail, only the first two
+     * being shown inline here.
+     *
+     * @returns {void}
+     */
     openAttachmentsDrawer() {
       this.$root.$emit('open-email-attachments-drawer', this.emailAttachments);
     },
