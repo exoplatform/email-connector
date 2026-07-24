@@ -745,27 +745,25 @@ function getDocumentsPageUrl(params) {
 }
 
 /**
- * Where a completed save can be seen: the stored document's preview when a single
- * attachment was saved, the destination folder when several landed together (one
- * toast cannot point at each of them). Null — meaning a plain toast — when several
- * were saved but the picker did not hand back the folder id.
+ * Where a completed save can be seen: the destination folder opened in the Drive,
+ * whether one attachment or several were saved. It opens the folder listing rather
+ * than a document preview on purpose — the user asked to land in the folder, not in
+ * the editor. Null — meaning a plain toast — when the picker did not hand back the
+ * folder id.
  *
  * @param {Array} documentIds the ids of the stored documents
  * @param {Object} pickerDetail the folder picker's selection event detail
- * @returns {String} the URL showing the saved documents, or null
+ * @returns {String} the URL opening the destination folder in the Drive, or null
  */
 function savedLocationUrl(documentIds, pickerDetail) {
-  if (documentIds.length === 1) {
-    return getDocumentsPageUrl({ documentPreviewId: documentIds[0] });
+  if (!pickerDetail.folderId) {
+    return null;
   }
-  if (pickerDetail.folderId) {
-    const params = { folderId: pickerDetail.folderId };
-    if (pickerDetail.ownerId) {
-      params.ownerId = pickerDetail.ownerId;
-    }
-    return getDocumentsPageUrl(params);
+  const params = { folderId: pickerDetail.folderId };
+  if (pickerDetail.ownerId) {
+    params.ownerId = pickerDetail.ownerId;
   }
-  return null;
+  return getDocumentsPageUrl(params);
 }
 
 /**
