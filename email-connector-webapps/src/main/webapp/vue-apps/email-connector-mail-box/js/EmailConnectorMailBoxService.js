@@ -730,22 +730,30 @@ function notify(alertMessage, alertType, alertLink = null, alertLinkText = null)
 }
 
 /**
- * The address of the Documents application on the meta portal, opened on whatever
- * the given parameters point at. The documents page reads documentPreviewId (opens
- * that document's preview) and folderId [+ ownerId] (opens that folder's listing)
- * from its URL, which is exactly how the Documents add-on builds its own permanent
- * links and notification links.
+ * The address of the Documents application showing the given folder. A folder in a
+ * space drive opens the Documents app of that space (its own context), the way the
+ * Documents add-on links to a space document; a folder in the personal drive opens
+ * the Documents app on the meta portal. Both read folderId from the URL.
  *
- * @param {Object} params the documents page URL parameters
- * @returns {String} the documents page URL
+ * @param {Object} pickerDetail the folder picker's selection event detail
+ * @returns {String} the documents page URL for the picked folder
  */
-function getDocumentsPageUrl(params) {
+function getDocumentsFolderUrl(pickerDetail) {
+  const context = eXo.env.portal.context;
+  const params = new URLSearchParams({ folderId: pickerDetail.folderId });
+  if (pickerDetail.spaceId) {
+    // the space's own Documents app, not the meta-portal Drive
+    return `${context}/s/${pickerDetail.spaceId}/documents?${params}`;
+  }
   const portal = eXo.env.portal.metaPortalName || eXo.env.portal.portalName;
-  return `${eXo.env.portal.context}/${portal}/documents?${new URLSearchParams(params)}`;
+  if (pickerDetail.ownerId) {
+    params.append('ownerId', pickerDetail.ownerId);
+  }
+  return `${context}/${portal}/documents?${params}`;
 }
 
 /**
- * Where a completed save can be seen: the destination folder opened in the Drive,
+ * Where a completed save can be seen: the destination folder opened in Documents,
  * whether one attachment or several were saved. It opens the folder listing rather
  * than a document preview on purpose — the user asked to land in the folder, not in
  * the editor. Null — meaning a plain toast — when the picker did not hand back the
@@ -753,17 +761,13 @@ function getDocumentsPageUrl(params) {
  *
  * @param {Array} documentIds the ids of the stored documents
  * @param {Object} pickerDetail the folder picker's selection event detail
- * @returns {String} the URL opening the destination folder in the Drive, or null
+ * @returns {String} the URL opening the destination folder in Documents, or null
  */
 function savedLocationUrl(documentIds, pickerDetail) {
   if (!pickerDetail.folderId) {
     return null;
   }
-  const params = { folderId: pickerDetail.folderId };
-  if (pickerDetail.ownerId) {
-    params.ownerId = pickerDetail.ownerId;
-  }
-  return getDocumentsPageUrl(params);
+  return getDocumentsFolderUrl(pickerDetail);
 }
 
 /**

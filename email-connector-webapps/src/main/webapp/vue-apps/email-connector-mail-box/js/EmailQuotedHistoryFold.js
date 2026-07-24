@@ -164,25 +164,22 @@ function hasMeaningfulTextBefore(node) {
 }
 
 /**
- * Build the muted "···" toggle button element (collapsed state).
+ * Build the "See more" text toggle (collapsed state), styled like the activity
+ * stream's read-more link rather than a pill.
  *
  * @param {Document} doc the owner document
- * @param {{show: string, hide: string}} labels localized tooltips
+ * @param {{show: string, hide: string}} labels localized link texts
  * @returns {Element} the toggle element
  */
 function buildToggle(doc, labels) {
-  const toggle = doc.createElement('div');
+  const toggle = doc.createElement('span');
   toggle.id = TOGGLE_ID;
   toggle.className = 'ec-quoted-toggle';
   toggle.setAttribute('role', 'button');
   toggle.setAttribute('tabindex', '0');
   toggle.setAttribute('aria-expanded', 'false');
   toggle.setAttribute('aria-controls', HISTORY_ID);
-  toggle.setAttribute('title', labels.show);
-  const dots = doc.createElement('span');
-  dots.className = 'ec-quoted-dots';
-  dots.textContent = '···';
-  toggle.appendChild(dots);
+  toggle.textContent = labels.show;
   return toggle;
 }
 
@@ -217,6 +214,7 @@ function buildToggleScript(labels) {
     'q.style.display=open?"block":"none";',
     't.setAttribute("aria-expanded",open?"true":"false");',
     't.setAttribute("title",open?L.hide:L.show);',
+    't.textContent=open?L.hide:L.show;',
     't.className="ec-quoted-toggle"+(open?" ec-open":"");',
     '}',
     't.addEventListener("click",function(){set(t.getAttribute("aria-expanded")!=="true");});',

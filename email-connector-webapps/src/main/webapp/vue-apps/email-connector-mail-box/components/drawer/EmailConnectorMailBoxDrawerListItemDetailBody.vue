@@ -107,18 +107,14 @@ export default {
         .ec-quoted-toggle {
           display: inline-block;
           margin: 8px 0;
-          padding: 0 6px;
-          line-height: 1;
-          border-radius: 10px;
-          background: #f1f3f4;
-          color: #5f6368;
+          line-height: 1.4;
+          color: #1a73e8;
           cursor: pointer;
           user-select: none;
-          font-size: 18px;
-          letter-spacing: 1px;
+          font-size: 14px;
+          font-weight: 500;
         }
-        .ec-quoted-toggle:hover { background: #e4e6e8; }
-        .ec-quoted-toggle .ec-quoted-dots { position: relative; top: -3px; }
+        .ec-quoted-toggle:hover { text-decoration: underline; }
         .ec-quoted-history { margin-top: 4px; }
       `;
       const responsiveCSS = `
