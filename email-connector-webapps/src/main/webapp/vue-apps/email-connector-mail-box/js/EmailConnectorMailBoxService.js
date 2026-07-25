@@ -173,6 +173,63 @@ export function groupEmailsByThread(emails) {
   return Array.from(byKey.values());
 }
 
+/**
+ * The email categories a user can assign (Important / Invitation / Notification /
+ * To review), each { id, name }.
+ *
+ * @returns {Promise<Array>} the assignable email categories
+ */
+export function getAvailableEmailCategories() {
+  return fetch('/email-connector/rest/email-box/categories/available', {
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : []));
+}
+
+/**
+ * Tag the given messages (by IMAP id) with a category — pass a conversation's message
+ * ids to categorize the whole thread.
+ *
+ * @param {Array<Number>} mailRemoteIds the messages to tag
+ * @param {Number} categoryId the category id
+ * @returns {Promise} resolves with the count of newly-tagged emails
+ */
+export function linkEmailsToCategory(mailRemoteIds, categoryId) {
+  return fetch(`/email-connector/rest/email-box/categories/${categoryId}`, {
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(mailRemoteIds)
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when tagging emails');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Remove a category from the given messages (by IMAP id).
+ *
+ * @param {Array<Number>} mailRemoteIds the messages to untag
+ * @param {Number} categoryId the category id
+ * @returns {Promise} resolves with the count of untagged emails
+ */
+export function unlinkEmailsFromCategory(mailRemoteIds, categoryId) {
+  return fetch(`/email-connector/rest/email-box/categories/${categoryId}`, {
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    method: 'DELETE',
+    body: JSON.stringify(mailRemoteIds)
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when removing category from emails');
+    }
+    return resp.json();
+  });
+}
+
 export function getEmailByRemoteId(mailRemoteId, folder) {
   const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
   return fetch(`/email-connector/rest/email-box/${mailRemoteId}${query}`, {
