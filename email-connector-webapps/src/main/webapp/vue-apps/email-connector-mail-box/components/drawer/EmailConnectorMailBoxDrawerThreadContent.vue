@@ -118,15 +118,41 @@ export default {
         : Promise.resolve(null);
       promise
         .then(fetched => {
-          const messages = (fetched && fetched.length ? fetched : [this.email])
+          const sorted = (fetched && fetched.length ? fetched : [this.email])
             .filter(Boolean)
             .sort((first, second) => new Date(first.receivedDate) - new Date(second.receivedDate));
+          const messages = this.dedupeByHeader(sorted);
           this.messages = messages;
           const latest = messages[messages.length - 1];
           this.expandedIds = latest ? [this.msgKey(latest)] : [];
           this.markThreadRead();
         })
         .finally(() => this.loadingThread = false);
+    },
+    // The same message can be present in more than one folder (e.g. a provider
+    // whose Archive/All-Mail overlaps the inbox), so show it once, preferring the
+    // INBOX copy. Messages without a Message-ID are always kept.
+    dedupeByHeader(messages) {
+      const priority = { INBOX: 0, SENT: 1, ARCHIVE: 2 };
+      const rank = message => (message.folder in priority ? priority[message.folder] : 9);
+      const seen = new Map();
+      const deduped = [];
+      messages.forEach(message => {
+        const header = message.mailHeaderId;
+        if (!header) {
+          deduped.push(message);
+          return;
+        }
+        const existing = seen.get(header);
+        if (!existing) {
+          seen.set(header, message);
+          deduped.push(message);
+        } else if (rank(message) < rank(existing)) {
+          deduped.splice(deduped.indexOf(existing), 1, message);
+          seen.set(header, message);
+        }
+      });
+      return deduped;
     },
     // Opening a conversation reads all of its messages, via the existing bulk endpoint.
     markThreadRead() {
