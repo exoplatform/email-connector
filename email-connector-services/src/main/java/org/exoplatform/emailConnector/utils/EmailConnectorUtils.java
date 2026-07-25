@@ -76,8 +76,8 @@ public class EmailConnectorUtils {
 
   public static final String   EMAIL_BOX_SYNC_JOB_NAME = "EmailBoxSyncJob";
 
-  public static final int      MAX_EMAILS              =
-                                          Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "100"));
+  public static final int      DEFAULT_EMAIL_BOX_CACHE_SIZE =
+                                          Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "500"));
 
   public static final String   OPEN_EMAIL              = "exo.email.openEmail";
 

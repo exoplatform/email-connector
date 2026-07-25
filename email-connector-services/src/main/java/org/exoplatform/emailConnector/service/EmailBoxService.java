@@ -215,11 +215,12 @@ public class EmailBoxService {
         updateEmailSyncStatus(username, SyncStatus.SUCCESS);
         return;
       }
-      int startIndex = Math.max(1, totalMessages - EmailConnectorUtils.MAX_EMAILS + 1);
+      int emailBoxCacheSize = emailConnectorService.getEmailBoxCacheSize();
+      int startIndex = Math.max(1, totalMessages - emailBoxCacheSize + 1);
       Message[] serverMessages = inbox.getMessages(startIndex, totalMessages);
       List<Email> userEmails = getEmailBox(username).getEmails();
       createEmails(uidFolder, serverMessages, username);
-      cleanupObsoleteEmails(uidFolder, userEmails, serverMessages, username);
+      cleanupObsoleteEmails(uidFolder, userEmails, serverMessages, username, emailBoxCacheSize);
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
       sendNotification(uidFolder, userEmails, serverMessages, username);
     } catch (Exception e) {
@@ -1038,7 +1039,11 @@ public class EmailBoxService {
     return true;
   }
 
-  private void cleanupObsoleteEmails(UIDFolder uidFolder, List<Email> userEmails, Message[] serverMessages, String username) {
+  private void cleanupObsoleteEmails(UIDFolder uidFolder,
+                                     List<Email> userEmails,
+                                     Message[] serverMessages,
+                                     String username,
+                                     int emailBoxCacheSize) {
     Set<Long> serverMessagesUids = Arrays.stream(serverMessages).map(msg -> {
       try {
         return uidFolder.getUID(msg);
@@ -1053,8 +1058,8 @@ public class EmailBoxService {
     if (!obsoleteEmails.isEmpty()) {
       deleteEmails(obsoleteEmails);
     }
-    if (userEmails.size() > EmailConnectorUtils.MAX_EMAILS) {
-      List<Email> oldUserEmailsToCleanup = userEmails.subList(EmailConnectorUtils.MAX_EMAILS, userEmails.size());
+    if (userEmails.size() > emailBoxCacheSize) {
+      List<Email> oldUserEmailsToCleanup = userEmails.subList(emailBoxCacheSize, userEmails.size());
       deleteEmails(oldUserEmailsToCleanup);
     }
   }

@@ -27,6 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :connectors="connectors"
       class="mt-7"
       v-if="emailFeatureActive" />
+    <email-connector-admin-cache-size v-if="emailFeatureActive" />
     <email-connector-admin-footer v-if="emailFeatureActive && !hasConnectors" />
     <email-connector-admin-drawer />
   </v-app>
