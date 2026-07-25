@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.model;
 
 import java.util.List;
+import java.util.Map;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -27,9 +28,14 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class EmailBox {
 
-  private List<Email> emails;
+  private List<Email>          emails;
 
-  private SyncStatus  emailSyncStatus;
+  private SyncStatus           emailSyncStatus;
 
-  private String      webmailUrl;
+  private String               webmailUrl;
+
+  // Total cached messages per conversation across every folder (INBOX/SENT/ARCHIVE/
+  // ALL_MAIL), keyed by thread id. The list shows the full conversation count on each
+  // thread badge — like Gmail — rather than only its inbox messages.
+  private Map<String, Integer> threadCounts;
 }
