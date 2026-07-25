@@ -280,6 +280,11 @@ public class EmailBoxService {
       fetchProfile.add(FetchProfile.Item.FLAGS);
       fetchProfile.add(FetchProfile.Item.ENVELOPE);
       fetchProfile.add(UIDFolder.FetchProfileItem.UID);
+      // Prefetch the threading headers too (not covered by ENVELOPE), so computing /
+      // backfilling thread ids reads them from cache instead of one FETCH per message.
+      fetchProfile.add("References");
+      fetchProfile.add("In-Reply-To");
+      fetchProfile.add("Thread-Index");
       folder.fetch(serverMessages, fetchProfile);
       List<Email> folderEmails = emailBoxStorage.getEmails(username, folderKey);
       createEmails(uidFolder, serverMessages, username, folderKey);
