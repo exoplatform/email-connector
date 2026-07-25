@@ -217,7 +217,7 @@ public class EmailBoxService {
         LOG.warn("Could not sync the Sent folder for user {}", username, e);
       }
       try {
-        syncFolder(findArchiveFolder(store), MailFolder.ARCHIVE, username, emailBoxCacheSize, false);
+        syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, emailBoxCacheSize, false);
       } catch (Exception e) {
         LOG.warn("Could not sync the Archive folder for user {}", username, e);
       }
@@ -1245,6 +1245,35 @@ public class EmailBoxService {
       }
       String name = imapFolder.getFullName().toLowerCase();
       if (name.contains("archive") || name.contains("archivage") || name.contains("all") || name.contains("tous")) {
+        return imapFolder;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The folder to <em>synchronize</em> as ARCHIVE: a dedicated {@code \Archive}
+   * folder only. Gmail's "All Mail" ({@code \All}) is deliberately excluded — it
+   * is a superset of the inbox, so caching it would duplicate every received
+   * message inside its conversation. (The archive <em>destination</em> still uses
+   * {@link #findArchiveFolder} so archiving keeps working on Gmail.)
+   */
+  private IMAPFolder findSyncableArchiveFolder(Store store) throws MessagingException {
+    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
+      if (!(folder instanceof IMAPFolder)) {
+        continue;
+      }
+      IMAPFolder imapFolder = (IMAPFolder) folder;
+      if (!imapFolder.exists()) {
+        continue;
+      }
+      for (String attr : imapFolder.getAttributes()) {
+        if (attr.equalsIgnoreCase("\\Archive")) {
+          return imapFolder;
+        }
+      }
+      String name = imapFolder.getFullName().toLowerCase();
+      if (name.equals("archive") || name.equals("archives") || name.equals("archivage")) {
         return imapFolder;
       }
     }
