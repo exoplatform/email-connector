@@ -130,6 +130,22 @@ public class EmailBoxRest {
     }
   }
 
+  @GetMapping("/thread/{threadId}")
+  @Secured("users")
+  @Operation(summary = "Gets a conversation across folders", method = "GET", description = "This will get all cached messages of a conversation (INBOX, SENT, ARCHIVE) by thread id")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public List<Email> getThread(HttpServletRequest request,
+                               @Parameter(description = "Conversation thread id", required = true)
+                               @PathVariable("threadId")
+                               String threadId) {
+    try {
+      return emailBoxService.getThread(threadId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
   @PostMapping("/webmail/broadcast")
   @Secured("users")
   @Operation(summary = "Broadcasts access webmail", method = "POST", description = "This will broadcast access webmail")

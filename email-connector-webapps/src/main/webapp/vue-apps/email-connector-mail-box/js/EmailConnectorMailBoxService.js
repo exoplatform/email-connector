@@ -175,6 +175,22 @@ export function getEmailByRemoteId(mailRemoteId) {
   });
 }
 
+export function getThreadByThreadId(threadId) {
+  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the conversation');
+    }
+  });
+}
+
 export function deleteEmails(mailRemoteIds) {
   return fetch('/email-connector/rest/email-box', {
     headers: {
