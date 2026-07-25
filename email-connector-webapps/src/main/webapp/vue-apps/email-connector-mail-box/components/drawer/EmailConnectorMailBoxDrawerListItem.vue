@@ -195,7 +195,12 @@ export default {
     hasAttachments() {
       return this.emailAttachments.length > 0;
     },
+    // A thread row shows the attachments of the whole conversation, so a file on any
+    // message (not only the latest) still surfaces a chip on the collapsed thread.
     emailAttachments() {
+      if (this.thread) {
+        return this.thread.emails.flatMap(message => message.content?.attachments || []);
+      }
       return this.email.content?.attachments || [];
     },
     excerpt() {
