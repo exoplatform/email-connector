@@ -313,18 +313,38 @@ public class EmailBoxService {
   }
 
   /**
-   * Get user email box.
+   * Get the user's inbox email box.
    *
    * @param username user getting user emails
    * @return list of stored {@link Email} in datasource
    */
   public EmailBox getEmailBox(String username) throws IllegalAccessException {
+    return getEmailBox(username, MailFolder.INBOX);
+  }
+
+  /**
+   * Get the user's email box for a given folder — the list can show the inbox or,
+   * for the in-app folder switch, the user's Sent or Archive mail. The thread reader
+   * still spans every folder; only the flat list is scoped here.
+   *
+   * @param username user getting user emails
+   * @param folder the folder to list: {@code INBOX}, {@code SENT} or {@code ARCHIVE}
+   * @return the folder's cached messages plus the per-conversation counts
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   * @throws IllegalArgumentException if {@code folder} is not a browsable folder
+   */
+  public EmailBox getEmailBox(String username, String folder) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
-    List<Email> emails = emailBoxStorage.getEmails(username, MailFolder.INBOX);
+    // Only the folders a user can browse as a list; ALL_MAIL is an internal on-demand
+    // completion store, never a browsable list.
+    if (!MailFolder.INBOX.equals(folder) && !MailFolder.SENT.equals(folder) && !MailFolder.ARCHIVE.equals(folder)) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    List<Email> emails = emailBoxStorage.getEmails(username, folder);
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
                         userEmailSetting.getEmailConnectorWebmailUrl(),
