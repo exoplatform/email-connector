@@ -35,12 +35,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :key="`divider-${item.key}`"
         class="my-2" />
       <!-- A run of consecutive collapsed messages, folded into a single Gmail-style
-           round count badge on the divider; click to reveal them as strips. -->
+           round count badge sitting on a divider line; click to reveal them as strips. -->
       <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
       <div
         v-if="item.type === 'bubble'"
         :key="item.key"
-        class="clickable d-flex align-center justify-center py-2"
+        class="clickable d-flex align-center py-2"
+        style="position: relative;"
         tabindex="0"
         :aria-label="$t('emailConnector.mailBox.list.drawer.thread.showHidden', item.count)"
         :title="$t('emailConnector.mailBox.list.drawer.thread.showHidden', item.count)"
@@ -48,8 +49,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @keydown.enter="revealBubble(item)"
         @keydown.space.prevent="revealBubble(item)">
         <span
+          class="d-block"
+          style="position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--v-borderColor, #e1e8ee);"></span>
+        <span
           class="d-flex align-center justify-center rounded-circle text-caption text-light-color"
-          style="width: 34px; height: 34px; border: 1px solid var(--v-borderColor, #e1e8ee);">
+          style="position: relative; z-index: 1; width: 40px; height: 40px; border: 1px solid var(--v-borderColor, #e1e8ee); background-color: var(--v-surface-base, #fff);">
           {{ item.count }}
         </span>
       </div>
