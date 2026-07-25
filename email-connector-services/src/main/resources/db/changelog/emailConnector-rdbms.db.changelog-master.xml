@@ -228,4 +228,16 @@
       </column>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-21">
+    <!-- Exchange Thread-Index conversation-root GUID (hex, 32 chars). Lets a reply
+         join its conversation even when the References chain is broken (subject
+         changes, external forwards). Indexed with USER_ID for the sibling lookup. -->
+    <addColumn tableName="EMAIL_BOX">
+      <column name="THREAD_INDEX_ROOT" type="VARCHAR(64)"/>
+    </addColumn>
+    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_THREAD_INDEX">
+      <column name="USER_ID"/>
+      <column name="THREAD_INDEX_ROOT"/>
+    </createIndex>
+  </changeSet>
 </databaseChangeLog>

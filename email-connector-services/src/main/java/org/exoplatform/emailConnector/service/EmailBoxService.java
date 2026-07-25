@@ -1012,7 +1012,8 @@ public class EmailBoxService {
           String mailHeaderId = ((MimeMessage) message).getMessageID();
           String inReplyTo = firstHeader(message, "In-Reply-To");
           String references = firstHeader(message, "References");
-          String threadId = computeThreadId(username, mailHeaderId, messageUid, inReplyTo, references);
+          String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, "Thread-Index"));
+          String threadId = computeThreadId(username, mailHeaderId, messageUid, inReplyTo, references, threadIndexRoot);
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
                                                 mailHeaderId,
@@ -1033,7 +1034,8 @@ public class EmailBoxService {
                                                 threadId,
                                                 inReplyTo,
                                                 references,
-                                                folderKey));
+                                                folderKey,
+                                                threadIndexRoot));
 
         } else {
           emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(messageUid),
@@ -1046,8 +1048,9 @@ public class EmailBoxService {
           if (StringUtils.isEmpty(email.getThreadId())) {
             String inReplyTo = firstHeader(message, "In-Reply-To");
             String references = firstHeader(message, "References");
-            String threadId = computeThreadId(username, ((MimeMessage) message).getMessageID(), messageUid, inReplyTo, references);
-            emailBoxStorage.updateThreadInfo(username, messageUid, threadId, inReplyTo, references, folderKey);
+            String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, "Thread-Index"));
+            String threadId = computeThreadId(username, ((MimeMessage) message).getMessageID(), messageUid, inReplyTo, references, threadIndexRoot);
+            emailBoxStorage.updateThreadInfo(username, messageUid, threadId, inReplyTo, references, folderKey, threadIndexRoot);
           }
         }
       } catch (Exception e) {
@@ -1070,22 +1073,35 @@ public class EmailBoxService {
    * @param references the raw References header, may be null
    * @return the thread id to store on the message, never null
    */
-  private String computeThreadId(String username, String mailHeaderId, long messageUid, String inReplyTo, String references) {
+  private String computeThreadId(String username,
+                                 String mailHeaderId,
+                                 long messageUid,
+                                 String inReplyTo,
+                                 String references,
+                                 String threadIndexRoot) {
     String ownMessageId = StringUtils.isNotEmpty(mailHeaderId) ? mailHeaderId
                                                                : EmailThreadingUtils.synthesizeMessageId(messageUid, username);
+    // Collect the thread ids this message belongs with, from two signals: the RFC
+    // References / In-Reply-To chain, and — for Exchange/Outlook mail — a shared
+    // Thread-Index conversation root, which still links messages whose References
+    // chain was broken by a subject change or an external forward.
+    Set<String> siblingThreadIds = new LinkedHashSet<>();
     Set<String> referencedIds = EmailThreadingUtils.collectReferencedIds(inReplyTo, references);
-    if (referencedIds.isEmpty()) {
-      return ownMessageId;
+    if (!referencedIds.isEmpty()) {
+      siblingThreadIds.addAll(emailBoxStorage.getSiblingThreadIds(username, new ArrayList<>(referencedIds)));
     }
-    List<String> siblingThreadIds = emailBoxStorage.getSiblingThreadIds(username, new ArrayList<>(referencedIds));
+    if (StringUtils.isNotEmpty(threadIndexRoot)) {
+      siblingThreadIds.addAll(emailBoxStorage.getThreadIdsByThreadIndexRoot(username, threadIndexRoot));
+    }
     if (siblingThreadIds.isEmpty()) {
       return ownMessageId;
     }
     if (siblingThreadIds.size() == 1) {
-      return siblingThreadIds.get(0);
+      return siblingThreadIds.iterator().next();
     }
-    String canonicalThreadId = emailBoxStorage.getOldestThreadId(username, siblingThreadIds);
-    List<String> threadIdsToMerge = siblingThreadIds.stream().filter(id -> !id.equals(canonicalThreadId)).toList();
+    List<String> siblings = new ArrayList<>(siblingThreadIds);
+    String canonicalThreadId = emailBoxStorage.getOldestThreadId(username, siblings);
+    List<String> threadIdsToMerge = siblings.stream().filter(id -> !id.equals(canonicalThreadId)).toList();
     emailBoxStorage.mergeThreads(username, canonicalThreadId, threadIdsToMerge);
     return canonicalThreadId;
   }
