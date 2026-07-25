@@ -35,6 +35,7 @@ import javax.activation.DataHandler;
 import javax.activation.FileDataSource;
 import javax.mail.Authenticator;
 import javax.mail.BodyPart;
+import javax.mail.FetchProfile;
 import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
@@ -271,6 +272,15 @@ public class EmailBoxService {
       }
       int startIndex = Math.max(1, totalMessages - emailBoxCacheSize + 1);
       Message[] serverMessages = folder.getMessages(startIndex, totalMessages);
+      // Prefetch flags + envelope + UID in a single round-trip. Without this,
+      // isSet(SEEN)/getFrom/getSubject/... each trigger their own IMAP FETCH per
+      // message — hundreds of round-trips over a high-latency provider like Gmail,
+      // which is what makes a large sync appear to take forever.
+      FetchProfile fetchProfile = new FetchProfile();
+      fetchProfile.add(FetchProfile.Item.FLAGS);
+      fetchProfile.add(FetchProfile.Item.ENVELOPE);
+      fetchProfile.add(UIDFolder.FetchProfileItem.UID);
+      folder.fetch(serverMessages, fetchProfile);
       List<Email> folderEmails = emailBoxStorage.getEmails(username, folderKey);
       createEmails(uidFolder, serverMessages, username, folderKey);
       cleanupObsoleteEmails(uidFolder, folderEmails, serverMessages, username, emailBoxCacheSize);
