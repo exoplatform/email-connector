@@ -251,16 +251,22 @@ export default {
       this.syncInProgress = syncInProgress;
       this.$root.isDetailDrawerActive = true;
       this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
+      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, this.folderOf(mailRemoteId)).then((email) => {
         this.email = email;
         this.selectEmailPlaceHolder = false;
       }).finally(() => {
         this.loading = false;
       });
     },
+    // IMAP UIDs are per-folder, so opening a Sent/Archive message needs its folder,
+    // taken from the currently-listed emails.
+    folderOf(mailRemoteId) {
+      const email = (this.emails || []).find(e => e.mailRemoteId === mailRemoteId);
+      return email && email.folder || 'INBOX';
+    },
     openEmailDetailContent(mailRemoteId) {
       this.loading = true;
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
+      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, this.folderOf(mailRemoteId)).then((email) => {
         this.email = email;
         this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
         this.selectEmailPlaceHolder = false;
