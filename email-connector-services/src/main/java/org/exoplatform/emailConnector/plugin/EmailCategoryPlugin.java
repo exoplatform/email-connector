@@ -17,7 +17,10 @@
  */
 package org.exoplatform.emailConnector.plugin;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -57,16 +60,20 @@ public class EmailCategoryPlugin implements CategoryPlugin {
 
   @Override
   public List<Long> getCategoryIds(long spaceId, String username) {
+    // The add-on's own default email categories are always offered, plus any other
+    // category already applied to the user's emails, so the email category tree is
+    // never empty (the read-only filter and the assign picker both read from here).
+    Set<Long> categoryIds = new LinkedHashSet<>(emailBoxService.getDefaultEmailCategoryIds());
     try {
       EmailBox emailBox = emailBoxService.getEmailBox(username);
-      return emailBox.getEmails()
-                     .stream()
-                     .filter(email -> email.getCategoryIds() != null)
-                     .flatMap(email -> email.getCategoryIds().stream())
-                     .distinct()
-                     .toList();
+      emailBox.getEmails()
+              .stream()
+              .filter(email -> email.getCategoryIds() != null)
+              .flatMap(email -> email.getCategoryIds().stream())
+              .forEach(categoryIds::add);
     } catch (IllegalAccessException e) {
-      return null;
+      // Fall through: still return the default categories.
     }
+    return new ArrayList<>(categoryIds);
   }
 }
