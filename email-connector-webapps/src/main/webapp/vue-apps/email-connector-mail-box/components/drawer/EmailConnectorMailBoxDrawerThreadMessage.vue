@@ -35,6 +35,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           style="max-width: 45%">{{ email.sender.name }}</span>
         <span class="text-light-color ms-3 text-truncate">{{ snippet }}</span>
       </div>
+      <v-icon
+        v-if="hasAttachment"
+        size="14"
+        class="icon-default-color ms-2 flex-shrink-0"
+        :title="$t('emailConnector.mailBox.attachments.label')">
+        fa-paperclip
+      </v-icon>
       <span class="text-light-color ms-2 flex-shrink-0 text-caption">{{ receivedDate }}</span>
     </div>
     <!-- Expanded: the full message. Reuses the single-message renderer without its
@@ -44,7 +51,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :email="email"
       :expanded-drawer="expandedDrawer"
       hide-subject
-      collapsible
+      :collapsible="collapsible"
       @toggle-collapse="$emit('collapse')" />
   </div>
 </template>
@@ -59,6 +66,11 @@ export default {
     expanded: {
       type: Boolean,
       default: false,
+    },
+    // The latest message of a thread stays open, like Gmail, so it is not collapsible.
+    collapsible: {
+      type: Boolean,
+      default: true,
     },
     expandedDrawer: {
       type: Boolean,
@@ -81,6 +93,9 @@ export default {
     },
     ariaLabel() {
       return `Open message from ${this.email.sender.name}`;
+    },
+    hasAttachment() {
+      return (this.email.content?.attachments?.length || 0) > 0;
     },
   },
 };
