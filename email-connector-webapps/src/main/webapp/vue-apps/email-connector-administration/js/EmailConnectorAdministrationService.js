@@ -91,6 +91,36 @@ export function getEmailConnectors() {
   });
 }
 
+export function getEmailBoxCacheSize() {
+  return fetch('/email-connector/rest/connectors/cache-size', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the mailbox cache size');
+    }
+  });
+}
+
+export function updateEmailBoxCacheSize(size) {
+  return fetch(`/email-connector/rest/connectors/cache-size?size=${size}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the mailbox cache size');
+    }
+  });
+}
+
 export function deleteEmailConnector(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}`, {
     headers: {

@@ -78,6 +78,34 @@ public class EmailConnectorRest {
     }
   }
 
+  @GetMapping("/cache-size")
+  @Secured("administrators")
+  @Operation(summary = "Gets the mailbox cache size", method = "GET", description = "This will get the number of most recent emails kept per user")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public int getEmailBoxCacheSize(HttpServletRequest request) {
+    return emailConnectorService.getEmailBoxCacheSize();
+  }
+
+  @PutMapping("/cache-size")
+  @Secured("administrators")
+  @Operation(summary = "Updates the mailbox cache size", method = "PUT", description = "This will update the number of most recent emails kept per user")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateEmailBoxCacheSize(HttpServletRequest request,
+                                      @Parameter(description = "Number of most recent emails kept per user", required = true)
+                                      @RequestParam("size")
+                                      int size) {
+    try {
+      emailConnectorService.saveEmailBoxCacheSize(size, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
   @PostMapping()
   @Secured("administrators")
   @Operation(summary = "Creates email connector", method = "POST", description = "This will create email connector")
