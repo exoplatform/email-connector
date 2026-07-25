@@ -19,6 +19,8 @@ package org.exoplatform.emailConnector.model;
 import java.util.Date;
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -61,4 +63,15 @@ public class Email {
   private List<Long>           categoryIds;
 
   private List<EmailOutgoingAttachment> attachments;
+
+  // Threading fields. Backend-only in this phase (@JsonIgnore keeps the REST payload
+  // unchanged); a later phase exposes threadId so the client can group conversations.
+  @JsonIgnore
+  private String               threadId;
+
+  @JsonIgnore
+  private String               inReplyTo;
+
+  @JsonIgnore
+  private String               mailReferences;
 }
