@@ -15,39 +15,31 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item dense class="d-flex px-0">
-    <v-list-item-content class="py-0">
-      <v-list-item-title class="text-title">
-        {{ $t("emailConnector.admin.title") }}
-      </v-list-item-title>
-    </v-list-item-content>
-    <v-list-item-action class="my-0">
-      <v-btn
-        min-width="36"
-        v-if="hasConnectors"
-        :aria-label="$t('emailConnector.admin.connectors.add')"
-        class="btn btn-primary px-0"
-        @click="$root.$emit('open-email-connector-drawer')">
-        <v-icon
-          size="18">
-          fa-plus
-        </v-icon>
-      </v-btn>
-    </v-list-item-action>
-    <v-list-item-action class="ms-5 my-0">
-      <v-switch :input-value="emailFeatureActive" @change="activate" />
-    </v-list-item-action>
-  </v-list-item>
+  <div>
+    <div class="text-title mb-4">
+      {{ $t("emailConnector.admin.title") }}
+    </div>
+    <v-list-item dense class="px-0">
+      <v-list-item-content class="py-0">
+        <v-list-item-title>
+          {{ $t("emailConnector.admin.enable") }}
+        </v-list-item-title>
+      </v-list-item-content>
+      <v-list-item-action class="my-0">
+        <v-switch
+          :input-value="emailFeatureActive"
+          class="mt-0 pt-0"
+          hide-details
+          @change="activate" />
+      </v-list-item-action>
+    </v-list-item>
+  </div>
 </template>
 
 <script>
 export default {
   props: {
     emailFeatureActive: {
-      type: Boolean,
-      default: false,
-    },
-    hasConnectors: {
       type: Boolean,
       default: false,
     },

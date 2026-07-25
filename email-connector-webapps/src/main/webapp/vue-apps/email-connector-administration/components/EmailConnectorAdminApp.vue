@@ -21,14 +21,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     class="pa-5">
     <email-connector-admin-header
       :email-feature-active="emailFeatureActive"
-      :has-connectors="hasConnectors" 
       @emailFeature-active="emailFeatureActive = $event" />
-    <email-connector-admin-list
-      :connectors="connectors"
-      class="mt-7"
-      v-if="emailFeatureActive" />
     <email-connector-admin-cache-size v-if="emailFeatureActive" />
-    <email-connector-admin-footer v-if="emailFeatureActive && !hasConnectors" />
+    <template v-if="emailFeatureActive">
+      <div class="text-title mt-8 mb-3">
+        {{ $t('emailConnector.admin.connectors.title') }}
+      </div>
+      <v-btn
+        :aria-label="$t('emailConnector.admin.connectors.add')"
+        class="btn btn-primary mb-4"
+        @click="$root.$emit('open-email-connector-drawer')">
+        <v-icon size="18">fa-plus</v-icon>
+        <span class="text-none ms-2">{{ $t('emailConnector.admin.connectors.add') }}</span>
+      </v-btn>
+      <email-connector-admin-list :connectors="connectors" />
+    </template>
     <email-connector-admin-drawer />
   </v-app>
 </template>
@@ -40,14 +47,6 @@ export default {
     emailFeatureActive: null,
     connectors: []
   }),
-  computed: {
-    hasConnectors() {
-      return this.connectors?.length > 0;
-    },
-    isDefault() {
-      return !this.emailConnector?.iconSrc && !this.emailConnector?.iconUrl;
-    },
-  },
   created() {
     this.$featureService.isFeatureEnabled(this.featureName)
       .then(enabled => this.emailFeatureActive = enabled);
