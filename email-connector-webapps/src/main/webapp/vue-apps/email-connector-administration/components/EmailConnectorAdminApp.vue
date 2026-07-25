@@ -27,13 +27,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="text-title mt-8 mb-3">
         {{ $t('emailConnector.admin.connectors.title') }}
       </div>
-      <v-btn
-        :aria-label="$t('emailConnector.admin.connectors.add')"
-        class="btn btn-primary mb-4"
-        @click="$root.$emit('open-email-connector-drawer')">
-        <v-icon size="18">fa-plus</v-icon>
-        <span class="text-none ms-2">{{ $t('emailConnector.admin.connectors.add') }}</span>
-      </v-btn>
+      <div class="mb-4">
+        <v-btn
+          :aria-label="$t('emailConnector.admin.connectors.add')"
+          class="btn btn-primary"
+          @click="$root.$emit('open-email-connector-drawer')">
+          <v-icon size="18">fa-plus</v-icon>
+          <span class="text-none ms-2">{{ $t('emailConnector.admin.connectors.add') }}</span>
+        </v-btn>
+      </div>
       <email-connector-admin-list :connectors="connectors" />
     </template>
     <email-connector-admin-drawer />
