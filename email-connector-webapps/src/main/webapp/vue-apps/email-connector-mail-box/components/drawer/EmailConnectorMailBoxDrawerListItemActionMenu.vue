@@ -48,7 +48,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </template>
       <email-connector-mail-box-drawer-list-item-action-menu-items
         @close="menu = false"
-        :email="email" />
+        :email="email"
+        :thread="thread" />
     </v-menu>
   </v-list-item-action>
 </template>
@@ -62,6 +63,10 @@ export default {
   },
   props: {
     email: {
+      type: Object,
+      default: () => null,
+    },
+    thread: {
       type: Object,
       default: () => null,
     }

@@ -18,15 +18,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <div>
     <email-connector-mail-box-drawer-list-item
-      v-for="email in emails"
-      :key="email.mailRemoteId"
-      :email="email"
+      v-for="thread in threads"
+      :key="thread.threadId"
+      :email="thread.latest"
+      :thread="thread"
       :opened-email-id="openedEmailId"
       :emails="emails"
       :webmail-url="webmailUrl"
-      :sync-in-progress="syncInProgress" 
+      :sync-in-progress="syncInProgress"
       :selected-emails="selectedEmails"
-      :select-mode="selectMode" 
+      :select-mode="selectMode"
       :expanded="expanded" />
   </div>
 </template>
@@ -67,6 +68,11 @@ export default {
       type: Object,
       default: () => null,
     }
+  },
+  computed: {
+    threads() {
+      return this.$emailConnectorMailBoxService.groupEmailsByThread(this.emails);
+    },
   },
   created() {
     this.$root.$on('set-opened', (mailRemoteId) => {
