@@ -25,26 +25,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item-subtitle>
     </v-list-item-content>
     <v-list-item-action class="my-0">
-      <div class="d-flex align-center">
-        <v-text-field
-          v-model.number="cacheSize"
-          type="number"
-          min="1"
-          max="2000"
-          :rules="rules"
-          dense
-          outlined
-          hide-details
-          class="flex-grow-0"
-          style="max-width: 100px" />
-        <v-btn
-          class="btn btn-primary ms-3"
-          :disabled="!valid || saving || cacheSize === savedValue"
-          :loading="saving"
-          @click="save">
-          {{ $t('emailConnector.admin.cacheSize.save') }}
-        </v-btn>
-      </div>
+      <v-select
+        :value="cacheSize"
+        :items="options"
+        :loading="saving"
+        :disabled="saving"
+        dense
+        outlined
+        hide-details
+        class="flex-grow-0"
+        style="max-width: 120px"
+        @change="onChange" />
     </v-list-item-action>
   </v-list-item>
 </template>
@@ -54,20 +45,9 @@ export default {
   data() {
     return {
       cacheSize: null,
-      savedValue: null,
+      options: [100, 250, 500, 750, 1000],
       saving: false,
     };
-  },
-  computed: {
-    rules() {
-      return [
-        v => (Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 2000)
-          || this.$t('emailConnector.admin.cacheSize.outOfRange'),
-      ];
-    },
-    valid() {
-      return Number.isInteger(this.cacheSize) && this.cacheSize >= 1 && this.cacheSize <= 2000;
-    },
   },
   created() {
     this.getCacheSize();
@@ -77,18 +57,19 @@ export default {
       this.$emailConnectorAdministrationService.getEmailBoxCacheSize()
         .then(size => {
           this.cacheSize = size;
-          this.savedValue = size;
+          // Keep the currently configured value (e.g. a non-standard default set via
+          // the system property) selectable even when it is not one of the presets.
+          if (!this.options.includes(size)) {
+            this.options = [...this.options, size].sort((first, second) => first - second);
+          }
         });
     },
-    save() {
-      if (!this.valid) {
-        return;
-      }
+    onChange(value) {
       this.saving = true;
-      this.$emailConnectorAdministrationService.updateEmailBoxCacheSize(this.cacheSize)
+      this.$emailConnectorAdministrationService.updateEmailBoxCacheSize(value)
         .then(() => {
-          this.savedValue = this.cacheSize;
-          this.$root.$emit('alert-message', this.$t('emailConnector.admin.cacheSize.success'), 'success');
+          this.cacheSize = value;
+          this.$root.$emit('alert-message', this.$t('emailConnector.admin.cacheSize.success'), 'info');
         })
         .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.cacheSize.error'), 'error'))
         .finally(() => this.saving = false);
