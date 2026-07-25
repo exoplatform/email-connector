@@ -19,8 +19,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <v-data-table
       :headers="headers"
       :items="connectors"
-      no-data-text=""
-      hide-default-footer 
+      :no-data-text="$t('emailConnector.admin.connectors.list.noConnector')"
+      hide-default-footer
       disable-pagination
       disable-filtering
       disable-sort

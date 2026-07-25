@@ -15,38 +15,38 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-card flat class="pa-0 mt-7">
-    <v-list-item dense class="px-0">
-      <v-list-item-content class="py-0">
-        <v-list-item-title class="text-title">
-          {{ $t('emailConnector.admin.cacheSize.title') }}
-        </v-list-item-title>
-        <v-list-item-subtitle class="text-wrap text-light-color">
-          {{ $t('emailConnector.admin.cacheSize.subtitle') }}
-        </v-list-item-subtitle>
-      </v-list-item-content>
-    </v-list-item>
-    <div class="d-flex align-center mt-2">
-      <v-text-field
-        v-model.number="cacheSize"
-        type="number"
-        min="1"
-        max="2000"
-        :rules="rules"
-        dense
-        outlined
-        hide-details="auto"
-        class="flex-grow-0 me-3"
-        style="max-width: 160px" />
-      <v-btn
-        class="btn btn-primary"
-        :disabled="!valid || saving || cacheSize === savedValue"
-        :loading="saving"
-        @click="save">
-        {{ $t('emailConnector.admin.cacheSize.save') }}
-      </v-btn>
-    </div>
-  </v-card>
+  <v-list-item dense class="px-0">
+    <v-list-item-content class="py-0">
+      <v-list-item-title>
+        {{ $t('emailConnector.admin.cacheSize.title') }}
+      </v-list-item-title>
+      <v-list-item-subtitle class="text-wrap text-light-color">
+        {{ $t('emailConnector.admin.cacheSize.subtitle') }}
+      </v-list-item-subtitle>
+    </v-list-item-content>
+    <v-list-item-action class="my-0">
+      <div class="d-flex align-center">
+        <v-text-field
+          v-model.number="cacheSize"
+          type="number"
+          min="1"
+          max="2000"
+          :rules="rules"
+          dense
+          outlined
+          hide-details
+          class="flex-grow-0"
+          style="max-width: 100px" />
+        <v-btn
+          class="btn btn-primary ms-3"
+          :disabled="!valid || saving || cacheSize === savedValue"
+          :loading="saving"
+          @click="save">
+          {{ $t('emailConnector.admin.cacheSize.save') }}
+        </v-btn>
+      </div>
+    </v-list-item-action>
+  </v-list-item>
 </template>
 
 <script>
