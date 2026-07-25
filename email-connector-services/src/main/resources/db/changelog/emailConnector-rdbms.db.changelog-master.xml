@@ -199,4 +199,23 @@
       <column name="WEB_MAIL_URL" type="NVARCHAR(250)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-18">
+    <addColumn tableName="EMAIL_BOX">
+      <!-- THREAD_ID stays at 255 so (USER_ID, THREAD_ID) fits a MySQL index key; a
+           Message-ID is practically well under that. IN_REPLY_TO holds one id;
+           MAIL_REFERENCES can carry a long chain, hence TEXT (as SUBJECT in 1.0.0-15). -->
+      <column name="THREAD_ID" type="VARCHAR(255)"/>
+      <column name="IN_REPLY_TO" type="VARCHAR(1024)"/>
+      <column name="MAIL_REFERENCES" type="TEXT"/>
+    </addColumn>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-19">
+    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_ID">
+      <column name="USER_ID"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_THREAD">
+      <column name="USER_ID"/>
+      <column name="THREAD_ID"/>
+    </createIndex>
+  </changeSet>
 </databaseChangeLog>
