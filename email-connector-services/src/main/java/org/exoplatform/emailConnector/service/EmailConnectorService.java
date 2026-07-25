@@ -65,7 +65,7 @@ public class EmailConnectorService {
 
   private static final int          MIN_EMAIL_BOX_CACHE_SIZE                     = 1;
 
-  private static final int          MAX_EMAIL_BOX_CACHE_SIZE                     = 2000;
+  private static final int          MAX_EMAIL_BOX_CACHE_SIZE                     = 5000;
 
   private static final String       EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
 

@@ -195,7 +195,7 @@ public class EmailConnectorServiceTest {
     when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
     when(userAcl.isAdministrator(identity)).thenReturn(true);
     assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxCacheSize(0, TEST_USER));
-    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxCacheSize(2001, TEST_USER));
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxCacheSize(5001, TEST_USER));
     emailConnectorService.saveEmailBoxCacheSize(500, TEST_USER);
     verify(settingService).set(eq(Context.GLOBAL),
                                eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
