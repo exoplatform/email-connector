@@ -100,7 +100,7 @@ public class UserEmailSettingServiceTest {
     when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
     Session session = mock(Session.class);
     try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
-      mockedSession.when(() -> Session.getDefaultInstance(any(Properties.class))).thenReturn(session);
+      mockedSession.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
       Store store = mock(Store.class);
       when(session.getStore()).thenReturn(store);
       when(store.isConnected()).thenReturn(true);
@@ -175,7 +175,7 @@ public class UserEmailSettingServiceTest {
     when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
     Session session = mock(Session.class);
     try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
-      mockedSession.when(() -> Session.getDefaultInstance(any(Properties.class))).thenReturn(session);
+      mockedSession.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
       Store store = mock(Store.class);
       when(session.getStore()).thenReturn(store);
       userEmailSettingService.connect(userEmailSetting());

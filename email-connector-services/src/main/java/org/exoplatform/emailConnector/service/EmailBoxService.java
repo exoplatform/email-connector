@@ -118,6 +118,11 @@ public class EmailBoxService {
   private static final Log        LOG                                                         =
                                       ExoLogger.getLogger(EmailBoxService.class);
 
+  // Sent/Archive are supplementary conversation context, so they sync a much
+  // smaller window than the inbox — this bounds the (potentially slow) one-time
+  // backfill and every subsequent sync on large mailboxes.
+  private static final int        NON_INBOX_FOLDER_SYNC_LIMIT                                 = 100;
+
   private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE              =
                                                                                  "User %s is not allowed to synchronize email";
 
@@ -211,13 +216,14 @@ public class EmailBoxService {
       // effort — a missing folder must not fail the sync) so a conversation shows the
       // user's own replies ("Me") and previously-archived messages inline.
       syncFolder(store.getFolder("INBOX"), MailFolder.INBOX, username, emailBoxCacheSize, true);
+      int nonInboxWindow = Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
       try {
-        syncFolder(findSentFolder(store), MailFolder.SENT, username, emailBoxCacheSize, false);
+        syncFolder(findSentFolder(store), MailFolder.SENT, username, nonInboxWindow, false);
       } catch (Exception e) {
         LOG.warn("Could not sync the Sent folder for user {}", username, e);
       }
       try {
-        syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, emailBoxCacheSize, false);
+        syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, nonInboxWindow, false);
       } catch (Exception e) {
         LOG.warn("Could not sync the Archive folder for user {}", username, e);
       }
