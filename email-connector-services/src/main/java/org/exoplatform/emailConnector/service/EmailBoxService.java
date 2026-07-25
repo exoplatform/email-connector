@@ -75,6 +75,7 @@ import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -956,7 +957,8 @@ public class EmailBoxService {
                                                 null,
                                                 threadId,
                                                 inReplyTo,
-                                                references));
+                                                references,
+                                                MailFolder.INBOX));
 
         } else {
           updateEmailReadStatus(List.of(messageUid), username, message.isSet(Flags.Flag.SEEN), false);
