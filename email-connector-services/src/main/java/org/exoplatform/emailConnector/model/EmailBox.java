@@ -38,4 +38,8 @@ public class EmailBox {
   // ALL_MAIL), keyed by thread id. The list shows the full conversation count on each
   // thread badge — like Gmail — rather than only its inbox messages.
   private Map<String, Integer> threadCounts;
+
+  // Message count per folder, so the list's folder switch only offers folders with
+  // mail (e.g. no empty Archive tab on Gmail).
+  private Map<String, Integer> folderCounts;
 }

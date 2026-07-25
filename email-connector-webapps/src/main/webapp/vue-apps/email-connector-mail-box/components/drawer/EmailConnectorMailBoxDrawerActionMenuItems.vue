@@ -18,7 +18,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-list class="pa-0">
     <!-- Folder switch: browse the inbox, your sent mail, or archived mail. -->
     <v-list-item
-      v-for="folder in folders"
+      v-for="folder in visibleFolders"
       :key="folder.id"
       class="ps-2 pe-3 height-auto"
       @click="switchFolder(folder.id)">
@@ -38,6 +38,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <v-divider class="my-1" />
+    <!-- Synchronize now (progress is shown by the header spinner while it runs). -->
+    <v-list-item
+      class="ps-2 pe-3 height-auto"
+      :disabled="syncInProgress"
+      @click="synchronize()">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-sync-alt
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.sync.tooltip') }}
+      </span>
+    </v-list-item>
     <extension-registry-components
       ref="emailListToolbarExtension"
       :params="{ hasWebmailAccess: true }"
@@ -79,6 +98,15 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Folders that actually hold mail (INBOX plus any of SENT/ARCHIVE with messages).
+    availableFolders: {
+      type: Array,
+      default: () => ['INBOX'],
+    },
+    syncInProgress: {
+      type: Boolean,
+      default: false,
+    },
   },
   data() {
     return {
@@ -89,11 +117,26 @@ export default {
       ],
     };
   },
+  computed: {
+    // Only offer folders that have mail; the inbox is always listed.
+    visibleFolders() {
+      return this.folders.filter(folder => folder.id === 'INBOX' || this.availableFolders.includes(folder.id));
+    },
+  },
   methods: {
     switchFolder(folder) {
       if (folder !== this.currentFolder) {
         this.$root.$emit('switch-folder', folder);
       }
+    },
+    synchronize() {
+      if (this.syncInProgress) {
+        return;
+      }
+      this.$root.$emit('synchronize-in-progress');
+      this.$emailConnectorMailBoxService.synchronize().then(() => {
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
+      });
     },
     openWebmail() {
       this.$root.$emit('open-webmail');
