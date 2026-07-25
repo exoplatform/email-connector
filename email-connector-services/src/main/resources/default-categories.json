@@ -2,9 +2,9 @@
   "descriptors": [
     {
       "nameId": "emailCategory",
-      "icon": "fa-inbox",
+      "icon": "fa-envelope",
       "names": {
-        "en": "Inbox"
+        "en": "Email"
       },
       "linkPermissions": [
         "*:/platform/users"
@@ -42,7 +42,7 @@
         },
         {
           "nameId": "emailToReviewCategory",
-          "icon": "fa-eye",
+          "icon": "fa-inbox",
           "names": {
             "en": "To review"
           },
