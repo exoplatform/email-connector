@@ -17,8 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <div
     v-if="categories.length"
-    class="d-flex flex-wrap align-center pb-2"
-    style="gap: 6px;">
+    class="d-flex align-center pb-2"
+    style="gap: 6px; overflow-x: auto; flex-wrap: nowrap;">
     <v-chip
       v-for="category in assignedCategories"
       :key="category.id"
