@@ -158,6 +158,15 @@ export default {
     threadKey(email) {
       return email.threadId || email.mailHeaderId || String(email.mailRemoteId);
     },
+    // The opened message's thread id, taken from the inbox list the drawer passed in
+    // (kept in sync with the last mailbox refresh) rather than the per-message detail,
+    // whose thread id can lag after a thread merge and then resolve to an empty
+    // conversation — leaving the reader showing only the opened message.
+    resolveThreadId() {
+      const openedKey = this.msgKey(this.email);
+      const listRow = (this.emails || []).find(e => this.msgKey(e) === openedKey);
+      return (listRow && listRow.threadId) || this.email.threadId;
+    },
     // A message is identified across the reader by its folder + IMAP UID: UIDs are
     // per-folder, so the same number can appear in INBOX and SENT/ARCHIVE.
     msgKey(message) {
@@ -191,7 +200,7 @@ export default {
         return;
       }
       this.revealedKeys = [];
-      const threadId = this.email.threadId;
+      const threadId = this.resolveThreadId();
       this.loadingThread = true;
       const cached = threadId
         ? this.$emailConnectorMailBoxService.getThreadByThreadId(threadId).catch(() => null)
