@@ -23,30 +23,62 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item-title>
       </v-list-item-content>
     </v-list-item>
-    <template v-for="(message, index) in messages">
+    <!-- A thin progress bar while the archived tail is fetched in the background. -->
+    <v-progress-linear
+      v-if="loadingOlder"
+      indeterminate
+      height="2"
+      class="my-1" />
+    <template v-for="(item, index) in renderItems">
       <v-divider
         v-if="index > 0"
-        :key="`divider-${msgKey(message)}`"
+        :key="`divider-${item.key}`"
         class="my-2" />
+      <!-- A run of consecutive collapsed messages, folded into a single Gmail-style
+           round count badge on the divider; click to reveal them as strips. -->
+      <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
+      <div
+        v-if="item.type === 'bubble'"
+        :key="item.key"
+        class="clickable d-flex align-center justify-center py-2"
+        tabindex="0"
+        :aria-label="$t('emailConnector.mailBox.list.drawer.thread.showHidden', item.count)"
+        :title="$t('emailConnector.mailBox.list.drawer.thread.showHidden', item.count)"
+        @click="revealBubble(item)"
+        @keydown.enter="revealBubble(item)"
+        @keydown.space.prevent="revealBubble(item)">
+        <span
+          class="d-flex align-center justify-center rounded-circle text-caption text-light-color"
+          style="width: 34px; height: 34px; border: 1px solid var(--v-borderColor, #e1e8ee);">
+          {{ item.count }}
+        </span>
+      </div>
       <email-connector-mail-box-drawer-thread-message
-        :key="msgKey(message)"
-        :email="message"
-        :expanded="expandedIds.includes(msgKey(message))"
-        :collapsible="index !== messages.length - 1"
+        v-else
+        :key="item.key"
+        :email="item.message"
+        :expanded="expandedIds.includes(item.key)"
+        :collapsible="!isLast(item.message)"
         :expanded-drawer="expandedDrawer"
-        @expand="expand(msgKey(message))"
-        @collapse="collapse(msgKey(message))" />
+        @expand="expand(item.key)"
+        @collapse="collapse(item.key)" />
     </template>
   </v-list>
 </template>
 
 <script>
+// Messages kept visible at the tail of a long thread, in addition to the last one
+// (which is expanded): matches Gmail showing the message just before the latest.
+const TAIL_STRIPS = 1;
+
 export default {
   data() {
     return {
       messages: [],
       expandedIds: [],
+      revealedKeys: [],
       loadingThread: false,
+      loadingOlder: false,
     };
   },
   props: {
@@ -79,6 +111,35 @@ export default {
       const ids = (this.emails || []).filter(e => this.threadKey(e) === key).map(e => e.mailRemoteId);
       return ids.length ? ids : [this.email.mailRemoteId];
     },
+    // The reader's display list: each message shown on its own, except runs of
+    // consecutive collapsed middle messages, which fold into one "bubble" item
+    // carrying the hidden count (Gmail's round "N" badge).
+    renderItems() {
+      const items = [];
+      let run = [];
+      const flush = () => {
+        if (!run.length) {
+          return;
+        }
+        // A lone hidden message is cheaper to show as a strip than to hide behind a badge.
+        if (run.length === 1) {
+          items.push({ type: 'message', message: run[0], key: this.msgKey(run[0]) });
+        } else {
+          items.push({ type: 'bubble', count: run.length, keys: run.map(m => this.msgKey(m)), key: `bubble-${this.msgKey(run[0])}` });
+        }
+        run = [];
+      };
+      this.messages.forEach((message, index) => {
+        if (this.isShown(index)) {
+          flush();
+          items.push({ type: 'message', message, key: this.msgKey(message) });
+        } else {
+          run.push(message);
+        }
+      });
+      flush();
+      return items;
+    },
   },
   watch: {
     // Reload whenever a different conversation is opened.
@@ -98,12 +159,26 @@ export default {
     msgKey(message) {
       return `${message.folder || 'INBOX'}-${message.mailRemoteId}`;
     },
+    isLast(message) {
+      const last = this.messages[this.messages.length - 1];
+      return !!last && this.msgKey(last) === this.msgKey(message);
+    },
+    // Which messages stay visible: the first, the last few (tail), any still-unread
+    // one, and any the user revealed by clicking a badge. The rest fold into badges.
+    isShown(index) {
+      const total = this.messages.length;
+      if (index === 0 || index >= total - 1 - TAIL_STRIPS) {
+        return true;
+      }
+      const message = this.messages[index];
+      return !message.read || this.revealedKeys.includes(this.msgKey(message));
+    },
     /**
-     * Loads the whole conversation across folders (INBOX + SENT + ARCHIVE) from the
-     * server by thread id, so the user's own replies and previously-archived
-     * messages show inline. Falls back to the opened message alone when it has no
-     * thread id or the fetch yields nothing. Messages are stacked oldest first with
-     * the newest expanded.
+     * Loads the conversation in two passes so the drawer never blocks on IMAP:
+     * first the cached thread across folders (fast, pure DB), rendered immediately;
+     * then, in the background, the archived tail from the provider's All Mail, merged
+     * in when it arrives. Falls back to the opened message alone when it has no thread
+     * id or the fetch yields nothing. Messages are stacked oldest first, newest open.
      *
      * @returns {void}
      */
@@ -111,29 +186,54 @@ export default {
       if (!this.email) {
         return;
       }
-      this.loadingThread = true;
+      this.revealedKeys = [];
       const threadId = this.email.threadId;
-      const promise = threadId
+      this.loadingThread = true;
+      const cached = threadId
         ? this.$emailConnectorMailBoxService.getThreadByThreadId(threadId).catch(() => null)
         : Promise.resolve(null);
-      promise
+      cached
         .then(fetched => {
-          const sorted = (fetched && fetched.length ? fetched : [this.email])
-            .filter(Boolean)
-            .sort((first, second) => new Date(first.receivedDate) - new Date(second.receivedDate));
-          const messages = this.dedupeByHeader(sorted);
-          this.messages = messages;
-          const latest = messages[messages.length - 1];
-          this.expandedIds = latest ? [this.msgKey(latest)] : [];
+          this.applyMessages(fetched);
           this.markThreadRead();
         })
-        .finally(() => this.loadingThread = false);
+        .finally(() => {
+          this.loadingThread = false;
+          this.completeInBackground(threadId);
+        });
+    },
+    // Second pass: pull the archived tail from All Mail without blocking the open.
+    completeInBackground(threadId) {
+      if (!threadId) {
+        return;
+      }
+      this.loadingOlder = true;
+      this.$emailConnectorMailBoxService.completeThreadByThreadId(threadId)
+        .then(completed => {
+          // Only re-render if completion actually recovered more messages.
+          if (completed && completed.length > this.messages.length) {
+            this.applyMessages(completed);
+          }
+        })
+        .catch(() => { /* best-effort: keep the cached thread on failure */ })
+        .finally(() => this.loadingOlder = false);
+    },
+    // Normalize a fetched thread into the reader's state: dedupe by Message-ID, sort
+    // oldest first, keep the latest message expanded.
+    applyMessages(fetched) {
+      const sorted = (fetched && fetched.length ? fetched : [this.email])
+        .filter(Boolean)
+        .sort((first, second) => new Date(first.receivedDate) - new Date(second.receivedDate));
+      const messages = this.dedupeByHeader(sorted);
+      this.messages = messages;
+      const latest = messages[messages.length - 1];
+      this.expandedIds = latest ? [this.msgKey(latest)] : [];
     },
     // The same message can be present in more than one folder (e.g. a provider
     // whose Archive/All-Mail overlaps the inbox), so show it once, preferring the
     // INBOX copy. Messages without a Message-ID are always kept.
     dedupeByHeader(messages) {
-      const priority = { INBOX: 0, SENT: 1, ARCHIVE: 2 };
+      const priority = { INBOX: 0, SENT: 1, ARCHIVE: 2, ALL_MAIL: 3 };
       const rank = message => (message.folder in priority ? priority[message.folder] : 9);
       const seen = new Map();
       const deduped = [];
@@ -162,6 +262,10 @@ export default {
       if (unread.length) {
         this.$root.$emit('update-email-read-status', true, unread);
       }
+    },
+    // Reveal a folded run: its messages render as individual strips from now on.
+    revealBubble(bubble) {
+      this.revealedKeys = this.revealedKeys.concat(bubble.keys);
     },
     expand(key) {
       if (!this.expandedIds.includes(key)) {

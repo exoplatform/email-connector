@@ -191,6 +191,30 @@ export function getThreadByThreadId(threadId) {
   });
 }
 
+/**
+ * Completes a conversation from the provider's archive (Gmail All Mail) and returns
+ * the whole thread. Slower than getThreadByThreadId (it may hit IMAP), so the reader
+ * calls it in the background after rendering the cached thread.
+ *
+ * @param {String} threadId the conversation id
+ * @returns {Promise<Array>} the thread including any recovered archived messages
+ */
+export function completeThreadByThreadId(threadId) {
+  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}/complete`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when completing the conversation');
+    }
+  });
+}
+
 export function deleteEmails(mailRemoteIds) {
   return fetch('/email-connector/rest/email-box', {
     headers: {
