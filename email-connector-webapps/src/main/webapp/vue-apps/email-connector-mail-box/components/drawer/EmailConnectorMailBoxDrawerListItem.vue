@@ -85,15 +85,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-touch-hold="openActionMenuDrawer">
           <v-list-item
             ref="mail"
-            :class="['height-auto', 'px-0', 'pb-2', { 'ms-n3': !email.read }]">
+            :class="['height-auto', 'px-0', 'pb-2', { 'ms-n3': threadUnread }]">
             <v-list-item-avatar
-              v-if="!email.read"
+              v-if="threadUnread"
               width="8"
               min-width="8"
               height="8"
               class="my-0 me-1 error-color-background" />
-            <v-list-item-content :class="['py-0', { 'font-weight-bold': !email.read }]">
-              <v-list-item-title v-text="email.sender.name" />
+            <v-list-item-content :class="['py-0', { 'font-weight-bold': threadUnread }]">
+              <v-list-item-title>
+                {{ email.sender.name }}<span
+                  v-if="threadCount > 1"
+                  class="text-light-color ms-1 font-weight-regular">{{ threadCount }}</span>
+              </v-list-item-title>
             </v-list-item-content>
             <v-list-item-action class="my-0">
               <v-list-item-subtitle v-text="receivedDate" />
@@ -102,7 +106,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item
             class="px-0 height-auto">
             <v-list-item-content class="py-0">
-              <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': !email.read }]" v-text="subject" />
+              <v-list-item-subtitle :class="['mb-1 text-color', { 'font-weight-bold': threadUnread }]" v-text="subject" />
               <v-list-item-subtitle v-text="excerpt" />
             </v-list-item-content>
             <email-connector-mail-box-drawer-list-item-action-menu
@@ -113,8 +117,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               }"
               ref="menu"
               :email="email"
+              :thread="thread"
               @open="menuOpen = true"
-              @close="menuOpen = false" /> 
+              @close="menuOpen = false" />
           </v-list-item>
         </div>
         <email-connector-mail-box-drawer-list-item-attachments
@@ -141,6 +146,10 @@ export default {
   },
   props: {
     email: {
+      type: Object,
+      default: () => null,
+    },
+    thread: {
       type: Object,
       default: () => null,
     },
@@ -195,8 +204,18 @@ export default {
     subject() {
       return this.email.subject || this.$t('emailConnector.mailBox.list.drawer.noSubject');
     },
+    threadIds() {
+      return this.thread ? this.thread.mailRemoteIds : [this.email.mailRemoteId];
+    },
+    threadCount() {
+      return this.thread ? this.thread.count : 1;
+    },
+    // A thread is unread when any of its messages is unread; a lone email falls back to its own flag.
+    threadUnread() {
+      return this.thread ? this.thread.unreadCount > 0 : !this.email.read;
+    },
     selected() {
-      return this.selectedEmails.includes(this.email.mailRemoteId);
+      return this.threadIds.every(id => this.selectedEmails.includes(id));
     },
     opened() {
       return this.openedEmailId === this.email.mailRemoteId;
@@ -218,9 +237,13 @@ export default {
     },
   },
   methods: {
+    emitSelect(selected) {
+      // A thread selects/deselects as a whole: one select-email per message id.
+      this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, selected }));
+    },
     openDetail() {
       if (this.selectMode) {
-        this.$root.$emit('select-email', { emailId: this.email.mailRemoteId, selected: !this.selected });
+        this.emitSelect(!this.selected);
       }
       else {
         if (this.expanded) {
@@ -234,7 +257,7 @@ export default {
     },
     openActionMenuDrawer() {
       if (!this.selectMode && !this.isSwiping) {
-        this.$root.$emit('open-email-action-menu-drawer', this.email);
+        this.$root.$emit('open-email-action-menu-drawer', this.email, this.thread);
       }
     },
     async reset() {
@@ -258,9 +281,9 @@ export default {
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
       if (confirm) {
         if (deleteEmail) {
-          this.$root.$emit('delete-email', [this.email.mailRemoteId]);
+          this.$root.$emit('delete-email', this.threadIds);
         } else {
-          this.$root.$emit('archive-email', [this.email.mailRemoteId]);
+          this.$root.$emit('archive-email', this.threadIds);
         }
       } else {
         this.reset();
@@ -286,7 +309,7 @@ export default {
       this.movingLeft = this.left < 0;
     },
     onSelectChange(value) {
-      this.$root.$emit('select-email', { emailId: this.email.mailRemoteId, selected: value });
+      this.emitSelect(value);
     }
   }
 };
