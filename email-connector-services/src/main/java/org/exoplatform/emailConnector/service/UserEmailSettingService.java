@@ -223,9 +223,15 @@ public class UserEmailSettingService {
     props.setProperty("mail.imaps.ssl.enable", "true");
     props.setProperty("mail.store.protocol", "imaps");
     props.setProperty("mail.imaps.port", emailConnector.getImapPort());
-    props.put("mail.imap.connectiontimeout", "10000");
-    // Connect to the server
-    Session session = Session.getDefaultInstance(props);
+    // Timeouts on the imaps store so a slow or stuck fetch can never hang the sync
+    // forever — a hung sync stays IN_PROGRESS and blocks every subsequent one. The
+    // property prefix must match the protocol (imaps), not imap, or it is ignored.
+    props.setProperty("mail.imaps.connectiontimeout", "15000");
+    props.setProperty("mail.imaps.timeout", "30000");
+    props.setProperty("mail.imaps.writetimeout", "30000");
+    // getInstance (not getDefaultInstance) so these props actually apply rather than
+    // silently reusing the first-ever session's properties.
+    Session session = Session.getInstance(props);
     Store store = session.getStore();
     store.connect(emailConnector.getImapUrl(),
                   Integer.parseInt(emailConnector.getImapPort()),
