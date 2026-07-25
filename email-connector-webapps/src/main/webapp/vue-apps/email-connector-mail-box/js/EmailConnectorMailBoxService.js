@@ -173,8 +173,9 @@ export function groupEmailsByThread(emails) {
   return Array.from(byKey.values());
 }
 
-export function getEmailByRemoteId(mailRemoteId) {
-  return fetch(`/email-connector/rest/email-box/${mailRemoteId}`, {
+export function getEmailByRemoteId(mailRemoteId, folder) {
+  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box/${mailRemoteId}${query}`, {
     headers: {
       'Content-Type': 'application/json'
     },
