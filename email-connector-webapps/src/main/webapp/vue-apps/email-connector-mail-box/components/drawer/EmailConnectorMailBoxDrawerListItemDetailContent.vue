@@ -15,7 +15,9 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list class="my-5 py-0 mx-4">
+  <!-- In a thread the outer ThreadContent already provides the horizontal margin, so
+       the message must not add its own or its avatar drifts right of the collapsed rows. -->
+  <v-list :class="['py-0', hideSubject ? 'my-0' : 'my-5 mx-4']">
     <v-list-item
       v-if="!hideSubject"
       class="px-0 pb-1 height-auto">
