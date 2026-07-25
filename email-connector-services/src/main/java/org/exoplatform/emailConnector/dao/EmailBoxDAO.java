@@ -83,6 +83,10 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("mailHeaderIds")
   List<String> mailHeaderIds);
 
+  @Query("SELECT email.threadId, COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL GROUP BY email.threadId")
+  List<Object[]> countMessagesByThread(@Param("userId")
+  String userId);
+
   @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadIndexRoot = :threadIndexRoot AND email.threadId IS NOT NULL")
   List<String> findDistinctThreadIdsByThreadIndexRoot(@Param("userId")
   String userId, @Param("threadIndexRoot")
