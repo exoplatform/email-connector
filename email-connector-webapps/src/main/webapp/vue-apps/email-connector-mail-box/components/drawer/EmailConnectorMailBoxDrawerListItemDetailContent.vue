@@ -34,7 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item-title
           :class="['font-weight-bold mb-3', { clickable: collapsible }]"
           @click="collapsible && $emit('toggle-collapse')"
-          v-text="email.sender.name" />
+          v-text="senderLabel" />
         <v-list-item-subtitle class="text-wrap overflow-visible d-flex">
           <span class="me-1 text-wrap text-break-all">{{ recipients }}</span>
           <v-btn
@@ -110,6 +110,12 @@ export default {
   computed: {
     receivedDate() {
       return this.$emailConnectorMailBoxService.formatDateString(this.email.receivedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
+    },
+    // A message from the user's own Sent folder is shown as "Me", like Gmail.
+    senderLabel() {
+      return this.email.folder === 'SENT'
+        ? this.$t('emailConnector.mailBox.list.drawer.detail.me')
+        : this.email.sender.name;
     },
     chevronIcon() {
       return this.expandedHeader ? 'fa-chevron-up' : 'fa-chevron-down';

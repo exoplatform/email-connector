@@ -32,7 +32,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="d-flex align-center no-min-width flex-grow-1">
         <span
           :class="['flex-shrink-0 text-truncate', { 'font-weight-bold': !email.read }]"
-          style="max-width: 45%">{{ email.sender.name }}</span>
+          style="max-width: 45%">{{ senderLabel }}</span>
         <span class="text-light-color ms-3 text-truncate">{{ snippet }}</span>
       </div>
       <v-icon
@@ -92,7 +92,13 @@ export default {
       return text.replace(/\s+/g, ' ').trim();
     },
     ariaLabel() {
-      return `Open message from ${this.email.sender.name}`;
+      return `Open message from ${this.senderLabel}`;
+    },
+    // A message from the user's own Sent folder is shown as "Me", like Gmail.
+    senderLabel() {
+      return this.email.folder === 'SENT'
+        ? this.$t('emailConnector.mailBox.list.drawer.detail.me')
+        : this.email.sender.name;
     },
     hasAttachment() {
       return (this.email.content?.attachments?.length || 0) > 0;
