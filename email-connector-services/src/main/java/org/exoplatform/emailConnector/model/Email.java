@@ -64,9 +64,8 @@ public class Email {
 
   private List<EmailOutgoingAttachment> attachments;
 
-  // Threading fields. Backend-only in this phase (@JsonIgnore keeps the REST payload
-  // unchanged); a later phase exposes threadId so the client can group conversations.
-  @JsonIgnore
+  // The conversation this message belongs to; the client groups the flat list into
+  // threads by this id. inReplyTo / mailReferences stay backend-only.
   private String               threadId;
 
   @JsonIgnore
