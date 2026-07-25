@@ -137,6 +137,7 @@ public class EmailBoxServiceTest {
     when(emailBoxStorage.getEmails(anyString())).thenReturn(new ArrayList<Email>());
     emailBoxService.synchronize(TEST_USER);
     verify(userEmailSettingService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
     when(inbox.getMessageCount()).thenReturn(1000);
     emailBoxService.synchronize(TEST_USER);
     verify(emailBoxStorage, times(2)).createEmail(any(Email.class));
