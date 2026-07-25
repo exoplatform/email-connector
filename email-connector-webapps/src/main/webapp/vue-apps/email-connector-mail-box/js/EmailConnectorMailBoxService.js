@@ -114,8 +114,9 @@ const attachmentMapIconsExtensions = new Map([
   ['folder', folder],
 ]);
  
-export function getEmailBox() {
-  return fetch('/email-connector/rest/email-box', {
+export function getEmailBox(folder) {
+  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box${query}`, {
     headers: {
       'Content-Type': 'application/json'
     },
