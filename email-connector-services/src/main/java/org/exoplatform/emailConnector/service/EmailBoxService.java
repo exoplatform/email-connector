@@ -479,12 +479,30 @@ public class EmailBoxService {
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
-    // Best-effort: complete the conversation from the provider's archive superset
-    // (Gmail "All Mail") when the cached messages reference ancestors we never synced.
-    // Returns the (possibly newer, older-rooted) canonical thread id after any merge,
-    // so we read back the right rows even when completion shifted the canonical id.
-    String canonicalThreadId = completeThreadFromArchive(username, threadId, userEmailSetting);
-    return emailBoxStorage.getEmailsByThreadId(username, canonicalThreadId, userEmailSetting.getEmailAddress());
+    return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
+  }
+
+  /**
+   * Complete a conversation from the provider's archive superset (Gmail "All Mail")
+   * and return the whole thread. Split from {@link #getThread} so the reader renders
+   * the cached thread instantly and pulls the archived tail in the background — the
+   * IMAP round-trip lives here, not on the drawer's opening path.
+   *
+   * @param threadId the conversation id opened by the user
+   * @param username the mailbox owner
+   * @return the thread's messages including any newly recovered archived ones
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public List<Email> completeThread(String threadId, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
+    // Completion keeps the opened thread id as the canonical one, so the id the reader
+    // (and the already-rendered inbox list) holds stays valid on the next open.
+    completeThreadFromArchive(username, threadId, userEmailSetting);
+    return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
   }
 
   @Transactional
@@ -1319,28 +1337,25 @@ public class EmailBoxService {
   }
 
   /**
-   * Collapse into one thread every thread id currently carried by any message whose
-   * {@code Message-ID} belongs to the conversation, choosing the oldest as canonical.
-   * Merge-only, so it can only join fragments, never split a thread.
+   * Collapse into the opened conversation every thread id carried by any message whose
+   * {@code Message-ID} belongs to it (e.g. an archived root just added under its own
+   * id). Merge-only, and — unlike sync-time merges — the canonical id is the
+   * <em>opened</em> thread id, not the oldest, so the id the reader and the already-
+   * rendered inbox list hold stays valid when the conversation is reopened.
    *
    * @param username the mailbox owner
-   * @param threadId the conversation opened by the user (kept in the merge set)
+   * @param threadId the conversation opened by the user, kept as canonical
    * @param knownIds every {@code Message-ID} in the conversation
-   * @return the canonical (oldest) thread id after the merge
+   * @return the (unchanged) opened thread id
    */
   private String unifyConversationThreads(String username, String threadId, Set<String> knownIds) {
     Set<String> threadIds = new LinkedHashSet<>(emailBoxStorage.getSiblingThreadIds(username, new ArrayList<>(knownIds)));
-    if (StringUtils.isNotEmpty(threadId)) {
-      threadIds.add(threadId);
-    }
-    if (threadIds.size() <= 1) {
+    threadIds.remove(threadId);
+    if (threadIds.isEmpty()) {
       return threadId;
     }
-    List<String> ids = new ArrayList<>(threadIds);
-    String canonicalThreadId = emailBoxStorage.getOldestThreadId(username, ids);
-    List<String> threadIdsToMerge = ids.stream().filter(id -> !id.equals(canonicalThreadId)).toList();
-    emailBoxStorage.mergeThreads(username, canonicalThreadId, threadIdsToMerge);
-    return canonicalThreadId;
+    emailBoxStorage.mergeThreads(username, threadId, new ArrayList<>(threadIds));
+    return threadId;
   }
 
   /**
