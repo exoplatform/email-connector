@@ -57,6 +57,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="d-block"
           style="position: absolute; left: 0; right: 0; top: 50%; height: 3px; border-top: 1px solid var(--v-borderColor, #e1e8ee); border-bottom: 1px solid var(--v-borderColor, #e1e8ee);"></span>
         <span
+          class="d-block"
+          style="position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--v-borderColor, #e1e8ee);"></span>
+        <span
           class="d-flex align-center justify-center rounded-circle text-caption text-light-color"
           style="position: relative; z-index: 1; width: 40px; height: 40px; border: 1px solid var(--v-borderColor, #e1e8ee); background-color: var(--v-surface-base, #fff);">
           {{ item.count }}
