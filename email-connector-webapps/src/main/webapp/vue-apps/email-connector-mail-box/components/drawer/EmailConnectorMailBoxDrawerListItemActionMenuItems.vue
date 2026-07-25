@@ -43,10 +43,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon
           class="icon-default-color mx-auto"
           size="16">
-          {{ email.read ? 'fa-mail-bulk' : 'fa-envelope-open-text' }}
+          {{ threadRead ? 'fa-mail-bulk' : 'fa-envelope-open-text' }}
         </v-icon>
       </v-sheet>
-      <span v-if="email.read">
+      <span v-if="threadRead">
         {{ $t('emailConnector.mailBox.list.drawer.detail.unread.label') }}
       </span>
       <span v-else>
@@ -108,27 +108,41 @@ export default {
       type: Object,
       default: () => null,
     },
+    thread: {
+      type: Object,
+      default: () => null,
+    },
     restricted: {
       type: Boolean,
       default: false,
     },
   },
+  computed: {
+    // All message ids the action applies to: the whole thread, or the lone email.
+    threadIds() {
+      return this.thread ? this.thread.mailRemoteIds : [this.email.mailRemoteId];
+    },
+    // A thread reads as read only when none of its messages is unread.
+    threadRead() {
+      return this.thread ? this.thread.unreadCount === 0 : this.email.read;
+    },
+  },
   methods: {
     selectEmail() {
       this.$emit('close');
-      this.$root.$emit('select-email', { emailId: this.email.mailRemoteId, selected: true });
+      this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, selected: true }));
     },
     updateEmailReadStatus() {
       this.$emit('close');
-      this.$root.$emit('update-email-read-status', !this.email.read, [this.email.mailRemoteId]);
+      this.$root.$emit('update-email-read-status', !this.threadRead, this.threadIds);
     },
     deleteEmail() {
       this.$emit('close');
-      this.$root.$emit('delete-email', [this.email.mailRemoteId]);
+      this.$root.$emit('delete-email', this.threadIds);
     },
     archiveEmail() {
       this.$emit('close');
-      this.$root.$emit('archive-email', [this.email.mailRemoteId]);
+      this.$root.$emit('archive-email', this.threadIds);
     },
   }
 };

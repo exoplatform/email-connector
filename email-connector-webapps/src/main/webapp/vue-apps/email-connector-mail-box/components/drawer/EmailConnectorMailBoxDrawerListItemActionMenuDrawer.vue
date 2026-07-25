@@ -22,7 +22,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template #content>
       <email-connector-mail-box-drawer-list-item-action-menu-items
         @close="close"
-        :email="email" 
+        :email="email"
+        :thread="thread"
         restricted />
     </template>
   </exo-drawer>
@@ -34,6 +35,7 @@ export default {
   data() {
     return {
       email: null,
+      thread: null,
       emailBoxActionMenuDrawer: false
     };
   },
@@ -46,8 +48,9 @@ export default {
     this.$root.$off('close-email-action-menu-drawer', this.close);
   },
   methods: {
-    open(email) {
+    open(email, thread) {
       this.email = email;
+      this.thread = thread;
       this.$refs.emailBoxActionMenuDrawer.open();
     },
     close() {
