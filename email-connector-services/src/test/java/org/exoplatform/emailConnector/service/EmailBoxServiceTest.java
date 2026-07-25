@@ -325,9 +325,9 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void getThreadSkipsArchiveCompletionWhenNothingMissing() throws Exception {
-    // A conversation whose cached messages reference nothing external needs no archive
-    // lookup — getThread must not open an IMAP connection (keeps repeat opens fast).
+  void getThreadReadsCacheWithoutImap() throws Exception {
+    // getThread is the fast path: a pure cache read, never an IMAP connection, so the
+    // reader can render the conversation instantly on open.
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -343,9 +343,28 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void getThreadCompletesConversationFromAllMail() throws Exception {
+  void completeThreadSkipsArchiveLookupWhenNothingMissing() throws Exception {
+    // A conversation whose cached messages reference nothing external needs no archive
+    // lookup — completeThread must not open an IMAP connection (keeps repeat opens fast).
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setMailHeaderId("<self@host>");
+    cached.setThreadId("<self@host>");
+    when(emailBoxStorage.getEmailsByThreadId(anyString(), anyString(), anyString())).thenReturn(List.of(cached));
+
+    List<Email> thread = emailBoxService.completeThread("<self@host>", TEST_USER);
+
+    assertEquals(1, thread.size());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  @Test
+  void completeThreadRecoversArchivedAncestorFromAllMail() throws Exception {
     // The cached message references an ancestor we never synced (archived in Gmail).
-    // getThread must fetch it from All Mail, cache it under ALL_MAIL, and unify threads.
+    // completeThread must fetch it from All Mail, cache it under ALL_MAIL, and unify
+    // the fragments INTO the opened thread id (not flip to the older root id).
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -371,14 +390,14 @@ public class EmailBoxServiceTest {
     when(((UIDFolder) allMail).getUID(archived)).thenReturn(999l);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(999l, TEST_USER, null, "ALL_MAIL", false, false, false)).thenReturn(null);
     when(emailBoxStorage.getSiblingThreadIds(anyString(), anyList())).thenReturn(List.of("<reply@host>", "<root@host>"));
-    when(emailBoxStorage.getOldestThreadId(anyString(), anyList())).thenReturn("<root@host>");
 
-    emailBoxService.getThread("<reply@host>", TEST_USER);
+    emailBoxService.completeThread("<reply@host>", TEST_USER);
 
     verify(allMail).search(any());
-    // The archived ancestor is persisted under ALL_MAIL and the fragments are unified.
+    // The archived ancestor is persisted under ALL_MAIL and the fragments are unified
+    // into the opened id "<reply@host>".
     verify(emailBoxStorage).createEmail(any(Email.class));
-    verify(emailBoxStorage).mergeThreads(anyString(), anyString(), anyList());
+    verify(emailBoxStorage).mergeThreads(TEST_USER, "<reply@host>", List.of("<root@host>"));
   }
 
   @Test
