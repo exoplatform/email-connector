@@ -11,16 +11,6 @@
       ]
     },
     {
-      "nameId": "emailInvitationCategory",
-      "icon": "fa-calendar-alt",
-      "names": {
-        "en": "Invitation"
-      },
-      "linkPermissions": [
-        "*:/platform/users"
-      ]
-    },
-    {
       "nameId": "emailNotificationCategory",
       "icon": "fa-bell",
       "names": {
