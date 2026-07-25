@@ -89,6 +89,7 @@ import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationP
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.log.ExoLogger;
@@ -793,8 +794,16 @@ public class EmailBoxService {
       }
       applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds);
       if (!StringUtils.isEmpty(email.getMailHeaderId())) {
-        message.setHeader("In-Reply-To", email.getMailHeaderId());
-        message.setHeader("References", email.getMailHeaderId());
+        String parentMessageId = email.getMailHeaderId();
+        message.setHeader("In-Reply-To", parentMessageId);
+        // RFC 5322 §3.6.4: References is the parent's own References plus the parent's
+        // Message-ID — not just the parent id, otherwise a third message in the chain
+        // loses the link to the first and starts a new thread.
+        String parentReferences = emailBoxStorage.getMailReferencesByMailHeaderId(parentMessageId, username);
+        String referencesHeader = EmailThreadingUtils.buildReferencesHeader(parentReferences, parentMessageId);
+        if (!StringUtils.isEmpty(referencesHeader)) {
+          message.setHeader("References", referencesHeader);
+        }
       }
       Transport.send(message);
       String emailType = StringUtils.isEmpty(email.getMailHeaderId()) ? "newEmail" : "reply";
@@ -924,6 +933,9 @@ public class EmailBoxService {
                                                                                                username,
                                                                                                false);
           String mailHeaderId = ((MimeMessage) message).getMessageID();
+          String inReplyTo = firstHeader(message, "In-Reply-To");
+          String references = firstHeader(message, "References");
+          String threadId = computeThreadId(username, mailHeaderId, messageUid, inReplyTo, references);
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
                                                 mailHeaderId,
@@ -940,16 +952,74 @@ public class EmailBoxService {
                                                 emailBccRecipients,
                                                 emailReplyToRecipients,
                                                 null,
-                                                null));
+                                                null,
+                                                threadId,
+                                                inReplyTo,
+                                                references));
 
         } else {
           updateEmailReadStatus(List.of(messageUid), username, message.isSet(Flags.Flag.SEEN), false);
           emailBoxStorage.markEmailAsNotRecent(messageUid, username);
+          // Backfill threading on rows cached before this feature: one sync cycle after
+          // deployment every cached message carries a thread id.
+          if (StringUtils.isEmpty(email.getThreadId())) {
+            String inReplyTo = firstHeader(message, "In-Reply-To");
+            String references = firstHeader(message, "References");
+            String threadId = computeThreadId(username, ((MimeMessage) message).getMessageID(), messageUid, inReplyTo, references);
+            emailBoxStorage.updateThreadInfo(username, messageUid, threadId, inReplyTo, references);
+          }
         }
       } catch (Exception e) {
         LOG.warn("Error when storing email with subject {} for user {}", message.getSubject(), username, e);
       }
     }
+  }
+
+  /**
+   * The conversation a message belongs to. It joins an existing thread when its
+   * References / In-Reply-To point at a cached message, otherwise it starts its own
+   * thread keyed by its Message-ID (synthesized when the sender omitted one). A message
+   * that references several distinct threads (a late, out-of-order arrival) collapses
+   * them into the oldest — the canonical thread id — so the conversation stays whole.
+   *
+   * @param username the mailbox owner
+   * @param mailHeaderId the message's own Message-ID, may be null
+   * @param messageUid the message's IMAP UID, used to synthesize an id when needed
+   * @param inReplyTo the raw In-Reply-To header, may be null
+   * @param references the raw References header, may be null
+   * @return the thread id to store on the message, never null
+   */
+  private String computeThreadId(String username, String mailHeaderId, long messageUid, String inReplyTo, String references) {
+    String ownMessageId = StringUtils.isNotEmpty(mailHeaderId) ? mailHeaderId
+                                                               : EmailThreadingUtils.synthesizeMessageId(messageUid, username);
+    Set<String> referencedIds = EmailThreadingUtils.collectReferencedIds(inReplyTo, references);
+    if (referencedIds.isEmpty()) {
+      return ownMessageId;
+    }
+    List<String> siblingThreadIds = emailBoxStorage.getSiblingThreadIds(username, new ArrayList<>(referencedIds));
+    if (siblingThreadIds.isEmpty()) {
+      return ownMessageId;
+    }
+    if (siblingThreadIds.size() == 1) {
+      return siblingThreadIds.get(0);
+    }
+    String canonicalThreadId = emailBoxStorage.getOldestThreadId(username, siblingThreadIds);
+    List<String> threadIdsToMerge = siblingThreadIds.stream().filter(id -> !id.equals(canonicalThreadId)).toList();
+    emailBoxStorage.mergeThreads(username, canonicalThreadId, threadIdsToMerge);
+    return canonicalThreadId;
+  }
+
+  /**
+   * The first value of a message header, or null when the header is absent.
+   *
+   * @param message the mail message
+   * @param name the header name
+   * @return the first header value, or null
+   * @throws MessagingException if the header cannot be read
+   */
+  private static String firstHeader(Message message, String name) throws MessagingException {
+    String[] values = message.getHeader(name);
+    return values != null && values.length > 0 ? values[0] : null;
   }
 
   private boolean canSynchronize(UserEmailSetting userEmailSetting, String username) {

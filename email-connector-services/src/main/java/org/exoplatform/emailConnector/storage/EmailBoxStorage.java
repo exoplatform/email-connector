@@ -75,6 +75,49 @@ public class EmailBoxStorage {
     emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus);
   }
 
+  /**
+   * The {@code References} header of a cached message, looked up by its Message-ID, so
+   * a reply can extend the parent's chain rather than replace it. Null when the parent
+   * is no longer cached (its window slot was reclaimed).
+   */
+  public String getMailReferencesByMailHeaderId(String mailHeaderId, String userId) {
+    List<EmailBoxEntity> entities = emailBoxDao.findByMailHeaderIdAndUserId(mailHeaderId, userId);
+    return entities.isEmpty() ? null : entities.get(0).getMailReferences();
+  }
+
+  /**
+   * The distinct thread ids of the cached messages a new message points back to (by
+   * Message-ID). Empty when it references nothing cached — i.e. it starts a new thread.
+   */
+  public List<String> getSiblingThreadIds(String userId, List<String> mailHeaderIds) {
+    if (mailHeaderIds == null || mailHeaderIds.isEmpty()) {
+      return List.of();
+    }
+    return emailBoxDao.findDistinctThreadIdsByMailHeaderIds(userId, mailHeaderIds);
+  }
+
+  /**
+   * Of several thread ids, the one whose earliest message is oldest — the canonical id
+   * a merge collapses the others into.
+   */
+  public String getOldestThreadId(String userId, List<String> threadIds) {
+    if (threadIds == null || threadIds.isEmpty()) {
+      return null;
+    }
+    List<String> ordered = emailBoxDao.findThreadIdsOrderedByAge(userId, threadIds);
+    return ordered.isEmpty() ? null : ordered.get(0);
+  }
+
+  public void mergeThreads(String userId, String canonicalThreadId, List<String> threadIds) {
+    if (threadIds != null && !threadIds.isEmpty()) {
+      emailBoxDao.mergeThreads(userId, canonicalThreadId, threadIds);
+    }
+  }
+
+  public void updateThreadInfo(String userId, Long mailRemoteId, String threadId, String inReplyTo, String mailReferences) {
+    emailBoxDao.updateThreadInfo(userId, mailRemoteId, threadId, inReplyTo, mailReferences);
+  }
+
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
                                                String userId,
                                                String userEmail,
@@ -130,7 +173,10 @@ public class EmailBoxStorage {
                                                          email.getReceivedDate(),
                                                          email.isRead(),
                                                          email.isRecent(),
-                                                         null);
+                                                         null,
+                                                         email.getThreadId(),
+                                                         email.getInReplyTo(),
+                                                         email.getMailReferences());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -178,7 +224,10 @@ public class EmailBoxStorage {
                               null,
                               null,
                               categoryIds,
-                              null);
+                              null,
+                              emailBoxEntity.getThreadId(),
+                              emailBoxEntity.getInReplyTo(),
+                              emailBoxEntity.getMailReferences());
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
