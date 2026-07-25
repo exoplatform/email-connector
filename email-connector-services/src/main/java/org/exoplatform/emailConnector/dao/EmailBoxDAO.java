@@ -90,6 +90,12 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<Object[]> countMessagesByThread(@Param("userId")
   String userId);
 
+  // Per-folder message counts, so the list's folder switch only offers folders that
+  // actually have mail (e.g. no empty Archive tab on Gmail, which has no \Archive).
+  @Query("SELECT email.folder, COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId GROUP BY email.folder")
+  List<Object[]> countMessagesByFolder(@Param("userId")
+  String userId);
+
   @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadIndexRoot = :threadIndexRoot AND email.threadId IS NOT NULL")
   List<String> findDistinctThreadIdsByThreadIndexRoot(@Param("userId")
   String userId, @Param("threadIndexRoot")

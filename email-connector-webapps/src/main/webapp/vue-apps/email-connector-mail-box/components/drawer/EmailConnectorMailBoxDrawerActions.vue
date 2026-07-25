@@ -28,13 +28,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span>{{ $t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip') }}</span>
     </v-tooltip>
     <v-btn
-      v-else
-      :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
-      @click="synchronize()"
-      icon>
-      <v-icon size="20" class="icon-default-color">fa-sync-alt</v-icon>
-    </v-btn>
-    <v-btn
       :title="$t('emailConnector.mailBox.list.drawer.newEmail.button.title')"
       @click="openNewEmailDrawer()"
       icon>
@@ -42,6 +35,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-btn>
     <email-connector-mail-box-drawer-action-menu
       :current-folder="currentFolder"
+      :available-folders="availableFolders"
+      :sync-in-progress="syncInProgress"
       :has-webmail-access="hasWebmailAccess" />
   </div>
   <div v-else-if="hasSelectedEmails">
@@ -150,6 +145,11 @@ export default {
     currentFolder: {
       type: String,
       default: 'INBOX',
+    },
+    // Folders that have mail, so the ⋮ switch hides empty ones.
+    availableFolders: {
+      type: Array,
+      default: () => ['INBOX'],
     },
     top: {
       type: Boolean,
