@@ -45,7 +45,7 @@ export default {
   data() {
     return {
       cacheSize: null,
-      options: [100, 250, 500, 750, 1000],
+      options: [100, 250, 500, 750, 1000, 5000],
       saving: false,
     };
   },
