@@ -88,6 +88,15 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("threadIndexRoot")
   String threadIndexRoot);
 
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.threadIndexRoot = :threadIndexRoot WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId")
+  void updateThreadIndexRoot(@Param("userId")
+  String userId, @Param("mailRemoteId")
+  Long mailRemoteId, @Param("folder")
+  String folder, @Param("threadIndexRoot")
+  String threadIndexRoot);
+
   @Query("SELECT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds ORDER BY email.receivedDate ASC")
   List<String> findThreadIdsOrderedByAge(@Param("userId")
   String userId, @Param("threadIds")

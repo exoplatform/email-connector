@@ -1035,7 +1035,7 @@ public class EmailBoxService {
                                                 inReplyTo,
                                                 references,
                                                 folderKey,
-                                                threadIndexRoot));
+                                                threadIndexRoot != null ? threadIndexRoot : ""));
 
         } else {
           emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(messageUid),
@@ -1043,14 +1043,25 @@ public class EmailBoxService {
                                                                message.isSet(Flags.Flag.SEEN),
                                                                folderKey);
           emailBoxStorage.markEmailAsNotRecent(messageUid, username, folderKey);
-          // Backfill threading on rows cached before this feature: one sync cycle after
-          // deployment every cached message carries a thread id.
+          // Backfill threading on rows cached before these features. (a) A row with no
+          // thread id yet gets one. (b) An already-threaded row gets its Thread-Index
+          // root captured once and any threads sharing that root MERGED (merge-only,
+          // never split) — this is what re-threads conversations cached before the
+          // Thread-Index layer existed. The root is stored (empty string when the
+          // message carries no Thread-Index) so each row is backfilled at most once.
           if (StringUtils.isEmpty(email.getThreadId())) {
             String inReplyTo = firstHeader(message, "In-Reply-To");
             String references = firstHeader(message, "References");
             String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, "Thread-Index"));
             String threadId = computeThreadId(username, ((MimeMessage) message).getMessageID(), messageUid, inReplyTo, references, threadIndexRoot);
-            emailBoxStorage.updateThreadInfo(username, messageUid, threadId, inReplyTo, references, folderKey, threadIndexRoot);
+            emailBoxStorage.updateThreadInfo(username, messageUid, threadId, inReplyTo, references, folderKey,
+                                             threadIndexRoot != null ? threadIndexRoot : "");
+          } else if (email.getThreadIndexRoot() == null) {
+            String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, "Thread-Index"));
+            if (threadIndexRoot != null) {
+              mergeThreadsSharingRoot(username, email.getThreadId(), threadIndexRoot);
+            }
+            emailBoxStorage.updateThreadIndexRoot(username, messageUid, folderKey, threadIndexRoot != null ? threadIndexRoot : "");
           }
         }
       } catch (Exception e) {
@@ -1104,6 +1115,31 @@ public class EmailBoxService {
     List<String> threadIdsToMerge = siblings.stream().filter(id -> !id.equals(canonicalThreadId)).toList();
     emailBoxStorage.mergeThreads(username, canonicalThreadId, threadIdsToMerge);
     return canonicalThreadId;
+  }
+
+  /**
+   * Merge every thread that shares an Exchange Thread-Index conversation root into
+   * one, collapsing to the oldest canonical thread id. Merge-only — it never resets
+   * a message's thread id, so it can only join fragmented conversations, never split
+   * a correctly-threaded one. Used to re-thread rows cached before the Thread-Index
+   * layer.
+   *
+   * @param username the mailbox owner
+   * @param currentThreadId the thread id of the row being backfilled
+   * @param threadIndexRoot the message's Thread-Index conversation root (non-null)
+   */
+  private void mergeThreadsSharingRoot(String username, String currentThreadId, String threadIndexRoot) {
+    Set<String> threadIds = new LinkedHashSet<>(emailBoxStorage.getThreadIdsByThreadIndexRoot(username, threadIndexRoot));
+    if (StringUtils.isNotEmpty(currentThreadId)) {
+      threadIds.add(currentThreadId);
+    }
+    if (threadIds.size() <= 1) {
+      return;
+    }
+    List<String> ids = new ArrayList<>(threadIds);
+    String canonicalThreadId = emailBoxStorage.getOldestThreadId(username, ids);
+    List<String> threadIdsToMerge = ids.stream().filter(id -> !id.equals(canonicalThreadId)).toList();
+    emailBoxStorage.mergeThreads(username, canonicalThreadId, threadIdsToMerge);
   }
 
   /**
