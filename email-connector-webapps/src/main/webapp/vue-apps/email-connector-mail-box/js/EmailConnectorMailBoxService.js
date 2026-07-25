@@ -130,6 +130,35 @@ export function getEmailBox() {
   });
 }
 
+/**
+ * Groups a flat, newest-first email list into conversations (threads). The group key
+ * is the server threadId, falling back to the message id then the remote id so rows
+ * still render during the one-sync-cycle backfill window when threadId can be null.
+ * The input order is preserved, so each thread's first email is its latest and the
+ * threads themselves come out ordered by their most recent message.
+ *
+ * @param {Array} emails the flat email list, newest first
+ * @returns {Array} threads, each { threadId, emails, latest, mailRemoteIds, count, unreadCount }
+ */
+export function groupEmailsByThread(emails) {
+  const byKey = new Map();
+  (emails || []).forEach(email => {
+    const key = email.threadId || email.mailHeaderId || String(email.mailRemoteId);
+    let thread = byKey.get(key);
+    if (!thread) {
+      thread = { threadId: key, emails: [], latest: email, mailRemoteIds: [], count: 0, unreadCount: 0 };
+      byKey.set(key, thread);
+    }
+    thread.emails.push(email);
+    thread.mailRemoteIds.push(email.mailRemoteId);
+    thread.count++;
+    if (!email.read) {
+      thread.unreadCount++;
+    }
+  });
+  return Array.from(byKey.values());
+}
+
 export function getEmailByRemoteId(mailRemoteId) {
   return fetch(`/email-connector/rest/email-box/${mailRemoteId}`, {
     headers: {
