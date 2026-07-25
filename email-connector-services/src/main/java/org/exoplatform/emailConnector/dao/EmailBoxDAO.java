@@ -60,4 +60,37 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   Long mailRemoteId, @Param("userId")
   String userId);
 
+  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")
+  String mailHeaderId, @Param("userId")
+  String userId);
+
+  @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds AND email.threadId IS NOT NULL")
+  List<String> findDistinctThreadIdsByMailHeaderIds(@Param("userId")
+  String userId, @Param("mailHeaderIds")
+  List<String> mailHeaderIds);
+
+  @Query("SELECT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds ORDER BY email.receivedDate ASC")
+  List<String> findThreadIdsOrderedByAge(@Param("userId")
+  String userId, @Param("threadIds")
+  List<String> threadIds);
+
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.threadId = :canonicalThreadId WHERE email.userId = :userId AND email.threadId IN :threadIds")
+  void mergeThreads(@Param("userId")
+  String userId, @Param("canonicalThreadId")
+  String canonicalThreadId, @Param("threadIds")
+  List<String> threadIds);
+
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.threadId = :threadId, email.inReplyTo = :inReplyTo, email.mailReferences = :mailReferences WHERE email.userId = :userId AND email.mailRemoteId = :mailRemoteId")
+  void updateThreadInfo(@Param("userId")
+  String userId, @Param("mailRemoteId")
+  Long mailRemoteId, @Param("threadId")
+  String threadId, @Param("inReplyTo")
+  String inReplyTo, @Param("mailReferences")
+  String mailReferences);
+
 }
