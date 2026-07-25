@@ -447,7 +447,8 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null,
-                     null);
+                     null,
+                     "INBOX");
   }
 
   private EmailConnector emailConnector() {

@@ -98,4 +98,9 @@ public class EmailBoxEntity {
   // "REFERENCES" is a SQL reserved word, hence the MAIL_REFERENCES column / mailReferences field.
   @Column(name = "MAIL_REFERENCES")
   private String                      mailReferences;
+
+  // The remote folder this message belongs to (INBOX / SENT / ARCHIVE). IMAP UIDs
+  // are per-folder, so the cache is keyed by (USER_ID, FOLDER, MAIL_REMOTE_ID).
+  @Column(name = "FOLDER")
+  private String                      folder;
 }

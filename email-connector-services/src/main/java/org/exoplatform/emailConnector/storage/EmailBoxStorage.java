@@ -35,6 +35,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
@@ -176,7 +177,8 @@ public class EmailBoxStorage {
                                                          null,
                                                          email.getThreadId(),
                                                          email.getInReplyTo(),
-                                                         email.getMailReferences());
+                                                         email.getMailReferences(),
+                                                         email.getFolder() != null ? email.getFolder() : MailFolder.INBOX);
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -227,7 +229,8 @@ public class EmailBoxStorage {
                               null,
                               emailBoxEntity.getThreadId(),
                               emailBoxEntity.getInReplyTo(),
-                              emailBoxEntity.getMailReferences());
+                              emailBoxEntity.getMailReferences(),
+                              emailBoxEntity.getFolder());
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());

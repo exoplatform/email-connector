@@ -218,4 +218,14 @@
       <column name="THREAD_ID"/>
     </createIndex>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-20">
+    <!-- Which remote folder a cached message belongs to (INBOX / SENT / ARCHIVE).
+         IMAP UIDs are per-folder, so the cache key becomes (USER_ID, FOLDER,
+         MAIL_REMOTE_ID). Existing rows are all INBOX. -->
+    <addColumn tableName="EMAIL_BOX">
+      <column name="FOLDER" type="VARCHAR(50)" defaultValue="INBOX">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>
