@@ -66,6 +66,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :selected-emails="selectedEmails"
           :select-mode="selectMode"
           :current-folder="currentFolder"
+          :available-folders="availableFolders"
           :sync-in-progress="syncInProgress" />
       </div>
     </template>
@@ -83,6 +84,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :selected-emails="selectedEmails"
         :select-mode="selectMode"
         :current-folder="currentFolder"
+        :available-folders="availableFolders"
         :sync-in-progress="syncInProgress" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
@@ -263,6 +265,11 @@ export default {
   computed: {
     hasEmails() {
       return this.emails?.length > 0;
+    },
+    // INBOX plus any of SENT/ARCHIVE that actually hold mail, for the ⋮ folder switch.
+    availableFolders() {
+      const counts = this.emailBox?.folderCounts || {};
+      return ['INBOX', 'SENT', 'ARCHIVE'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
     },
     syncBlocked() {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';

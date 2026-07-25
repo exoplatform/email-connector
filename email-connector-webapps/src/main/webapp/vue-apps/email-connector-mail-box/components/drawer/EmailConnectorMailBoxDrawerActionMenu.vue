@@ -40,6 +40,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </template>
       <email-connector-mail-box-drawer-action-menu-items
         :current-folder="currentFolder"
+        :available-folders="availableFolders"
+        :sync-in-progress="syncInProgress"
         :has-webmail-access="hasWebmailAccess" />
     </v-menu>
   </v-list-item-action>
@@ -51,6 +53,14 @@ export default {
     currentFolder: {
       type: String,
       default: 'INBOX',
+    },
+    availableFolders: {
+      type: Array,
+      default: () => ['INBOX'],
+    },
+    syncInProgress: {
+      type: Boolean,
+      default: false,
     },
     hasWebmailAccess: {
       type: Boolean,
