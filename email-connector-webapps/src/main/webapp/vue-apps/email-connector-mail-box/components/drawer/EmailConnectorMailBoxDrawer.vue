@@ -132,9 +132,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :emails="emails"
               :selected-emails="selectedEmails" />
             <email-connector-mail-box-drawer-select-email v-else-if="selectEmailPlaceHolder" />
-            <email-connector-mail-box-drawer-list-item-detail-content
+            <email-connector-mail-box-drawer-thread-content
               v-else
               :email="email"
+              :emails="emails"
               expanded-drawer />
           </template>
           <email-connector-mail-box-drawer-content
