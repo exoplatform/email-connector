@@ -83,6 +83,11 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("mailHeaderIds")
   List<String> mailHeaderIds);
 
+  @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadIndexRoot = :threadIndexRoot AND email.threadId IS NOT NULL")
+  List<String> findDistinctThreadIdsByThreadIndexRoot(@Param("userId")
+  String userId, @Param("threadIndexRoot")
+  String threadIndexRoot);
+
   @Query("SELECT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds ORDER BY email.receivedDate ASC")
   List<String> findThreadIdsOrderedByAge(@Param("userId")
   String userId, @Param("threadIds")
@@ -98,13 +103,14 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   @Transactional
   @Modifying
-  @Query("UPDATE EmailBoxEntity email SET email.threadId = :threadId, email.inReplyTo = :inReplyTo, email.mailReferences = :mailReferences WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId")
+  @Query("UPDATE EmailBoxEntity email SET email.threadId = :threadId, email.inReplyTo = :inReplyTo, email.mailReferences = :mailReferences, email.threadIndexRoot = :threadIndexRoot WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId")
   void updateThreadInfo(@Param("userId")
   String userId, @Param("mailRemoteId")
   Long mailRemoteId, @Param("threadId")
   String threadId, @Param("inReplyTo")
   String inReplyTo, @Param("mailReferences")
   String mailReferences, @Param("folder")
-  String folder);
+  String folder, @Param("threadIndexRoot")
+  String threadIndexRoot);
 
 }
