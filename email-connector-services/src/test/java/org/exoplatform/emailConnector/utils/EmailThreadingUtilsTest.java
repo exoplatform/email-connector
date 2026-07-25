@@ -17,9 +17,11 @@
 package org.exoplatform.emailConnector.utils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 
@@ -80,5 +82,37 @@ public class EmailThreadingUtilsTest {
     assertEquals("Invoice", EmailThreadingUtils.normalizeSubject("TR: AW: SV: Invoice"));
     assertEquals("Invoice", EmailThreadingUtils.normalizeSubject("Invoice"));
     assertEquals("", EmailThreadingUtils.normalizeSubject(null));
+  }
+
+  @Test
+  void extractThreadIndexRootReturnsSharedConversationGuid() {
+    assertNull(EmailThreadingUtils.extractThreadIndexRoot(null));
+    assertNull(EmailThreadingUtils.extractThreadIndexRoot("   "));
+    assertNull(EmailThreadingUtils.extractThreadIndexRoot("!!not-base64!!"));
+    // Well-formed base64 but shorter than the 22-byte header → not a Thread-Index.
+    assertNull(EmailThreadingUtils.extractThreadIndexRoot(Base64.getEncoder().encodeToString(new byte[10])));
+
+    // A 22-byte header carrying a known 16-byte conversation GUID at offset 6.
+    byte[] base = new byte[22];
+    for (int i = 6; i < 22; i++) {
+      base[i] = (byte) (i * 7);
+    }
+    String parent = Base64.getEncoder().encodeToString(base);
+    String root = EmailThreadingUtils.extractThreadIndexRoot(parent);
+    assertNotNull(root);
+    assertEquals(32, root.length()); // 16 bytes rendered as hex
+
+    // A reply appends a 5-byte block but keeps the same first 22 bytes → same root.
+    byte[] reply = new byte[27];
+    System.arraycopy(base, 0, reply, 0, 22);
+    reply[24] = 0x2a;
+    assertEquals(root, EmailThreadingUtils.extractThreadIndexRoot(Base64.getEncoder().encodeToString(reply)));
+
+    // A different conversation GUID → a different root.
+    byte[] other = new byte[22];
+    for (int i = 6; i < 22; i++) {
+      other[i] = (byte) (i * 3 + 1);
+    }
+    assertTrue(!root.equals(EmailThreadingUtils.extractThreadIndexRoot(Base64.getEncoder().encodeToString(other))));
   }
 }

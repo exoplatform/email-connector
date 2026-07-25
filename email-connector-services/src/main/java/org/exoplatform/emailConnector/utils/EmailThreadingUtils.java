@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.utils;
 
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -110,6 +111,37 @@ public class EmailThreadingUtils {
    */
   public static String synthesizeMessageId(long mailRemoteId, String userId) {
     return "<" + mailRemoteId + "." + userId + "@email-connector.local>";
+  }
+
+  /**
+   * The conversation identity encoded in an Exchange/Outlook {@code Thread-Index}
+   * header — the 16-byte GUID shared by every message of the conversation. Per
+   * MS-OXOMSG the base64 value starts with 1 reserved byte + 5 FILETIME bytes,
+   * then the 16-byte conversation GUID (offset 6), then a 5-byte block per reply.
+   * Two messages with the same root belong to the same conversation even when
+   * their {@code References} chain is broken (subject changes, external forwards).
+   *
+   * @param threadIndex the raw {@code Thread-Index} header, may be null
+   * @return the 16-byte conversation GUID as a lowercase hex string, or null when
+   *         the header is absent or not a well-formed Thread-Index
+   */
+  public static String extractThreadIndexRoot(String threadIndex) {
+    if (StringUtils.isBlank(threadIndex)) {
+      return null;
+    }
+    try {
+      byte[] decoded = Base64.getDecoder().decode(threadIndex.replaceAll("\\s", ""));
+      if (decoded.length < 22) {
+        return null;
+      }
+      StringBuilder hex = new StringBuilder(32);
+      for (int i = 6; i < 22; i++) {
+        hex.append(String.format("%02x", decoded[i]));
+      }
+      return hex.toString();
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
   }
 
   /**
