@@ -98,6 +98,17 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The distinct thread ids of cached messages sharing an Exchange Thread-Index
+   * conversation root — the same conversation even when References is broken.
+   */
+  public List<String> getThreadIdsByThreadIndexRoot(String userId, String threadIndexRoot) {
+    if (threadIndexRoot == null || threadIndexRoot.isEmpty()) {
+      return List.of();
+    }
+    return emailBoxDao.findDistinctThreadIdsByThreadIndexRoot(userId, threadIndexRoot);
+  }
+
+  /**
    * Of several thread ids, the one whose earliest message is oldest — the canonical id
    * a merge collapses the others into.
    */
@@ -115,8 +126,8 @@ public class EmailBoxStorage {
     }
   }
 
-  public void updateThreadInfo(String userId, Long mailRemoteId, String threadId, String inReplyTo, String mailReferences, String folder) {
-    emailBoxDao.updateThreadInfo(userId, mailRemoteId, threadId, inReplyTo, mailReferences, folder);
+  public void updateThreadInfo(String userId, Long mailRemoteId, String threadId, String inReplyTo, String mailReferences, String folder, String threadIndexRoot) {
+    emailBoxDao.updateThreadInfo(userId, mailRemoteId, threadId, inReplyTo, mailReferences, folder, threadIndexRoot);
   }
 
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
@@ -198,7 +209,8 @@ public class EmailBoxStorage {
                                                          email.getThreadId(),
                                                          email.getInReplyTo(),
                                                          email.getMailReferences(),
-                                                         email.getFolder() != null ? email.getFolder() : MailFolder.INBOX);
+                                                         email.getFolder() != null ? email.getFolder() : MailFolder.INBOX,
+                                                         email.getThreadIndexRoot());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -250,7 +262,8 @@ public class EmailBoxStorage {
                               emailBoxEntity.getThreadId(),
                               emailBoxEntity.getInReplyTo(),
                               emailBoxEntity.getMailReferences(),
-                              emailBoxEntity.getFolder());
+                              emailBoxEntity.getFolder(),
+                              emailBoxEntity.getThreadIndexRoot());
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
