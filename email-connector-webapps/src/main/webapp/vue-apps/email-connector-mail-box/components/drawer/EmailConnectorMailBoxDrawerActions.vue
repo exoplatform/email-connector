@@ -16,10 +16,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <div class="align-self-center" v-if="!selectMode">
-    <email-box-sync-loader
-      v-if="syncInProgress"
-      :label="$t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip')"
-      loader-class="me-2" />
+    <v-tooltip v-if="syncInProgress" bottom>
+      <template #activator="{ on, attrs }">
+        <div
+          v-on="on"
+          v-bind="attrs"
+          class="d-inline-flex align-center">
+          <email-box-sync-loader loader-class="me-2" />
+        </div>
+      </template>
+      <span>{{ $t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip') }}</span>
+    </v-tooltip>
     <v-btn
       v-else
       :title="$t('emailConnector.mailBox.list.drawer.sync.tooltip')"
