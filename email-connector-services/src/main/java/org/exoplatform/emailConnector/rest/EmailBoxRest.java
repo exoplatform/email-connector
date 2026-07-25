@@ -114,16 +114,25 @@ public class EmailBoxRest {
                                                   @Parameter(description = "Email id", required = true)
                                                   @PathVariable("mailRemoteId")
                                                   long mailRemoteId,
+                                                  @Parameter(description = "Folder the message is in: INBOX, SENT or ARCHIVE")
+                                                  @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                  String folder,
                                                   @RequestHeader(value = "If-None-Match", required = false)
                                                   String ifNoneMatch) {
     try {
-      String eTag = "\"" + Objects.hash(mailRemoteId, request.getRemoteUser()) + "\"";
+      // UIDs are per-folder, so the folder is part of the message identity / eTag.
+      String eTag = "\"" + Objects.hash(mailRemoteId, folder, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
         emailBoxService.broadcastOpenEmail(request.getRemoteUser());
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
-      Email email =
-                  emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, request.getRemoteUser(), true, true, true, true);
+      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId,
+                                                                    request.getRemoteUser(),
+                                                                    folder,
+                                                                    true,
+                                                                    true,
+                                                                    true,
+                                                                    true);
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }

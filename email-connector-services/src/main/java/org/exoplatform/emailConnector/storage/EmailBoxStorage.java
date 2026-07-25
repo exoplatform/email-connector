@@ -183,6 +183,21 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The number of cached messages per folder, so the list's folder switch can hide
+   * folders that have no mail (e.g. Archive on a Gmail account).
+   *
+   * @param userId the mailbox owner
+   * @return a map of folder discriminator to its message count
+   */
+  public Map<String, Integer> getFolderMessageCounts(String userId) {
+    Map<String, Integer> counts = new HashMap<>();
+    for (Object[] row : emailBoxDao.countMessagesByFolder(userId)) {
+      counts.put((String) row[0], ((Number) row[1]).intValue());
+    }
+    return counts;
+  }
+
+  /**
    * All cached messages of a conversation, across every folder (INBOX, SENT,
    * ARCHIVE), oldest first — the read model for the conversation reader. Bodies
    * and recipients are loaded so each message renders in full.

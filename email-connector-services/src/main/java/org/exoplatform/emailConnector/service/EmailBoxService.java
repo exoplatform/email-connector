@@ -348,7 +348,8 @@ public class EmailBoxService {
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
                         userEmailSetting.getEmailConnectorWebmailUrl(),
-                        emailBoxStorage.getThreadMessageCounts(username));
+                        emailBoxStorage.getThreadMessageCounts(username),
+                        emailBoxStorage.getFolderMessageCounts(username));
   }
 
   /**
@@ -473,6 +474,37 @@ public class EmailBoxService {
                                                boolean withRecipients,
                                                boolean withProfile,
                                                boolean broadcast) throws IllegalAccessException {
+    return getEmailByMailRemoteIdAndUserId(mailRemoteId,
+                                           username,
+                                           MailFolder.INBOX,
+                                           withAttachments,
+                                           withRecipients,
+                                           withProfile,
+                                           broadcast);
+  }
+
+  /**
+   * Get a single cached message by its IMAP UID within a given folder. IMAP UIDs are
+   * per-folder, so the folder is required to open a message the user clicked from the
+   * Sent or Archive list, not only the inbox.
+   *
+   * @param mailRemoteId the message IMAP UID
+   * @param username the mailbox owner
+   * @param folder the folder the message is listed in (INBOX / SENT / ARCHIVE)
+   * @param withAttachments whether to load attachments
+   * @param withRecipients whether to load recipients
+   * @param withProfile whether to resolve sender/recipient platform profiles
+   * @param broadcast whether to broadcast the open-email event
+   * @return the message, or null when not found in that folder
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
+                                               String username,
+                                               String folder,
+                                               boolean withAttachments,
+                                               boolean withRecipients,
+                                               boolean withProfile,
+                                               boolean broadcast) throws IllegalAccessException {
     String userEmail = null;
     if (broadcast) {
       userEmail = broadcastOpenEmail(username);
@@ -480,7 +512,7 @@ public class EmailBoxService {
     return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId,
                                                            username,
                                                            userEmail,
-                                                           MailFolder.INBOX,
+                                                           folder,
                                                            withAttachments,
                                                            withRecipients,
                                                            withProfile);
