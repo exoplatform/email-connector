@@ -146,6 +146,22 @@ public class EmailBoxRest {
     }
   }
 
+  @GetMapping("/thread/{threadId}/complete")
+  @Secured("users")
+  @Operation(summary = "Completes a conversation from the archive", method = "GET", description = "Fetches a conversation's archived messages (Gmail All Mail) on demand and returns the whole thread. Slower than /thread/{threadId} as it may hit IMAP; call it in the background after rendering the cached thread.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public List<Email> completeThread(HttpServletRequest request,
+                                    @Parameter(description = "Conversation thread id", required = true)
+                                    @PathVariable("threadId")
+                                    String threadId) {
+    try {
+      return emailBoxService.completeThread(threadId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
   @PostMapping("/webmail/broadcast")
   @Secured("users")
   @Operation(summary = "Broadcasts access webmail", method = "POST", description = "This will broadcast access webmail")
