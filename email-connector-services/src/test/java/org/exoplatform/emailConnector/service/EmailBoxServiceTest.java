@@ -52,6 +52,7 @@ import javax.mail.internet.MimeMessage;
 import org.apache.commons.lang3.ArrayUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -349,6 +350,42 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void sendReplyBuildsFullReferencesChain() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    // a reply whose parent already referenced <root@host>
+    Email reply = email(TEST_USER);
+    reply.setMailHeaderId("<parent@host>");
+    when(emailBoxStorage.getMailReferencesByMailHeaderId("<parent@host>", TEST_USER)).thenReturn("<root@host>");
+    Session session = mock(Session.class);
+    when(session.getProperties()).thenReturn(new Properties());
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    when(store.isConnected()).thenReturn(true);
+    IMAPFolder sentFolder = mock(IMAPFolder.class);
+    when(sentFolder.getFullName()).thenReturn("sent");
+    when(folder.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
+    when(sentFolder.exists()).thenReturn(true);
+    when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    when(sentFolder.isOpen()).thenReturn(true);
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      emailBoxService.sendEmail(reply, TEST_USER);
+      ArgumentCaptor<Message> sentCaptor = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sentCaptor.capture()));
+      Message sent = sentCaptor.getValue();
+      // In-Reply-To is the parent; References is parent's chain + parent id (RFC 5322 §3.6.4)
+      org.junit.jupiter.api.Assertions.assertEquals("<parent@host>", sent.getHeader("In-Reply-To")[0]);
+      org.junit.jupiter.api.Assertions.assertEquals("<root@host> <parent@host>", sent.getHeader("References")[0]);
+    }
+  }
+
+  @Test
   void getAttachmentByMailRemoteIdAnId() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
@@ -402,6 +439,9 @@ public class EmailBoxServiceTest {
                      false,
                      false,
                      List.of(new EmailRecipient()),
+                     null,
+                     null,
+                     null,
                      null,
                      null,
                      null,
