@@ -26,9 +26,14 @@ public final class MailFolder {
   private MailFolder() {
   }
 
-  public static final String INBOX   = "INBOX";
+  public static final String INBOX    = "INBOX";
 
-  public static final String SENT    = "SENT";
+  public static final String SENT     = "SENT";
 
-  public static final String ARCHIVE = "ARCHIVE";
+  public static final String ARCHIVE  = "ARCHIVE";
+
+  // The Gmail "All Mail" (\All) superset. Never bulk-synced (it duplicates every
+  // folder); rows land here only via on-demand thread completion, so an archived
+  // message that lost its INBOX label still shows inline when its thread is opened.
+  public static final String ALL_MAIL = "ALL_MAIL";
 }
