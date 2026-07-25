@@ -17,7 +17,9 @@
 package org.exoplatform.emailConnector.storage;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -162,6 +164,22 @@ public class EmailBoxStorage {
     return emailBoxEntities.stream()
                            .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, null, false, false))
                            .toList();
+  }
+
+  /**
+   * The total number of cached messages per conversation, across every folder, keyed
+   * by thread id — so the inbox list can show the full conversation count (Gmail-style)
+   * rather than only the messages that happen to be in the inbox.
+   *
+   * @param userId the mailbox owner
+   * @return a map of thread id to its cached message count
+   */
+  public Map<String, Integer> getThreadMessageCounts(String userId) {
+    Map<String, Integer> counts = new HashMap<>();
+    for (Object[] row : emailBoxDao.countMessagesByThread(userId)) {
+      counts.put((String) row[0], ((Number) row[1]).intValue());
+    }
+    return counts;
   }
 
   /**

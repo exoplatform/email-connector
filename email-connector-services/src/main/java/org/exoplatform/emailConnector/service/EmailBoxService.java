@@ -325,7 +325,10 @@ public class EmailBoxService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
     List<Email> emails = emailBoxStorage.getEmails(username, MailFolder.INBOX);
-    return new EmailBox(emails, userEmailSetting.getEmailSyncStatus(), userEmailSetting.getEmailConnectorWebmailUrl());
+    return new EmailBox(emails,
+                        userEmailSetting.getEmailSyncStatus(),
+                        userEmailSetting.getEmailConnectorWebmailUrl(),
+                        emailBoxStorage.getThreadMessageCounts(username));
   }
 
   /**
