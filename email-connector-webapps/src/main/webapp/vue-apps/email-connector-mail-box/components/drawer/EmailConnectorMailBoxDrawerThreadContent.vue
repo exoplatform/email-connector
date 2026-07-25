@@ -32,6 +32,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :key="message.mailRemoteId"
         :email="message"
         :expanded="expandedIds.includes(message.mailRemoteId)"
+        :collapsible="index !== messages.length - 1"
         :expanded-drawer="expandedDrawer"
         @expand="expand(message.mailRemoteId)"
         @collapse="collapse(message.mailRemoteId)" />
