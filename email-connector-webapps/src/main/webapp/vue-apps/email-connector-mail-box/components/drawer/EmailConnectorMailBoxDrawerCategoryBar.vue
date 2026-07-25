@@ -17,16 +17,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <div
     v-if="categories.length"
-    class="d-flex align-center pb-2 category-chips-thin-scrollbar"
-    style="gap: 6px; overflow-x: auto; flex-wrap: nowrap;">
+    class="d-flex flex-wrap align-center pb-2"
+    style="gap: 6px;">
     <v-chip
       v-for="category in assignedCategories"
       :key="category.id"
-      small
+      x-small
       close
+      outlined
       color="primary"
-      text-color="white"
-      class="flex-shrink-0"
       @click:close="toggle(category, false)">
       {{ category.name }}
     </v-chip>
@@ -37,7 +36,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-btn
           x-small
           text
-          class="text-none flex-shrink-0"
+          class="text-none"
           v-bind="attrs"
           v-on="on">
           <v-icon size="13" class="me-1 icon-default-color">fa-tag</v-icon>
@@ -126,14 +125,6 @@ export default {
           this.$set(email, 'categoryIds', assign
             ? Array.from(new Set([...current, category.id]))
             : current.filter(id => id !== category.id));
-        });
-        // The reader works on a deduped copy of the thread, so tell the main list
-        // to patch its own email objects; otherwise the categories filter never
-        // reflects a category assigned from the detail view.
-        this.$root.$emit('email-categories-updated', {
-          mailRemoteIds: this.mailRemoteIds,
-          categoryId: category.id,
-          assign,
         });
       }).catch(() => {
         // Leave the current chips as-is if the server call fails.
