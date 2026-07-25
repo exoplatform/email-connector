@@ -86,9 +86,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-mail-box-drawer-no-email v-if="filteredEmails.length === 0" />
         <template v-else>
           <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
-          <email-connector-mail-box-drawer-list-item-detail-content
+          <email-connector-mail-box-drawer-thread-content
             v-else
             :email="email"
+            :emails="filteredEmails"
             :expanded-drawer="expanded" />
         </template>
       </template>
