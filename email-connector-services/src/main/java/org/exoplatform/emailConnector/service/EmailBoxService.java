@@ -352,7 +352,6 @@ public class EmailBoxService {
   // SettingService, so the assignable email category ids are resolved from there.
   private static final List<String> DEFAULT_EMAIL_CATEGORY_NAME_IDS                          =
                                                                    List.of("emailImportantCategory",
-                                                                           "emailInvitationCategory",
                                                                            "emailNotificationCategory",
                                                                            "emailToReviewCategory");
 
