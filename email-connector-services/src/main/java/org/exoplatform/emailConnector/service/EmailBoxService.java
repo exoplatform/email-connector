@@ -22,6 +22,7 @@ import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -39,6 +40,7 @@ import javax.mail.FetchProfile;
 import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
+import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Part;
@@ -52,6 +54,9 @@ import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
 import javax.mail.internet.MimeUtility;
+import javax.mail.search.MessageIDTerm;
+import javax.mail.search.OrTerm;
+import javax.mail.search.SearchTerm;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -123,6 +128,10 @@ public class EmailBoxService {
   // smaller window than the inbox — this bounds the (potentially slow) one-time
   // backfill and every subsequent sync on large mailboxes.
   private static final int        NON_INBOX_FOLDER_SYNC_LIMIT                                 = 100;
+
+  // Caps the OR-of-Message-ID search when completing a thread from the archive on
+  // open, so an unusually long conversation can't build a giant IMAP SEARCH.
+  private static final int        ARCHIVE_COMPLETION_SEARCH_LIMIT                             = 50;
 
   private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE              =
                                                                                  "User %s is not allowed to synchronize email";
@@ -470,7 +479,12 @@ public class EmailBoxService {
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
-    return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
+    // Best-effort: complete the conversation from the provider's archive superset
+    // (Gmail "All Mail") when the cached messages reference ancestors we never synced.
+    // Returns the (possibly newer, older-rooted) canonical thread id after any merge,
+    // so we read back the right rows even when completion shifted the canonical id.
+    String canonicalThreadId = completeThreadFromArchive(username, threadId, userEmailSetting);
+    return emailBoxStorage.getEmailsByThreadId(username, canonicalThreadId, userEmailSetting.getEmailAddress());
   }
 
   @Transactional
@@ -590,7 +604,19 @@ public class EmailBoxService {
               if (trash != null) {
                 inbox.copyMessages(new Message[] { remoteMessage }, trash);
               }
-              remoteMessage.setFlag(Flags.Flag.DELETED, true);
+              // On Gmail a COPY into [Gmail]/Trash MOVES the message (Trash is exclusive
+              // with every label), so the server expunges it from INBOX right away and the
+              // source handle is already gone — the delete has in fact succeeded. Only set
+              // the DELETED flag when the message survived the copy (the non-Gmail case,
+              // where the finally's inbox.close(true) expunges it), and treat an
+              // already-expunged source as success rather than triggering the re-insert.
+              try {
+                if (!remoteMessage.isExpunged()) {
+                  remoteMessage.setFlag(Flags.Flag.DELETED, true);
+                }
+              } catch (MessageRemovedException alreadyRemoved) {
+                LOG.debug("Email {} already removed from INBOX by the copy to Trash for user {}", mailRemoteId, username);
+              }
             }
           } catch (Exception e) {
             emails.stream().filter(email -> email.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
@@ -1145,6 +1171,209 @@ public class EmailBoxService {
     String canonicalThreadId = emailBoxStorage.getOldestThreadId(username, ids);
     List<String> threadIdsToMerge = ids.stream().filter(id -> !id.equals(canonicalThreadId)).toList();
     emailBoxStorage.mergeThreads(username, canonicalThreadId, threadIdsToMerge);
+  }
+
+  /**
+   * On-demand cross-folder thread completion. When a conversation's cached messages
+   * reference ancestors we never synced — typically because they are archived in
+   * Gmail (they lost the {@code INBOX} label and live only in the {@code \All} "All
+   * Mail" superset, which bulk sync deliberately excludes to avoid duplicating the
+   * whole mailbox) — fetch just those ancestors from the archive superset, persist
+   * them under {@link MailFolder#ALL_MAIL}, and merge them into the conversation.
+   * <p>
+   * Provider-agnostic: the signal is RFC 5322 {@code References}/{@code Message-ID},
+   * and the only Gmail-specific step is discovering the {@code \All} folder (via its
+   * special-use attribute). On a provider without such a superset it is a no-op —
+   * archived mail there already lives in a synced {@code \Archive} folder. Gated on
+   * there being an obviously-missing ancestor, so a completed thread reopens with no
+   * IMAP round-trip. Best-effort: any failure leaves the cached thread untouched.
+   *
+   * @param username the mailbox owner
+   * @param threadId the conversation opened by the user
+   * @param userEmailSetting the user's connector binding
+   * @return the canonical thread id to read back (the input id, or the older id the
+   *         conversation collapsed to once its archived root was added)
+   */
+  private String completeThreadFromArchive(String username, String threadId, UserEmailSetting userEmailSetting) {
+    try {
+      List<Email> cached = emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
+      if (cached.isEmpty()) {
+        return threadId;
+      }
+      // The ids we already hold, and every id the cached messages point back to.
+      Set<String> cachedOwnIds = new HashSet<>();
+      Set<String> knownIds = new LinkedHashSet<>();
+      for (Email email : cached) {
+        if (StringUtils.isNotEmpty(email.getMailHeaderId())) {
+          cachedOwnIds.add(email.getMailHeaderId());
+          knownIds.add(email.getMailHeaderId());
+        }
+        knownIds.addAll(EmailThreadingUtils.collectReferencedIds(email.getInReplyTo(), email.getMailReferences()));
+      }
+      // Ancestors the thread references but that are not in the cache: the archived tail.
+      List<String> missingIds = knownIds.stream()
+                                        .filter(id -> !cachedOwnIds.contains(id))
+                                        .limit(ARCHIVE_COMPLETION_SEARCH_LIMIT)
+                                        .toList();
+      if (missingIds.isEmpty()) {
+        // Nothing obviously missing — skip the IMAP round-trip so repeat opens stay fast.
+        return threadId;
+      }
+      return fetchArchivedThreadTail(username, threadId, userEmailSetting, missingIds, cachedOwnIds, knownIds);
+    } catch (Exception e) {
+      LOG.warn("Could not complete thread {} from archive for user {}", threadId, username, e);
+      return threadId;
+    }
+  }
+
+  /**
+   * Fetch the archived ancestors of a conversation from the provider's {@code \All}
+   * superset and merge them into the thread. See {@link #completeThreadFromArchive}.
+   *
+   * @param username the mailbox owner
+   * @param threadId the conversation opened by the user
+   * @param userEmailSetting the user's connector binding
+   * @param missingIds the {@code Message-ID}s referenced but not yet cached
+   * @param cachedOwnIds the {@code Message-ID}s already cached (any folder), for dedupe
+   * @param knownIds every id in the conversation, used to unify thread ids after insert
+   * @return the canonical thread id after any merge (see {@link #completeThreadFromArchive})
+   */
+  private String fetchArchivedThreadTail(String username,
+                                         String threadId,
+                                         UserEmailSetting userEmailSetting,
+                                         List<String> missingIds,
+                                         Set<String> cachedOwnIds,
+                                         Set<String> knownIds) throws MessagingException, IllegalAccessException {
+    Store store = null;
+    IMAPFolder allMail = null;
+    try {
+      store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
+      allMail = findAllMailFolder(store);
+      if (allMail == null) {
+        // Non-Gmail: archived mail lives in a real \Archive folder already synced by 4B.
+        return threadId;
+      }
+      allMail.open(Folder.READ_ONLY);
+      Message[] found = allMail.search(buildMessageIdSearchTerm(missingIds));
+      if (found == null || found.length == 0) {
+        return threadId;
+      }
+      // Prefetch flags/envelope/threading headers in one round-trip before reading ids.
+      FetchProfile fetchProfile = new FetchProfile();
+      fetchProfile.add(FetchProfile.Item.FLAGS);
+      fetchProfile.add(FetchProfile.Item.ENVELOPE);
+      fetchProfile.add(UIDFolder.FetchProfileItem.UID);
+      fetchProfile.add("References");
+      fetchProfile.add("In-Reply-To");
+      fetchProfile.add("Thread-Index");
+      allMail.fetch(found, fetchProfile);
+      // Keep only genuinely-missing messages: a hit may be an INBOX message that is also
+      // in All Mail (same Message-ID, different per-folder UID) — caching it again would
+      // duplicate it. Dedupe by Message-ID, not by UID.
+      List<Message> toCache = new ArrayList<>();
+      for (Message message : found) {
+        String id = ((MimeMessage) message).getMessageID();
+        if (StringUtils.isNotEmpty(id) && !cachedOwnIds.contains(id)) {
+          toCache.add(message);
+        }
+      }
+      if (toCache.isEmpty()) {
+        return threadId;
+      }
+      createEmails(allMail, toCache.toArray(new Message[0]), username, MailFolder.ALL_MAIL);
+      // The archived root references nothing cached, so createEmails may have started it
+      // in its own thread. Unify every thread id now carried by the conversation's known
+      // messages into the oldest canonical id.
+      return unifyConversationThreads(username, threadId, knownIds);
+    } finally {
+      if (allMail != null && allMail.isOpen()) {
+        try {
+          allMail.close(false);
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing All Mail folder for user {}", username, messagingException);
+        }
+      }
+      if (store != null && store.isConnected()) {
+        try {
+          store.close();
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing store for user {}", username, messagingException);
+        }
+      }
+    }
+  }
+
+  /**
+   * An IMAP search matching any of the given {@code Message-ID}s (an {@code OR} of
+   * {@code HEADER Message-ID} terms).
+   *
+   * @param messageIds the ids to match, at least one
+   * @return the search term
+   */
+  private SearchTerm buildMessageIdSearchTerm(List<String> messageIds) {
+    List<SearchTerm> terms = messageIds.stream().map(id -> (SearchTerm) new MessageIDTerm(id)).toList();
+    if (terms.size() == 1) {
+      return terms.get(0);
+    }
+    return new OrTerm(terms.toArray(new SearchTerm[0]));
+  }
+
+  /**
+   * Collapse into one thread every thread id currently carried by any message whose
+   * {@code Message-ID} belongs to the conversation, choosing the oldest as canonical.
+   * Merge-only, so it can only join fragments, never split a thread.
+   *
+   * @param username the mailbox owner
+   * @param threadId the conversation opened by the user (kept in the merge set)
+   * @param knownIds every {@code Message-ID} in the conversation
+   * @return the canonical (oldest) thread id after the merge
+   */
+  private String unifyConversationThreads(String username, String threadId, Set<String> knownIds) {
+    Set<String> threadIds = new LinkedHashSet<>(emailBoxStorage.getSiblingThreadIds(username, new ArrayList<>(knownIds)));
+    if (StringUtils.isNotEmpty(threadId)) {
+      threadIds.add(threadId);
+    }
+    if (threadIds.size() <= 1) {
+      return threadId;
+    }
+    List<String> ids = new ArrayList<>(threadIds);
+    String canonicalThreadId = emailBoxStorage.getOldestThreadId(username, ids);
+    List<String> threadIdsToMerge = ids.stream().filter(id -> !id.equals(canonicalThreadId)).toList();
+    emailBoxStorage.mergeThreads(username, canonicalThreadId, threadIdsToMerge);
+    return canonicalThreadId;
+  }
+
+  /**
+   * The provider's "all mail" superset — Gmail's {@code \All} ("All Mail" / "Tous les
+   * messages"). This is the folder bulk sync deliberately skips (see
+   * {@link #findSyncableArchiveFolder}); thread completion targets it on demand.
+   * Returns null when the provider exposes no such superset (most non-Gmail servers),
+   * where archived mail already lives in a synced {@code \Archive} folder instead.
+   *
+   * @param store an open IMAP store
+   * @return the {@code \All} folder, or null
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder findAllMailFolder(Store store) throws MessagingException {
+    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
+      if (!(folder instanceof IMAPFolder)) {
+        continue;
+      }
+      IMAPFolder imapFolder = (IMAPFolder) folder;
+      if (!imapFolder.exists()) {
+        continue;
+      }
+      for (String attr : imapFolder.getAttributes()) {
+        if (attr.equalsIgnoreCase("\\All")) {
+          return imapFolder;
+        }
+      }
+      String name = imapFolder.getFullName().toLowerCase();
+      if (name.contains("all mail") || name.contains("tous les messages")) {
+        return imapFolder;
+      }
+    }
+    return null;
   }
 
   /**
