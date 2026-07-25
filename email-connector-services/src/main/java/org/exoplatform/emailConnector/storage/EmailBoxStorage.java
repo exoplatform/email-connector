@@ -68,12 +68,12 @@ public class EmailBoxStorage {
     return fromEntity(emailBoxEntity, false, false, null, null, true, false);
   }
 
-  public void markEmailAsNotRecent(Long mailRemoteId, String userId) {
-    emailBoxDao.markEmailAsNotRecent(mailRemoteId, userId);
+  public void markEmailAsNotRecent(Long mailRemoteId, String userId, String folder) {
+    emailBoxDao.markEmailAsNotRecent(mailRemoteId, userId, folder);
   }
 
-  public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus) {
-    emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus);
+  public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
+    emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus, folder);
   }
 
   /**
@@ -115,17 +115,18 @@ public class EmailBoxStorage {
     }
   }
 
-  public void updateThreadInfo(String userId, Long mailRemoteId, String threadId, String inReplyTo, String mailReferences) {
-    emailBoxDao.updateThreadInfo(userId, mailRemoteId, threadId, inReplyTo, mailReferences);
+  public void updateThreadInfo(String userId, Long mailRemoteId, String threadId, String inReplyTo, String mailReferences, String folder) {
+    emailBoxDao.updateThreadInfo(userId, mailRemoteId, threadId, inReplyTo, mailReferences, folder);
   }
 
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
                                                String userId,
                                                String userEmail,
+                                               String folder,
                                                boolean withAttachments,
                                                boolean withRecipients,
                                                boolean withProfile) {
-    EmailBoxEntity emailBoxEntity = emailBoxDao.findByMailRemoteIdAndUserId(mailRemoteId, userId);
+    EmailBoxEntity emailBoxEntity = emailBoxDao.findByMailRemoteIdAndUserIdAndFolder(mailRemoteId, userId, folder);
     return fromEntity(emailBoxEntity, withAttachments, false, userId, userEmail, withRecipients, withProfile);
   }
 
@@ -138,6 +139,25 @@ public class EmailBoxStorage {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(userId);
     return emailBoxEntities.stream()
                            .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, null, false, false))
+                           .toList();
+  }
+
+  public List<Email> getEmails(String userId, String folder) {
+    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndFolderWithAttachments(userId, folder);
+    return emailBoxEntities.stream()
+                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, null, false, false))
+                           .toList();
+  }
+
+  /**
+   * All cached messages of a conversation, across every folder (INBOX, SENT,
+   * ARCHIVE), oldest first — the read model for the conversation reader. Bodies
+   * and recipients are loaded so each message renders in full.
+   */
+  public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail) {
+    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndThreadIdWithAttachments(userId, threadId);
+    return emailBoxEntities.stream()
+                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, false, userId, userEmail, true, true))
                            .toList();
   }
 

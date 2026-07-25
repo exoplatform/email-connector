@@ -32,10 +32,21 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<EmailBoxEntity> findByUserIdWithAttachments(@Param("userId")
   String userId);
 
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.mailRemoteId = :mailRemoteId ORDER BY email.receivedDate DESC")
-  EmailBoxEntity findByMailRemoteIdAndUserId(@Param("mailRemoteId")
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByUserIdAndFolderWithAttachments(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.threadId = :threadId ORDER BY email.receivedDate ASC")
+  List<EmailBoxEntity> findByUserIdAndThreadIdWithAttachments(@Param("userId")
+  String userId, @Param("threadId")
+  String threadId);
+
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId ORDER BY email.receivedDate DESC")
+  EmailBoxEntity findByMailRemoteIdAndUserIdAndFolder(@Param("mailRemoteId")
   long mailRemoteId, @Param("userId")
-  String userId);
+  String userId, @Param("folder")
+  String folder);
 
   void deleteByUserId(String userId);
 
@@ -47,18 +58,20 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   @Transactional
   @Modifying
-  @Query("UPDATE EmailBoxEntity email SET email.read = :readStatus WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :userId AND (email.read IS NULL OR email.read <> :readStatus)")
+  @Query("UPDATE EmailBoxEntity email SET email.read = :readStatus WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read <> :readStatus)")
   void updateReadStatusByMailRemoteIds(@Param("mailRemoteIds")
   List<Long> mailRemoteIds, @Param("userId")
   String userId, @Param("readStatus")
-  boolean readStatus);
+  boolean readStatus, @Param("folder")
+  String folder);
 
   @Transactional
   @Modifying
-  @Query("UPDATE EmailBoxEntity email SET email.recent = false WHERE email.mailRemoteId = :mailRemoteId AND email.userId = :userId")
+  @Query("UPDATE EmailBoxEntity email SET email.recent = false WHERE email.mailRemoteId = :mailRemoteId AND email.userId = :userId AND email.folder = :folder")
   void markEmailAsNotRecent(@Param("mailRemoteId")
   Long mailRemoteId, @Param("userId")
-  String userId);
+  String userId, @Param("folder")
+  String folder);
 
   @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")
@@ -85,12 +98,13 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   @Transactional
   @Modifying
-  @Query("UPDATE EmailBoxEntity email SET email.threadId = :threadId, email.inReplyTo = :inReplyTo, email.mailReferences = :mailReferences WHERE email.userId = :userId AND email.mailRemoteId = :mailRemoteId")
+  @Query("UPDATE EmailBoxEntity email SET email.threadId = :threadId, email.inReplyTo = :inReplyTo, email.mailReferences = :mailReferences WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId")
   void updateThreadInfo(@Param("userId")
   String userId, @Param("mailRemoteId")
   Long mailRemoteId, @Param("threadId")
   String threadId, @Param("inReplyTo")
   String inReplyTo, @Param("mailReferences")
-  String mailReferences);
+  String mailReferences, @Param("folder")
+  String folder);
 
 }
