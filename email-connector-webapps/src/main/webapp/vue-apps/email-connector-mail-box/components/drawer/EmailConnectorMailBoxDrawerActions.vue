@@ -41,25 +41,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
     </v-btn>
     <email-connector-mail-box-drawer-action-menu
-      v-if="hasWebmailAccess && hasEmailListToolbarExtension"
-      :webmail-url="webmailUrl" />
-    <template v-else>
-      <extension-registry-components
-        ref="emailListToolbarExtension"
-        name="EmailList"
-        type="email-list-toolbar"
-        parent-element="span"
-        element="span"
-        class="my-auto" /> 
-      <v-btn
-        v-if="hasWebmailAccess"
-        @click="openWebmail()"
-        target="_blank"
-        :title="$t('emailConnector.mailBox.list.drawer.webmail.button.title')"
-        icon>
-        <v-icon size="20" class="icon-default-color">fa-external-link-alt</v-icon>
-      </v-btn>
-    </template>
+      :current-folder="currentFolder"
+      :has-webmail-access="hasWebmailAccess" />
   </div>
   <div v-else-if="hasSelectedEmails">
     <template v-if="top">
@@ -142,11 +125,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 export default {
-  data() {
-    return {
-      hasEmailListToolbarExtension: false,
-    };
-  },
   props: {
     emails: {
       type: Array,
@@ -168,6 +146,11 @@ export default {
       type: String,
       default: null,
     },
+    // The folder currently listed (INBOX / SENT / ARCHIVE), for the ⋮ folder switch.
+    currentFolder: {
+      type: String,
+      default: 'INBOX',
+    },
     top: {
       type: Boolean,
       default: true,
@@ -185,9 +168,6 @@ export default {
     },
   },
   created() {
-    document.addEventListener('email-list-toolbar-extension-loaded', () => {
-      this.hasEmailListToolbarExtension = true;
-    });
     this.$root.$on('open-webmail', this.openWebmail);
   },
   methods: {
