@@ -130,6 +130,10 @@ public class EmailBoxStorage {
     emailBoxDao.updateThreadInfo(userId, mailRemoteId, threadId, inReplyTo, mailReferences, folder, threadIndexRoot);
   }
 
+  public void updateThreadIndexRoot(String userId, Long mailRemoteId, String folder, String threadIndexRoot) {
+    emailBoxDao.updateThreadIndexRoot(userId, mailRemoteId, folder, threadIndexRoot);
+  }
+
   public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
                                                String userId,
                                                String userEmail,
