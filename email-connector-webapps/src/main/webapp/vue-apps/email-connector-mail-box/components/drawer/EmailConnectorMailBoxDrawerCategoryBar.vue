@@ -22,10 +22,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <v-chip
       v-for="category in assignedCategories"
       :key="category.id"
-      x-small
+      small
       close
-      outlined
       color="primary"
+      text-color="white"
       @click:close="toggle(category, false)">
       {{ category.name }}
     </v-chip>
