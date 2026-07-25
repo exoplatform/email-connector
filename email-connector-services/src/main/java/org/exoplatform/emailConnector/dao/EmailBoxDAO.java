@@ -83,7 +83,10 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("mailHeaderIds")
   List<String> mailHeaderIds);
 
-  @Query("SELECT email.threadId, COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL GROUP BY email.threadId")
+  // Count DISTINCT messages per thread (by Message-ID), matching the reader which
+  // shows the same message once even when it is cached in several folders (e.g. INBOX
+  // and ALL_MAIL). A raw row count would over-report by the cross-folder duplicates.
+  @Query("SELECT email.threadId, COUNT(DISTINCT email.mailHeaderId) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.mailHeaderId IS NOT NULL GROUP BY email.threadId")
   List<Object[]> countMessagesByThread(@Param("userId")
   String userId);
 
