@@ -90,8 +90,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <categories-filter
         v-model="selectedCategoryId"
-        class="full-width border-box-sizing application-border application-border-radius py-3 pe-4 ps-7"
+        :category-ids="emailCategoryIds"
+        class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
         object-type="email"
+        scrollable
         hide-on-empty />
       <email-connector-mail-box-drawer-content
         :emails="emails"
@@ -126,8 +128,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <categories-filter
           v-if="!expanded"
           v-model="selectedCategoryId"
-          class="full-width border-box-sizing application-border application-border-radius py-3 pe-4 ps-7"
+          :category-ids="emailCategoryIds"
+          class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
           object-type="email"
+          scrollable
           hide-on-empty />
         <template v-if="hasEmails">
           <template v-if="expanded">
@@ -176,6 +180,7 @@ export default {
       selectEmailPlaceHolder: false,
       selectedCategoryId: null,
       selectedCategoryIds: [],
+      emailCategoryIds: [],
       deletedEmailIds: [],
       archivedEmailIds: [],
       currentFolder: 'INBOX'
@@ -183,6 +188,11 @@ export default {
   },
   created() {
     this.isRefreshing = false;
+    // The add-on's own email categories are the children of the Inbox category; feeding
+    // their ids to the platform filter makes it open "inside the Inbox" — showing those
+    // children directly as chips, rather than an Inbox parent the user must drill into.
+    this.$emailConnectorMailBoxService.getAvailableEmailCategories()
+      .then(list => this.emailCategoryIds = (list || []).map(category => category.id));
     this.$root.$on('switch-folder', this.onSwitchFolder);
     this.onOpenEmailDetailContent = (mailRemoteId) => {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
@@ -224,6 +234,7 @@ export default {
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$on('delete-email', this.onDeleteEmail);
     this.$root.$on('archive-email', this.onArchiveEmail);
+    this.$root.$on('email-categories-updated', this.onCategoriesUpdated);
     this.$root.$on('open-email-detail-drawer', () => {
       this.email = null;
     });
@@ -260,6 +271,7 @@ export default {
     this.$root.$off('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$off('delete-email', this.onDeleteEmail);
     this.$root.$off('archive-email', this.onArchiveEmail);
+    this.$root.$off('email-categories-updated', this.onCategoriesUpdated);
     this.$root.$off('switch-folder', this.onSwitchFolder);
   },
   computed: {
@@ -468,6 +480,20 @@ export default {
       }
     },
     // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
+    // A category was assigned/removed from the detail view; patch the matching
+    // emails the main list holds so the categories filter reflects it live.
+    onCategoriesUpdated({ mailRemoteIds, categoryId, assign }) {
+      const targetIds = new Set(mailRemoteIds || []);
+      (this.emailBox?.emails || []).forEach(email => {
+        if (!targetIds.has(email.mailRemoteId)) {
+          return;
+        }
+        const current = email.categoryIds || [];
+        this.$set(email, 'categoryIds', assign
+          ? Array.from(new Set([...current, categoryId]))
+          : current.filter(id => id !== categoryId));
+      });
+    },
     onSwitchFolder(folder) {
       if (folder === this.currentFolder) {
         return;
