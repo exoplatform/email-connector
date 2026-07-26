@@ -23,9 +23,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     allow-expand
     @expand-updated="updateExpand"
     :loading="loading"
-    :use-filter="canSearch"
-    :filter-placeholder="$t('emailConnector.mailBox.search.placeholder')"
-    @filter-updated="onFilterUpdated"
     :confirm-close="activeDownload"
     :go-back-button="canGoBack"
     :confirm-close-labels="{
@@ -91,30 +88,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :sync-in-progress="syncInProgress" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
-      <email-connector-mail-box-drawer-search-results
-        v-if="searchActive"
-        :results="mergedSearchResults"
-        :total-matches="searchTotalMatches"
-        :server-searching="searchServerRunning"
-        :server-error="searchServerError"
-        @open-result="openSearchResult" />
-      <template v-else>
-        <categories-filter
-          v-model="selectedCategoryId"
-          :category-ids="emailCategoryIds"
-          class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-          object-type="email"
-          scrollable
-          hide-on-empty />
-        <email-connector-mail-box-drawer-content
-          :emails="emails"
-          :email="email"
-          :selected-emails="selectedEmails"
-          :select-mode="selectMode"
-          :indeterminate="indeterminate"
-          expanded
-          @update:selected-emails="selectedEmails = $event" />
-      </template>
+      <categories-filter
+        v-model="selectedCategoryId"
+        :category-ids="emailCategoryIds"
+        class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
+        object-type="email"
+        scrollable
+        hide-on-empty />
+      <email-connector-mail-box-drawer-content
+        :emails="emails"
+        :email="email"
+        :selected-emails="selectedEmails"
+        :select-mode="selectMode"
+        :indeterminate="indeterminate"
+        expanded
+        @update:selected-emails="selectedEmails = $event" />
     </template>
     <template v-if="emailBoxDrawer && !loading" #content>
       <v-list-item v-if="syncBlocked" class="full-height align-center">
@@ -136,13 +124,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </div>
         </v-list-item-content>
       </v-list-item>
-      <email-connector-mail-box-drawer-search-results
-        v-else-if="searchActive && !expanded"
-        :results="mergedSearchResults"
-        :total-matches="searchTotalMatches"
-        :server-searching="searchServerRunning"
-        :server-error="searchServerError"
-        @open-result="openSearchResult" />
       <template v-else>
         <categories-filter
           v-if="!expanded"
@@ -182,29 +163,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-// Categorization runs after the sync reports done, in batches, and a large mailbox takes
-// several minutes. Two numbers govern how long the drawer keeps watching for the results.
-
-// Give up after this long even if categories are still arriving, so a mailbox with
-// categorization switched off never polls indefinitely.
-const CATEGORY_WATCH_MAX_MS = 600000;
-
-// Stop once nothing new has landed for this many consecutive polls (2s each, so ~60s).
-// It has to comfortably exceed the gap between two batches finishing: at three polls the
-// first lull between batches looked like the end and the drawer stopped after one batch.
-const CATEGORY_WATCH_QUIET_POLLS = 30;
-
-// How long typing must pause before the whole-mailbox server search fires; the
-// instant local matches don't wait for it.
-const SEARCH_DEBOUNCE_MS = 400;
-
-// How many server hits to page in (the server returns the newest matches).
-const SEARCH_PAGE_SIZE = 20;
-
-// A fetch refused mid-sync (HTTP 409) is retried once after this pause; the sync
-// window it collides with is short-lived.
-const SEARCH_FETCH_RETRY_MS = 3000;
-
 export default {
   data() {
     return {
@@ -212,9 +170,6 @@ export default {
       emailBox: null,
       loading: false,
       syncInProgress: false,
-      categoryWatchDeadline: null,
-      lastCategoryCount: 0,
-      stableCategoryPolls: 0,
       webmailUrl: null,
       refreshInterval: null,
       activeDownload: null,
@@ -228,25 +183,15 @@ export default {
       emailCategoryIds: [],
       deletedEmailIds: [],
       archivedEmailIds: [],
-      currentFolder: 'INBOX',
-      searchTerm: '',
-      searchServerResults: [],
-      searchTotalMatches: 0,
-      searchServerRunning: false,
-      searchServerError: false,
-      searchRequestId: 0,
-      searchOpening: false
+      currentFolder: 'INBOX'
     };
   },
   created() {
     this.isRefreshing = false;
-    // Plain instance field: a pending timeout id needs no reactivity.
-    this.searchDebounceTimer = null;
     // The add-on's own email categories are the children of the Inbox category; feeding
     // their ids to the platform filter makes it open "inside the Inbox" — showing those
     // children directly as chips, rather than an Inbox parent the user must drill into.
-    // The promise is kept so open() can await the ids before trusting a stored default view.
-    this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
+    this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.emailCategoryIds = (list || []).map(category => category.id));
     this.$root.$on('switch-folder', this.onSwitchFolder);
     this.onOpenEmailDetailContent = (mailRemoteId) => {
@@ -360,55 +305,7 @@ export default {
       return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
     },
     hasFullAppLeft() {
-      return this.expanded && (this.hasEmails || this.selectedCategoryId || this.searchActive) && !this.syncBlocked;
-    },
-    // The header filter is the platform's own (exo-drawer); it hides the go-back
-    // button, so it steps aside while select mode needs that button.
-    canSearch() {
-      return !this.syncBlocked && !this.selectMode;
-    },
-    searchActive() {
-      return !!this.searchTerm;
-    },
-    // Instant matches from the emails the app already holds (the whole cached
-    // window of the current folder), on the same fields the server searches —
-    // subject and sender — so the instant list and the final one agree.
-    localSearchMatches() {
-      const term = this.searchTerm.toLowerCase();
-      if (!term) {
-        return [];
-      }
-      return (this.emailBox?.emails || [])
-        .filter(e => (e.subject || '').toLowerCase().includes(term)
-          || (e.sender?.name || '').toLowerCase().includes(term)
-          || (e.sender?.address || '').toLowerCase().includes(term))
-        .map(e => ({
-          mailRemoteId: e.mailRemoteId,
-          folder: e.folder || this.currentFolder,
-          subject: e.subject,
-          sender: e.sender,
-          receivedDate: e.receivedDate,
-          read: e.read,
-          cached: true,
-          // Kept because the rows double as the reader's list, whose category
-          // filter dereferences categoryIds on every row.
-          categoryIds: e.categoryIds || [],
-        }));
-    },
-    // Local matches shown instantly, server hits MERGED in when they land — never
-    // replacing: the server returns only the newest matches, so with many hits a
-    // result the user is already reading could vanish under a replacement. Keyed
-    // on (folder, uid), server fields winning.
-    mergedSearchResults() {
-      const merged = new Map();
-      this.localSearchMatches.forEach(result => merged.set(`${result.folder}:${result.mailRemoteId}`, result));
-      this.searchServerResults.forEach(result => {
-        const key = `${result.folder}:${result.mailRemoteId}`;
-        // Server hits carry no categoryIds; default them for the reader's list.
-        merged.set(key, { categoryIds: [], ...merged.get(key), ...result });
-      });
-      return Array.from(merged.values())
-        .sort((first, second) => new Date(second.receivedDate) - new Date(first.receivedDate));
+      return this.expanded && (this.hasEmails || this.selectedCategoryId) && !this.syncBlocked;
     },
     canGoBack() {
       return this.selectMode && !this.expanded;
@@ -429,11 +326,6 @@ export default {
       this.selectedCategoryIds = val && await this.$emailConnectorMailBoxService.getSubcategoryIds(val) || [];
     },
     emails() {
-      // A search hit opened in the reader is often outside the listed folder view;
-      // a background refresh must not knock it out for the placeholder.
-      if (this.searchActive) {
-        return;
-      }
       if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
         this.selectEmailPlaceHolder = true;
       }
@@ -458,26 +350,12 @@ export default {
         this.syncInProgress = true;
         await this.$nextTick();
       }
-      // Always (re)open on the inbox, without a leftover search.
+      // Always (re)open on the inbox.
       this.currentFolder = 'INBOX';
-      this.clearSearch();
       this.loading = true;
       this.emailBoxDrawer = true;
       await this.loadEmailBox();
       this.loading = false;
-      // Position the inbox on the user's chosen default category view (if any). The stored
-      // view can point at a category that no longer exists (e.g. a removed default), and
-      // filtering on it would reject — so apply it only once the available category ids are
-      // loaded and the stored id is one of them.
-      this.$emailConnectorCommonService.getUserEmailSetting()
-        .then(async setting => {
-          const defaultView = setting && setting.defaultCategoryView || null;
-          await this.emailCategoryIdsPromise;
-          this.selectedCategoryId = defaultView && this.emailCategoryIds.includes(defaultView) ? defaultView : null;
-        })
-        .catch(() => {
-          // Keep the inbox unfiltered when the setting cannot be read.
-        });
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
@@ -499,125 +377,8 @@ export default {
     canDisplaySelectEmailPlaceHolder(emails) {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
-    // The drawer's header filter field emitted a new value: instant local matches
-    // apply as soon as the debounce elapses, and the server search runs alongside.
-    // Clearing the field returns to the normal folder view at once.
-    onFilterUpdated(text) {
-      window.clearTimeout(this.searchDebounceTimer);
-      const term = (text || '').trim();
-      if (!term) {
-        this.clearSearch();
-        return;
-      }
-      this.searchDebounceTimer = window.setTimeout(() => this.runSearch(term), SEARCH_DEBOUNCE_MS);
-    },
-    runSearch(term) {
-      this.searchTerm = term;
-      this.cancelSelectMode();
-      this.runServerSearch();
-    },
-    // The whole-mailbox search (IMAP SEARCH on the server). The request id guards
-    // against out-of-order answers: only the latest term's response may land.
-    runServerSearch() {
-      const requestId = ++this.searchRequestId;
-      this.searchServerRunning = true;
-      this.searchServerError = false;
-      this.$emailConnectorMailBoxService.searchEmails(this.searchTerm, this.currentFolder, SEARCH_PAGE_SIZE)
-        .then(page => {
-          if (requestId !== this.searchRequestId) {
-            return;
-          }
-          this.searchServerResults = page?.results || [];
-          this.searchTotalMatches = page?.totalMatches || 0;
-        })
-        .catch(() => {
-          if (requestId !== this.searchRequestId) {
-            return;
-          }
-          // The instant local matches stay listed; only flag that the whole-mailbox
-          // pass could not run.
-          this.searchServerError = true;
-          this.searchServerResults = [];
-          this.searchTotalMatches = 0;
-        })
-        .finally(() => {
-          if (requestId === this.searchRequestId) {
-            this.searchServerRunning = false;
-          }
-        });
-    },
-    clearSearch() {
-      window.clearTimeout(this.searchDebounceTimer);
-      // Invalidate any in-flight server answer.
-      this.searchRequestId++;
-      this.searchTerm = '';
-      this.searchServerResults = [];
-      this.searchTotalMatches = 0;
-      this.searchServerRunning = false;
-      this.searchServerError = false;
-    },
-    // Open one search hit: a cached one goes straight to the existing reader; an
-    // uncached one is first pulled into the cache through the fetch endpoint.
-    async openSearchResult(result) {
-      if (this.searchOpening) {
-        return;
-      }
-      this.searchOpening = true;
-      this.loading = true;
-      try {
-        if (!result.cached) {
-          await this.fetchSearchedEmail(result);
-        }
-        this.markResultOpened(result);
-        if (this.expanded) {
-          const email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(result.mailRemoteId, result.folder);
-          this.email = email;
-          this.selectEmailPlaceHolder = false;
-          this.$root.$emit('set-opened', result.mailRemoteId);
-        } else {
-          this.$root.$emit('open-email-detail-drawer', result.mailRemoteId, this.mergedSearchResults, this.syncInProgress, this.webmailUrl, true);
-        }
-      } catch (error) {
-        // A fetch refused because a synchronization is running (already retried
-        // once) is a "one moment", not an error.
-        const syncing = error?.status === 409;
-        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-          alertType: syncing ? 'warning' : 'error',
-          alertMessage: this.$t(syncing ? 'emailConnector.mailBox.search.syncInProgress' : 'emailConnector.mailBox.search.openError'),
-        }}));
-      } finally {
-        this.loading = false;
-        this.searchOpening = false;
-      }
-    },
-    // Pull an uncached hit into the local cache. A 409 means a synchronization
-    // holds the mailbox for a moment — deliberately, to keep duplicate rows out —
-    // so wait briefly and retry once before giving up.
-    fetchSearchedEmail(result, retried) {
-      return this.$emailConnectorMailBoxService.fetchSearchedEmail(result.mailRemoteId, result.folder)
-        .catch(error => {
-          if (error?.status === 409 && !retried) {
-            return new Promise(resolve => window.setTimeout(resolve, SEARCH_FETCH_RETRY_MS))
-              .then(() => this.fetchSearchedEmail(result, true));
-          }
-          throw error;
-        });
-    },
-    // Reflect an open on the hit's own row: it is now cached, and read.
-    markResultOpened(result) {
-      const serverRow = this.searchServerResults
-        .find(row => row.mailRemoteId === result.mailRemoteId && row.folder === result.folder);
-      if (serverRow) {
-        this.$set(serverRow, 'cached', true);
-        this.$set(serverRow, 'read', true);
-      }
-    },
     close() {
-      this.categoryWatchDeadline = null;
       this.stopAutoRefresh();
-      this.clearSearch();
-      // Also empty the drawer's own header filter field for the next open.
-      this.$refs.emailBoxDrawer?.resetFilter?.();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
@@ -713,12 +474,9 @@ export default {
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
       this.webmailUrl = this.emailBox.webmailUrl;
       this.$root.$emit('refresh-emails', this.emails);
-      if (this.syncInProgress) {
-        // A new sync started: any previous post-sync watch is over.
-        this.categoryWatchDeadline = null;
-      } else {
+      if (!this.syncInProgress) {
+        this.stopAutoRefresh();
         this.$root.$emit('synchronize-finished');
-        this.watchIncomingCategories();
       }
     },
     // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
@@ -743,14 +501,7 @@ export default {
       this.currentFolder = folder;
       this.cancelSelectMode();
       this.loading = true;
-      this.loadEmailBox().finally(() => {
-        this.loading = false;
-        // A running search follows the folder: local matches recompute from the
-        // new list, and the server search re-runs scoped to the new folder.
-        if (this.searchActive) {
-          this.runServerSearch();
-        }
-      });
+      this.loadEmailBox().finally(() => this.loading = false);
     },
     startAutoRefresh() {
       if (this.refreshInterval) {
@@ -768,32 +519,6 @@ export default {
           this.isRefreshing = false;
         }
       }, 2000); 
-    },
-    // AI categorization only starts once the sync reports it is done, and then keeps writing
-    // categories for a while. Stopping the refresh the moment the sync finishes left the user
-    // staring at an uncategorized list until they reloaded the page by hand. So keep polling
-    // past the end of the sync, and stop as soon as nothing new lands rather than on a timer
-    // alone — a mailbox with categorization switched off must not poll for minutes.
-    watchIncomingCategories() {
-      if (!this.categoryWatchDeadline) {
-        this.categoryWatchDeadline = Date.now() + CATEGORY_WATCH_MAX_MS;
-        this.lastCategoryCount = this.countAppliedCategories();
-        this.stableCategoryPolls = 0;
-        this.startAutoRefresh();
-        return;
-      }
-      const count = this.countAppliedCategories();
-      this.stableCategoryPolls = count === this.lastCategoryCount ? this.stableCategoryPolls + 1 : 0;
-      this.lastCategoryCount = count;
-      if (this.stableCategoryPolls >= CATEGORY_WATCH_QUIET_POLLS || Date.now() > this.categoryWatchDeadline) {
-        this.categoryWatchDeadline = null;
-        this.stopAutoRefresh();
-      }
-    },
-    // How many categories are applied across the listed emails; its only use is to notice
-    // that categorization has stopped changing anything.
-    countAppliedCategories() {
-      return (this.emailBox?.emails || []).reduce((total, email) => total + (email.categoryIds || []).length, 0);
     },
     stopAutoRefresh() {
       if (this.refreshInterval) {
