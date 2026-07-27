@@ -85,6 +85,11 @@ public class EmailConnectorUtils {
 
   public static final String   ACCESS_WEBMAIL          = "exo.email.accessWebmail";
 
+  // Broadcast after a sync when new emails were fetched: source = username,
+  // data = the new emails' IMAP UIDs (mailRemoteIds). Lets other add-ons react
+  // to freshly-arrived mail (e.g. the enterprise AI auto-categorization).
+  public static final String   NEW_EMAILS_SYNCED       = "exo.email.newEmailsSynced";
+
   public static final String   EMAIL_FEATURE           = "email";
 
   private static final int     DEFAULT_AVATAR_WIDTH    = 350;
