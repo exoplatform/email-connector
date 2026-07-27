@@ -302,7 +302,7 @@
     {
       "name": "add_email_category",
       "title": "Add a category to emails",
-      "description": "Tag one or more emails (identified by their IMAP mail_remote_id) with an existing category id obtained from list_email_categories. Emails already in the category are skipped. Confirm the affected emails and the category with the user before tagging.",
+      "description": "Tag one or more emails (identified by their IMAP mail_remote_id) with an existing category id obtained from list_email_categories. Emails already in the category are skipped. This is a low-risk, reversible label (use remove_email_category to undo), so it runs without a confirmation prompt.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -311,7 +311,7 @@
         },
         "required": ["mail_remote_ids", "category_id"]
       },
-      "require_approval": true,
+      "require_approval": false,
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -322,7 +322,7 @@
     {
       "name": "remove_email_category",
       "title": "Remove a category from emails",
-      "description": "Remove a category id from one or more emails (identified by their IMAP mail_remote_id). Emails not currently in the category are skipped. Confirm the affected emails and the category with the user before removing.",
+      "description": "Remove a category id from one or more emails (identified by their IMAP mail_remote_id). Emails not currently in the category are skipped. This is a low-risk, reversible label change (use add_email_category to re-apply), so it runs without a confirmation prompt.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -331,7 +331,7 @@
         },
         "required": ["mail_remote_ids", "category_id"]
       },
-      "require_approval": true,
+      "require_approval": false,
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
