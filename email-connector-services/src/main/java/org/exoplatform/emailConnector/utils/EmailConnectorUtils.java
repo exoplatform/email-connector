@@ -33,7 +33,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -54,7 +53,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.RequestLifeCycle;
-import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -78,15 +76,8 @@ public class EmailConnectorUtils {
 
   public static final String   EMAIL_BOX_SYNC_JOB_NAME = "EmailBoxSyncJob";
 
-  // Chosen from measurements on a real mailbox at 500, 1000 and 5000 messages. Every size
-  // works and the cost is linear, so the number is a trade rather than a limit: at a
-  // thousand a full reset takes about five minutes, a sync that finds nothing new costs two
-  // or three seconds, and the cached bodies come to some sixty megabytes per user. Five
-  // thousand is supported and stays available to administrators, but it multiplies all
-  // three -- and the routine sync cost is paid by every user on every period, so it is the
-  // one that adds up on a busy server rather than the reset anybody actually notices.
   public static final int      DEFAULT_EMAIL_BOX_CACHE_SIZE =
-                                          Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "1000"));
+                                          Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "500"));
 
   public static final String   OPEN_EMAIL              = "exo.email.openEmail";
 
@@ -97,19 +88,7 @@ public class EmailConnectorUtils {
   // Broadcast after a sync when new emails were fetched: source = username,
   // data = the new emails' IMAP UIDs (mailRemoteIds). Lets other add-ons react
   // to freshly-arrived mail (e.g. the enterprise AI auto-categorization).
-  // A large sync broadcasts this SEVERAL times, one group of messages at a time,
-  // so a consumer can start working while the rest of the mailbox is still
-  // downloading; NEW_EMAILS_SYNC_COMPLETED marks the end of the run.
   public static final String   NEW_EMAILS_SYNCED       = "exo.email.newEmailsSynced";
-
-  // Broadcast once per inbox sync, after the last NEW_EMAILS_SYNCED group: source =
-  // username, data = ALL the IMAP UIDs this sync cached. This is the "no more groups
-  // are coming" signal a consumer needs for whole-run work -- per-message events can
-  // never tell it when a conversation split across groups is finally complete.
-  public static final String   NEW_EMAILS_SYNC_COMPLETED = "exo.email.newEmailsSyncCompleted";
-
-  /** Raised whenever a user's unread count may have changed (sync or read status update). */
-  public static final String   UNREAD_EMAILS_CHANGED   = "exo.email.unreadEmailsChanged";
 
   public static final String   EMAIL_FEATURE           = "email";
 
@@ -121,43 +100,14 @@ public class EmailConnectorUtils {
 
   private static final Log     LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
-  /**
-   * Extracts a message's displayable body and attachment descriptors, without
-   * measuring anything — the historical entry point, kept for callers (and tests)
-   * that do not care about the fetch count.
-   *
-   * @param messageUid the message's IMAP UID, stamped on attachment descriptors
-   * @param message the live message
-   * @return the extracted content, never null
-   */
-  public static EmailContent getMessageContent(long messageUid, Message message) {
-    return getMessageContent(messageUid, message, null);
-  }
-
-  /**
-   * Extracts a message's displayable body and attachment descriptors, counting the
-   * MIME part bodies actually pulled from the server as it goes. Each leaf part read
-   * here is its own {@code FETCH BODY[n]} round trip — the structure comes free with
-   * the batched CONTENT_INFO fetch, but every text body and every inline {@code cid:}
-   * image does not. The counter exists to answer one sizing question with data
-   * instead of suspicion: whether deferring inline-image download to message-open is
-   * worth building, which is exactly the ratio of parts fetched to messages fetched.
-   *
-   * @param messageUid the message's IMAP UID, stamped on attachment descriptors
-   * @param message the live message
-   * @param fetchedParts incremented once per part body pulled from the server; null
-   *          when nobody is measuring
-   * @return the extracted content, never null
-   */
   @SneakyThrows
-  public static EmailContent getMessageContent(long messageUid, Message message, LongAdder fetchedParts) {
+  public static EmailContent getMessageContent(long messageUid, Message message) {
     EmailContent content = new EmailContent("");
     try {
       if (message.isMimeType("text/*")) {
-        countPartFetch(fetchedParts);
         content = safeGetContent(message);
       } else if (message.getContent() instanceof MimeMultipart) {
-        content = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) message.getContent(), null, fetchedParts);
+        content = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) message.getContent(), null);
       }
     } catch (Exception e) {
       LOG.warn("Error extracting content from message: From={}, Subject={}", message.getFrom()[0], message.getSubject(), e);
@@ -165,109 +115,6 @@ public class EmailConnectorUtils {
     String bodyText = content.getBody() != null ? content.getBody().trim() : "";
     content.setBody(bodyText);
     return content;
-  }
-
-  /**
-   * Records one MIME part body pulled from the server, when a measurement is running.
-   * A {@link LongAdder} because the body prefetch workers extract content on their own
-   * threads — the counter is shared memory, never a database touch, so worker purity
-   * holds.
-   *
-   * @param fetchedParts the sync's counter, or null when nobody is measuring
-   */
-  private static void countPartFetch(LongAdder fetchedParts) {
-    if (fetchedParts != null) {
-      fetchedParts.increment();
-    }
-  }
-
-  /** Nobody typed this: a newsletter, receipt, alert or automated report. */
-  public static final String MAIL_TYPE_AUTOMATED = "automated";
-
-  /** Relayed by a discussion list; usually written by a person, so judge the sender. */
-  public static final String MAIL_TYPE_LIST      = "list";
-
-  /** Mass distribution: marketing and newsletter blasts. */
-  public static final String MAIL_TYPE_BULK      = "bulk";
-
-  /** Written by a person straight to the recipient. */
-  public static final String MAIL_TYPE_PERSONAL  = "personal";
-
-  /**
-   * How the message reached the mailbox, from the distribution headers captured at sync.
-   * <p>
-   * Order matters and is deliberate. {@code automated} is tested first, so a bot posting to a
-   * mailing list is still machine mail. {@code list} requires a postable {@code List-Post}
-   * alongside {@code List-Id}: discussion lists set both, marketing senders rarely set
-   * List-Post, and some senders emit List-Id on plain marketing -- so List-Id alone cannot
-   * separate a colleague writing to a group from a newsletter blast. Anything left carrying
-   * only List-Unsubscribe is bulk distribution.
-   * <p>
-   * This is transport, not authorship: {@code list} means "a person probably wrote it, judge
-   * the sender", NOT "this is personal mail". A newsletter relayed into a group is still
-   * automated, which is exactly why {@code automated} outranks {@code list}.
-   *
-   * @param email the message to classify
-   * @return one of {@link #MAIL_TYPE_AUTOMATED}, {@link #MAIL_TYPE_LIST},
-   *         {@link #MAIL_TYPE_BULK} or {@link #MAIL_TYPE_PERSONAL}
-   */
-  public static String getMailType(Email email) {
-    if (email == null) {
-      return MAIL_TYPE_PERSONAL;
-    }
-    if (email.isAutoSubmitted()) {
-      return MAIL_TYPE_AUTOMATED;
-    }
-    if (email.isHasListId() && email.isHasListPost()) {
-      return MAIL_TYPE_LIST;
-    }
-    if (email.isHasListUnsubscribe() || email.isHasListId()) {
-      return MAIL_TYPE_BULK;
-    }
-    return MAIL_TYPE_PERSONAL;
-  }
-
-  private static final Pattern FORWARD_SUBJECT = Pattern.compile("^\\s*(fw|fwd|tr|wg|rv)\\s*:", Pattern.CASE_INSENSITIVE);
-
-  /**
-   * Whether a person forwarded this message on rather than writing it themselves.
-   * <p>
-   * Worth knowing because a forward's visible content belongs to whoever wrote the original —
-   * typically an automated receipt or booking confirmation — while the act that matters is a
-   * person choosing to send it to the recipient. A consumer reading only the body sees the
-   * machine text and misjudges the message.
-   *
-   * @param email the message to inspect
-   * @return {@code true} when the subject carries a forward marker
-   */
-  public static boolean isForward(Email email) {
-    return email != null && email.getSubject() != null && FORWARD_SUBJECT.matcher(email.getSubject()).find();
-  }
-
-  /**
-   * The address of whoever actually wrote the message, which differs from the sender only when
-   * a mailing list rewrote {@code From} to itself. Falls back to {@code Reply-To}, which lists
-   * generally point at the author, and finally to nothing when the sender is already the
-   * author.
-   *
-   * @param email the message to inspect
-   * @return the original author's address, or {@code null} when the sender is the author
-   */
-  public static String getOriginalSender(Email email) {
-    if (email == null) {
-      return null;
-    }
-    if (StringUtils.isNotBlank(email.getOriginalSender())) {
-      return email.getOriginalSender();
-    }
-    if (email.getReplyTo() != null && !email.getReplyTo().isEmpty() && email.getReplyTo().get(0) != null) {
-      String replyTo = email.getReplyTo().get(0).getAddress();
-      String sender = email.getSender() == null ? null : email.getSender().getAddress();
-      if (StringUtils.isNotBlank(replyTo) && !StringUtils.equalsIgnoreCase(replyTo, sender)) {
-        return replyTo;
-      }
-    }
-    return null;
   }
 
   public static int getEmailBoxUserSyncPeriod(UserEmailSetting userEmailSetting) {
@@ -381,26 +228,9 @@ public class EmailConnectorUtils {
     }
   }
 
-  /**
-   * Walks a multipart body, assembling the displayable HTML (or plain-text
-   * fallback), inlining {@code cid:} images as data URLs and describing the
-   * attachments. Navigating the multipart tree is free — the structure was fetched
-   * with CONTENT_INFO — but each leaf body read (text parts, inline images) is its
-   * own server round trip, which is why those reads and only those reads tick
-   * {@code fetchedParts}.
-   *
-   * @param messageUid the message's IMAP UID, stamped on attachment descriptors
-   * @param mimeMultipart the (sub-)tree to walk
-   * @param parentPartNumber the IMAP section prefix of this subtree, null at the root
-   * @param fetchedParts incremented once per part body pulled, null when not measuring
-   * @return the assembled content, never null
-   * @throws MessagingException if the structure cannot be read
-   * @throws IOException if a part's content cannot be read
-   */
   private static EmailContent getHtmlFromMimeMultipart(long messageUid,
                                                        MimeMultipart mimeMultipart,
-                                                       String parentPartNumber,
-                                                       LongAdder fetchedParts) throws MessagingException, IOException {
+                                                       String parentPartNumber) throws MessagingException, IOException {
     EmailContent htmlContent = null;
     EmailContent plainContent = null;
     Map<String, String> cidImageMap = new HashMap<>();
@@ -410,13 +240,11 @@ public class EmailConnectorUtils {
       String disposition = bodyPart.getDisposition();
       String partNumber = (parentPartNumber == null ? "" : parentPartNumber + ".") + (i + 1);
       if (bodyPart.isMimeType("text/html") && htmlContent == null) {
-        countPartFetch(fetchedParts);
         htmlContent = safeGetContent(bodyPart);
       } else if (bodyPart.isMimeType("text/plain") && plainContent == null) {
-        countPartFetch(fetchedParts);
         plainContent = safeGetContent(bodyPart);
       } else if (bodyPart.getContent() instanceof MimeMultipart) {
-        EmailContent nested = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) bodyPart.getContent(), partNumber, fetchedParts);
+        EmailContent nested = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) bodyPart.getContent(), partNumber);
         if (nested != null && !nested.getBody().isEmpty()) {
           if (nested.isHtml()) {
             if (htmlContent == null) {
@@ -441,7 +269,6 @@ public class EmailConnectorUtils {
       } else if (bodyPart.isMimeType("image/*") && Part.INLINE.equalsIgnoreCase(disposition)) {
         String cid = getCid(bodyPart);
         if (cid != null) {
-          countPartFetch(fetchedParts);
           cidImageMap.put(cid, encodeToBase64DataUrl(bodyPart));
         }
       } else if (disposition == null || Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
