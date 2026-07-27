@@ -316,8 +316,16 @@ public class EmailBoxService {
       List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey);
       cleanupObsoleteEmails(uidFolder, folderEmails, serverMessages, username, emailBoxCacheSize);
       if (notify) {
-        sendNotification(uidFolder, folderEmails, serverMessages, username);
+        // Fire the new-emails event FIRST (categorization must not depend on the
+        // notification step) and isolate sendNotification: it re-hits the IMAP folder
+        // per message, so a dropped connection (FolderClosedException) must neither skip
+        // categorization nor fail the whole sync (which would escalate the user to BLOCKED).
         broadcastNewEmailsSynced(username, newEmailIds);
+        try {
+          sendNotification(uidFolder, folderEmails, serverMessages, username);
+        } catch (Exception e) {
+          LOG.warn("Error sending the new-email notification for user {}", username, e);
+        }
       }
     } finally {
       if (folder.isOpen()) {
