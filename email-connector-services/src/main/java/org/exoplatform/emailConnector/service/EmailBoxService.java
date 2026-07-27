@@ -313,10 +313,11 @@ public class EmailBoxService {
       fetchProfile.add("Thread-Index");
       folder.fetch(serverMessages, fetchProfile);
       List<Email> folderEmails = emailBoxStorage.getEmails(username, folderKey);
-      createEmails(uidFolder, serverMessages, username, folderKey);
+      List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey);
       cleanupObsoleteEmails(uidFolder, folderEmails, serverMessages, username, emailBoxCacheSize);
       if (notify) {
         sendNotification(uidFolder, folderEmails, serverMessages, username);
+        broadcastNewEmailsSynced(username, newEmailIds);
       }
     } finally {
       if (folder.isOpen()) {
@@ -326,6 +327,25 @@ public class EmailBoxService {
           LOG.warn("Error when closing folder {} for user {}", folderKey, username, messagingException);
         }
       }
+    }
+  }
+
+  /**
+   * Broadcasts {@link EmailConnectorUtils#NEW_EMAILS_SYNCED} with the freshly fetched inbox
+   * emails' ids so other add-ons can react to new mail (e.g. the enterprise AI
+   * auto-categorization). The add-on stays AI-agnostic; a broadcast failure never breaks sync.
+   *
+   * @param username the synchronized user
+   * @param newEmailIds the IMAP UIDs of the emails created during this sync
+   */
+  private void broadcastNewEmailsSynced(String username, List<Long> newEmailIds) {
+    if (newEmailIds == null || newEmailIds.isEmpty()) {
+      return;
+    }
+    try {
+      listenerService.broadcast(EmailConnectorUtils.NEW_EMAILS_SYNCED, username, newEmailIds);
+    } catch (Exception e) {
+      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.NEW_EMAILS_SYNCED, username, e);
     }
   }
 
@@ -1145,10 +1165,11 @@ public class EmailBoxService {
     }
   }
 
-  private void createEmails(UIDFolder uidFolder,
+  private List<Long> createEmails(UIDFolder uidFolder,
                             Message[] serverMessages,
                             String username,
                             String folderKey) throws MessagingException, IllegalAccessException {
+    List<Long> newEmailIds = new ArrayList<>();
     for (Message message : serverMessages) {
       try {
         long messageUid = uidFolder.getUID(message);
@@ -1203,6 +1224,7 @@ public class EmailBoxService {
                                                 references,
                                                 folderKey,
                                                 threadIndexRoot != null ? threadIndexRoot : ""));
+          newEmailIds.add(messageUid);
 
         } else {
           emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(messageUid),
@@ -1235,6 +1257,7 @@ public class EmailBoxService {
         LOG.warn("Error when storing email with subject {} for user {}", message.getSubject(), username, e);
       }
     }
+    return newEmailIds;
   }
 
   /**
