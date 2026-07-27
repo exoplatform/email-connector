@@ -132,6 +132,10 @@ public class EmailBoxService {
   // backfill and every subsequent sync on large mailboxes.
   private static final int        NON_INBOX_FOLDER_SYNC_LIMIT                                 = 100;
 
+  // Cooldown before a BLOCKED mailbox is allowed to retry a sync, so BLOCKED is a temporary
+  // backoff rather than a permanent dead-end (a successful retry clears it).
+  private static final long       BLOCKED_RETRY_COOLDOWN_MS                                   = 30 * 60 * 1000L;
+
   // Caps the OR-of-Message-ID search when completing a thread from the archive on
   // open, so an unusually long conversation can't build a giant IMAP SEARCH.
   private static final int        ARCHIVE_COMPLETION_SEARCH_LIMIT                             = 50;
@@ -1571,7 +1575,11 @@ public class EmailBoxService {
       return false;
     }
     if (SyncStatus.BLOCKED.equals(userEmailSetting.getEmailSyncStatus())) {
-      return false;
+      // BLOCKED is a temporary backoff, not a permanent dead-end: after repeated failures
+      // (e.g. transient IMAP/connection issues) allow one retry once a cooldown has elapsed,
+      // so the user recovers automatically -- a subsequent successful sync clears BLOCKED.
+      long retryAfter = userEmailSetting.getLastEmailSyncStartDate() + BLOCKED_RETRY_COOLDOWN_MS;
+      return System.currentTimeMillis() > retryAfter;
     }
     if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
       long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate() +
