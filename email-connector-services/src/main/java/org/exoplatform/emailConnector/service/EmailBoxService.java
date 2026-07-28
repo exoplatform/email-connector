@@ -274,6 +274,48 @@ public class EmailBoxService {
   }
 
   /**
+   * Reset the user's mailbox and run a full re-synchronization from the server.
+   * The locally-cached emails (and their category links) are cleared first, then a
+   * fresh {@link #synchronize(String)} is run: because the cache is empty, every
+   * message in the server window is treated as new and re-downloaded. The messages
+   * on the server are never modified. This is a recovery action for a stale or
+   * inconsistent local cache; it also clears a BLOCKED / failed-attempt backoff so
+   * the immediate resync is allowed to run. Manually-applied categories are dropped
+   * (re-created rows get new local ids); AI auto-categorization, when enabled,
+   * re-tags the messages on the resync.
+   *
+   * @param username user whose mailbox is reset and re-synchronized
+   * @throws IllegalAccessException if the user is not allowed to synchronize the
+   *           email connector
+   * @throws IllegalStateException if a synchronization is currently running
+   */
+  public void resetAndResynchronize(String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
+    }
+    // Refuse to reset while a sync is genuinely running (recent IN_PROGRESS), so the
+    // two do not race over the cache. A stale IN_PROGRESS (past the sync period, i.e. a
+    // stuck sync) is allowed through, since recovering from it is the point of a reset.
+    if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
+      long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate()
+          + EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
+      if (System.currentTimeMillis() <= nextAllowedSync) {
+        throw new IllegalStateException("emailConnector.reset.syncInProgress");
+      }
+    }
+    // Clear the local cache (deleteEmails also unlinks each email's category links).
+    deleteUserEmails(username);
+    // Clear any BLOCKED / failed-attempt backoff so the immediate resync is not refused.
+    userEmailSetting.setEmailSyncFailedAttemps(0);
+    userEmailSetting.setEmailSyncStatus(SyncStatus.SUCCESS);
+    userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
+    // Full re-download from the server.
+    synchronize(username);
+  }
+
+  /**
    * Synchronize one remote folder into the local cache: pull its most recent
    * {@code emailBoxCacheSize} messages, create the new ones (stamped with
    * {@code folderKey}), and drop the locally-cached ones no longer present. IMAP
@@ -326,7 +368,7 @@ public class EmailBoxService {
         // categorization nor fail the whole sync (which would escalate the user to BLOCKED).
         broadcastNewEmailsSynced(username, newEmailIds);
         try {
-          sendNotification(uidFolder, folderEmails, serverMessages, username);
+          sendNotification(folderEmails, username);
         } catch (Exception e) {
           LOG.warn("Error sending the new-email notification for user {}", username, e);
         }
@@ -1636,19 +1678,32 @@ public class EmailBoxService {
     userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
   }
 
-  private void sendNotification(UIDFolder uidFolder, List<Email> userEmails, Message[] serverMessages, String userName) {
-    long maxLocalUid = userEmails.stream().mapToLong(Email::getMailRemoteId).max().orElse(0L);
-    long newUnreadCount = Arrays.stream(serverMessages).filter(msg -> {
-      try {
-        long uid = uidFolder.getUID(msg);
-        boolean isNew = uid > maxLocalUid;
-        boolean isUnread = !msg.isSet(Flags.Flag.SEEN);
-        return isNew && isUnread;
-      } catch (MessagingException e) {
-        LOG.warn("Error reading message flags", e);
-        return false;
-      }
-    }).count();
+  /**
+   * Fires the new-emails notification for the messages just synced into the INBOX,
+   * counting only the ones that are both new (IMAP UID beyond the highest one already
+   * cached before this sync) and still unread, and — crucially — only those the user's
+   * per-category notification preference allows (see
+   * {@link #shouldNotifyForNewEmail(Email, UserEmailSetting)}). Category links are keyed
+   * by the local email id, so the freshly-synced INBOX is re-read from the local cache
+   * (its {@code categoryIds}) rather than inspected on the raw IMAP messages.
+   *
+   * @param userEmails the INBOX emails cached before this sync (used to derive the
+   *          highest already-known UID, i.e. what counts as "new")
+   * @param userName the mailbox owner
+   */
+  private void sendNotification(List<Email> userEmails, String userName) {
+    long maxLocalUid = userEmails.stream()
+                                 .filter(email -> email.getMailRemoteId() != null)
+                                 .mapToLong(Email::getMailRemoteId)
+                                 .max()
+                                 .orElse(0L);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(userName);
+    List<Email> currentEmails = emailBoxStorage.getEmails(userName, MailFolder.INBOX);
+    long newUnreadCount = currentEmails.stream()
+                                       .filter(email -> email.getMailRemoteId() != null && email.getMailRemoteId() > maxLocalUid)
+                                       .filter(email -> !email.isRead())
+                                       .filter(email -> shouldNotifyForNewEmail(email, userEmailSetting))
+                                       .count();
     if (newUnreadCount > 0) {
       NotificationContext ctx = NotificationContextImpl.cloneInstance()
                                                        .append(NewEmailsNotificationPlugin.RECEIVER, userName)
@@ -1658,6 +1713,43 @@ public class EmailBoxService {
          .with(ctx.makeCommand(PluginKey.key(NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN)))
          .execute(ctx);
     }
+  }
+
+  /**
+   * Decides whether a freshly-synced inbox email should trigger a new-mail notification,
+   * according to the user's per-category notification preference. The rule is deliberately
+   * conservative: it never silently drops a notification when category filtering cannot be
+   * applied. A notification is SUPPRESSED only when all of the following hold — the user
+   * asked to be notified for selected categories only ({@code notifyAllCategories == false}),
+   * the email is linked to one or more categories, and none of them is among the user's
+   * {@code notifyCategories}. In every other case the email notifies, including:
+   * <ul>
+   *   <li>{@code notifyAllCategories} is {@code null} or {@code true} — the default, notify for
+   *       every new email;</li>
+   *   <li>the email has no category link (uncategorized — which also covers the case where AI
+   *       auto-categorization is disabled, so emails simply have no category links).</li>
+   * </ul>
+   *
+   * @param email the freshly-synced inbox email; its {@code categoryIds} are the linked
+   *          category ids
+   * @param userEmailSetting the mailbox owner's settings (may be {@code null})
+   * @return {@code true} to fire the notification, {@code false} to suppress it
+   */
+  boolean shouldNotifyForNewEmail(Email email, UserEmailSetting userEmailSetting) {
+    // Default / "notify for everything": notifyAllCategories null or true.
+    if (userEmailSetting == null || !Boolean.FALSE.equals(userEmailSetting.getNotifyAllCategories())) {
+      return true;
+    }
+    // Fallback — never silently drop when we cannot filter by category: an uncategorized
+    // email (also the AI-off case) always notifies.
+    List<Long> emailCategoryIds = email.getCategoryIds();
+    if (CollectionUtils.isEmpty(emailCategoryIds)) {
+      return true;
+    }
+    // Category filtering is on and the email is categorized: notify only if at least one of
+    // its categories is among the ones the user opted into.
+    List<Long> notifyCategories = userEmailSetting.getNotifyCategories();
+    return notifyCategories != null && emailCategoryIds.stream().anyMatch(notifyCategories::contains);
   }
 
   private BodyPart getPartByPath(Part root, String partNumber) throws Exception {

@@ -31,6 +31,45 @@ export function getUserEmailSetting() {
   });
 }
 
+export function updateEmailPreferences(preferences) {
+  return fetch('/email-connector/rest/user-email-setting/preferences', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify(preferences)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating email preferences');
+    }
+  });
+}
+
+export function resetAndResyncMailbox() {
+  return fetch('/email-connector/rest/email-box/reset', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when resetting the mailbox');
+    }
+  });
+}
+
+export function getAvailableEmailCategories() {
+  return fetch('/email-connector/rest/email-box/categories/available', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then(resp => (resp?.ok ? resp.json() : []));
+}
+
 export function openEmailBox() {
   const quickActions = extensionRegistry.loadExtensions('QuickAction', 'Extension');
   if (quickActions?.length) {
