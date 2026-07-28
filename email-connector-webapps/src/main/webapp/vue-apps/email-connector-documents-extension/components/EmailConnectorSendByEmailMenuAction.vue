@@ -58,7 +58,6 @@ export default {
         id: file.sourceID || file.id,
         name: file.name,
         title: file.title || file.name,
-        mimetype: file.mimeType,
         mimeType: file.mimeType,
         size: file.size,
         path: file.path,
