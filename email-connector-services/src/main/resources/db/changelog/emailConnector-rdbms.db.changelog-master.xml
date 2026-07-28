@@ -241,148 +241,16 @@
     </createIndex>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-22">
-    <!-- The bulk-mail signals, read from the standard headers at sync time while the
-         MimeMessage is still at hand. Consumers only see the cached row, so without these the
-         only way to guess is to search the body for the word "unsubscribe", which also matches
-         signatures, mailing list footers and quoted replies, and so mislabels genuine human
-         mail. Existing rows default to false and are corrected on their next sync.
-         Stored as separate facts rather than one derived verdict, because they do not mean the
-         same thing: Auto-Submitted and Precedence say "no human wrote this", while
-         List-Unsubscribe only says "this travelled through bulk distribution machinery" - a
-         mailing list stamps it on every message it relays, including one a colleague typed by
-         hand. Collapsing them into a single flag made list traffic indistinguishable from
-         marketing and filed genuine business mail as automated. List-Id plus a postable
-         List-Post is what actually identifies a mailing list, since marketing senders rarely
-         set List-Post. Keeping the raw facts means the classification rule can be changed
-         without re-downloading every mailbox.
-         Upstream reached this shape in two steps - a single BULK_MAIL flag, then its
-         replacement by these four - which is why feature/ai-contribution carries both an add
-         and a drop. Neither has ever run on this lineage, so they are collapsed here rather
-         than backported literally: replaying them would add a NOT NULL column to EMAIL_BOX and
-         drop it again on every install and every upgrade, for a column no code ever reads. -->
+    <!-- Whether the message was machine-sent, decided from the standard bulk headers at sync
+         time (List-Unsubscribe, Auto-Submitted, Precedence) while the MimeMessage is still at
+         hand. Consumers only see the cached row, so without this the only way to guess is to
+         search the body for the word "unsubscribe", which also matches signatures, mailing
+         list footers and quoted replies, and so mislabels genuine human mail. Existing rows
+         default to false and are corrected on their next sync. -->
     <addColumn tableName="EMAIL_BOX">
-      <column name="AUTO_SUBMITTED" type="BOOLEAN" defaultValueBoolean="false">
+      <column name="BULK_MAIL" type="BOOLEAN" defaultValueBoolean="false">
         <constraints nullable="false"/>
       </column>
-      <column name="HAS_LIST_ID" type="BOOLEAN" defaultValueBoolean="false">
-        <constraints nullable="false"/>
-      </column>
-      <column name="HAS_LIST_POST" type="BOOLEAN" defaultValueBoolean="false">
-        <constraints nullable="false"/>
-      </column>
-      <column name="HAS_LIST_UNSUBSCRIBE" type="BOOLEAN" defaultValueBoolean="false">
-        <constraints nullable="false"/>
-      </column>
-    </addColumn>
-  </changeSet>
-  <changeSet author="email-connector" id="1.0.0-23">
-    <!-- Who actually wrote a message that arrived through a mailing list. Google Groups and
-         Mailman rewrite From to the list itself ("Name via the-list <the-list@example.com>"),
-         so the stored sender identifies the transport, not the author - and a colleague's
-         message then looks exactly like a newsletter relayed into the same group. The original
-         address survives in X-Original-Sender; without it, anything list-borne is
-         indistinguishable. Empty for directly-delivered mail. -->
-    <addColumn tableName="EMAIL_BOX">
-      <column name="ORIGINAL_SENDER" type="VARCHAR(320)"/>
-    </addColumn>
-  </changeSet>
-  <changeSet author="email-connector" id="1.0.0-24">
-    <!-- The reconcile view this change introduced (findSyncViewByUserIdAndFolder) runs on
-         every routine sync of every connected mailbox: it filters on (USER_ID, FOLDER) and
-         sorts on RECEIVED_DATE. The indexes above cover USER_ID, (USER_ID, THREAD_ID) and
-         (USER_ID, THREAD_INDEX_ROOT) - none covers FOLDER or RECEIVED_DATE, so the database
-         range-scans USER_ID alone and filters and sorts the rest in memory. That is a whole
-         mailbox's rows on the hottest query of the sync path, at a cache size that now
-         defaults to 1000 and that administrators may raise to 5000. -->
-    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE">
-      <column name="USER_ID"/>
-      <column name="FOLDER"/>
-      <column name="RECEIVED_DATE"/>
-    </createIndex>
-  </changeSet>
-  <changeSet author="email-connector" id="1.0.0-25" dbms="oracle,postgresql,hsqldb">
-    <createSequence sequenceName="SEQ_EMAIL_CONTACT_ID" startValue="1"/>
-  </changeSet>
-  <changeSet author="email-connector" id="1.0.0-27">
-    <!-- The per-user contact store. Rows are collected from the user's own cached mail
-         (SOURCE=COLLECTED), typed by hand (MANUAL), or synced from a CardDAV address
-         book (CARDDAV, phase 3). The lowercased PRIMARY_EMAIL with USER_ID is the
-         natural key: the same person arriving from several sources resolves in place
-         on the one row. SUPPRESSED is the tombstone for "remove a collected contact":
-         a hard delete would only see the row re-collected on the next mail from that
-         person. SORT_BUCKET is the alphabetical bucket (0..25 = A..Z of the
-         diacritic-stripped sort key, 26 = everything else): ordering by an integer
-         keeps the letter buckets contiguous on every dialect, where ordering
-         punctuation and non-Latin scripts against letters is collation-dependent.
-         EMAILS and PHONES are semicolon-joined value lists (the EMAIL_BOX recipients
-         precedent) and stay VARCHAR so they remain LIKE-searchable on HSQLDB.
-         HREF / ETAG / VCARD_UID / CONNECTOR_ID / PHOTO_FILE_ID / ORGANIZATION / TITLE
-         are the CardDAV bookkeeping seam, null until phase 3 fills them. -->
-    <createTable tableName="EMAIL_CONTACT">
-      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
-        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_CONTACT"/>
-      </column>
-      <column name="USER_ID" type="VARCHAR(250)">
-        <constraints nullable="false"/>
-      </column>
-      <column name="SOURCE" type="VARCHAR(20)">
-        <constraints nullable="false"/>
-      </column>
-      <column name="PRIMARY_EMAIL" type="VARCHAR(320)">
-        <constraints nullable="false"/>
-      </column>
-      <column name="EMAILS" type="VARCHAR(2000)"/>
-      <column name="DISPLAY_NAME" type="NVARCHAR(500)"/>
-      <column name="GIVEN_NAME" type="NVARCHAR(250)"/>
-      <column name="FAMILY_NAME" type="NVARCHAR(250)"/>
-      <column name="SORT_NAME" type="NVARCHAR(255)"/>
-      <column name="SORT_BUCKET" type="INT" defaultValueNumeric="26">
-        <constraints nullable="false"/>
-      </column>
-      <column name="PHONES" type="VARCHAR(500)"/>
-      <column name="ORGANIZATION" type="NVARCHAR(250)"/>
-      <column name="TITLE" type="NVARCHAR(250)"/>
-      <column name="PHOTO_FILE_ID" type="BIGINT"/>
-      <column name="HREF" type="VARCHAR(1000)"/>
-      <column name="ETAG" type="VARCHAR(250)"/>
-      <column name="VCARD_UID" type="VARCHAR(250)"/>
-      <column name="CONNECTOR_ID" type="BIGINT"/>
-      <column name="SUPPRESSED" type="BOOLEAN" defaultValueBoolean="false">
-        <constraints nullable="false"/>
-      </column>
-      <column name="SEEN_COUNT" type="BIGINT" defaultValueNumeric="0">
-        <constraints nullable="false"/>
-      </column>
-      <column name="LAST_SEEN_DATE" type="TIMESTAMP"/>
-      <column name="CREATED_DATE" type="TIMESTAMP"/>
-      <column name="UPDATED_DATE" type="TIMESTAMP"/>
-    </createTable>
-    <modifySql dbms="mysql">
-      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci" />
-    </modifySql>
-  </changeSet>
-  <changeSet author="email-connector" id="1.0.0-28">
-    <createIndex tableName="EMAIL_CONTACT" indexName="IDX_EMAIL_CONTACT_USER_ID">
-      <column name="USER_ID"/>
-    </createIndex>
-    <createIndex tableName="EMAIL_CONTACT" indexName="UQ_EMAIL_CONTACT_USER_EMAIL" unique="true">
-      <column name="USER_ID"/>
-      <column name="PRIMARY_EMAIL"/>
-    </createIndex>
-    <createIndex tableName="EMAIL_CONTACT" indexName="IDX_EMAIL_CONTACT_USER_SORT">
-      <column name="USER_ID"/>
-      <column name="SORT_BUCKET"/>
-      <column name="SORT_NAME"/>
-    </createIndex>
-  </changeSet>
-  <changeSet author="email-connector" id="1.0.0-29">
-    <!-- The platform identity a DIRECTORY row links to. Imported colleagues are
-         stored as a LINK (this username), not a copy: name, avatar and address
-         resolve live from the profile at read time, so a rename or a departure
-         never rots into a stale snapshot. The name/email columns of such a row
-         are only the fallback shown when the profile is gone. -->
-    <addColumn tableName="EMAIL_CONTACT">
-      <column name="PLATFORM_USERNAME" type="VARCHAR(250)"/>
     </addColumn>
   </changeSet>
 </databaseChangeLog>
