@@ -16,28 +16,55 @@
  */
 package org.exoplatform.emailConnector.entity;
 
+import java.util.List;
+
 import org.exoplatform.emailConnector.model.SyncStatus;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class UserEmailSettingEntity {
 
-  private String     emailConnectorId;
+  private String       emailConnectorId;
 
-  private String     emailAddress;
+  private String       emailAddress;
 
-  private String     emailPassword;
+  private String       emailPassword;
 
-  private Integer    emailBoxUserSyncPeriod;
+  private Integer      emailBoxUserSyncPeriod;
 
-  private SyncStatus emailSyncStatus;
+  private SyncStatus   emailSyncStatus;
 
-  private int        emailSyncFailedAttemps;
+  private int          emailSyncFailedAttemps;
 
-  private Long       lastEmailSyncStartDate;
+  private Long         lastEmailSyncStartDate;
+
+  // New-mail notification preference. notifyAllCategories null/true => notify for every new email
+  // (default, current behaviour); false => notify only for emails whose Inbox category is in
+  // notifyCategories. Unset (null) resolves to "All".
+  private Boolean      notifyAllCategories;
+
+  // Inbox category ids to be notified about when notifyAllCategories is false.
+  private List<Long>   notifyCategories;
+
+  // Default Inbox category the mailbox drawer opens positioned to; null => None (show all).
+  private Long         defaultCategoryView;
+
+  public UserEmailSettingEntity(String emailConnectorId,
+                                String emailAddress,
+                                String emailPassword,
+                                Integer emailBoxUserSyncPeriod,
+                                SyncStatus emailSyncStatus,
+                                int emailSyncFailedAttemps,
+                                Long lastEmailSyncStartDate) {
+    this.emailConnectorId = emailConnectorId;
+    this.emailAddress = emailAddress;
+    this.emailPassword = emailPassword;
+    this.emailBoxUserSyncPeriod = emailBoxUserSyncPeriod;
+    this.emailSyncStatus = emailSyncStatus;
+    this.emailSyncFailedAttemps = emailSyncFailedAttemps;
+    this.lastEmailSyncStartDate = lastEmailSyncStartDate;
+  }
 }
