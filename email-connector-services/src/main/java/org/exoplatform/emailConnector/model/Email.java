@@ -83,4 +83,11 @@ public class Email {
   // broken. Backend-only.
   @JsonIgnore
   private String               threadIndexRoot;
+
+  // Machine-sent mail (newsletter, notification, receipt, automated report), decided from
+  // the standard bulk headers (List-Unsubscribe, Auto-Submitted, Precedence) when the
+  // message was fetched. The headers only exist on the live message, so this is captured at
+  // sync time; a consumer reading the cache cannot recompute it. Backend-only.
+  @JsonIgnore
+  private boolean              bulkMail;
 }
