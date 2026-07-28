@@ -223,7 +223,8 @@ public class EmailBoxStorageTest {
                                                        null,
                                                        null,
                                                        "INBOX",
-                                                       null);
+                                                       null,
+                                                       false);
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
                                                                                                           "2",
@@ -262,7 +263,8 @@ public class EmailBoxStorageTest {
                      null,
                      null,
                      "INBOX",
-                     null);
+                     null,
+                     false);
   }
 
   private EmailAttachment emailAttachment() {

@@ -108,4 +108,10 @@ public class EmailBoxEntity {
   // the same conversation even when the References chain is broken.
   @Column(name = "THREAD_INDEX_ROOT")
   private String                      threadIndexRoot;
+
+  // Machine-sent mail (newsletter, notification, receipt, automated report), decided from
+  // the standard bulk headers when the message is fetched. Captured at sync time because
+  // the headers are only available on the live MimeMessage, never on the cached row.
+  @Column(name = "BULK_MAIL")
+  private boolean                     bulkMail;
 }
