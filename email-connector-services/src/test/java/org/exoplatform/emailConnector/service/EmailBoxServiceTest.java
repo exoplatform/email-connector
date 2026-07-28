@@ -385,6 +385,56 @@ public class EmailBoxServiceTest {
     verify(emailAtatchment).setMimeType("application/pdf");
   }
 
+  @Test
+  void shouldNotifyForNewEmailNotifyAllTrue() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(Boolean.TRUE);
+    setting.setNotifyCategories(List.of(1L));
+    // Notify-all wins even when the email's category is not among the selected ones.
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of(99L)), setting));
+  }
+
+  @Test
+  void shouldNotifyForNewEmailNotifyAllNull() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(null);
+    setting.setNotifyCategories(List.of(1L));
+    // Null resolves to "notify for everything" (the default).
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of(99L)), setting));
+  }
+
+  @Test
+  void shouldNotifyForNewEmailSelectedCategoriesMatch() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(Boolean.FALSE);
+    setting.setNotifyCategories(List.of(1L, 2L));
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of(2L, 5L)), setting));
+  }
+
+  @Test
+  void shouldNotifyForNewEmailSelectedCategoriesNoMatch() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(Boolean.FALSE);
+    setting.setNotifyCategories(List.of(1L, 2L));
+    assertEquals(false, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of(5L)), setting));
+  }
+
+  @Test
+  void shouldNotifyForNewEmailUncategorizedFallback() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(Boolean.FALSE);
+    setting.setNotifyCategories(List.of(1L, 2L));
+    // Fallback: an uncategorized email (also the AI-off case) always notifies.
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(null), setting));
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of()), setting));
+  }
+
+  private Email emailWithCategories(List<Long> categoryIds) {
+    Email email = email(TEST_USER);
+    email.setCategoryIds(categoryIds);
+    return email;
+  }
+
   private UserEmailSetting userEmailSetting() {
     return new UserEmailSetting("1", "testEmail", "testPassword", null, null, 0, 0L, null, null, "connector", true);
   }
