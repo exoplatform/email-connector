@@ -360,6 +360,12 @@ public class EmailBoxService {
       folder.fetch(serverMessages, fetchProfile);
       List<Email> folderEmails = emailBoxStorage.getEmails(username, folderKey);
       List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey);
+      LOG.info("Synchronized folder {} of user {}: {} message(s) on the server, {} newly cached, {} already known",
+               folderKey,
+               username,
+               serverMessages.length,
+               newEmailIds.size(),
+               serverMessages.length - newEmailIds.size());
       cleanupObsoleteEmails(uidFolder, folderEmails, serverMessages, username, emailBoxCacheSize);
       if (notify) {
         // Fire the new-emails event FIRST (categorization must not depend on the
@@ -394,9 +400,19 @@ public class EmailBoxService {
    */
   private void broadcastNewEmailsSynced(String username, List<Long> newEmailIds) {
     if (newEmailIds == null || newEmailIds.isEmpty()) {
+      // Traced on purpose: consumers only ever see messages that were *created* by this sync,
+      // so "nothing was new" and "the consumer is broken" are otherwise indistinguishable from
+      // the outside -- both are complete silence.
+      LOG.info("No new email to broadcast for user {}: this sync created no message, so '{}' consumers (e.g. AI auto-categorization) are not invoked",
+               username,
+               EmailConnectorUtils.NEW_EMAILS_SYNCED);
       return;
     }
     try {
+      LOG.info("Broadcasting '{}' for user {} with {} newly-cached message(s)",
+               EmailConnectorUtils.NEW_EMAILS_SYNCED,
+               username,
+               newEmailIds.size());
       listenerService.broadcast(EmailConnectorUtils.NEW_EMAILS_SYNCED, username, newEmailIds);
     } catch (Exception e) {
       LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.NEW_EMAILS_SYNCED, username, e);
