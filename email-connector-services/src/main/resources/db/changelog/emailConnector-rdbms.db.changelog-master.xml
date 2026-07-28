@@ -240,4 +240,17 @@
       <column name="THREAD_INDEX_ROOT"/>
     </createIndex>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-22">
+    <!-- Whether the message was machine-sent, decided from the standard bulk headers at sync
+         time (List-Unsubscribe, Auto-Submitted, Precedence) while the MimeMessage is still at
+         hand. Consumers only see the cached row, so without this the only way to guess is to
+         search the body for the word "unsubscribe", which also matches signatures, mailing
+         list footers and quoted replies, and so mislabels genuine human mail. Existing rows
+         default to false and are corrected on their next sync. -->
+    <addColumn tableName="EMAIL_BOX">
+      <column name="BULK_MAIL" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>

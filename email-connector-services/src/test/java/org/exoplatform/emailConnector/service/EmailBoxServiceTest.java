@@ -618,7 +618,8 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      "INBOX",
-                     null);
+                     null,
+                     false);
   }
 
   private EmailConnector emailConnector() {
