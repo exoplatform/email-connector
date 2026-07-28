@@ -234,6 +234,21 @@ public class EmailBoxService {
    *           connector
    */
   public void synchronize(String username) throws IllegalAccessException {
+    synchronize(username, false);
+  }
+
+  /**
+   * Synchronize the user's mailbox, optionally restricted to the inbox.
+   *
+   * @param username the mailbox owner
+   * @param inboxOnly when {@code true}, skip the Sent and Archive folders. They are only
+   *          needed so a conversation shows the user's own replies and archived messages
+   *          inline, they are never mutated locally, and re-fetching them costs one message
+   *          body per row -- so a caller that just needs a fresh inbox (see
+   *          {@link #resetAndResynchronize(String)}) should not pay for them.
+   * @throws IllegalAccessException if the user is not allowed to synchronize
+   */
+  private void synchronize(String username, boolean inboxOnly) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (!canSynchronize(userEmailSetting, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
@@ -247,16 +262,18 @@ public class EmailBoxService {
       // effort — a missing folder must not fail the sync) so a conversation shows the
       // user's own replies ("Me") and previously-archived messages inline.
       syncFolder(store.getFolder("INBOX"), MailFolder.INBOX, username, emailBoxCacheSize, true);
-      int nonInboxWindow = Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
-      try {
-        syncFolder(findSentFolder(store), MailFolder.SENT, username, nonInboxWindow, false);
-      } catch (Exception e) {
-        LOG.warn("Could not sync the Sent folder for user {}", username, e);
-      }
-      try {
-        syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, nonInboxWindow, false);
-      } catch (Exception e) {
-        LOG.warn("Could not sync the Archive folder for user {}", username, e);
+      if (!inboxOnly) {
+        int nonInboxWindow = Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
+        try {
+          syncFolder(findSentFolder(store), MailFolder.SENT, username, nonInboxWindow, false);
+        } catch (Exception e) {
+          LOG.warn("Could not sync the Sent folder for user {}", username, e);
+        }
+        try {
+          syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, nonInboxWindow, false);
+        } catch (Exception e) {
+          LOG.warn("Could not sync the Archive folder for user {}", username, e);
+        }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
     } catch (Exception e) {
@@ -274,15 +291,19 @@ public class EmailBoxService {
   }
 
   /**
-   * Reset the user's mailbox and run a full re-synchronization from the server.
-   * The locally-cached emails (and their category links) are cleared first, then a
-   * fresh {@link #synchronize(String)} is run: because the cache is empty, every
-   * message in the server window is treated as new and re-downloaded. The messages
-   * on the server are never modified. This is a recovery action for a stale or
-   * inconsistent local cache; it also clears a BLOCKED / failed-attempt backoff so
-   * the immediate resync is allowed to run. Manually-applied categories are dropped
-   * (re-created rows get new local ids); AI auto-categorization, when enabled,
-   * re-tags the messages on the resync.
+   * Reset the user's inbox and re-download it from the server. The cached INBOX rows
+   * (and their category links) are cleared first, then the inbox is synchronized
+   * again: because its cache is empty, every message in the server window is treated
+   * as new and re-downloaded. The messages on the server are never modified. This is
+   * a recovery action for a stale or inconsistent local cache; it also clears a
+   * BLOCKED / failed-attempt backoff so the immediate resync is allowed to run.
+   * Manually-applied categories are dropped (re-created rows get new local ids); AI
+   * auto-categorization, when enabled, re-tags the messages on the resync.
+   * <p>
+   * Scoped to the inbox on purpose: Sent and Archive are read-only mirrors kept for
+   * the conversation reader, so they cannot be the stale cache being recovered, and
+   * re-downloading them costs one message body per row -- minutes of waiting the
+   * caller gains nothing from. The scheduled sync keeps them current.
    *
    * @param username user whose mailbox is reset and re-synchronized
    * @throws IllegalAccessException if the user is not allowed to synchronize the
@@ -305,14 +326,18 @@ public class EmailBoxService {
         throw new IllegalStateException("emailConnector.reset.syncInProgress");
       }
     }
-    // Clear the local cache (deleteEmails also unlinks each email's category links).
-    deleteUserEmails(username);
+    // Clear the cached INBOX (deleteEmails also unlinks each email's category links). Sent
+    // and Archive are deliberately left alone: they are never mutated locally, so they cannot
+    // be the stale cache the user is recovering from, and re-downloading them costs a message
+    // body per row -- on a 100-message mailbox that is minutes of waiting for folders the
+    // inbox view, the notifications and the AI categorization never read.
+    deleteUserEmails(username, MailFolder.INBOX);
     // Clear any BLOCKED / failed-attempt backoff so the immediate resync is not refused.
     userEmailSetting.setEmailSyncFailedAttemps(0);
     userEmailSetting.setEmailSyncStatus(SyncStatus.SUCCESS);
     userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
-    // Full re-download from the server.
-    synchronize(username);
+    // Full re-download of the inbox; the scheduled sync keeps the other folders current.
+    synchronize(username, true);
   }
 
   /**
@@ -466,6 +491,17 @@ public class EmailBoxService {
    */
   public void deleteUserEmails(String username) {
     List<Email> emails = emailBoxStorage.getEmails(username);
+    deleteEmails(emails);
+  }
+
+  /**
+   * Delete the user's cached emails of a single folder, with their category links.
+   *
+   * @param username user whose emails will be deleted
+   * @param folder the {@link MailFolder} to clear
+   */
+  public void deleteUserEmails(String username, String folder) {
+    List<Email> emails = emailBoxStorage.getEmails(username, folder);
     deleteEmails(emails);
   }
 
