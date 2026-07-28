@@ -247,7 +247,8 @@ public class EmailBoxStorage {
                                                          email.getInReplyTo(),
                                                          email.getMailReferences(),
                                                          email.getFolder() != null ? email.getFolder() : MailFolder.INBOX,
-                                                         email.getThreadIndexRoot());
+                                                         email.getThreadIndexRoot(),
+                                                         email.isBulkMail());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -300,7 +301,8 @@ public class EmailBoxStorage {
                               emailBoxEntity.getInReplyTo(),
                               emailBoxEntity.getMailReferences(),
                               emailBoxEntity.getFolder(),
-                              emailBoxEntity.getThreadIndexRoot());
+                              emailBoxEntity.getThreadIndexRoot(),
+                              emailBoxEntity.isBulkMail());
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
