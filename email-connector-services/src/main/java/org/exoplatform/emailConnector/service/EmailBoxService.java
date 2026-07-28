@@ -648,9 +648,15 @@ public class EmailBoxService {
                                                boolean withRecipients,
                                                boolean withProfile,
                                                boolean broadcast) throws IllegalAccessException {
-    String userEmail = null;
+    // The mailbox owner's own address, needed to tell which recipients are "me" -- so it must
+    // be resolved for every caller, not only when the open-email event is broadcast. Deriving
+    // it from broadcastOpenEmail() made it a side effect of broadcasting: a caller that must
+    // not broadcast (a background job) silently got null here, and every recipient of every
+    // message then looked like somebody else.
+    UserEmailSetting readerSetting = userEmailSettingService.getUserEmailSetting(username);
+    String userEmail = readerSetting == null ? null : readerSetting.getEmailAddress();
     if (broadcast) {
-      userEmail = broadcastOpenEmail(username);
+      broadcastOpenEmail(username);
     }
     return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId,
                                                            username,
@@ -1341,7 +1347,8 @@ public class EmailBoxService {
                                                 inReplyTo,
                                                 references,
                                                 folderKey,
-                                                threadIndexRoot != null ? threadIndexRoot : ""));
+                                                threadIndexRoot != null ? threadIndexRoot : "",
+                                                isBulkMail(message)));
           newEmailIds.add(messageUid);
 
         } else {
@@ -1661,6 +1668,33 @@ public class EmailBoxService {
   private static String firstHeader(Message message, String name) throws MessagingException {
     String[] values = message.getHeader(name);
     return values != null && values.length > 0 ? values[0] : null;
+  }
+
+  /**
+   * Whether the message was sent by a machine rather than typed by a person, from the three
+   * standard headers senders use to mark bulk and automated mail: {@code List-Unsubscribe}
+   * (RFC 2369, newsletters and mailing lists), {@code Auto-Submitted} (RFC 3834, anything
+   * generated without human intervention -- the explicit value {@code no} means the opposite
+   * and is ignored) and the legacy {@code Precedence: bulk|list|junk}.
+   * <p>
+   * Captured here because headers exist only on the live message: a consumer reading the
+   * cached row later can at best search the body for the word "unsubscribe", which also hits
+   * signatures, mailing-list footers and quoted replies, and so mislabels genuine human mail
+   * as automated.
+   *
+   * @param message the freshly-fetched message
+   * @return {@code true} when any bulk/automated marker is present
+   */
+  private static boolean isBulkMail(Message message) throws MessagingException {
+    if (StringUtils.isNotBlank(firstHeader(message, "List-Unsubscribe"))) {
+      return true;
+    }
+    String autoSubmitted = firstHeader(message, "Auto-Submitted");
+    if (StringUtils.isNotBlank(autoSubmitted) && !StringUtils.equalsIgnoreCase(autoSubmitted.trim(), "no")) {
+      return true;
+    }
+    String precedence = firstHeader(message, "Precedence");
+    return precedence != null && StringUtils.equalsAnyIgnoreCase(precedence.trim(), "bulk", "list", "junk");
   }
 
   private boolean canSynchronize(UserEmailSetting userEmailSetting, String username) {
