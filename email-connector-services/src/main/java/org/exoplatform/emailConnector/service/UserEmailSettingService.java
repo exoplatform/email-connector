@@ -24,6 +24,8 @@ import javax.mail.MessagingException;
 import javax.mail.Session;
 import javax.mail.Store;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -137,6 +139,9 @@ public class UserEmailSettingService {
                                                                                userEmailSetting.getEmailSyncStatus(),
                                                                                userEmailSetting.getEmailSyncFailedAttemps(),
                                                                                userEmailSetting.getLastEmailSyncStartDate());
+    userEmailSettingEntity.setNotifyAllCategories(userEmailSetting.getNotifyAllCategories());
+    userEmailSettingEntity.setNotifyCategories(userEmailSetting.getNotifyCategories());
+    userEmailSettingEntity.setDefaultCategoryView(userEmailSetting.getDefaultCategoryView());
     settingService.set(Context.USER.id(username),
                        EMAIL_CONNECTOR_SCOPE,
                        USER_EMAIL_SETTING_KEY,
@@ -144,6 +149,30 @@ public class UserEmailSettingService {
     if (broadcast) {
       eventPublisher.publishEvent(new EmailBoxCleanupEvent(username));
     }
+  }
+
+  /**
+   * Update only the new-mail notification / default-view preferences of a user's email setting,
+   * without reconnecting the mailbox. A no-op when the user has no connected mailbox.
+   *
+   * @param username the user whose preferences are updated
+   * @param notifyAllCategories notify for every new email (null/true) or only for the selected
+   *          categories (false)
+   * @param notifyCategories the Inbox category ids to notify about when notifyAllCategories is false
+   * @param defaultCategoryView the Inbox category the mailbox drawer opens positioned to (null = None)
+   */
+  public void updateEmailPreferences(String username,
+                                     Boolean notifyAllCategories,
+                                     List<Long> notifyCategories,
+                                     Long defaultCategoryView) {
+    UserEmailSetting userEmailSetting = getUserEmailSetting(username);
+    if (StringUtils.isBlank(userEmailSetting.getEmailConnectorId())) {
+      return;
+    }
+    userEmailSetting.setNotifyAllCategories(notifyAllCategories);
+    userEmailSetting.setNotifyCategories(notifyCategories);
+    userEmailSetting.setDefaultCategoryView(defaultCategoryView);
+    setUserEmailSetting(userEmailSetting, username, false);
   }
 
   /**

@@ -356,6 +356,12 @@ export default {
       this.emailBoxDrawer = true;
       await this.loadEmailBox();
       this.loading = false;
+      // Position the inbox on the user's chosen default category view (if any).
+      this.$emailConnectorCommonService.getUserEmailSetting()
+        .then(setting => this.selectedCategoryId = setting && setting.defaultCategoryView || null)
+        .catch(() => {
+          // Keep the inbox unfiltered when the setting cannot be read.
+        });
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
