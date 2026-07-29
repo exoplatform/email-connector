@@ -253,4 +253,41 @@
       </column>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-23">
+    <!-- Replace the single BULK_MAIL flag with the raw headers it was collapsing. They do not
+         mean the same thing: Auto-Submitted and Precedence say "no human wrote this", while
+         List-Unsubscribe only says "this travelled through bulk distribution machinery" - a
+         mailing list stamps it on every message it relays, including one a colleague typed by
+         hand. Collapsing them made list traffic indistinguishable from marketing and filed
+         genuine business mail as automated. List-Id plus a postable List-Post is what actually
+         identifies a mailing list, since marketing senders rarely set List-Post.
+         Kept as separate facts rather than a derived verdict so the classification rule can be
+         changed without re-downloading every mailbox. -->
+    <dropColumn tableName="EMAIL_BOX" columnName="BULK_MAIL"/>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="AUTO_SUBMITTED" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="HAS_LIST_ID" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="HAS_LIST_POST" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="HAS_LIST_UNSUBSCRIBE" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-24">
+    <!-- Who actually wrote a message that arrived through a mailing list. Google Groups and
+         Mailman rewrite From to the list itself ("Name via the-list <the-list@example.com>"),
+         so the stored sender identifies the transport, not the author - and a colleague's
+         message then looks exactly like a newsletter relayed into the same group. The original
+         address survives in X-Original-Sender; without it, anything list-borne is
+         indistinguishable. Empty for directly-delivered mail. -->
+    <addColumn tableName="EMAIL_BOX">
+      <column name="ORIGINAL_SENDER" type="VARCHAR(320)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>
