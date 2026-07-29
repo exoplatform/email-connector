@@ -109,9 +109,33 @@ public class EmailBoxEntity {
   @Column(name = "THREAD_INDEX_ROOT")
   private String                      threadIndexRoot;
 
-  // Machine-sent mail (newsletter, notification, receipt, automated report), decided from
-  // the standard bulk headers when the message is fetched. Captured at sync time because
-  // the headers are only available on the live MimeMessage, never on the cached row.
-  @Column(name = "BULK_MAIL")
-  private boolean                     bulkMail;
+  // The distribution headers, captured at sync time because they only exist on the live
+  // MimeMessage. Kept as raw facts rather than one "is this bulk" verdict: they carry
+  // different meanings and the rule that combines them is still being tuned.
+
+  // RFC 3834 Auto-Submitted (other than "no"), or the legacy Precedence: bulk|junk. Means
+  // nobody typed this message. Note Precedence: list is deliberately NOT included -- mailing
+  // lists stamp it on the human messages they relay.
+  @Column(name = "AUTO_SUBMITTED")
+  private boolean                     autoSubmitted;
+
+  // List-Id: this message was relayed by a mailing list.
+  @Column(name = "HAS_LIST_ID")
+  private boolean                     hasListId;
+
+  // List-Post with a postable address: a discussion list you can write back to, which
+  // marketing senders rarely set. Together with List-Id this is what separates a colleague
+  // writing to a group from a newsletter blast.
+  @Column(name = "HAS_LIST_POST")
+  private boolean                     hasListPost;
+
+  // List-Unsubscribe: only means the message came through bulk distribution machinery. On its
+  // own it says nothing about whether a human wrote it.
+  @Column(name = "HAS_LIST_UNSUBSCRIBE")
+  private boolean                     hasListUnsubscribe;
+
+  // The real author when a mailing list rewrote From to itself (X-Original-Sender). Empty for
+  // directly-delivered mail.
+  @Column(name = "ORIGINAL_SENDER")
+  private String                      originalSender;
 }

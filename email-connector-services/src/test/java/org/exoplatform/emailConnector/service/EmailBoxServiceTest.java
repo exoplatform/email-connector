@@ -619,7 +619,11 @@ public class EmailBoxServiceTest {
                      null,
                      "INBOX",
                      null,
-                     false);
+                     false,
+                     false,
+                     false,
+                     false,
+                     null);
   }
 
   private EmailConnector emailConnector() {
