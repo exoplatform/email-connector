@@ -170,6 +170,9 @@ export default {
       emailBox: null,
       loading: false,
       syncInProgress: false,
+      categoryWatchDeadline: null,
+      lastCategoryCount: 0,
+      stableCategoryPolls: 0,
       webmailUrl: null,
       refreshInterval: null,
       activeDownload: null,
@@ -392,6 +395,7 @@ export default {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
     close() {
+      this.categoryWatchDeadline = null;
       this.stopAutoRefresh();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.cancelSelectMode();
@@ -488,9 +492,12 @@ export default {
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
       this.webmailUrl = this.emailBox.webmailUrl;
       this.$root.$emit('refresh-emails', this.emails);
-      if (!this.syncInProgress) {
-        this.stopAutoRefresh();
+      if (this.syncInProgress) {
+        // A new sync started: any previous post-sync watch is over.
+        this.categoryWatchDeadline = null;
+      } else {
         this.$root.$emit('synchronize-finished');
+        this.watchIncomingCategories();
       }
     },
     // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
@@ -533,6 +540,32 @@ export default {
           this.isRefreshing = false;
         }
       }, 2000); 
+    },
+    // AI categorization only starts once the sync reports it is done, and then keeps writing
+    // categories for a while. Stopping the refresh the moment the sync finishes left the user
+    // staring at an uncategorized list until they reloaded the page by hand. So keep polling
+    // past the end of the sync, and stop as soon as nothing new lands rather than on a timer
+    // alone — a mailbox with categorization switched off must not poll for minutes.
+    watchIncomingCategories() {
+      if (!this.categoryWatchDeadline) {
+        this.categoryWatchDeadline = Date.now() + 180000;
+        this.lastCategoryCount = this.countAppliedCategories();
+        this.stableCategoryPolls = 0;
+        this.startAutoRefresh();
+        return;
+      }
+      const count = this.countAppliedCategories();
+      this.stableCategoryPolls = count === this.lastCategoryCount ? this.stableCategoryPolls + 1 : 0;
+      this.lastCategoryCount = count;
+      if (this.stableCategoryPolls >= 3 || Date.now() > this.categoryWatchDeadline) {
+        this.categoryWatchDeadline = null;
+        this.stopAutoRefresh();
+      }
+    },
+    // How many categories are applied across the listed emails; its only use is to notice
+    // that categorization has stopped changing anything.
+    countAppliedCategories() {
+      return (this.emailBox?.emails || []).reduce((total, email) => total + (email.categoryIds || []).length, 0);
     },
     stopAutoRefresh() {
       if (this.refreshInterval) {
