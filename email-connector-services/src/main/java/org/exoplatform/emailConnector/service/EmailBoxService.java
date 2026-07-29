@@ -146,8 +146,7 @@ public class EmailBoxService {
   private static final List<String> DEFAULT_EMAIL_CATEGORY_NAME_IDS                          =
                                                                    List.of("emailImportantCategory",
                                                                            "emailInvitationCategory",
-                                                                           "emailNotificationCategory",
-                                                                           "emailToReviewCategory");
+                                                                           "emailNotificationCategory");
 
   private static final Context      CATEGORY_IMPORT_CONTEXT                                   = Context.GLOBAL.id("CATEGORY");
 
@@ -1060,7 +1059,7 @@ public class EmailBoxService {
 
   /**
    * The add-on's own email categories a user can assign — Important / Invitation /
-   * Notification / To review — resolved to their localized name. These are the leaf
+   * Notification — resolved to their localized name. These are the leaf
    * categories seeded from the add-on's {@code default-categories.json}, returned
    * whether or not they are already in use, so the picker always offers the full set.
    *
@@ -1336,7 +1335,11 @@ public class EmailBoxService {
                                                 references,
                                                 folderKey,
                                                 threadIndexRoot != null ? threadIndexRoot : "",
-                                                isBulkMail(message)));
+                                                isAutoSubmitted(message),
+                                                firstHeader(message, "List-Id") != null,
+                                                isPostableList(message),
+                                                firstHeader(message, "List-Unsubscribe") != null,
+                                                firstHeader(message, "X-Original-Sender")));
           newEmailIds.add(messageUid);
 
         } else {
@@ -1659,31 +1662,42 @@ public class EmailBoxService {
   }
 
   /**
-   * Whether the message was sent by a machine rather than typed by a person, from the three
-   * standard headers senders use to mark bulk and automated mail: {@code List-Unsubscribe}
-   * (RFC 2369, newsletters and mailing lists), {@code Auto-Submitted} (RFC 3834, anything
-   * generated without human intervention -- the explicit value {@code no} means the opposite
-   * and is ignored) and the legacy {@code Precedence: bulk|list|junk}.
+   * Whether nobody typed this message: {@code Auto-Submitted} (RFC 3834, generated without
+   * human intervention -- the explicit value {@code no} means the opposite and is ignored) or
+   * the legacy {@code Precedence: bulk|junk}.
    * <p>
-   * Captured here because headers exist only on the live message: a consumer reading the
-   * cached row later can at best search the body for the word "unsubscribe", which also hits
-   * signatures, mailing-list footers and quoted replies, and so mislabels genuine human mail
-   * as automated.
+   * {@code Precedence: list} is deliberately excluded: mailing lists stamp it on every message
+   * they relay, including one a colleague typed by hand, so treating it as automated files
+   * genuine business mail as machine noise. {@code List-Unsubscribe} is excluded for the same
+   * reason -- it is captured separately, since on its own it says only that the message passed
+   * through bulk distribution machinery.
    *
    * @param message the freshly-fetched message
-   * @return {@code true} when any bulk/automated marker is present
+   * @return {@code true} when the message declares itself machine-generated
    */
-  private static boolean isBulkMail(Message message) throws MessagingException {
-    if (StringUtils.isNotBlank(firstHeader(message, "List-Unsubscribe"))) {
-      return true;
-    }
+  private static boolean isAutoSubmitted(Message message) throws MessagingException {
     String autoSubmitted = firstHeader(message, "Auto-Submitted");
     if (StringUtils.isNotBlank(autoSubmitted) && !StringUtils.equalsIgnoreCase(autoSubmitted.trim(), "no")) {
       return true;
     }
     String precedence = firstHeader(message, "Precedence");
-    return precedence != null && StringUtils.equalsAnyIgnoreCase(precedence.trim(), "bulk", "list", "junk");
+    return precedence != null && StringUtils.equalsAnyIgnoreCase(precedence.trim(), "bulk", "junk");
   }
+
+  /**
+   * Whether the message advertises an address you can post back to, i.e. it came from a
+   * discussion list rather than a one-way blast. Marketing senders rarely set List-Post, so
+   * together with List-Id this is what tells a colleague writing to a group apart from a
+   * newsletter.
+   *
+   * @param message the freshly-fetched message
+   * @return {@code true} when List-Post names a postable address
+   */
+  private static boolean isPostableList(Message message) throws MessagingException {
+    String listPost = firstHeader(message, "List-Post");
+    return StringUtils.containsIgnoreCase(listPost, "mailto:");
+  }
+
 
   private boolean canSynchronize(UserEmailSetting userEmailSetting, String username) {
     if (userEmailSetting.getEmailConnectorId() == null
