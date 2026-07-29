@@ -191,7 +191,8 @@ export default {
     // The add-on's own email categories are the children of the Inbox category; feeding
     // their ids to the platform filter makes it open "inside the Inbox" — showing those
     // children directly as chips, rather than an Inbox parent the user must drill into.
-    this.$emailConnectorMailBoxService.getAvailableEmailCategories()
+    // The promise is kept so open() can await the ids before trusting a stored default view.
+    this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.emailCategoryIds = (list || []).map(category => category.id));
     this.$root.$on('switch-folder', this.onSwitchFolder);
     this.onOpenEmailDetailContent = (mailRemoteId) => {
@@ -356,9 +357,16 @@ export default {
       this.emailBoxDrawer = true;
       await this.loadEmailBox();
       this.loading = false;
-      // Position the inbox on the user's chosen default category view (if any).
+      // Position the inbox on the user's chosen default category view (if any). The stored
+      // view can point at a category that no longer exists (e.g. a removed default), and
+      // filtering on it would reject — so apply it only once the available category ids are
+      // loaded and the stored id is one of them.
       this.$emailConnectorCommonService.getUserEmailSetting()
-        .then(setting => this.selectedCategoryId = setting && setting.defaultCategoryView || null)
+        .then(async setting => {
+          const defaultView = setting && setting.defaultCategoryView || null;
+          await this.emailCategoryIdsPromise;
+          this.selectedCategoryId = defaultView && this.emailCategoryIds.includes(defaultView) ? defaultView : null;
+        })
         .catch(() => {
           // Keep the inbox unfiltered when the setting cannot be read.
         });
