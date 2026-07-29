@@ -258,6 +258,11 @@ public class UserEmailSettingService {
     props.setProperty("mail.imaps.connectiontimeout", "15000");
     props.setProperty("mail.imaps.timeout", "30000");
     props.setProperty("mail.imaps.writetimeout", "30000");
+    // Read a message body in one go. The default fetch size is 16KB, so every message is
+    // pulled in 16KB slices, each its own round-trip to the server -- an HTML newsletter of a
+    // few hundred KB costs a dozen of them, and the sync spends most of its time waiting on
+    // the network rather than on the mailbox.
+    props.setProperty("mail.imaps.fetchsize", "1048576");
     // getInstance (not getDefaultInstance) so these props actually apply rather than
     // silently reusing the first-ever session's properties.
     Session session = Session.getInstance(props);
