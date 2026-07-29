@@ -53,6 +53,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.RequestLifeCycle;
+import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -115,6 +116,95 @@ public class EmailConnectorUtils {
     String bodyText = content.getBody() != null ? content.getBody().trim() : "";
     content.setBody(bodyText);
     return content;
+  }
+
+  /** Nobody typed this: a newsletter, receipt, alert or automated report. */
+  public static final String MAIL_TYPE_AUTOMATED = "automated";
+
+  /** Relayed by a discussion list; usually written by a person, so judge the sender. */
+  public static final String MAIL_TYPE_LIST      = "list";
+
+  /** Mass distribution: marketing and newsletter blasts. */
+  public static final String MAIL_TYPE_BULK      = "bulk";
+
+  /** Written by a person straight to the recipient. */
+  public static final String MAIL_TYPE_PERSONAL  = "personal";
+
+  /**
+   * How the message reached the mailbox, from the distribution headers captured at sync.
+   * <p>
+   * Order matters and is deliberate. {@code automated} is tested first, so a bot posting to a
+   * mailing list is still machine mail. {@code list} requires a postable {@code List-Post}
+   * alongside {@code List-Id}: discussion lists set both, marketing senders rarely set
+   * List-Post, and some senders emit List-Id on plain marketing -- so List-Id alone cannot
+   * separate a colleague writing to a group from a newsletter blast. Anything left carrying
+   * only List-Unsubscribe is bulk distribution.
+   * <p>
+   * This is transport, not authorship: {@code list} means "a person probably wrote it, judge
+   * the sender", NOT "this is personal mail". A newsletter relayed into a group is still
+   * automated, which is exactly why {@code automated} outranks {@code list}.
+   *
+   * @param email the message to classify
+   * @return one of {@link #MAIL_TYPE_AUTOMATED}, {@link #MAIL_TYPE_LIST},
+   *         {@link #MAIL_TYPE_BULK} or {@link #MAIL_TYPE_PERSONAL}
+   */
+  public static String getMailType(Email email) {
+    if (email == null) {
+      return MAIL_TYPE_PERSONAL;
+    }
+    if (email.isAutoSubmitted()) {
+      return MAIL_TYPE_AUTOMATED;
+    }
+    if (email.isHasListId() && email.isHasListPost()) {
+      return MAIL_TYPE_LIST;
+    }
+    if (email.isHasListUnsubscribe() || email.isHasListId()) {
+      return MAIL_TYPE_BULK;
+    }
+    return MAIL_TYPE_PERSONAL;
+  }
+
+  private static final Pattern FORWARD_SUBJECT = Pattern.compile("^\\s*(fw|fwd|tr|wg|rv)\\s*:", Pattern.CASE_INSENSITIVE);
+
+  /**
+   * Whether a person forwarded this message on rather than writing it themselves.
+   * <p>
+   * Worth knowing because a forward's visible content belongs to whoever wrote the original —
+   * typically an automated receipt or booking confirmation — while the act that matters is a
+   * person choosing to send it to the recipient. A consumer reading only the body sees the
+   * machine text and misjudges the message.
+   *
+   * @param email the message to inspect
+   * @return {@code true} when the subject carries a forward marker
+   */
+  public static boolean isForward(Email email) {
+    return email != null && email.getSubject() != null && FORWARD_SUBJECT.matcher(email.getSubject()).find();
+  }
+
+  /**
+   * The address of whoever actually wrote the message, which differs from the sender only when
+   * a mailing list rewrote {@code From} to itself. Falls back to {@code Reply-To}, which lists
+   * generally point at the author, and finally to nothing when the sender is already the
+   * author.
+   *
+   * @param email the message to inspect
+   * @return the original author's address, or {@code null} when the sender is the author
+   */
+  public static String getOriginalSender(Email email) {
+    if (email == null) {
+      return null;
+    }
+    if (StringUtils.isNotBlank(email.getOriginalSender())) {
+      return email.getOriginalSender();
+    }
+    if (email.getReplyTo() != null && !email.getReplyTo().isEmpty() && email.getReplyTo().get(0) != null) {
+      String replyTo = email.getReplyTo().get(0).getAddress();
+      String sender = email.getSender() == null ? null : email.getSender().getAddress();
+      if (StringUtils.isNotBlank(replyTo) && !StringUtils.equalsIgnoreCase(replyTo, sender)) {
+        return replyTo;
+      }
+    }
+    return null;
   }
 
   public static int getEmailBoxUserSyncPeriod(UserEmailSetting userEmailSetting) {
