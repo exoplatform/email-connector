@@ -179,8 +179,8 @@ export function groupEmailsByThread(emails) {
 }
 
 /**
- * The email categories a user can assign (Important / Invitation / Notification /
- * To review), each { id, name }.
+ * The email categories a user can assign (Important / Invitation / Notification),
+ * each { id, name }.
  *
  * @returns {Promise<Array>} the assignable email categories
  */
