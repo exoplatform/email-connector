@@ -24,6 +24,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -81,6 +87,8 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
+import org.exoplatform.container.component.RequestLifeCycle;
+import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
@@ -131,6 +139,27 @@ public class EmailBoxService {
   // smaller window than the inbox — this bounds the (potentially slow) one-time
   // backfill and every subsequent sync on large mailboxes.
   private static final int        NON_INBOX_FOLDER_SYNC_LIMIT                                 = 100;
+
+  // Every header createEmails reads per message. They must be fetched in the one batched
+  // FETCH: JavaMail otherwise goes back to the server for each header of each message.
+  private static final List<String> PREFETCHED_HEADERS                                        =
+                                                                                              List.of("References",
+                                                                                                      "In-Reply-To",
+                                                                                                      "Thread-Index",
+                                                                                                      "Auto-Submitted",
+                                                                                                      "Precedence",
+                                                                                                      "List-Id",
+                                                                                                      "List-Post",
+                                                                                                      "List-Unsubscribe",
+                                                                                                      "X-Original-Sender");
+
+  // How long a new-mail notification waits for someone to classify the messages first. Short,
+  // because with no such consumer this is pure added latency.
+  private static final long       NOTIFICATION_GRACE_MS                                       = 10000L;
+
+  // The outside limit once a consumer has claimed the wait: if it never reports back, the
+  // notification is late rather than lost.
+  private static final long       NOTIFICATION_MAX_WAIT_MS                                    = 15 * 60 * 1000L;
 
   // Cooldown before a BLOCKED mailbox is allowed to retry a sync, so BLOCKED is a temporary
   // backoff rather than a permanent dead-end (a successful retry clears it).
@@ -185,6 +214,22 @@ public class EmailBoxService {
 
   @Autowired
   private CategoryLinkService     categoryLinkService;
+
+  // Mailboxes with a synchronization running right now, so two can never overlap and cache
+  // the same message twice.
+  private final Set<String>                      syncingUsers          = ConcurrentHashMap.newKeySet();
+
+  // Notifications waiting for their messages to be classified, keyed by mailbox owner.
+  private final Map<String, PendingNotification> pendingNotifications = new ConcurrentHashMap<>();
+
+  // One daemon thread: the work is a short database read plus a notification dispatch.
+  private final ScheduledExecutorService         notificationScheduler =
+                                                                       Executors.newSingleThreadScheduledExecutor(runnable -> {
+                                                                         Thread thread = new Thread(runnable,
+                                                                                                    "email-new-mail-notification");
+                                                                         thread.setDaemon(true);
+                                                                         return thread;
+                                                                       });
 
   @Autowired
   private CategoryService         categoryService;
@@ -252,6 +297,16 @@ public class EmailBoxService {
     if (!canSynchronize(userEmailSetting, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
     }
+    // The IN_PROGRESS check above lets a sync through once it looks stale, which is deliberate
+    // -- a sync killed mid-flight must not lock the mailbox forever. But "stale" is judged on
+    // the sync period, so a sync that simply takes longer than that period is treated as dead
+    // while it is still running, and a second one starts alongside it. Both then cache the same
+    // messages, and the mailbox ends up with duplicate rows that break every lookup keyed on
+    // (user, folder, UID). Only one sync per user in this JVM, whatever the status says.
+    if (!syncingUsers.add(username)) {
+      LOG.info("A synchronization is already running for user {}; skipping this one", username);
+      return;
+    }
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting);
@@ -279,6 +334,7 @@ public class EmailBoxService {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
     } finally {
+      syncingUsers.remove(username);
       try {
         if (store != null && store.isConnected()) {
           store.close();
@@ -376,11 +432,14 @@ public class EmailBoxService {
       fetchProfile.add(FetchProfile.Item.FLAGS);
       fetchProfile.add(FetchProfile.Item.ENVELOPE);
       fetchProfile.add(UIDFolder.FetchProfileItem.UID);
-      // Prefetch the threading headers too (not covered by ENVELOPE), so computing /
-      // backfilling thread ids reads them from cache instead of one FETCH per message.
-      fetchProfile.add("References");
-      fetchProfile.add("In-Reply-To");
-      fetchProfile.add("Thread-Index");
+      // Prefetch every header read per message below (none is covered by ENVELOPE), so they
+      // come back in this one batched command. Reading a header that was not prefetched costs
+      // a separate server round-trip for EVERY message: on a 500-message mailbox the six
+      // delivery headers alone turned a nine-minute sync into half an hour. Anything added to
+      // createEmails must be added here too.
+      for (String header : PREFETCHED_HEADERS) {
+        fetchProfile.add(header);
+      }
       folder.fetch(serverMessages, fetchProfile);
       List<Email> folderEmails = emailBoxStorage.getEmails(username, folderKey);
       List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey);
@@ -396,12 +455,10 @@ public class EmailBoxService {
         // notification step) and isolate sendNotification: it re-hits the IMAP folder
         // per message, so a dropped connection (FolderClosedException) must neither skip
         // categorization nor fail the whole sync (which would escalate the user to BLOCKED).
+        // Queue the notification BEFORE the broadcast, so a consumer reacting to the event
+        // can immediately ask for it to be held back while it classifies.
+        scheduleNotification(username, folderEmails);
         broadcastNewEmailsSynced(username, newEmailIds);
-        try {
-          sendNotification(folderEmails, username);
-        } catch (Exception e) {
-          LOG.warn("Error sending the new-email notification for user {}", username, e);
-        }
       }
     } finally {
       if (folder.isOpen()) {
@@ -1550,9 +1607,9 @@ public class EmailBoxService {
       fetchProfile.add(FetchProfile.Item.FLAGS);
       fetchProfile.add(FetchProfile.Item.ENVELOPE);
       fetchProfile.add(UIDFolder.FetchProfileItem.UID);
-      fetchProfile.add("References");
-      fetchProfile.add("In-Reply-To");
-      fetchProfile.add("Thread-Index");
+      for (String header : PREFETCHED_HEADERS) {
+        fetchProfile.add(header);
+      }
       allMail.fetch(found, fetchProfile);
       // Keep only genuinely-missing messages: a hit may be an INBOX message that is also
       // in All Mail (same Message-ID, different per-folder UID) — caching it again would
@@ -1803,12 +1860,114 @@ public class EmailBoxService {
    *          highest already-known UID, i.e. what counts as "new")
    * @param userName the mailbox owner
    */
-  private void sendNotification(List<Email> userEmails, String userName) {
+  /**
+   * Queues the new-mail notification for a sync that has just cached messages, instead of
+   * sending it straight away.
+   * <p>
+   * The user can ask to be notified only for chosen categories, but the categories are applied
+   * by a consumer of {@link EmailConnectorUtils#NEW_EMAILS_SYNCED} that takes minutes to run.
+   * Notifying immediately means every message is still uncategorized, the filter's
+   * "uncategorized always notifies" fallback applies to all of them, and the preference can
+   * never suppress anything: the user picks one category and is notified about everything.
+   * <p>
+   * So the notification waits. A consumer that is going to classify these messages says so
+   * with {@link #deferNewEmailsNotification(String)} and reports back with
+   * {@link #notifyNewEmailsClassified(String)}; with no consumer at all the short grace below
+   * elapses and the notification goes out as before.
+   *
+   * @param username the mailbox owner
+   * @param userEmails the inbox as it was before this sync, used to tell the new messages apart
+   */
+  private void scheduleNotification(String username, List<Email> userEmails) {
     long maxLocalUid = userEmails.stream()
                                  .filter(email -> email.getMailRemoteId() != null)
                                  .mapToLong(Email::getMailRemoteId)
                                  .max()
                                  .orElse(0L);
+    pendingNotifications.compute(username, (user, pending) -> {
+      // Several folders can queue within one sync: keep the earliest boundary so no new
+      // message is missed, and let the last one scheduled own the timer.
+      long boundary = pending == null ? maxLocalUid : Math.min(pending.maxLocalUid(), maxLocalUid);
+      if (pending != null) {
+        pending.future().cancel(false);
+      }
+      return new PendingNotification(boundary, scheduleNotificationTask(user, NOTIFICATION_GRACE_MS));
+    });
+  }
+
+  /**
+   * Schedules the deferred send and returns its handle.
+   *
+   * @param username the mailbox owner
+   * @param delayMs how long to wait before sending
+   * @return the scheduled task, so a later call can cancel or replace it
+   */
+  private ScheduledFuture<?> scheduleNotificationTask(String username, long delayMs) {
+    return notificationScheduler.schedule(() -> {
+      PendingNotification pending = pendingNotifications.remove(username);
+      if (pending != null) {
+        try {
+          RequestLifeCycle.begin(PortalContainer.getInstance());
+          try {
+            sendNotification(username, pending.maxLocalUid());
+          } finally {
+            RequestLifeCycle.end();
+          }
+        } catch (Exception e) {
+          LOG.warn("Error sending the new-email notification for user {}", username, e);
+        }
+      }
+    }, delayMs, TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Asks for the pending new-mail notification to be held back, because the caller is about to
+   * classify the messages this sync cached and the user's per-category preference cannot be
+   * applied until it has.
+   * <p>
+   * Only extends the wait; it never sends. The caller is expected to finish with
+   * {@link #notifyNewEmailsClassified(String)}, and if it never does, the extended deadline
+   * still fires so a notification is delayed rather than lost.
+   *
+   * @param username the mailbox owner
+   */
+  public void deferNewEmailsNotification(String username) {
+    pendingNotifications.computeIfPresent(username, (user, pending) -> {
+      pending.future().cancel(false);
+      return new PendingNotification(pending.maxLocalUid(), scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS));
+    });
+  }
+
+  /**
+   * Reports that the messages this sync cached have been classified, releasing the notification
+   * that was held back. Does nothing when none is pending.
+   *
+   * @param username the mailbox owner
+   */
+  public void notifyNewEmailsClassified(String username) {
+    PendingNotification pending = pendingNotifications.remove(username);
+    if (pending == null) {
+      return;
+    }
+    pending.future().cancel(false);
+    try {
+      sendNotification(username, pending.maxLocalUid());
+    } catch (Exception e) {
+      LOG.warn("Error sending the new-email notification for user {}", username, e);
+    }
+  }
+
+  /**
+   * A notification waiting to be sent: the UID boundary that separates the newly-cached
+   * messages from the ones already there, and the task that will send it.
+   *
+   * @param maxLocalUid the highest UID present before the sync
+   * @param future the scheduled send
+   */
+  private record PendingNotification(long maxLocalUid, ScheduledFuture<?> future) {
+  }
+
+  private void sendNotification(String userName, long maxLocalUid) {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(userName);
     List<Email> currentEmails = emailBoxStorage.getEmails(userName, MailFolder.INBOX);
     long newUnreadCount = currentEmails.stream()
