@@ -440,6 +440,10 @@ public class EmailBoxService {
       for (String header : PREFETCHED_HEADERS) {
         fetchProfile.add(header);
       }
+      // Same reasoning for the MIME structure: reading a body starts by asking the message
+      // what it is made of, and an unfetched structure costs a BODYSTRUCTURE round-trip per
+      // message. CONTENT_INFO brings all of them back inside this one batched command.
+      fetchProfile.add(FetchProfile.Item.CONTENT_INFO);
       folder.fetch(serverMessages, fetchProfile);
       List<Email> folderEmails = emailBoxStorage.getEmails(username, folderKey);
       List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey);
@@ -1610,6 +1614,7 @@ public class EmailBoxService {
       for (String header : PREFETCHED_HEADERS) {
         fetchProfile.add(header);
       }
+      fetchProfile.add(FetchProfile.Item.CONTENT_INFO);
       allMail.fetch(found, fetchProfile);
       // Keep only genuinely-missing messages: a hit may be an INBOX message that is also
       // in All Mail (same Message-ID, different per-folder UID) — caching it again would
