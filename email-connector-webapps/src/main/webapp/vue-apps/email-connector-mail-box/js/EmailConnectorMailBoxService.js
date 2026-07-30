@@ -121,6 +121,11 @@ export function getEmailBox(folder) {
       'Content-Type': 'application/json'
     },
     credentials: 'include',
+    // The drawer polls this while a sync runs and while categories are still being applied.
+    // The response carries no cache directives, so the browser is free to serve it from its
+    // own cache heuristically — the poll then repeats forever against a stale copy and the
+    // list only updates when the user reloads the page by hand.
+    cache: 'no-store',
     method: 'GET'
   }).then((resp) => {
     if (resp?.ok) {
