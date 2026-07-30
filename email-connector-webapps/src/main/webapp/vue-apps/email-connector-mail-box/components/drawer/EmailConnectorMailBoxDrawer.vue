@@ -163,6 +163,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// Categorization runs after the sync reports done, in batches, and a large mailbox takes
+// several minutes. Two numbers govern how long the drawer keeps watching for the results.
+
+// Give up after this long even if categories are still arriving, so a mailbox with
+// categorization switched off never polls indefinitely.
+const CATEGORY_WATCH_MAX_MS = 600000;
+
+// Stop once nothing new has landed for this many consecutive polls (2s each, so ~60s).
+// It has to comfortably exceed the gap between two batches finishing: at three polls the
+// first lull between batches looked like the end and the drawer stopped after one batch.
+const CATEGORY_WATCH_QUIET_POLLS = 30;
+
 export default {
   data() {
     return {
@@ -548,7 +560,7 @@ export default {
     // alone — a mailbox with categorization switched off must not poll for minutes.
     watchIncomingCategories() {
       if (!this.categoryWatchDeadline) {
-        this.categoryWatchDeadline = Date.now() + 180000;
+        this.categoryWatchDeadline = Date.now() + CATEGORY_WATCH_MAX_MS;
         this.lastCategoryCount = this.countAppliedCategories();
         this.stableCategoryPolls = 0;
         this.startAutoRefresh();
@@ -557,7 +569,7 @@ export default {
       const count = this.countAppliedCategories();
       this.stableCategoryPolls = count === this.lastCategoryCount ? this.stableCategoryPolls + 1 : 0;
       this.lastCategoryCount = count;
-      if (this.stableCategoryPolls >= 3 || Date.now() > this.categoryWatchDeadline) {
+      if (this.stableCategoryPolls >= CATEGORY_WATCH_QUIET_POLLS || Date.now() > this.categoryWatchDeadline) {
         this.categoryWatchDeadline = null;
         this.stopAutoRefresh();
       }
