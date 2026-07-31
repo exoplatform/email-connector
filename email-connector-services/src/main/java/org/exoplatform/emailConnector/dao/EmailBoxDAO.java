@@ -73,6 +73,45 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("folder")
   String folder);
 
+  /**
+   * Bulk companion of {@link #markEmailAsNotRecent}: clears the recent flag of all
+   * the given messages in ONE statement. The sync used to issue the single-row
+   * version once per already-known message — 5000 statements per routine sync on a
+   * 5000-message cache, almost all of them writing nothing. The caller passes only
+   * the rows whose flag is actually set, so a steady-state sync issues no statement
+   * at all.
+   *
+   * @param mailRemoteIds the IMAP UIDs whose recent flag must be cleared
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.recent = false WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :userId AND email.folder = :folder")
+  void markEmailsAsNotRecent(@Param("mailRemoteIds")
+  List<Long> mailRemoteIds, @Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
+   * The light per-folder view the sync reconcile runs on: row id, IMAP UID,
+   * threading state and the two flags — WITHOUT the body CLOB and without the
+   * attachments join. The sync used to load the full entities through
+   * {@link #findByUserIdAndFolderWithAttachments}: at 5000 cached messages that
+   * dragged 5000 bodies out of the database every routine sync just to compare
+   * UIDs and flags. Ordered newest-first because cleanupObsoleteEmails trims the
+   * cache overflow off the END of the list, exactly as the full query did.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read, recent]},
+   *         newest first
+   */
+  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
+  List<Object[]> findSyncViewByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
   @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")
   String mailHeaderId, @Param("userId")
