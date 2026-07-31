@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 
 import javax.mail.internet.InternetAddress;
 
+import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -97,6 +98,57 @@ public class EmailBoxStorage {
       return List.of();
     }
     return emailBoxDao.findDistinctThreadIdsByMailHeaderIds(userId, mailHeaderIds);
+  }
+
+  /**
+   * The distinct thread ids of already-cached messages that point back AT the given
+   * message — its Message-ID appears in their {@code References} / {@code In-Reply-To}
+   * — the reverse of {@link #getSiblingThreadIds}. Without this direction a reply
+   * cached before its parent is invisible to the parent, and the conversation
+   * silently splits in two; with both directions, thread grouping no longer depends
+   * on the order messages are cached in.
+   * <p>
+   * The matching runs HERE, in Java, over the chains the DAO returns — not as a SQL
+   * substring function. The References column is CLOB on some dialects (HSQLDB),
+   * where {@code LOCATE} throws {@code SQLFeatureNotSupportedException}; the first
+   * live reset with a SQL-side match aborted the sync and cached nothing. Matching in
+   * Java is dialect-proof, and cheap: the candidate set is bounded by the per-user
+   * cache cap, hundreds of short strings against a sync budget that is pure IMAP
+   * latency. The id is normalized to its angle-bracketed RFC 5322 form before
+   * matching, because the brackets are what makes the containment check token-exact:
+   * {@code <a@host>} matches neither {@code <xa@host>} nor {@code <a@host.com>},
+   * while a bare {@code a@host} would match both.
+   *
+   * @param userId the mailbox owner
+   * @param messageId the message's own Message-ID, with or without angle brackets
+   * @return the distinct thread ids of the cached messages referencing it, never null
+   */
+  public List<String> getThreadIdsReferencingMessageId(String userId, String messageId) {
+    if (StringUtils.isBlank(messageId)) {
+      return List.of();
+    }
+    String bracketedId = messageId.startsWith("<") && messageId.endsWith(">") ? messageId : "<" + messageId + ">";
+    return emailBoxDao.findThreadReferenceChainsByUserId(userId)
+                      .stream()
+                      .filter(chain -> chainContains((String) chain[1], bracketedId)
+                          || chainContains((String) chain[2], bracketedId))
+                      .map(chain -> (String) chain[0])
+                      .distinct()
+                      .toList();
+  }
+
+  /**
+   * Whether a raw {@code References} / {@code In-Reply-To} header value contains the
+   * given angle-bracketed Message-ID. A plain containment check is exact here: ids
+   * cannot contain {@code <} or {@code >} internally, so the brackets delimit the
+   * token on both sides.
+   *
+   * @param chain the raw header value, may be null
+   * @param bracketedId the angle-bracketed Message-ID to look for
+   * @return true when the chain references the id
+   */
+  private boolean chainContains(String chain, String bracketedId) {
+    return chain != null && chain.contains(bracketedId);
   }
 
   /**
