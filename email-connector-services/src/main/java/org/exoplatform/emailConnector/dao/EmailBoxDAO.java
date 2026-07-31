@@ -101,6 +101,33 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("threadIndexRoot")
   String threadIndexRoot);
 
+  /**
+   * The reference chains of the user's cached messages: each row's thread id with
+   * its raw {@code References} and {@code In-Reply-To} headers. This feeds the
+   * REVERSE thread lookup (which already-cached messages point AT a given
+   * Message-ID — see {@code EmailBoxStorage#getThreadIdsReferencingMessageId}),
+   * needed when a message is cached after the replies that reference it: the sync
+   * drains prefetch slices in completion order, newest mail first, so a parent
+   * routinely lands last. The substring matching itself deliberately happens in
+   * Java, NOT here: {@code MAIL_REFERENCES} maps to CLOB on some dialects (verified
+   * live on HSQLDB), where SQL string functions are unsupported — a
+   * {@code LOCATE}-based version of this query threw
+   * {@code SQLFeatureNotSupportedException} on the first live reset and aborted the
+   * whole sync. Equality and null checks are all a CLOB column can be trusted with
+   * across dialects. The result is bounded by the per-user cache cap
+   * (a few hundred rows), and the chain-presence predicate keeps chainless
+   * messages — most of a typical inbox — out of the transfer entirely. The
+   * empty-string guard keeps backfill-pending rows (threading columns added after
+   * their creation) out of the merge machinery.
+   *
+   * @param userId the mailbox owner
+   * @return rows of {@code [threadId, mailReferences, inReplyTo]} for every cached
+   *         message that has a thread id and at least one chain header
+   */
+  @Query("SELECT email.threadId, email.mailReferences, email.inReplyTo FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.threadId <> '' AND (email.mailReferences IS NOT NULL OR email.inReplyTo IS NOT NULL)")
+  List<Object[]> findThreadReferenceChainsByUserId(@Param("userId")
+  String userId);
+
   @Transactional
   @Modifying
   @Query("UPDATE EmailBoxEntity email SET email.threadIndexRoot = :threadIndexRoot WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId")
