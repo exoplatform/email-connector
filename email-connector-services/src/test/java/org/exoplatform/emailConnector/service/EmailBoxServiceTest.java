@@ -66,6 +66,7 @@ import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.MessageRemovedException;
+import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Session;
 import javax.mail.Store;
@@ -85,6 +86,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
+import com.sun.mail.imap.ResyncData;
 
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
@@ -1077,6 +1079,7 @@ public class EmailBoxServiceTest {
     IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
     emailBoxService.synchronize(TEST_USER);
     verify(inbox, never()).open(anyInt());
+    verify(inbox, never()).open(anyInt(), any(ResyncData.class));
     verify(inbox, never()).getMessages(anyInt(), anyInt());
     verify(inbox, never()).fetch(any(), any());
     verify(emailBoxStorage, never()).getSyncEmails(anyString(), anyString());
@@ -1262,6 +1265,78 @@ public class EmailBoxServiceTest {
     when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(new ArrayList<>());
     emailBoxService.deleteUserEmails(TEST_USER);
     verify(settingService).remove(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+  }
+
+  @Test
+  @SneakyThrows
+  void condstoreServerOpensWithExplicitModSeqRequest() {
+    // The Stalwart fix: a server may advertise CONDSTORE yet only send HIGHESTMODSEQ
+    // when explicitly asked (RFC 7162 obliges it no further) -- observed live as
+    // benjamin's folders looping on "snapshot incomplete" forever. On such servers
+    // the sync must open with SELECT (CONDSTORE), never with a plain SELECT.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
+    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    lenient().when(inbox.getStore()).thenReturn(connectedStore);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY, ResyncData.CONDSTORE);
+    verify(inbox, never()).open(anyInt());
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void resyncRejectionFallsBackToPlainOpen() {
+    // A server that advertises CONDSTORE but rejects the SELECT parameter must cost
+    // nothing: the open falls back to a plain SELECT and the sync completes -- the
+    // skip simply stays off for that folder, exactly the pre-fix behavior.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
+    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    lenient().when(inbox.getStore()).thenReturn(connectedStore);
+    when(inbox.open(Folder.READ_ONLY, ResyncData.CONDSTORE)).thenThrow(new MessagingException("CONDSTORE not supported"));
+    lenient().when(inbox.isOpen()).thenReturn(false).thenReturn(true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.INBOX);
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void serverWithholdingModSeqStoresIncompleteSnapshotAndStaysOnTheFullPath() {
+    // A server that ACCEPTS the CONDSTORE parameter but still provides no
+    // mod-sequence: the capture stores -1, the state persists it (the log then
+    // shows exactly which signal is missing), and the skip must never fire.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, -1L, true);
+    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    lenient().when(inbox.getStore()).thenReturn(connectedStore);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    MailboxSyncState savedSyncState = JsonUtils.fromJsonString(savedState.getValue().getValue().toString(),
+                                                               MailboxSyncState.class);
+    assertEquals(-1L, savedSyncState.getSnapshot(MailFolder.INBOX).getHighestModSeq());
+  }
+
+  @Test
+  @SneakyThrows
+  void incompleteSnapshotNeverSkips() {
+    // The stored -1 mod-sequence (a capture the server left short) must keep forcing
+    // the full path even when every other signal matches -- this is the exact state
+    // benjamin's mailbox was stuck in, and it must stay a full sync, never a skip.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, -1L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, -1L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.INBOX);
   }
 
   /**
