@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -41,11 +42,21 @@ import static org.mockito.Mockito.withSettings;
 
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.LongStream;
 
 import javax.mail.Authenticator;
 import javax.mail.BodyPart;
@@ -735,27 +746,32 @@ public class EmailBoxServiceTest {
     verify(workerStore, times(5)).close();
     ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxStorage, times(100)).createEmail(emailCaptor.capture());
-    // Bodies come from the workers, and -- the property that matters for threading --
-    // the rows are still cached oldest-first even though the slices finish in any order:
-    // computeThreadId attaches a reply by looking up the messages already stored, so a
-    // reply cached before its parent would silently start a second conversation.
-    long previousUid = 0;
+    // Bodies come from the workers. The rows land in slice-COMPLETION order, newest
+    // slices submitted first -- deliberately NOT in ascending UID order. The ascending
+    // assertion that used to live here encoded the forward-only threading lookup (a
+    // parent had to be cached before its replies); computeThreadId now links
+    // conversations in both directions, and the order-independence itself is proven by
+    // the *StillFormsOneThread tests. What must hold here is that every message is
+    // cached exactly once, with the body its worker prefetched.
+    Set<Long> cachedUids = new HashSet<>();
     for (Email created : emailCaptor.getAllValues()) {
       assertEquals("prefetched-" + created.getMailRemoteId(), created.getContent().getBody());
-      assertTrue(created.getMailRemoteId() > previousUid, "emails must be cached in ascending UID order");
-      previousUid = created.getMailRemoteId();
+      assertTrue(cachedUids.add(created.getMailRemoteId()), "every message must be cached exactly once");
     }
+    assertEquals(100, cachedUids.size());
     // The new-emails events stream out during the download, one group every three slices
     // (3 x 20 = 60, then the remaining 40), so the AI categorization can start on the
-    // first messages while the later ones are still being fetched...
+    // first messages while the later ones are still being fetched. Which UIDs land in
+    // which group depends on completion order; together they must cover the whole sync.
     @SuppressWarnings({ "unchecked", "rawtypes" })
     ArgumentCaptor<List<Long>> groupCaptor = ArgumentCaptor.forClass((Class) List.class);
     verify(listenerService, times(2)).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), eq(TEST_USER), groupCaptor.capture());
     List<List<Long>> groups = groupCaptor.getAllValues();
     assertEquals(60, groups.get(0).size());
     assertEquals(40, groups.get(1).size());
-    assertEquals(1L, groups.get(0).get(0));
-    assertEquals(100L, groups.get(1).get(39));
+    Set<Long> broadcastUids = new HashSet<>(groups.get(0));
+    broadcastUids.addAll(groups.get(1));
+    assertEquals(cachedUids, broadcastUids);
     // ...and the completion event closes the run with every id, which is what whole-run
     // consumers (conversation alignment) key off.
     verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED),
@@ -777,6 +793,352 @@ public class EmailBoxServiceTest {
     emailBoxService.synchronize(TEST_USER);
     verify(emailBoxStorage, times(12)).createEmail(any(Email.class));
     assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void replyCachedBeforeParentStillFormsOneThread() {
+    // Order-independence, direction one: the reply lands FIRST (newest-first caching
+    // does exactly this on every reset), its parent second. The forward References
+    // lookup finds nothing when the reply is cached, so only the reverse lookup run
+    // when the parent lands can reunite them -- before it existed this conversation
+    // silently split in two.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage reply = threadedMessage("<reply@host>", "<parent@host>", "<parent@host>", null, new Date(2000));
+    MimeMessage parent = threadedMessage("<parent@host>", null, null, null, new Date(1000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { reply, parent });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(2, rows.size());
+    assertEquals(rows.get(0).getThreadId(), rows.get(1).getThreadId(), "reply and parent must share one thread id");
+  }
+
+  @Test
+  @SneakyThrows
+  void lateMessageReferencingTwoThreadsMergesThemIntoTheOldest() {
+    // Two fragments exist before the linking message arrives: A alone, and C whose only
+    // reference points at a not-yet-cached B. When B finally lands it references A (the
+    // forward lookup finds A's thread) while C references B (the reverse lookup finds
+    // C's thread): one message bridges two conversations, and the merge collapses them
+    // into the oldest thread whatever order the three were cached in.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage a = threadedMessage("<a@host>", null, null, null, new Date(1000));
+    MimeMessage c = threadedMessage("<c@host>", "<b@host>", "<b@host>", null, new Date(3000));
+    MimeMessage b = threadedMessage("<b@host>", "<a@host>", "<a@host>", null, new Date(2000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { a, c, b });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(3, rows.size());
+    for (Email row : rows) {
+      // A is the oldest message, so its thread id is the canonical one everything
+      // collapses into -- including C, whose row was already stored with its own id
+      // and must have been rewritten by the merge.
+      assertEquals("<a@host>", row.getThreadId(), "all three fragments must collapse into the oldest thread");
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void threadIndexGroupingIsOrderIndependent() {
+    // Exchange mail with a broken References chain: the only grouping signal is the
+    // Thread-Index conversation root. The root lookup matches any cached row carrying
+    // the same root, in either direction, so the pair must group even when the newer
+    // message deliberately lands before the conversation starter.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage newer = threadedMessage("<ti-reply@host>", null, null, threadIndex(27), new Date(2000));
+    MimeMessage older = threadedMessage("<ti-root@host>", null, null, threadIndex(22), new Date(1000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { newer, older });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(2, rows.size());
+    assertEquals(rows.get(0).getThreadId(), rows.get(1).getThreadId(), "a shared Thread-Index root must group either way");
+  }
+
+  @Test
+  @SneakyThrows
+  void interleavedRepliesAcrossParallelSlicesStillFormOneThreadEach() {
+    // The full pipeline: 40 messages = 20 parent/reply pairs deliberately split across
+    // two prefetch slices (parents in UIDs 1..20, replies in 21..40). The slices are
+    // submitted newest-first and drained in completion order, so the replies routinely
+    // land before their parents -- every pair must still come out as one conversation,
+    // and no two pairs may bleed into each other.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage[] messages = new MimeMessage[40];
+    for (int i = 0; i < 20; i++) {
+      messages[i] = threadedMessage("<m" + (i + 1) + "@host>", null, null, null, new Date((i + 1) * 1000L));
+      messages[20 + i] = threadedMessage("<r" + (i + 1) + "@host>",
+                                         "<m" + (i + 1) + "@host>",
+                                         "<m" + (i + 1) + "@host>",
+                                         null,
+                                         new Date((21 + i) * 1000L));
+    }
+    mockInboxWithMessages(userEmailSetting(), messages);
+    EmailConnector emailConnector = emailConnector();
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
+    mockPrefetchWorkerConnection(emailConnector, 40);
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(40, rows.size());
+    Map<String, String> threadIdByHeaderId = rows.stream().collect(Collectors.toMap(Email::getMailHeaderId, Email::getThreadId));
+    for (int i = 1; i <= 20; i++) {
+      assertEquals(threadIdByHeaderId.get("<m" + i + "@host>"),
+                   threadIdByHeaderId.get("<r" + i + "@host>"),
+                   "pair " + i + " must share one thread id whatever order its slices completed in");
+    }
+    assertEquals(20, rows.stream().map(Email::getThreadId).distinct().count(), "the 20 conversations must stay distinct");
+  }
+
+  @Test
+  @SneakyThrows
+  void slowSliceDoesNotHoldUpCompletedSlices() {
+    // The incident behind completion-order draining: one message trickling in slowly
+    // stalled a whole mailbox for ~4 minutes while four workers sat idle holding
+    // finished data, because slices were consumed strictly in sequence. Here the
+    // NEWEST slice (UIDs 81..100, submitted first) blocks until the other eighty
+    // messages have been cached; with a sequential drain that is a deadlock broken
+    // only by the slice timeout, with completion-order draining it just finishes last.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    mockInboxForSync(userEmailSetting, 100);
+    EmailConnector emailConnector = emailConnector();
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
+    CountDownLatch othersCached = new CountDownLatch(80);
+    when(emailBoxStorage.createEmail(any(Email.class))).thenAnswer(invocation -> {
+      othersCached.countDown();
+      return invocation.getArgument(0);
+    });
+    mockPrefetchWorkerConnection(emailConnector, 100, uids -> {
+      if (LongStream.of(uids).anyMatch(uid -> uid == 100L)) {
+        // The slow slice: its FETCH does not return until every other slice's messages
+        // have been cached by the sync thread -- which can only happen if the drain
+        // consumes slices as they complete instead of waiting for this one.
+        assertTrue(othersCached.await(30, TimeUnit.SECONDS),
+                   "the other slices must be cached while the slow one is still fetching");
+      }
+      return null;
+    });
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage, times(100)).createEmail(emailCaptor.capture());
+    List<Email> created = emailCaptor.getAllValues();
+    // The blocked slice's messages are exactly the LAST twenty cached: nothing waited
+    // for it, and nothing was lost to it.
+    Set<Long> lastTwenty = created.subList(80, 100).stream().map(Email::getMailRemoteId).collect(Collectors.toSet());
+    assertEquals(LongStream.rangeClosed(81, 100).boxed().collect(Collectors.toSet()), lastTwenty);
+  }
+
+  /**
+   * Turns the mocked storage into a small in-memory mailbox for the threading tests:
+   * created rows are remembered, and every thread lookup computeThreadId relies on
+   * (forward References, reverse References, Thread-Index root, oldest-thread
+   * canonicalization, merge) answers from what has actually been stored so far --
+   * exactly what the service sees in production. Without this, the order-independence
+   * tests would only prove that the service believes whatever a stubbed list says.
+   *
+   * @return the live list of stored rows, in creation order
+   */
+  private List<Email> stubStatefulThreadingStorage() {
+    List<Email> rows = Collections.synchronizedList(new ArrayList<>());
+    when(emailBoxStorage.createEmail(any(Email.class))).thenAnswer(invocation -> {
+      Email email = invocation.getArgument(0);
+      rows.add(email);
+      return email;
+    });
+    when(emailBoxStorage.getSiblingThreadIds(anyString(), anyList())).thenAnswer(invocation -> {
+      List<String> mailHeaderIds = invocation.getArgument(1);
+      return rows.stream()
+                 .filter(row -> row.getMailHeaderId() != null && mailHeaderIds.contains(row.getMailHeaderId()))
+                 .map(Email::getThreadId)
+                 .filter(Objects::nonNull)
+                 .distinct()
+                 .toList();
+    });
+    when(emailBoxStorage.getThreadIdsReferencingMessageId(anyString(), anyString())).thenAnswer(invocation -> {
+      String messageId = invocation.getArgument(1);
+      return rows.stream()
+                 .filter(row -> (row.getMailReferences() != null && row.getMailReferences().contains(messageId))
+                     || (row.getInReplyTo() != null && row.getInReplyTo().contains(messageId)))
+                 .map(Email::getThreadId)
+                 .filter(Objects::nonNull)
+                 .distinct()
+                 .toList();
+    });
+    when(emailBoxStorage.getThreadIdsByThreadIndexRoot(anyString(), anyString())).thenAnswer(invocation -> {
+      String threadIndexRoot = invocation.getArgument(1);
+      return rows.stream()
+                 .filter(row -> threadIndexRoot.equals(row.getThreadIndexRoot()))
+                 .map(Email::getThreadId)
+                 .filter(Objects::nonNull)
+                 .distinct()
+                 .toList();
+    });
+    when(emailBoxStorage.getOldestThreadId(anyString(), anyList())).thenAnswer(invocation -> {
+      List<String> threadIds = invocation.getArgument(1);
+      return rows.stream()
+                 .filter(row -> threadIds.contains(row.getThreadId()))
+                 .sorted(Comparator.comparing(Email::getReceivedDate))
+                 .map(Email::getThreadId)
+                 .findFirst()
+                 .orElse(null);
+    });
+    doAnswer(invocation -> {
+      String canonicalThreadId = invocation.getArgument(1);
+      List<String> threadIds = invocation.getArgument(2);
+      rows.stream().filter(row -> threadIds.contains(row.getThreadId())).forEach(row -> row.setThreadId(canonicalThreadId));
+      return null;
+    }).when(emailBoxStorage).mergeThreads(anyString(), anyString(), anyList());
+    return rows;
+  }
+
+  /**
+   * A mocked inbox message carrying real threading headers, as the sync connection's
+   * batched fetch would expose them. Only non-null headers are stubbed, so an absent
+   * header behaves exactly like production (getHeader returns null).
+   *
+   * @param messageId the Message-ID header (angle-bracketed), may be null
+   * @param references the raw References header, may be null
+   * @param inReplyTo the raw In-Reply-To header, may be null
+   * @param threadIndex the raw Exchange Thread-Index header, may be null
+   * @param receivedDate the received date, which drives oldest-thread canonicalization
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private MimeMessage threadedMessage(String messageId, String references, String inReplyTo, String threadIndex, Date receivedDate) {
+    MimeMessage message = mock(MimeMessage.class);
+    when(message.getMessageID()).thenReturn(messageId);
+    // lenient: the service also probes getHeader for headers this message does not
+    // carry (delivery headers, the absent ones of the three below), and strict
+    // stubbing would report those probes as argument mismatches.
+    if (references != null) {
+      lenient().when(message.getHeader("References")).thenReturn(new String[] { references });
+    }
+    if (inReplyTo != null) {
+      lenient().when(message.getHeader("In-Reply-To")).thenReturn(new String[] { inReplyTo });
+    }
+    if (threadIndex != null) {
+      lenient().when(message.getHeader("Thread-Index")).thenReturn(new String[] { threadIndex });
+    }
+    when(message.getReceivedDate()).thenReturn(receivedDate);
+    return message;
+  }
+
+  /**
+   * A synthetic MS-OXOMSG {@code Thread-Index} whose 16-byte conversation GUID
+   * (bytes 6..21) is a fixed constant, so indexes of different lengths -- the
+   * conversation starter at 22 bytes, each reply 5 bytes longer -- decode to the
+   * same conversation root.
+   *
+   * @param length the raw byte length before base64 encoding, at least 22
+   * @return the base64-encoded header value
+   */
+  private String threadIndex(int length) {
+    byte[] raw = new byte[length];
+    for (int i = 6; i < 22; i++) {
+      raw[i] = (byte) 0x42;
+    }
+    return Base64.getEncoder().encodeToString(raw);
+  }
+
+  /**
+   * Wires the mocks for a {@code synchronize()} run over an inbox containing exactly
+   * the given messages, with UIDs {@code 1..n} in array order (nothing cached
+   * locally, no Sent/Archive folders on the store). Unlike {@link #mockInboxForSync}
+   * the caller controls each message's headers, which is what the threading
+   * order-independence tests manipulate.
+   *
+   * @param userEmailSetting the user's connector binding
+   * @param messages the inbox content, oldest first (UID = index + 1)
+   * @return the mocked INBOX folder
+   */
+  @SneakyThrows
+  private Folder mockInboxWithMessages(UserEmailSetting userEmailSetting, MimeMessage[] messages) {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    // Only the parallel-prefetch tests reach getFullName; lenient so the serial-path
+    // tests sharing this fixture do not trip strict-stubbing.
+    lenient().when(inbox.getFullName()).thenReturn("INBOX");
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    when(inbox.getMessageCount()).thenReturn(messages.length);
+    for (int i = 0; i < messages.length; i++) {
+      when(((UIDFolder) inbox).getUID(messages[i])).thenReturn((long) (i + 1));
+    }
+    when(inbox.getMessages(anyInt(), anyInt())).thenReturn(messages);
+    when(emailBoxStorage.getEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
+    // No subscribed Sent/Archive folders in the test store, so those syncs are no-ops.
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    return inbox;
+  }
+
+  /**
+   * Wires the extra IMAP connection the body prefetch workers open: same folder
+   * re-opened by full name, messages resolved by UID, each carrying a
+   * {@code prefetched-<uid>} body.
+   *
+   * @param emailConnector the resolved connector the workers connect with
+   * @param count the number of messages, UIDs {@code 1..count}
+   * @return the mocked worker-side folder
+   */
+  @SneakyThrows
+  private Folder mockPrefetchWorkerConnection(EmailConnector emailConnector, int count) {
+    return mockPrefetchWorkerConnection(emailConnector, count, uids -> null);
+  }
+
+  /**
+   * Same as {@link #mockPrefetchWorkerConnection(EmailConnector, int)}, with a hook
+   * invoked on the worker thread before a slice's messages are returned -- used to
+   * make one slice deliberately slow.
+   *
+   * @param emailConnector the resolved connector the workers connect with
+   * @param count the number of messages, UIDs {@code 1..count}
+   * @param beforeSlice called with the slice's UIDs before they resolve; may block
+   * @return the mocked worker-side folder
+   */
+  @SneakyThrows
+  private Folder mockPrefetchWorkerConnection(EmailConnector emailConnector, int count, SliceHook beforeSlice) {
+    Store workerStore = mock(Store.class);
+    when(userEmailSettingService.connect(any(UserEmailSetting.class), eq(emailConnector))).thenReturn(workerStore);
+    when(workerStore.isConnected()).thenReturn(true);
+    Folder workerFolder = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(workerStore.getFolder("INBOX")).thenReturn(workerFolder);
+    when(workerFolder.isOpen()).thenReturn(true);
+    Map<Long, Message> workerMessages = new HashMap<>();
+    for (long uid = 1; uid <= count; uid++) {
+      MimeMessage workerMessage = mock(MimeMessage.class);
+      when(workerMessage.isMimeType("text/*")).thenReturn(true);
+      when(workerMessage.getContent()).thenReturn("prefetched-" + uid);
+      when(((UIDFolder) workerFolder).getUID(workerMessage)).thenReturn(uid);
+      workerMessages.put(uid, workerMessage);
+    }
+    // Read-only answer (all stubbing done above) so concurrent workers never stub.
+    when(((UIDFolder) workerFolder).getMessagesByUID(any(long[].class))).thenAnswer(invocation -> {
+      long[] uids = invocation.getArgument(0);
+      beforeSlice.beforeSlice(uids);
+      Message[] result = new Message[uids.length];
+      for (int i = 0; i < uids.length; i++) {
+        result[i] = workerMessages.get(uids[i]);
+      }
+      return result;
+    });
+    return workerFolder;
+  }
+
+  /**
+   * A hook run on a prefetch worker thread just before its slice resolves, allowed to
+   * block or throw -- how the slow-slice test freezes exactly one slice.
+   */
+  @FunctionalInterface
+  private interface SliceHook {
+    /**
+     * Invoked with the slice's UIDs on the worker thread.
+     *
+     * @param uids the slice's UIDs
+     * @return ignored, present so blocking lambdas may end with a return
+     * @throws Exception to fail the slice like a dead connection would
+     */
+    Object beforeSlice(long[] uids) throws Exception;
   }
 
   /**

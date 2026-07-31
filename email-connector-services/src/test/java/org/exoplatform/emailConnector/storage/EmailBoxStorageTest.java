@@ -150,6 +150,30 @@ public class EmailBoxStorageTest {
   }
 
   @Test
+  void getThreadIdsReferencingMessageIdMatchesChainsInJava() {
+    // The matching runs in Java over the chains the DAO returns (SQL substring
+    // functions are unsupported on the CLOB columns of some dialects -- a LOCATE
+    // version aborted a live sync on HSQLDB). The storage must: match the bracketed
+    // token exactly (neither <xa@host> nor <a@host.com> may match <a@host>), fall
+    // back to In-Reply-To when References misses, normalize a bare id to its
+    // bracketed form, de-duplicate thread ids, and skip the database entirely for a
+    // blank id (a synthesized id can never be referenced).
+    when(emailBoxDAO.findThreadReferenceChainsByUserId("root"))
+                                                              .thenReturn(List.of(
+                                                                                  new Object[] { "<t1@host>",
+                                                                                      "<root@host> <a@host>", null },
+                                                                                  new Object[] { "<t1@host>", null, "<a@host>" },
+                                                                                  new Object[] { "<t2@host>", "<xa@host>",
+                                                                                      "<a@host.com>" },
+                                                                                  new Object[] { "<t3@host>", null, null }));
+    assertEquals(List.of("<t1@host>"), emailBoxStorage.getThreadIdsReferencingMessageId("root", "<a@host>"));
+    assertEquals(List.of("<t1@host>"), emailBoxStorage.getThreadIdsReferencingMessageId("root", "a@host"));
+    assertEquals(List.of("<t2@host>"), emailBoxStorage.getThreadIdsReferencingMessageId("root", "<xa@host>"));
+    assertEquals(List.of(), emailBoxStorage.getThreadIdsReferencingMessageId("root", null));
+    assertEquals(List.of(), emailBoxStorage.getThreadIdsReferencingMessageId("root", " "));
+  }
+
+  @Test
   void getEmailByMailRemoteIdAndUserId() {
     Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, "INBOX", false, false, false);
     assertNull(retrievedEmail);
