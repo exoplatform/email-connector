@@ -19,10 +19,12 @@ import EmailConnectorMailBoxDrawer from './components/drawer/EmailConnectorMailB
 import EmailConnectorMailBoxDrawerActionMenu from './components/drawer/EmailConnectorMailBoxDrawerActionMenu.vue';
 import EmailConnectorMailBoxDrawerActionMenuItems from './components/drawer/EmailConnectorMailBoxDrawerActionMenuItems.vue';
 import EmailConnectorMailBoxDrawerActions from './components/drawer/EmailConnectorMailBoxDrawerActions.vue';
+import EmailConnectorMailBoxDrawerAttachmentActionMenu from './components/drawer/EmailConnectorMailBoxDrawerAttachmentActionMenu.vue';
 import EmailConnectorMailBoxDrawerAttachmentItem from './components/drawer/EmailConnectorMailBoxDrawerAttachmentItem.vue';
 import EmailConnectorMailBoxDrawerAttachmentsDrawer from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsDrawer.vue';
 import EmailConnectorMailBoxDrawerAttachmentsList from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsList.vue';
 import EmailConnectorMailBoxDrawerAttachmentsListItem from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsListItem.vue';
+import EmailConnectorMailBoxDrawerAttachmentsSaveAll from './components/drawer/EmailConnectorMailBoxDrawerAttachmentsSaveAll.vue';
 import EmailConnectorMailBoxDrawerContent from './components/drawer/EmailConnectorMailBoxDrawerContent.vue';
 import EmailConnectorMailBoxDrawerList from './components/drawer/EmailConnectorMailBoxDrawerList.vue';
 import EmailConnectorMailBoxDrawerListItem from './components/drawer/EmailConnectorMailBoxDrawerListItem.vue';
@@ -54,10 +56,12 @@ const components = {
   'email-connector-mail-box-drawer-action-menu': EmailConnectorMailBoxDrawerActionMenu,
   'email-connector-mail-box-drawer-action-menu-items': EmailConnectorMailBoxDrawerActionMenuItems,
   'email-connector-mail-box-drawer-actions': EmailConnectorMailBoxDrawerActions,
+  'email-connector-mail-box-drawer-attachment-action-menu': EmailConnectorMailBoxDrawerAttachmentActionMenu,
   'email-connector-mail-box-drawer-attachment-item': EmailConnectorMailBoxDrawerAttachmentItem,
   'email-connector-mail-box-drawer-attachments-drawer': EmailConnectorMailBoxDrawerAttachmentsDrawer,
   'email-connector-mail-box-drawer-attachments-list': EmailConnectorMailBoxDrawerAttachmentsList,
   'email-connector-mail-box-drawer-attachments-list-item': EmailConnectorMailBoxDrawerAttachmentsListItem,
+  'email-connector-mail-box-drawer-attachments-save-all': EmailConnectorMailBoxDrawerAttachmentsSaveAll,
   'email-connector-mail-box-drawer-content': EmailConnectorMailBoxDrawerContent,
   'email-connector-mail-box-drawer-list': EmailConnectorMailBoxDrawerList,
   'email-connector-mail-box-drawer-list-item': EmailConnectorMailBoxDrawerListItem,
