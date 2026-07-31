@@ -103,7 +103,9 @@ import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -135,6 +137,7 @@ import io.meeds.social.category.model.CategoryWithName;
 import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.category.service.CategoryService;
 import io.meeds.social.html.utils.HtmlUtils;
+import io.meeds.social.util.JsonUtils;
 import jakarta.annotation.PostConstruct;
 
 /**
@@ -229,6 +232,12 @@ public class EmailBoxService {
   // at all completing for this long means the connections are dead, not slow, and the
   // remaining bodies are fetched serially, which costs a fraction of a second each.
   private static final long       BODY_PREFETCH_SLICE_TIMEOUT_MS                              = 90 * 1000L;
+
+  // Where each user's MailboxSyncState lives (SettingService, user context, the
+  // add-on's scope). Its OWN key, not a field of userEmailSetting: the setting
+  // object is read-modified-written by preference flows, and sync bookkeeping
+  // racing user edits over a single JSON blob is how settings get clobbered.
+  private static final String     MAILBOX_SYNC_STATE_KEY                                      = "emailBoxSyncState";
 
   // The nameIds of the add-on's own default email categories (see default-categories.json).
   // The platform's CategoryImportService persists each nameId -> created category id in
@@ -369,6 +378,12 @@ public class EmailBoxService {
       return;
     }
     Store store = null;
+    // The sync memory: per-folder change snapshots + discovered folder names. Loaded
+    // once, mutated by the folder syncs below, persisted at the end only when it
+    // actually changed (the original serialized form is the dirty check, so a run
+    // that skipped everything writes nothing).
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
       store = userEmailSettingService.connect(userEmailSetting);
       updateEmailSyncStatus(username, SyncStatus.IN_PROGRESS);
@@ -376,16 +391,16 @@ public class EmailBoxService {
       // INBOX drives the new-mail notifications; Sent and Archive are cached (best
       // effort — a missing folder must not fail the sync) so a conversation shows the
       // user's own replies ("Me") and previously-archived messages inline.
-      syncFolder(store.getFolder("INBOX"), MailFolder.INBOX, username, userEmailSetting, emailBoxCacheSize, true);
+      syncFolderIfChanged(store, store.getFolder("INBOX"), MailFolder.INBOX, username, userEmailSetting, emailBoxCacheSize, true, syncState);
       if (!inboxOnly) {
         int nonInboxWindow = Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
         try {
-          syncFolder(findSentFolder(store), MailFolder.SENT, username, userEmailSetting, nonInboxWindow, false);
+          syncFolderIfChanged(store, resolveSentFolder(store, syncState), MailFolder.SENT, username, userEmailSetting, nonInboxWindow, false, syncState);
         } catch (Exception e) {
           LOG.warn("Could not sync the Sent folder for user {}", username, e);
         }
         try {
-          syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, userEmailSetting, nonInboxWindow, false);
+          syncFolderIfChanged(store, resolveArchiveFolder(store, syncState), MailFolder.ARCHIVE, username, userEmailSetting, nonInboxWindow, false, syncState);
         } catch (Exception e) {
           LOG.warn("Could not sync the Archive folder for user {}", username, e);
         }
@@ -395,6 +410,10 @@ public class EmailBoxService {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
     } finally {
+      // Persisted in the finally so the folders that DID sync keep their fresh
+      // snapshots even when a later folder failed; a folder that failed mid-sync
+      // never returned a snapshot, so its stale one keeps forcing the full path.
+      saveMailboxSyncState(username, syncState, originalSyncStateJson);
       syncingUsers.remove(username);
       try {
         if (store != null && store.isConnected()) {
@@ -469,15 +488,18 @@ public class EmailBoxService {
    *          body prefetch to open its own extra IMAP connections
    * @param emailBoxCacheSize the number of most recent messages to keep
    * @param notify whether to fire the new-mail notification (INBOX only)
+   * @return the folder's change snapshot as of this sync's SELECT, for the next
+   *         sync's skip-if-unchanged check; null when none could be captured (the
+   *         next sync then simply takes the full path again)
    */
-  private void syncFolder(Folder folder,
+  private FolderSyncSnapshot syncFolder(Folder folder,
                           String folderKey,
                           String username,
                           UserEmailSetting userEmailSetting,
                           int emailBoxCacheSize,
                           boolean notify) throws MessagingException, IllegalAccessException {
     if (folder == null) {
-      return;
+      return null;
     }
     try {
       // Phase timings below feed the one-line summary at the end. Permanent
@@ -490,10 +512,18 @@ public class EmailBoxService {
       UIDFolder uidFolder = (UIDFolder) folder;
       int totalMessages = folder.getMessageCount();
       if (totalMessages == 0) {
-        return;
+        // No snapshot for an empty folder: today's behavior is to do nothing here (a
+        // cache whose folder emptied remotely keeps its rows), and snapshotting an
+        // untouched cache would only set the skip check in stone over it.
+        return null;
       }
       int startIndex = Math.max(1, totalMessages - emailBoxCacheSize + 1);
       Message[] serverMessages = folder.getMessages(startIndex, totalMessages);
+      // Captured NOW, from the SELECT-time values, not at close: mail landing while
+      // the download runs would otherwise be recorded in the snapshot without being
+      // in the cache, and the next sync would skip right over it. Anything arriving
+      // after this line makes the next check mismatch, which is the safe direction.
+      FolderSyncSnapshot folderSnapshot = captureFolderSnapshot(folder, totalMessages, emailBoxCacheSize);
       long windowFetchStart = System.currentTimeMillis();
       // Prefetch flags + envelope + UID + headers + MIME structure in a single
       // round-trip (see buildSyncFetchProfile for why every piece is in there).
@@ -568,6 +598,7 @@ public class EmailBoxService {
         completeNotificationWindow(username, folderEmails);
         broadcastNewEmailsSyncCompleted(username, newEmailIds);
       }
+      return folderSnapshot;
     } finally {
       if (folder.isOpen()) {
         try {
@@ -576,6 +607,296 @@ public class EmailBoxService {
           LOG.warn("Error when closing folder {} for user {}", folderKey, username, messagingException);
         }
       }
+    }
+  }
+
+  /**
+   * The cheap-change gate in front of {@link #syncFolder}: skip the folder outright
+   * when the server provably did not change since the snapshot the last full sync
+   * captured, otherwise run the full sync and remember what it saw. The measured
+   * motivation: a no-op INBOX sync at 1000 cached spent 8531 of 8615 ms — 98% — in
+   * the window FETCH re-downloading every envelope, header and MIME structure to
+   * discover nothing changed, every period, for every user, forever.
+   *
+   * @param store the connected store, for the CONDSTORE capability check
+   * @param folder the remote folder (may be {@code null} when not discovered)
+   * @param folderKey the {@link MailFolder} discriminator
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param windowSize the number of most recent messages to keep
+   * @param notify whether to fire the new-mail notification (INBOX only)
+   * @param syncState the mailbox's sync memory, updated in place with the fresh
+   *          snapshot after a successful full sync
+   * @throws MessagingException if the folder cannot be read
+   * @throws IllegalAccessException if the user is not allowed to cache messages
+   */
+  private void syncFolderIfChanged(Store store,
+                                   Folder folder,
+                                   String folderKey,
+                                   String username,
+                                   UserEmailSetting userEmailSetting,
+                                   int windowSize,
+                                   boolean notify,
+                                   MailboxSyncState syncState) throws MessagingException, IllegalAccessException {
+    if (folder == null) {
+      return;
+    }
+    if (canSkipFolderSync(store, folder, folderKey, syncState.getSnapshot(folderKey), windowSize, username)) {
+      return;
+    }
+    FolderSyncSnapshot folderSnapshot = syncFolder(folder, folderKey, username, userEmailSetting, windowSize, notify);
+    if (folderSnapshot != null) {
+      syncState.setSnapshot(folderKey, folderSnapshot);
+    }
+  }
+
+  /**
+   * Whether a folder's sync can be skipped because the server provably did not
+   * change since the last full sync. Reads the four change signals off a STATUS on
+   * the still-closed folder (two round-trips: JavaMail batches MESSAGES / UIDNEXT /
+   * UIDVALIDITY into one STATUS, HIGHESTMODSEQ needs its own) and compares them to
+   * the snapshot. Every exit is deliberately conservative — a wrong "unchanged"
+   * silently stops a mailbox from syncing, which is a far worse failure than a slow
+   * sync, so any missing signal, missing capability, unexpected value or error
+   * means "run the full sync":
+   * <ul>
+   * <li>no snapshot (first sync, invalidated by a reset, or unparseable state) —
+   * full sync;</li>
+   * <li>snapshot captured with a different window size (admin changed the cache
+   * size; the wider window must download even though the server is unchanged) —
+   * full sync;</li>
+   * <li>snapshot without a positive HIGHESTMODSEQ, or a server not advertising
+   * CONDSTORE — full sync ALWAYS: without mod-sequences, an unchanged
+   * uidNext+messageCount says nothing about read/unread flags flipped in another
+   * client, and skipping would leave them stale forever, not just slow;</li>
+   * <li>any server signal negative/unavailable, or the STATUS failing — full
+   * sync.</li>
+   * </ul>
+   * The decision and both sides of the comparison are logged at INFO on purpose: a
+   * silent skip is one nobody can debug when a mailbox looks stale.
+   *
+   * @param store the connected store, for the CONDSTORE capability check
+   * @param folder the remote folder, still closed
+   * @param folderKey the {@link MailFolder} discriminator, for the log
+   * @param snapshot what the last full sync saw, may be null
+   * @param windowSize the window size this sync would use
+   * @param username the mailbox owner, for the log
+   * @return true only when every change signal matches the snapshot exactly
+   */
+  private boolean canSkipFolderSync(Store store,
+                                    Folder folder,
+                                    String folderKey,
+                                    FolderSyncSnapshot snapshot,
+                                    int windowSize,
+                                    String username) {
+    if (snapshot == null) {
+      // First sync of this folder (or a reset invalidated it): nothing to compare.
+      return false;
+    }
+    try {
+      if (snapshot.getUidValidity() <= 0 || snapshot.getUidNext() <= 0 || snapshot.getMessageCount() <= 0
+          || snapshot.getHighestModSeq() <= 0) {
+        LOG.info("Folder {} of user {} cheap change check: snapshot incomplete -> full sync", folderKey, username);
+        return false;
+      }
+      if (snapshot.getWindowSize() != windowSize) {
+        LOG.info("Folder {} of user {} cheap change check: window size changed {} -> {} -> full sync",
+                 folderKey,
+                 username,
+                 snapshot.getWindowSize(),
+                 windowSize);
+        return false;
+      }
+      if (!(store instanceof IMAPStore imapStore) || !imapStore.hasCapability("CONDSTORE")
+          || !(folder instanceof IMAPFolder imapFolder)) {
+        // No CONDSTORE: flags flipped in another client are undetectable from here,
+        // and skipping would leave them stale forever. Checked before any STATUS is
+        // issued, so non-CONDSTORE servers pay nothing for this gate.
+        LOG.info("Folder {} of user {} cheap change check: no CONDSTORE on this server -> full sync", folderKey, username);
+        return false;
+      }
+      long uidValidity = imapFolder.getUIDValidity();
+      long uidNext = imapFolder.getUIDNext();
+      int messageCount = imapFolder.getMessageCount();
+      long highestModSeq = imapFolder.getHighestModSeq();
+      boolean unchanged = uidValidity > 0 && uidValidity == snapshot.getUidValidity()
+          && uidNext > 0 && uidNext == snapshot.getUidNext()
+          && messageCount > 0 && messageCount == snapshot.getMessageCount()
+          && highestModSeq > 0 && highestModSeq == snapshot.getHighestModSeq();
+      LOG.info("Folder {} of user {} cheap change check: server (uidValidity {}, uidNext {}, {} message(s), highestModSeq {})"
+          + " vs last sync ({}, {}, {}, {}) -> {}",
+               folderKey,
+               username,
+               uidValidity,
+               uidNext,
+               messageCount,
+               highestModSeq,
+               snapshot.getUidValidity(),
+               snapshot.getUidNext(),
+               snapshot.getMessageCount(),
+               snapshot.getHighestModSeq(),
+               unchanged ? "unchanged, folder sync skipped" : "changed, full sync");
+      return unchanged;
+    } catch (Exception e) {
+      LOG.warn("Cheap change check failed on folder {} for user {}; running the full sync", folderKey, username, e);
+      return false;
+    }
+  }
+
+  /**
+   * The folder's change signals as of this sync's SELECT — what the next sync's
+   * skip check compares against. The message count is the one the window listing
+   * used (NOT re-read from the folder, which untagged EXISTS responses update while
+   * the download runs), and uidNext / highestModSeq come from the SELECT response
+   * JavaMail parsed at open, so the snapshot describes exactly the state this sync
+   * reconciled the cache to. On a server without CONDSTORE the mod-sequence is
+   * negative and the snapshot is stored anyway — the skip check refuses it, which
+   * is precisely the intent.
+   *
+   * @param folder the OPEN remote folder
+   * @param totalMessages the message count at window listing
+   * @param windowSize the cache window size this sync used
+   * @return the snapshot, or null when the folder is not IMAP or a signal cannot
+   *         be read (the next sync then takes the full path — the safe default)
+   */
+  private FolderSyncSnapshot captureFolderSnapshot(Folder folder, int totalMessages, int windowSize) {
+    if (!(folder instanceof IMAPFolder imapFolder)) {
+      return null;
+    }
+    try {
+      return new FolderSyncSnapshot(imapFolder.getUIDValidity(),
+                                    imapFolder.getUIDNext(),
+                                    totalMessages,
+                                    imapFolder.getHighestModSeq(),
+                                    windowSize);
+    } catch (Exception e) {
+      LOG.warn("Could not capture the sync snapshot of folder {}; the next sync takes the full path",
+               folder.getFullName(),
+               e);
+      return null;
+    }
+  }
+
+  /**
+   * The Sent folder, from the name remembered in the sync state when possible —
+   * discovery walks the WHOLE subscribed folder list ({@code LIST *}) to find one
+   * folder that never moves, on every sync of every user. The cached name is
+   * verified with a single-folder {@code exists()} probe; a name that no longer
+   * resolves (folder renamed or deleted) falls back to a full rediscovery, whose
+   * result replaces the remembered name.
+   *
+   * @param store the connected store
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @return the Sent folder, or null when the mailbox has none
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder resolveSentFolder(Store store, MailboxSyncState syncState) throws MessagingException {
+    if (StringUtils.isNotBlank(syncState.getSentFolderName())) {
+      Folder cached = store.getFolder(syncState.getSentFolderName());
+      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
+        return imapFolder;
+      }
+    }
+    IMAPFolder sentFolder = findSentFolder(store);
+    syncState.setSentFolderName(sentFolder != null ? sentFolder.getFullName() : null);
+    return sentFolder;
+  }
+
+  /**
+   * The syncable Archive folder, from the name remembered in the sync state when
+   * possible — same reasoning and same fallback as {@link #resolveSentFolder}.
+   *
+   * @param store the connected store
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @return the Archive folder, or null when the mailbox has none to bulk-sync
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder resolveArchiveFolder(Store store, MailboxSyncState syncState) throws MessagingException {
+    if (StringUtils.isNotBlank(syncState.getArchiveFolderName())) {
+      Folder cached = store.getFolder(syncState.getArchiveFolderName());
+      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
+        return imapFolder;
+      }
+    }
+    IMAPFolder archiveFolder = findSyncableArchiveFolder(store);
+    syncState.setArchiveFolderName(archiveFolder != null ? archiveFolder.getFullName() : null);
+    return archiveFolder;
+  }
+
+  /**
+   * The mailbox's persisted sync memory, or a blank one when absent or unreadable —
+   * either way every folder simply takes the full path, so a corrupt state can
+   * never do worse than cost one full sync. Lives under its own SettingService key,
+   * NOT inside the user's email setting JSON: that object is read-modified-written
+   * by preference flows, and sync bookkeeping racing user edits over one blob is
+   * how settings get clobbered.
+   *
+   * @param username the mailbox owner
+   * @return the state, never null
+   */
+  private MailboxSyncState loadMailboxSyncState(String username) {
+    try {
+      SettingValue<?> settingValue = settingService.get(Context.USER.id(username),
+                                                        EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                                        MAILBOX_SYNC_STATE_KEY);
+      if (settingValue != null && settingValue.getValue() != null) {
+        MailboxSyncState syncState = JsonUtils.fromJsonString(settingValue.getValue().toString(), MailboxSyncState.class);
+        if (syncState != null) {
+          return syncState;
+        }
+      }
+    } catch (Exception e) {
+      LOG.warn("Could not read the sync state of user {}; every folder takes the full sync path", username, e);
+    }
+    return new MailboxSyncState();
+  }
+
+  /**
+   * Persists the mailbox's sync memory when — and only when — this run changed it,
+   * compared on the serialized form so a fully-skipped sync writes nothing at all.
+   * Best-effort: a failed write only costs the next sync a full pass.
+   *
+   * @param username the mailbox owner
+   * @param syncState the possibly-mutated state
+   * @param originalSyncStateJson the state as it was serialized at load time
+   */
+  private void saveMailboxSyncState(String username, MailboxSyncState syncState, String originalSyncStateJson) {
+    try {
+      String syncStateJson = JsonUtils.toJsonString(syncState);
+      if (!syncStateJson.equals(originalSyncStateJson)) {
+        settingService.set(Context.USER.id(username),
+                           EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                           MAILBOX_SYNC_STATE_KEY,
+                           SettingValue.create(syncStateJson));
+      }
+    } catch (Exception e) {
+      LOG.warn("Could not save the sync state of user {}; the next sync takes the full path", username, e);
+    }
+  }
+
+  /**
+   * Drops one folder's change snapshot, forcing the next sync of that folder down
+   * the full path. MUST be called whenever that folder's local cache is cleared:
+   * after a reset the server still matches the old snapshot exactly, and without
+   * this the skip check would conclude "nothing changed" over an empty cache — the
+   * mailbox would come up blank and stay blank until new mail happened to arrive.
+   *
+   * @param username the mailbox owner
+   * @param folderKey the {@link MailFolder} whose cache was cleared
+   */
+  private void clearFolderSyncSnapshot(String username, String folderKey) {
+    try {
+      MailboxSyncState syncState = loadMailboxSyncState(username);
+      if (syncState.getSnapshot(folderKey) == null) {
+        return;
+      }
+      syncState.setSnapshot(folderKey, null);
+      settingService.set(Context.USER.id(username),
+                         EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                         MAILBOX_SYNC_STATE_KEY,
+                         SettingValue.create(JsonUtils.toJsonString(syncState)));
+    } catch (Exception e) {
+      LOG.warn("Could not clear the {} sync snapshot of user {}", folderKey, username, e);
     }
   }
 
@@ -1159,6 +1480,13 @@ public class EmailBoxService {
   public void deleteUserEmails(String username) {
     List<Email> emails = emailBoxStorage.getEmails(username);
     deleteEmails(emails);
+    // The whole cache is gone, so the whole sync memory must go with it: a surviving
+    // snapshot would let the next sync skip folders whose local rows no longer exist.
+    try {
+      settingService.remove(Context.USER.id(username), EmailConnectorService.EMAIL_CONNECTOR_SCOPE, MAILBOX_SYNC_STATE_KEY);
+    } catch (Exception e) {
+      LOG.warn("Could not clear the sync state of user {}", username, e);
+    }
   }
 
   /**
@@ -1170,6 +1498,11 @@ public class EmailBoxService {
   public void deleteUserEmails(String username, String folder) {
     List<Email> emails = emailBoxStorage.getEmails(username, folder);
     deleteEmails(emails);
+    // This folder's cache is gone, so its change snapshot must die with it: after a
+    // reset the server still matches the old snapshot exactly, and a surviving one
+    // would make the resync skip "unchanged" folders over an empty cache — the
+    // mailbox would come up blank and stay blank until new mail happened to arrive.
+    clearFolderSyncSnapshot(username, folder);
   }
 
   /**
