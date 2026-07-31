@@ -158,7 +158,7 @@ public class EmailBoxServiceTest {
     when(message2.getSubject()).thenReturn("message2Subject");
     MimeMessage[] messages = { message1, message2 };
     when((inbox).getMessages(anyInt(), anyInt())).thenReturn(messages);
-    when(emailBoxStorage.getEmails(anyString(), anyString())).thenReturn(new ArrayList<Email>());
+    when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<Email>());
     // No subscribed Sent/Archive folders in the test store, so those syncs are no-ops.
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -922,6 +922,180 @@ public class EmailBoxServiceTest {
     assertEquals(LongStream.rangeClosed(81, 100).boxed().collect(Collectors.toSet()), lastTwenty);
   }
 
+  @Test
+  @SneakyThrows
+  void noOpSyncIssuesNoPerMessageStatements() {
+    // The B1 regression guard. A sync that finds nothing new used to issue one SELECT
+    // and two guarded UPDATEs per already-known message -- ~15,000 statements on a
+    // 5000-message cache to discover nothing changed -- plus the full-entity folder
+    // load with every body CLOB. It must now issue NO per-message statement and never
+    // touch the full load: this is the regression that would silently return.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[12];
+    List<Email> cached = new ArrayList<>();
+    for (int i = 0; i < 12; i++) {
+      messages[i] = flaggedMessage(false);
+      cached.add(cachedEmail(i + 1, false, false));
+    }
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(cached);
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage, never()).getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                                     anyString(),
+                                                                     any(),
+                                                                     anyString(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean());
+    verify(emailBoxStorage, never()).updateEmailReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    verify(emailBoxStorage, never()).markEmailAsNotRecent(anyLong(), anyString(), anyString());
+    verify(emailBoxStorage, never()).markEmailsAsNotRecent(anyList(), anyString(), anyString());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    verify(emailBoxStorage, never()).getEmails(anyString(), anyString());
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void flagChangesAreAppliedAsBulkUpdates() {
+    // Read/unread changes made in another client must still land, but as at most
+    // three bulk statements -- one per direction plus one recent-clear -- never as
+    // per-message updates.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[6];
+    List<Email> cached = new ArrayList<>();
+    // UIDs 1-2: read on the server, unread in the cache -> one bulk mark-read.
+    messages[0] = flaggedMessage(true);
+    messages[1] = flaggedMessage(true);
+    cached.add(cachedEmail(1, false, false));
+    cached.add(cachedEmail(2, false, false));
+    // UIDs 3-4: unread on the server, read in the cache -> one bulk mark-unread.
+    messages[2] = flaggedMessage(false);
+    messages[3] = flaggedMessage(false);
+    cached.add(cachedEmail(3, true, false));
+    cached.add(cachedEmail(4, true, false));
+    // UID 5: still wearing the recent badge from its own sync -> one bulk clear.
+    messages[4] = flaggedMessage(false);
+    cached.add(cachedEmail(5, false, true));
+    // UID 6: nothing changed -> touched by no statement at all.
+    messages[5] = flaggedMessage(false);
+    cached.add(cachedEmail(6, false, false));
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(cached);
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1L, 2L), TEST_USER, true, "INBOX");
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(3L, 4L), TEST_USER, false, "INBOX");
+    verify(emailBoxStorage).markEmailsAsNotRecent(List.of(5L), TEST_USER, "INBOX");
+    verify(emailBoxStorage, never()).markEmailAsNotRecent(anyLong(), anyString(), anyString());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void mixedSyncCreatesNewAndReconcilesKnownInBulk() {
+    // The general case: known-unchanged messages are untouched, a known flag change
+    // goes through the bulk path, a lingering recent badge is cleared in bulk, and
+    // the genuinely new messages are created -- the same end state the per-message
+    // code produced, at O(changes) statements.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[5];
+    List<Email> cached = new ArrayList<>();
+    // UID 1: known, read on the server but not in the cache.
+    messages[0] = flaggedMessage(true);
+    cached.add(cachedEmail(1, false, false));
+    // UID 2: known, recent badge to clear.
+    messages[1] = flaggedMessage(false);
+    cached.add(cachedEmail(2, false, true));
+    // UID 3: known, nothing changed.
+    messages[2] = flaggedMessage(false);
+    cached.add(cachedEmail(3, false, false));
+    // UIDs 4-5: new, a parent and its reply.
+    messages[3] = threadedMessage("<new-parent@host>", null, null, null, new Date(4000));
+    messages[4] = threadedMessage("<new-reply@host>", "<new-parent@host>", "<new-parent@host>", null, new Date(5000));
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(cached);
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage, times(2)).createEmail(emailCaptor.capture());
+    assertEquals(List.of(4L, 5L), emailCaptor.getAllValues().stream().map(Email::getMailRemoteId).toList());
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1L), TEST_USER, true, "INBOX");
+    verify(emailBoxStorage).markEmailsAsNotRecent(List.of(2L), TEST_USER, "INBOX");
+    verify(emailBoxStorage, never()).getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                                     anyString(),
+                                                                     any(),
+                                                                     anyString(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean());
+    verify(emailBoxStorage, never()).markEmailAsNotRecent(anyLong(), anyString(), anyString());
+  }
+
+  @Test
+  @SneakyThrows
+  void backfillStillRunsPerRowButOnlyForRowsThatNeedIt() {
+    // The threading backfill keeps its per-row writes -- but ONLY for rows that
+    // genuinely need them, which is what keeps it out of the steady-state cost.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[] { flaggedMessage(false), flaggedMessage(false), flaggedMessage(false) };
+    // UID 1: cached before threading existed -- no thread id at all.
+    Email unthreaded = cachedEmail(1, false, false);
+    unthreaded.setThreadId("");
+    unthreaded.setThreadIndexRoot(null);
+    // UID 2: threaded, but its Thread-Index root was never captured.
+    Email rootless = cachedEmail(2, false, false);
+    rootless.setThreadIndexRoot(null);
+    // UID 3: fully backfilled -- must not be written at all.
+    Email complete = cachedEmail(3, false, false);
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(List.of(unthreaded, rootless, complete));
+    emailBoxService.synchronize(TEST_USER);
+    // Exactly one thread-info backfill (UID 1) and one root capture (UID 2); the
+    // messages carry no Thread-Index header, so the root is stored as "".
+    verify(emailBoxStorage, times(1)).updateThreadInfo(eq(TEST_USER), eq(1L), anyString(), any(), any(), eq("INBOX"), eq(""));
+    verify(emailBoxStorage, times(1)).updateThreadIndexRoot(TEST_USER, 2L, "INBOX", "");
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * A mocked inbox message for the reconcile tests: only its SEEN flag matters, and
+   * the flag comes off the batched window FETCH in production, so a bare mock with a
+   * stubbed flag is the honest shape.
+   *
+   * @param seen the server-side SEEN flag
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private MimeMessage flaggedMessage(boolean seen) {
+    MimeMessage message = mock(MimeMessage.class);
+    lenient().when(message.isSet(Flags.Flag.SEEN)).thenReturn(seen);
+    lenient().when(message.getReceivedDate()).thenReturn(new Date());
+    return message;
+  }
+
+  /**
+   * A cached row as the light sync view returns it: ids, flags and threading state,
+   * no body. Threading is already backfilled (non-empty thread id, captured empty
+   * Thread-Index root) so the reconcile tests exercise pure flag logic; the backfill
+   * test overrides those fields explicitly.
+   *
+   * @param uid the IMAP UID
+   * @param read the cached read flag
+   * @param recent the cached recent flag
+   * @return the light row
+   */
+  private Email cachedEmail(long uid, boolean read, boolean recent) {
+    Email email = new Email();
+    email.setId(uid * 100);
+    email.setMailRemoteId(uid);
+    email.setRead(read);
+    email.setRecent(recent);
+    email.setThreadId("<m" + uid + "@host>");
+    email.setThreadIndexRoot("");
+    email.setUserId(TEST_USER);
+    email.setFolder("INBOX");
+    return email;
+  }
+
   /**
    * Turns the mocked storage into a small in-memory mailbox for the threading tests:
    * created rows are remembered, and every thread lookup computeThreadId relies on
@@ -1064,7 +1238,7 @@ public class EmailBoxServiceTest {
       when(((UIDFolder) inbox).getUID(messages[i])).thenReturn((long) (i + 1));
     }
     when(inbox.getMessages(anyInt(), anyInt())).thenReturn(messages);
-    when(emailBoxStorage.getEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
+    when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
     // No subscribed Sent/Archive folders in the test store, so those syncs are no-ops.
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -1167,7 +1341,7 @@ public class EmailBoxServiceTest {
       when(((UIDFolder) inbox).getUID(messages[i])).thenReturn((long) (i + 1));
     }
     when(inbox.getMessages(anyInt(), anyInt())).thenReturn(messages);
-    when(emailBoxStorage.getEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
+    when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
     // No subscribed Sent/Archive folders in the test store, so those syncs are no-ops.
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
