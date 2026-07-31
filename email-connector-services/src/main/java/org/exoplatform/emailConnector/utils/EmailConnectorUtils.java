@@ -33,6 +33,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -117,14 +118,43 @@ public class EmailConnectorUtils {
 
   private static final Log     LOG                     = ExoLogger.getLogger(EmailConnectorUtils.class);
 
-  @SneakyThrows
+  /**
+   * Extracts a message's displayable body and attachment descriptors, without
+   * measuring anything — the historical entry point, kept for callers (and tests)
+   * that do not care about the fetch count.
+   *
+   * @param messageUid the message's IMAP UID, stamped on attachment descriptors
+   * @param message the live message
+   * @return the extracted content, never null
+   */
   public static EmailContent getMessageContent(long messageUid, Message message) {
+    return getMessageContent(messageUid, message, null);
+  }
+
+  /**
+   * Extracts a message's displayable body and attachment descriptors, counting the
+   * MIME part bodies actually pulled from the server as it goes. Each leaf part read
+   * here is its own {@code FETCH BODY[n]} round trip — the structure comes free with
+   * the batched CONTENT_INFO fetch, but every text body and every inline {@code cid:}
+   * image does not. The counter exists to answer one sizing question with data
+   * instead of suspicion: whether deferring inline-image download to message-open is
+   * worth building, which is exactly the ratio of parts fetched to messages fetched.
+   *
+   * @param messageUid the message's IMAP UID, stamped on attachment descriptors
+   * @param message the live message
+   * @param fetchedParts incremented once per part body pulled from the server; null
+   *          when nobody is measuring
+   * @return the extracted content, never null
+   */
+  @SneakyThrows
+  public static EmailContent getMessageContent(long messageUid, Message message, LongAdder fetchedParts) {
     EmailContent content = new EmailContent("");
     try {
       if (message.isMimeType("text/*")) {
+        countPartFetch(fetchedParts);
         content = safeGetContent(message);
       } else if (message.getContent() instanceof MimeMultipart) {
-        content = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) message.getContent(), null);
+        content = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) message.getContent(), null, fetchedParts);
       }
     } catch (Exception e) {
       LOG.warn("Error extracting content from message: From={}, Subject={}", message.getFrom()[0], message.getSubject(), e);
@@ -132,6 +162,20 @@ public class EmailConnectorUtils {
     String bodyText = content.getBody() != null ? content.getBody().trim() : "";
     content.setBody(bodyText);
     return content;
+  }
+
+  /**
+   * Records one MIME part body pulled from the server, when a measurement is running.
+   * A {@link LongAdder} because the body prefetch workers extract content on their own
+   * threads — the counter is shared memory, never a database touch, so worker purity
+   * holds.
+   *
+   * @param fetchedParts the sync's counter, or null when nobody is measuring
+   */
+  private static void countPartFetch(LongAdder fetchedParts) {
+    if (fetchedParts != null) {
+      fetchedParts.increment();
+    }
   }
 
   /** Nobody typed this: a newsletter, receipt, alert or automated report. */
@@ -334,9 +378,26 @@ public class EmailConnectorUtils {
     }
   }
 
+  /**
+   * Walks a multipart body, assembling the displayable HTML (or plain-text
+   * fallback), inlining {@code cid:} images as data URLs and describing the
+   * attachments. Navigating the multipart tree is free — the structure was fetched
+   * with CONTENT_INFO — but each leaf body read (text parts, inline images) is its
+   * own server round trip, which is why those reads and only those reads tick
+   * {@code fetchedParts}.
+   *
+   * @param messageUid the message's IMAP UID, stamped on attachment descriptors
+   * @param mimeMultipart the (sub-)tree to walk
+   * @param parentPartNumber the IMAP section prefix of this subtree, null at the root
+   * @param fetchedParts incremented once per part body pulled, null when not measuring
+   * @return the assembled content, never null
+   * @throws MessagingException if the structure cannot be read
+   * @throws IOException if a part's content cannot be read
+   */
   private static EmailContent getHtmlFromMimeMultipart(long messageUid,
                                                        MimeMultipart mimeMultipart,
-                                                       String parentPartNumber) throws MessagingException, IOException {
+                                                       String parentPartNumber,
+                                                       LongAdder fetchedParts) throws MessagingException, IOException {
     EmailContent htmlContent = null;
     EmailContent plainContent = null;
     Map<String, String> cidImageMap = new HashMap<>();
@@ -346,11 +407,13 @@ public class EmailConnectorUtils {
       String disposition = bodyPart.getDisposition();
       String partNumber = (parentPartNumber == null ? "" : parentPartNumber + ".") + (i + 1);
       if (bodyPart.isMimeType("text/html") && htmlContent == null) {
+        countPartFetch(fetchedParts);
         htmlContent = safeGetContent(bodyPart);
       } else if (bodyPart.isMimeType("text/plain") && plainContent == null) {
+        countPartFetch(fetchedParts);
         plainContent = safeGetContent(bodyPart);
       } else if (bodyPart.getContent() instanceof MimeMultipart) {
-        EmailContent nested = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) bodyPart.getContent(), partNumber);
+        EmailContent nested = getHtmlFromMimeMultipart(messageUid, (MimeMultipart) bodyPart.getContent(), partNumber, fetchedParts);
         if (nested != null && !nested.getBody().isEmpty()) {
           if (nested.isHtml()) {
             if (htmlContent == null) {
@@ -375,6 +438,7 @@ public class EmailConnectorUtils {
       } else if (bodyPart.isMimeType("image/*") && Part.INLINE.equalsIgnoreCase(disposition)) {
         String cid = getCid(bodyPart);
         if (cid != null) {
+          countPartFetch(fetchedParts);
           cidImageMap.put(cid, encodeToBase64DataUrl(bodyPart));
         }
       } else if (disposition == null || Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
