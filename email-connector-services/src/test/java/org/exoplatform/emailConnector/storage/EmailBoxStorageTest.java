@@ -28,6 +28,8 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.Collections;
@@ -171,6 +173,40 @@ public class EmailBoxStorageTest {
     assertEquals(List.of("<t2@host>"), emailBoxStorage.getThreadIdsReferencingMessageId("root", "<xa@host>"));
     assertEquals(List.of(), emailBoxStorage.getThreadIdsReferencingMessageId("root", null));
     assertEquals(List.of(), emailBoxStorage.getThreadIdsReferencingMessageId("root", " "));
+  }
+
+  @Test
+  void getSyncEmailsMapsTheLightViewWithoutBodiesOrCategories() {
+    // The sync view must carry exactly what the reconcile reads -- ids, flags,
+    // threading state -- and nothing that costs a CLOB read or a category lookup,
+    // because loading those for 5000 rows per sync was the point of removing it.
+    when(emailBoxDAO.findSyncViewByUserIdAndFolder("root", "INBOX"))
+                                                                   .thenReturn(List.<Object[]> of(new Object[] { 7L, 1212L,
+                                                                       "<t@host>", "", Boolean.TRUE, Boolean.FALSE }));
+    List<Email> emails = emailBoxStorage.getSyncEmails("root", "INBOX");
+    assertEquals(1, emails.size());
+    Email email = emails.get(0);
+    assertEquals(7L, email.getId());
+    assertEquals(1212L, email.getMailRemoteId());
+    assertEquals("<t@host>", email.getThreadId());
+    assertEquals("", email.getThreadIndexRoot());
+    assertTrue(email.isRead());
+    assertFalse(email.isRecent());
+    assertEquals("root", email.getUserId());
+    assertEquals("INBOX", email.getFolder());
+    assertNull(email.getContent());
+    assertNull(email.getCategoryIds());
+  }
+
+  @Test
+  void markEmailsAsNotRecentSkipsTheDatabaseOnEmptyList() {
+    // The bulk clear is called once per folder sync; when nothing wears the recent
+    // badge it must not cost a statement.
+    emailBoxStorage.markEmailsAsNotRecent(List.of(), "root", "INBOX");
+    emailBoxStorage.markEmailsAsNotRecent(null, "root", "INBOX");
+    verify(emailBoxDAO, never()).markEmailsAsNotRecent(anyList(), anyString(), anyString());
+    emailBoxStorage.markEmailsAsNotRecent(List.of(1L), "root", "INBOX");
+    verify(emailBoxDAO).markEmailsAsNotRecent(List.of(1L), "root", "INBOX");
   }
 
   @Test
