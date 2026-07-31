@@ -248,6 +248,20 @@ public class UserEmailSettingService {
   public Store connect(UserEmailSetting userEmailSetting) throws MessagingException {
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    return connect(userEmailSetting, emailConnector);
+  }
+
+  /**
+   * Connect to the user's mail box against an already-resolved connector preset. Pure
+   * IMAP — no database read happens here, which is what lets the sync's parallel
+   * body-prefetch workers call it from bare threads (no request lifecycle, no
+   * EntityManager) after the sync thread resolved the connector once for all of them.
+   *
+   * @param userEmailSetting userEmailSetting used to connect
+   * @param emailConnector the connector preset holding the IMAP endpoint
+   * @return store user box connected store
+   */
+  public Store connect(UserEmailSetting userEmailSetting, EmailConnector emailConnector) throws MessagingException {
     Properties props = new Properties();
     props.setProperty("mail.imaps.ssl.enable", "true");
     props.setProperty("mail.store.protocol", "imaps");
