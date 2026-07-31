@@ -25,11 +25,16 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -168,6 +173,42 @@ public class EmailBoxService {
   // Caps the OR-of-Message-ID search when completing a thread from the archive on
   // open, so an unusually long conversation can't build a giant IMAP SEARCH.
   private static final int        ARCHIVE_COMPLETION_SEARCH_LIMIT                             = 50;
+
+  // Concurrent IMAP connections used to prefetch new message bodies during a sync.
+  // Bodies are the one per-message cost the batched FETCH profile cannot absorb: each
+  // body is its own FETCH BODY[n] round-trip (several for nested multiparts, plus a
+  // full download per inline cid: image), all serialized on the single sync connection
+  // — on a 500-message reset that latency IS the sync time. The default stays modest
+  // because Gmail allows ~15 simultaneous IMAP connections per account and that budget
+  // is shared with the user's other mail clients.
+  private static final String     BODY_PREFETCH_WORKERS_PROPERTY                              =
+                                                                 "email.connector.sync.body.fetch.threads";
+
+  private static final int        DEFAULT_BODY_PREFETCH_WORKERS                               = 5;
+
+  // Below this many new messages the parallel prefetch is skipped: every worker pays a
+  // TLS handshake + IMAP login + folder SELECT before its first FETCH, which costs more
+  // than the handful of serial body fetches it would save on an ordinary periodic sync.
+  // Messages per prefetch slice. Deliberately far below the connection count: one slice
+  // per connection would have every worker finish at the same moment, so the mailbox
+  // would stay empty for the whole download and then fill in one jump.
+  private static final int        BODY_PREFETCH_SLICE_SIZE                                    = 20;
+
+  private static final int        BODY_PREFETCH_MIN_MESSAGES                                  = 10;
+
+  // How many drained slices are grouped into one NEW_EMAILS_SYNCED broadcast, so the AI
+  // categorization starts while the rest of the mailbox is still downloading instead of
+  // waiting for the whole folder. Three slices of 20 = 60 messages = exactly four of the
+  // categorizer's batches of 15: broadcasting every slice would split each group into a
+  // 15 + 5 and inflate the number of LLM requests by half -- and the provider's
+  // rate limiting is already the categorization's observed failure mode.
+  private static final int        BODY_PREFETCH_SLICES_PER_BROADCAST                          = 3;
+
+  // Outside bound on the whole parallel prefetch. The per-connection socket timeouts
+  // (see UserEmailSettingService#connect) already unstick a dead worker; this bound only
+  // guarantees the sync thread itself can never wait forever, and losing the race is
+  // harmless — unmapped messages are fetched serially, exactly as before this existed.
+  private static final long       BODY_PREFETCH_TIMEOUT_MS                                    = 10 * 60 * 1000L;
 
   // The nameIds of the add-on's own default email categories (see default-categories.json).
   // The platform's CategoryImportService persists each nameId -> created category id in
@@ -315,16 +356,16 @@ public class EmailBoxService {
       // INBOX drives the new-mail notifications; Sent and Archive are cached (best
       // effort — a missing folder must not fail the sync) so a conversation shows the
       // user's own replies ("Me") and previously-archived messages inline.
-      syncFolder(store.getFolder("INBOX"), MailFolder.INBOX, username, emailBoxCacheSize, true);
+      syncFolder(store.getFolder("INBOX"), MailFolder.INBOX, username, userEmailSetting, emailBoxCacheSize, true);
       if (!inboxOnly) {
         int nonInboxWindow = Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
         try {
-          syncFolder(findSentFolder(store), MailFolder.SENT, username, nonInboxWindow, false);
+          syncFolder(findSentFolder(store), MailFolder.SENT, username, userEmailSetting, nonInboxWindow, false);
         } catch (Exception e) {
           LOG.warn("Could not sync the Sent folder for user {}", username, e);
         }
         try {
-          syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, nonInboxWindow, false);
+          syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, userEmailSetting, nonInboxWindow, false);
         } catch (Exception e) {
           LOG.warn("Could not sync the Archive folder for user {}", username, e);
         }
@@ -404,12 +445,15 @@ public class EmailBoxService {
    * @param folder the remote folder (may be {@code null} when not discovered)
    * @param folderKey the {@link MailFolder} discriminator to stamp
    * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding, used by the parallel
+   *          body prefetch to open its own extra IMAP connections
    * @param emailBoxCacheSize the number of most recent messages to keep
    * @param notify whether to fire the new-mail notification (INBOX only)
    */
   private void syncFolder(Folder folder,
                           String folderKey,
                           String username,
+                          UserEmailSetting userEmailSetting,
                           int emailBoxCacheSize,
                           boolean notify) throws MessagingException, IllegalAccessException {
     if (folder == null) {
@@ -424,29 +468,28 @@ public class EmailBoxService {
       }
       int startIndex = Math.max(1, totalMessages - emailBoxCacheSize + 1);
       Message[] serverMessages = folder.getMessages(startIndex, totalMessages);
-      // Prefetch flags + envelope + UID in a single round-trip. Without this,
-      // isSet(SEEN)/getFrom/getSubject/... each trigger their own IMAP FETCH per
-      // message — hundreds of round-trips over a high-latency provider like Gmail,
-      // which is what makes a large sync appear to take forever.
-      FetchProfile fetchProfile = new FetchProfile();
-      fetchProfile.add(FetchProfile.Item.FLAGS);
-      fetchProfile.add(FetchProfile.Item.ENVELOPE);
-      fetchProfile.add(UIDFolder.FetchProfileItem.UID);
-      // Prefetch every header read per message below (none is covered by ENVELOPE), so they
-      // come back in this one batched command. Reading a header that was not prefetched costs
-      // a separate server round-trip for EVERY message: on a 500-message mailbox the six
-      // delivery headers alone turned a nine-minute sync into half an hour. Anything added to
-      // createEmails must be added here too.
-      for (String header : PREFETCHED_HEADERS) {
-        fetchProfile.add(header);
-      }
-      // Same reasoning for the MIME structure: reading a body starts by asking the message
-      // what it is made of, and an unfetched structure costs a BODYSTRUCTURE round-trip per
-      // message. CONTENT_INFO brings all of them back inside this one batched command.
-      fetchProfile.add(FetchProfile.Item.CONTENT_INFO);
-      folder.fetch(serverMessages, fetchProfile);
+      // Prefetch flags + envelope + UID + headers + MIME structure in a single
+      // round-trip (see buildSyncFetchProfile for why every piece is in there).
+      folder.fetch(serverMessages, buildSyncFetchProfile());
       List<Email> folderEmails = emailBoxStorage.getEmails(username, folderKey);
-      List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey);
+      if (notify) {
+        // Open the notification window BEFORE anything is broadcast: the groups of new
+        // messages stream out below while the download is still running, and a consumer's
+        // hold-back claim must always find the window to attach to.
+        openNotificationWindow(username, folderEmails);
+      }
+      // Bodies are the one per-message cost the batched FETCH above cannot absorb, so
+      // fetch them for the new messages over several extra IMAP connections, caching each
+      // slice as it lands. Best-effort: a miss just falls back to the serial fetch.
+      List<Long> newEmailIds =
+                             prefetchAndCreateEmails(folder,
+                                                     uidFolder,
+                                                     serverMessages,
+                                                     folderEmails,
+                                                     username,
+                                                     folderKey,
+                                                     userEmailSetting,
+                                                     notify);
       LOG.info("Synchronized folder {} of user {}: {} message(s) on the server, {} newly cached, {} already known",
                folderKey,
                username,
@@ -455,14 +498,13 @@ public class EmailBoxService {
                serverMessages.length - newEmailIds.size());
       cleanupObsoleteEmails(uidFolder, folderEmails, serverMessages, username, emailBoxCacheSize);
       if (notify) {
-        // Fire the new-emails event FIRST (categorization must not depend on the
-        // notification step) and isolate sendNotification: it re-hits the IMAP folder
-        // per message, so a dropped connection (FolderClosedException) must neither skip
-        // categorization nor fail the whole sync (which would escalate the user to BLOCKED).
-        // Queue the notification BEFORE the broadcast, so a consumer reacting to the event
-        // can immediately ask for it to be held back while it classifies.
-        scheduleNotification(username, folderEmails);
-        broadcastNewEmailsSynced(username, newEmailIds);
+        // The per-group NEW_EMAILS_SYNCED broadcasts already went out above, inside
+        // prefetchAndCreateEmails, while the download was still running. What remains
+        // here is the end of the run: close the notification window (arming the grace
+        // delay when no consumer claimed it), then tell consumers no more groups are
+        // coming -- whole-run work like conversation alignment can only start now.
+        completeNotificationWindow(username, folderEmails);
+        broadcastNewEmailsSyncCompleted(username, newEmailIds);
       }
     } finally {
       if (folder.isOpen()) {
@@ -472,6 +514,379 @@ public class EmailBoxService {
           LOG.warn("Error when closing folder {} for user {}", folderKey, username, messagingException);
         }
       }
+    }
+  }
+
+  /**
+   * The fetch profile every sync-side message read relies on. Flags + envelope + UID
+   * come back in one round-trip; without this, isSet(SEEN)/getFrom/getSubject/... each
+   * trigger their own IMAP FETCH per message — hundreds of round-trips over a
+   * high-latency provider like Gmail, which is what makes a large sync appear to take
+   * forever. Every header createEmails reads is prefetched too (none is covered by
+   * ENVELOPE): a header that was not prefetched costs a separate server round-trip for
+   * EVERY message — on a 500-message mailbox the six delivery headers alone turned a
+   * nine-minute sync into half an hour. Anything added to createEmails must be added
+   * to {@link #PREFETCHED_HEADERS}. Same reasoning for the MIME structure: reading a
+   * body starts by asking the message what it is made of, and an unfetched structure
+   * costs a BODYSTRUCTURE round-trip per message; CONTENT_INFO brings all of them back
+   * inside the one batched command.
+   *
+   * @return the profile to pass to {@link Folder#fetch(Message[], FetchProfile)}
+   */
+  private FetchProfile buildSyncFetchProfile() {
+    FetchProfile fetchProfile = new FetchProfile();
+    fetchProfile.add(FetchProfile.Item.FLAGS);
+    fetchProfile.add(FetchProfile.Item.ENVELOPE);
+    fetchProfile.add(UIDFolder.FetchProfileItem.UID);
+    for (String header : PREFETCHED_HEADERS) {
+      fetchProfile.add(header);
+    }
+    fetchProfile.add(FetchProfile.Item.CONTENT_INFO);
+    return fetchProfile;
+  }
+
+  /**
+   * Fetches the bodies of the folder's not-yet-cached messages over several extra IMAP
+   * connections, caching each slice as soon as it lands so the mailbox fills in
+   * progressively instead of staying empty until the whole download finishes.
+   * <p>
+   * The workers are pure IMAP I/O by design: they touch no database and no storage. Every
+   * write stays on this thread, in {@link #createEmails}, because the thread computation
+   * races when run concurrently and JPA dies on threads we create ourselves.
+   * <p>
+   * Two details here are load-bearing. The work is cut into slices <em>much smaller</em>
+   * than the number of connections: one slice per connection would have them all finish
+   * together, and nothing would appear until the end -- which is the whole point of this
+   * method. And the slices are consumed in message order rather than completion order,
+   * because {@link #computeThreadId} attaches a reply to its conversation by looking up
+   * the messages already stored; cache a reply before its parent and the conversation
+   * silently splits in two.
+   * <p>
+   * Best effort throughout: a dead connection, one unreadable message or a total failure
+   * of the prefetch only leaves UIDs unmapped, and createEmails fetches those bodies
+   * serially. The sync stays correct, just slower.
+   * <p>
+   * When {@code streamNewEmails} is set, this method also owns the
+   * {@link EmailConnectorUtils#NEW_EMAILS_SYNCED} broadcasts: every
+   * {@value #BODY_PREFETCH_SLICES_PER_BROADCAST} drained slices, the group of
+   * freshly-cached UIDs goes out immediately, so the AI categorization runs
+   * concurrently with the rest of the download instead of after it. The serial
+   * fallbacks broadcast their single pass the same way, so a consumer sees the same
+   * event whichever path a sync took.
+   *
+   * @param folder the open remote folder being synchronized
+   * @param uidFolder the same folder, for UID resolution
+   * @param serverMessages the folder window listed by the sync connection
+   * @param folderEmails the locally-cached rows of this folder, whose UIDs need no body
+   * @param username the mailbox owner
+   * @param folderKey the {@link MailFolder} discriminator to stamp
+   * @param userEmailSetting the user's connector binding, to open the extra connections
+   * @param streamNewEmails whether to broadcast the newly-cached UIDs as they land
+   *          (INBOX only -- Sent and Archive are never broadcast)
+   * @return the IMAP UIDs of the messages this sync newly cached
+   * @throws MessagingException if the folder cannot be read
+   * @throws IllegalAccessException if the user is not allowed to cache these messages
+   */
+  private List<Long> prefetchAndCreateEmails(Folder folder,
+                                             UIDFolder uidFolder,
+                                             Message[] serverMessages,
+                                             List<Email> folderEmails,
+                                             String username,
+                                             String folderKey,
+                                             UserEmailSetting userEmailSetting,
+                                             boolean streamNewEmails) throws MessagingException,
+                                                                      IllegalAccessException {
+    List<Long> newUids = collectNewUids(uidFolder, serverMessages, folderEmails);
+    int workerCount = getBodyPrefetchWorkerCount();
+    if (workerCount <= 1 || newUids.size() < BODY_PREFETCH_MIN_MESSAGES) {
+      // Too small to be worth extra connections: one pass, bodies fetched serially.
+      return createEmailsAndBroadcast(uidFolder, serverMessages, username, folderKey, streamNewEmails);
+    }
+    EmailConnector emailConnector;
+    try {
+      // Resolved once, on this thread: the workers must stay pure IMAP, and the one-argument
+      // connect() would re-read the connector from the database on every bare worker thread.
+      emailConnector = emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    } catch (Exception e) {
+      LOG.warn("Could not resolve the connector of user {}; the sync falls back to fetching bodies serially", username, e);
+      return createEmailsAndBroadcast(uidFolder, serverMessages, username, folderKey, streamNewEmails);
+    }
+    Map<Long, Message> messagesByUid = new HashMap<>();
+    for (Message message : serverMessages) {
+      messagesByUid.put(uidFolder.getUID(message), message);
+    }
+    int sliceCount = (int) Math.ceil((double) newUids.size() / BODY_PREFETCH_SLICE_SIZE);
+    List<long[]> uidSlices = partitionUids(newUids, sliceCount);
+    String folderFullName = folder.getFullName();
+    // Daemon workers so a hung prefetch can never keep the JVM alive; the pool lives for
+    // this one folder and is shut down before returning.
+    AtomicInteger workerIndex = new AtomicInteger();
+    ExecutorService prefetchPool = Executors.newFixedThreadPool(workerCount, runnable -> {
+      Thread thread = new Thread(runnable, "email-body-prefetch-" + workerIndex.incrementAndGet());
+      thread.setDaemon(true);
+      return thread;
+    });
+    List<Long> newEmailIds = new ArrayList<>();
+    int prefetchedCount = 0;
+    try {
+      List<Future<Map<Long, EmailContent>>> pendingSlices = new ArrayList<>();
+      for (long[] uidSlice : uidSlices) {
+        pendingSlices.add(prefetchPool.submit(() -> prefetchSlice(folderFullName,
+                                                                  uidSlice,
+                                                                  userEmailSetting,
+                                                                  emailConnector,
+                                                                  username)));
+      }
+      // One deadline for the whole folder, so a wedged connection cannot hold the sync
+      // open indefinitely -- whatever is late is simply fetched serially instead.
+      long deadline = System.currentTimeMillis() + BODY_PREFETCH_TIMEOUT_MS;
+      // The UIDs cached since the last broadcast. Replaced (never cleared) after each
+      // broadcast: the list is handed to asynchronous listeners, which read it on their
+      // own threads after this loop has moved on.
+      List<Long> broadcastGroup = new ArrayList<>();
+      for (int sliceIndex = 0; sliceIndex < uidSlices.size(); sliceIndex++) {
+        Map<Long, EmailContent> sliceContents = awaitSlice(pendingSlices.get(sliceIndex), deadline, username);
+        prefetchedCount += sliceContents.size();
+        List<Long> sliceEmailIds = createEmails(uidFolder,
+                                                messagesOfSlice(uidSlices.get(sliceIndex), messagesByUid),
+                                                username,
+                                                folderKey,
+                                                sliceContents);
+        newEmailIds.addAll(sliceEmailIds);
+        if (streamNewEmails) {
+          broadcastGroup.addAll(sliceEmailIds);
+          boolean groupComplete = (sliceIndex + 1) % BODY_PREFETCH_SLICES_PER_BROADCAST == 0
+              || sliceIndex == uidSlices.size() - 1;
+          if (groupComplete && !broadcastGroup.isEmpty()) {
+            broadcastNewEmailsSynced(username, broadcastGroup);
+            broadcastGroup = new ArrayList<>();
+          }
+        }
+      }
+    } finally {
+      prefetchPool.shutdownNow();
+    }
+    LOG.info("Prefetched {} of {} new message bodies in folder {} for user {} over {} extra connection(s), in {} slice(s)",
+             prefetchedCount,
+             newUids.size(),
+             folderFullName,
+             username,
+             workerCount,
+             uidSlices.size());
+    return newEmailIds;
+  }
+
+  /**
+   * The serial fallback of {@link #prefetchAndCreateEmails}: one createEmails pass over the
+   * whole window, followed by the single {@link EmailConnectorUtils#NEW_EMAILS_SYNCED}
+   * broadcast the streamed path would have spread over its groups. Kept next to the
+   * streamed path so both stay the only two places that broadcast the event during a sync.
+   *
+   * @param uidFolder the folder being synchronized, for UID resolution
+   * @param serverMessages the folder window listed by the sync connection
+   * @param username the mailbox owner
+   * @param folderKey the {@link MailFolder} discriminator to stamp
+   * @param streamNewEmails whether the newly-cached UIDs are broadcast (INBOX only)
+   * @return the IMAP UIDs of the messages this sync newly cached
+   * @throws MessagingException if the folder cannot be read
+   * @throws IllegalAccessException if the user is not allowed to cache these messages
+   */
+  private List<Long> createEmailsAndBroadcast(UIDFolder uidFolder,
+                                              Message[] serverMessages,
+                                              String username,
+                                              String folderKey,
+                                              boolean streamNewEmails) throws MessagingException, IllegalAccessException {
+    List<Long> newEmailIds = createEmails(uidFolder, serverMessages, username, folderKey, Map.of());
+    if (streamNewEmails) {
+      broadcastNewEmailsSynced(username, newEmailIds);
+    }
+    return newEmailIds;
+  }
+
+  /**
+   * Waits for one slice's bodies, degrading to an empty slice rather than failing the sync.
+   *
+   * @param pendingSlice the worker's pending result
+   * @param deadline the epoch-millis bound shared by every slice of this folder
+   * @param username the mailbox owner, for logging
+   * @return the slice's bodies keyed by IMAP UID, empty if it failed or ran out of time
+   */
+  private Map<Long, EmailContent> awaitSlice(Future<Map<Long, EmailContent>> pendingSlice, long deadline, String username) {
+    try {
+      return pendingSlice.get(Math.max(1, deadline - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      LOG.warn("Body prefetch interrupted for user {}; the remaining bodies are fetched serially", username, e);
+    } catch (Exception e) {
+      LOG.warn("A body prefetch slice failed for user {}; its messages are fetched serially", username, e);
+    }
+    return Map.of();
+  }
+
+  /**
+   * Lists the not-yet-cached messages of the folder window, in the order the server
+   * listed them -- which is the order they must be cached in, oldest first.
+   *
+   * @param uidFolder the folder being synchronized, for UID resolution
+   * @param serverMessages the folder window listed by the sync connection
+   * @param folderEmails the locally-cached rows of this folder
+   * @return the UIDs present on the server but not in the local cache
+   * @throws MessagingException if a UID cannot be read
+   */
+  private List<Long> collectNewUids(UIDFolder uidFolder,
+                                    Message[] serverMessages,
+                                    List<Email> folderEmails) throws MessagingException {
+    // The UIDs are read off the already-fetched profile (no round-trip) and compared to
+    // the rows syncFolder has already loaded -- no per-message database lookup here.
+    Set<Long> knownUids = folderEmails.stream().map(Email::getMailRemoteId).filter(Objects::nonNull).collect(Collectors.toSet());
+    List<Long> newUids = new ArrayList<>();
+    for (Message message : serverMessages) {
+      long messageUid = uidFolder.getUID(message);
+      if (!knownUids.contains(messageUid)) {
+        newUids.add(messageUid);
+      }
+    }
+    return newUids;
+  }
+
+  /**
+   * Resolves a slice's UIDs back to the messages the sync connection listed, keeping the
+   * slice's order.
+   *
+   * @param uidSlice the slice's UIDs
+   * @param messagesByUid the folder window indexed by UID
+   * @return the slice's messages, skipping any UID that has since disappeared
+   */
+  private Message[] messagesOfSlice(long[] uidSlice, Map<Long, Message> messagesByUid) {
+    return Arrays.stream(uidSlice).mapToObj(messagesByUid::get).filter(Objects::nonNull).toArray(Message[]::new);
+  }
+
+  /**
+   * One prefetch worker: opens its own store and folder, fetches its slice of UIDs with
+   * the same batched profile as the sync connection, and extracts each body. Self-contained on purpose — no database, no storage, no shared JavaMail
+   * objects (a JavaMail Folder is not safe to read from two threads, so each worker
+   * re-resolves its messages by UID on its own connection). Any failure is logged and
+   * swallowed: an unmapped UID just means createEmails fetches that body serially.
+   *
+   * @param folderFullName the remote folder's full name, re-opened on this connection
+   * @param uids the IMAP UIDs this worker is responsible for
+   * @param userEmailSetting the user's connector binding
+   * @param emailConnector the resolved connector preset, so no database read happens here
+   * @param username the mailbox owner, for logs
+   * @param contents the shared map to fill, keyed by IMAP UID
+   */
+  private Map<Long, EmailContent> prefetchSlice(String folderFullName,
+                                                long[] uids,
+                                                UserEmailSetting userEmailSetting,
+                                                EmailConnector emailConnector,
+                                                String username) {
+    Map<Long, EmailContent> contents = new HashMap<>();
+    Store store = null;
+    Folder folder = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting, emailConnector);
+      folder = store.getFolder(folderFullName);
+      folder.open(Folder.READ_ONLY);
+      UIDFolder uidFolder = (UIDFolder) folder;
+      // A UID expunged since the sync connection listed it comes back as a null (or
+      // missing) entry; drop it — cleanupObsoleteEmails handles its disappearance.
+      Message[] messages = Arrays.stream(uidFolder.getMessagesByUID(uids))
+                                 .filter(Objects::nonNull)
+                                 .toArray(Message[]::new);
+      if (messages.length == 0) {
+        return contents;
+      }
+      folder.fetch(messages, buildSyncFetchProfile());
+      for (Message message : messages) {
+        try {
+          long messageUid = uidFolder.getUID(message);
+          contents.put(messageUid, EmailConnectorUtils.getMessageContent(messageUid, message));
+        } catch (Exception e) {
+          LOG.warn("Could not prefetch the body of a message in folder {} for user {}; it will be fetched serially",
+                   folderFullName,
+                   username,
+                   e);
+        }
+      }
+    } catch (Exception e) {
+      LOG.warn("Body prefetch worker failed on folder {} for user {}; its {} message(s) will be fetched serially",
+               folderFullName,
+               username,
+               uids.length,
+               e);
+    } finally {
+      if (folder != null && folder.isOpen()) {
+        try {
+          folder.close(false);
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing prefetch folder {} for user {}", folderFullName, username, messagingException);
+        }
+      }
+      if (store != null && store.isConnected()) {
+        try {
+          store.close();
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing prefetch store for user {}", username, messagingException);
+        }
+      }
+    }
+    return contents;
+  }
+
+  /**
+   * Splits the UIDs into at most {@code chunkCount} contiguous, balanced chunks — one
+   * per worker. Contiguous on purpose: the UIDs arrive in mailbox order, so each chunk
+   * compresses into a compact UID set in the worker's FETCH commands instead of
+   * scattering every worker across the whole folder. Package-visible for tests.
+   *
+   * @param uids the UIDs to split, in mailbox order
+   * @param chunkCount the maximum number of chunks (bounded by the number of UIDs)
+   * @return the chunks, whose concatenation is exactly {@code uids}; empty when there
+   *         is nothing to split
+   */
+  static List<long[]> partitionUids(List<Long> uids, int chunkCount) {
+    List<long[]> chunks = new ArrayList<>();
+    int total = uids.size();
+    if (total == 0 || chunkCount <= 0) {
+      return chunks;
+    }
+    int effectiveChunkCount = Math.min(chunkCount, total);
+    int baseSize = total / effectiveChunkCount;
+    int remainder = total % effectiveChunkCount;
+    int index = 0;
+    for (int i = 0; i < effectiveChunkCount; i++) {
+      long[] chunk = new long[baseSize + (i < remainder ? 1 : 0)];
+      for (int j = 0; j < chunk.length; j++) {
+        chunk[j] = uids.get(index++);
+      }
+      chunks.add(chunk);
+    }
+    return chunks;
+  }
+
+  /**
+   * How many IMAP connections the body prefetch may open, from the
+   * {@value #BODY_PREFETCH_WORKERS_PROPERTY} system property (same convention as the
+   * other {@code email.connector.sync.*} tunables in {@link EmailConnectorUtils}).
+   * Read on every sync rather than at class load, so a malformed value degrades to the
+   * default instead of pinning garbage for the JVM's lifetime. {@code <= 1} disables
+   * the parallel prefetch entirely.
+   *
+   * @return the configured worker count, or {@value #DEFAULT_BODY_PREFETCH_WORKERS}
+   */
+  private int getBodyPrefetchWorkerCount() {
+    String configured = System.getProperty(BODY_PREFETCH_WORKERS_PROPERTY);
+    if (StringUtils.isBlank(configured)) {
+      return DEFAULT_BODY_PREFETCH_WORKERS;
+    }
+    try {
+      return Integer.parseInt(configured.trim());
+    } catch (NumberFormatException e) {
+      LOG.warn("Ignoring invalid value '{}' for {}; using the default of {}",
+               configured,
+               BODY_PREFETCH_WORKERS_PROPERTY,
+               DEFAULT_BODY_PREFETCH_WORKERS);
+      return DEFAULT_BODY_PREFETCH_WORKERS;
     }
   }
 
@@ -501,6 +916,30 @@ public class EmailBoxService {
       listenerService.broadcast(EmailConnectorUtils.NEW_EMAILS_SYNCED, username, newEmailIds);
     } catch (Exception e) {
       LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.NEW_EMAILS_SYNCED, username, e);
+    }
+  }
+
+  /**
+   * Broadcasts {@link EmailConnectorUtils#NEW_EMAILS_SYNC_COMPLETED} once the inbox sync has
+   * cached its last message, carrying ALL the UIDs the run created. The per-group
+   * {@link #broadcastNewEmailsSynced} events stream out while the download is still running,
+   * so on their own a consumer can never tell "the next group has not arrived yet" from
+   * "there is no next group" -- whole-run work (the categorizer's conversation alignment)
+   * hangs off this event. Broadcast even when the sync cached nothing, so a consumer can
+   * close any state left over from a run whose completion it never saw.
+   *
+   * @param username the synchronized user
+   * @param newEmailIds the IMAP UIDs of every email created during this sync
+   */
+  private void broadcastNewEmailsSyncCompleted(String username, List<Long> newEmailIds) {
+    try {
+      LOG.info("Broadcasting '{}' for user {}: the inbox sync ended with {} newly-cached message(s) in total",
+               EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED,
+               username,
+               newEmailIds.size());
+      listenerService.broadcast(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED, username, newEmailIds);
+    } catch (Exception e) {
+      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED, username, e);
     }
   }
 
@@ -1349,17 +1788,40 @@ public class EmailBoxService {
     }
   }
 
+  /**
+   * Creates a local row for every server message not yet cached, and refreshes the
+   * read flag / threading backfill of the ones already there. Deliberately serial:
+   * computeThreadId reads the threads of the messages inserted before it and merges
+   * threads as it goes, so processing order IS the threading contract — running these
+   * iterations concurrently would race the merges and silently re-fragment
+   * conversations. The expensive part, the per-message body fetch, is instead served
+   * from {@code prefetchedContents} when the parallel prefetch got there first; a miss
+   * falls back to the same serial fetch as always, so the map can be empty (or
+   * partial, or entirely wrong about what exists) without affecting correctness.
+   *
+   * @param uidFolder the open remote folder, to resolve each message's UID
+   * @param serverMessages the folder window to reconcile, in mailbox order
+   * @param username the mailbox owner
+   * @param folderKey the {@link MailFolder} discriminator to stamp on new rows
+   * @param prefetchedContents bodies already fetched in parallel, keyed by IMAP UID;
+   *          consulted before falling back to a per-message FETCH
+   * @return the IMAP UIDs of the messages newly cached by this pass
+   */
   private List<Long> createEmails(UIDFolder uidFolder,
                             Message[] serverMessages,
                             String username,
-                            String folderKey) throws MessagingException, IllegalAccessException {
+                            String folderKey,
+                            Map<Long, EmailContent> prefetchedContents) throws MessagingException, IllegalAccessException {
     List<Long> newEmailIds = new ArrayList<>();
     for (Message message : serverMessages) {
       try {
         long messageUid = uidFolder.getUID(message);
         Email email = emailBoxStorage.getEmailByMailRemoteIdAndUserId(messageUid, username, null, folderKey, false, false, false);
         if (email == null) {
-          EmailContent emailContent = EmailConnectorUtils.getMessageContent(messageUid, message);
+          EmailContent emailContent = prefetchedContents.get(messageUid);
+          if (emailContent == null) {
+            emailContent = EmailConnectorUtils.getMessageContent(messageUid, message);
+          }
           EmailSender emailSender = message.getFrom() != null
                                     && message.getFrom().length != 0 ?
                                                                      EmailConnectorUtils.getEmailSender(message.getFrom()[0],
@@ -1607,15 +2069,7 @@ public class EmailBoxService {
         return threadId;
       }
       // Prefetch flags/envelope/threading headers in one round-trip before reading ids.
-      FetchProfile fetchProfile = new FetchProfile();
-      fetchProfile.add(FetchProfile.Item.FLAGS);
-      fetchProfile.add(FetchProfile.Item.ENVELOPE);
-      fetchProfile.add(UIDFolder.FetchProfileItem.UID);
-      for (String header : PREFETCHED_HEADERS) {
-        fetchProfile.add(header);
-      }
-      fetchProfile.add(FetchProfile.Item.CONTENT_INFO);
-      allMail.fetch(found, fetchProfile);
+      allMail.fetch(found, buildSyncFetchProfile());
       // Keep only genuinely-missing messages: a hit may be an INBOX message that is also
       // in All Mail (same Message-ID, different per-folder UID) — caching it again would
       // duplicate it. Dedupe by Message-ID, not by UID.
@@ -1629,7 +2083,9 @@ public class EmailBoxService {
       if (toCache.isEmpty()) {
         return threadId;
       }
-      createEmails(allMail, toCache.toArray(new Message[0]), username, MailFolder.ALL_MAIL);
+      // A thread tail is a handful of messages, so no parallel body prefetch: pass an
+      // empty map and let each body be fetched on this connection.
+      createEmails(allMail, toCache.toArray(new Message[0]), username, MailFolder.ALL_MAIL, Map.of());
       // The archived root references nothing cached, so createEmails may have started it
       // in its own thread. Unify every thread id now carried by the conversation's known
       // messages into the oldest canonical id.
@@ -1853,21 +2309,7 @@ public class EmailBoxService {
   }
 
   /**
-   * Fires the new-emails notification for the messages just synced into the INBOX,
-   * counting only the ones that are both new (IMAP UID beyond the highest one already
-   * cached before this sync) and still unread, and — crucially — only those the user's
-   * per-category notification preference allows (see
-   * {@link #shouldNotifyForNewEmail(Email, UserEmailSetting)}). Category links are keyed
-   * by the local email id, so the freshly-synced INBOX is re-read from the local cache
-   * (its {@code categoryIds}) rather than inspected on the raw IMAP messages.
-   *
-   * @param userEmails the INBOX emails cached before this sync (used to derive the
-   *          highest already-known UID, i.e. what counts as "new")
-   * @param userName the mailbox owner
-   */
-  /**
-   * Queues the new-mail notification for a sync that has just cached messages, instead of
-   * sending it straight away.
+   * Opens the new-mail notification window for a sync that is about to cache messages.
    * <p>
    * The user can ask to be notified only for chosen categories, but the categories are applied
    * by a consumer of {@link EmailConnectorUtils#NEW_EMAILS_SYNCED} that takes minutes to run.
@@ -1875,33 +2317,94 @@ public class EmailBoxService {
    * "uncategorized always notifies" fallback applies to all of them, and the preference can
    * never suppress anything: the user picks one category and is notified about everything.
    * <p>
-   * So the notification waits. A consumer that is going to classify these messages says so
-   * with {@link #deferNewEmailsNotification(String)} and reports back with
-   * {@link #notifyNewEmailsClassified(String)}; with no consumer at all the short grace below
-   * elapses and the notification goes out as before.
+   * So the notification waits, and because the new-emails events now stream out one group at
+   * a time while the download is still running, the wait is a counted window rather than a
+   * single hand-off: every {@link #deferNewEmailsNotification(String)} adds a claim, every
+   * {@link #notifyNewEmailsClassified(String)} releases one, and the notification fires only
+   * once the window is complete ({@link #completeNotificationWindow}) AND the last claim is
+   * gone. A single claim cannot be trusted to mean "done": the first group's classification
+   * regularly finishes before the next group has even been broadcast, and firing on that
+   * transient zero would notify about a mailbox that is still mostly uncategorized.
+   * <p>
+   * Must be called before the sync's first broadcast, so an early claim always finds the
+   * window; no timer is armed here -- during the download there is nothing to time out,
+   * every claim arms its own backstop, and the grace delay belongs to the window's end.
+   * Package-visible for tests.
    *
    * @param username the mailbox owner
    * @param userEmails the inbox as it was before this sync, used to tell the new messages apart
    */
-  private void scheduleNotification(String username, List<Email> userEmails) {
-    long maxLocalUid = userEmails.stream()
-                                 .filter(email -> email.getMailRemoteId() != null)
-                                 .mapToLong(Email::getMailRemoteId)
-                                 .max()
-                                 .orElse(0L);
+  void openNotificationWindow(String username, List<Email> userEmails) {
+    long maxLocalUid = maxKnownUid(userEmails);
     pendingNotifications.compute(username, (user, pending) -> {
-      // Several folders can queue within one sync: keep the earliest boundary so no new
-      // message is missed, and let the last one scheduled own the timer.
-      long boundary = pending == null ? maxLocalUid : Math.min(pending.maxLocalUid(), maxLocalUid);
-      if (pending != null) {
-        pending.future().cancel(false);
+      if (pending == null) {
+        return new PendingNotification(maxLocalUid, 0, false, null);
       }
-      return new PendingNotification(boundary, scheduleNotificationTask(user, NOTIFICATION_GRACE_MS));
+      // A leftover from a previous sync whose timer has not fired yet: absorb it, keeping
+      // the earliest boundary so none of its messages is skipped, and let this sync's
+      // window own the send.
+      cancelTimer(pending);
+      return new PendingNotification(Math.min(pending.maxLocalUid(), maxLocalUid), pending.pendingClaims(), false, null);
     });
   }
 
   /**
-   * Schedules the deferred send and returns its handle.
+   * Marks the sync's notification window complete: every message is cached and every
+   * {@link EmailConnectorUtils#NEW_EMAILS_SYNCED} group is broadcast, so no further claims
+   * are expected (a still-in-flight consumer gets the short grace delay to place one, same
+   * contract as before streaming). With no outstanding claim the grace timer now owns the
+   * send; with claims still out, the send belongs to the last release, backstopped by the
+   * extended deadline so a consumer that never reports back delays the notification rather
+   * than losing it. Package-visible for tests.
+   *
+   * @param username the mailbox owner
+   * @param userEmails the inbox as it was before this sync, used as the boundary fallback
+   *          when the window was already flushed (e.g. a backstop fired mid-sync)
+   */
+  void completeNotificationWindow(String username, List<Email> userEmails) {
+    long fallbackBoundary = maxKnownUid(userEmails);
+    pendingNotifications.compute(username, (user, pending) -> {
+      // The min covers the window a backstop flushed mid-sync: the entry a late claim
+      // re-created has no usable boundary, and the pre-sync mailbox state does.
+      long boundary = pending == null ? fallbackBoundary : Math.min(pending.maxLocalUid(), fallbackBoundary);
+      int claims = pending == null ? 0 : pending.pendingClaims();
+      cancelTimer(pending);
+      long delayMs = claims > 0 ? NOTIFICATION_MAX_WAIT_MS : NOTIFICATION_GRACE_MS;
+      return new PendingNotification(boundary, claims, true, scheduleNotificationTask(user, delayMs));
+    });
+  }
+
+  /**
+   * The highest IMAP UID among the given cached emails -- the boundary separating what the
+   * user has already been notified about from what this sync brings in.
+   *
+   * @param userEmails the inbox rows cached before the sync
+   * @return the highest known UID, or 0 for an empty mailbox
+   */
+  private long maxKnownUid(List<Email> userEmails) {
+    return userEmails.stream()
+                     .filter(email -> email.getMailRemoteId() != null)
+                     .mapToLong(Email::getMailRemoteId)
+                     .max()
+                     .orElse(0L);
+  }
+
+  /**
+   * Cancels a pending window's timer, if it has one -- a window opened mid-sync has none.
+   *
+   * @param pending the window whose timer to cancel, possibly {@code null}
+   */
+  private void cancelTimer(PendingNotification pending) {
+    if (pending != null && pending.future() != null) {
+      pending.future().cancel(false);
+    }
+  }
+
+  /**
+   * Schedules the deferred send and returns its handle. Whatever the window's state when
+   * the delay elapses -- even with claims still out -- the task flushes it and sends: this
+   * is the "late rather than lost" backstop, and a claim whose consumer died must never
+   * strand the notification.
    *
    * @param username the mailbox owner
    * @param delayMs how long to wait before sending
@@ -1926,37 +2429,65 @@ public class EmailBoxService {
   }
 
   /**
-   * Asks for the pending new-mail notification to be held back, because the caller is about to
-   * classify the messages this sync cached and the user's per-category preference cannot be
-   * applied until it has.
+   * Adds a claim on the pending new-mail notification, because the caller is about to
+   * classify a group of the messages this sync cached and the user's per-category preference
+   * cannot be applied until every group has been.
    * <p>
-   * Only extends the wait; it never sends. The caller is expected to finish with
-   * {@link #notifyNewEmailsClassified(String)}, and if it never does, the extended deadline
-   * still fires so a notification is delayed rather than lost.
+   * Claims are counted, one per {@link EmailConnectorUtils#NEW_EMAILS_SYNCED} group the
+   * caller reacts to, so a consumer working group-by-group while the download continues
+   * holds the notification exactly as long as it is still working. Never sends; each claim
+   * is matched by a {@link #notifyNewEmailsClassified(String)}, and if one never comes, the
+   * refreshed backstop deadline still fires so a notification is delayed rather than lost.
    *
    * @param username the mailbox owner
    */
   public void deferNewEmailsNotification(String username) {
-    pendingNotifications.computeIfPresent(username, (user, pending) -> {
-      pending.future().cancel(false);
-      return new PendingNotification(pending.maxLocalUid(), scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS));
+    pendingNotifications.compute(username, (user, pending) -> {
+      if (pending == null) {
+        // A claim with no window to attach to -- the backstop already flushed it, or the
+        // consumer reacted to an event this service did not broadcast. The unknown boundary
+        // makes the eventual send a no-op, matching the old "nothing pending" behavior,
+        // but the claim is still tracked so its release stays balanced.
+        return new PendingNotification(Long.MAX_VALUE, 1, false, scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS));
+      }
+      cancelTimer(pending);
+      return new PendingNotification(pending.maxLocalUid(),
+                                     pending.pendingClaims() + 1,
+                                     pending.syncCompleted(),
+                                     scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS));
     });
   }
 
   /**
-   * Reports that the messages this sync cached have been classified, releasing the notification
-   * that was held back. Does nothing when none is pending.
+   * Releases one claim on the held-back notification. The send happens on the release that
+   * empties a completed window -- claims gone AND the sync's last message cached. A zero
+   * reached while the window is still open is deliberately NOT a send: it only means the
+   * classifier caught up with the download for a moment, and firing there would notify
+   * about the still-uncategorized rest of the mailbox. Does nothing when none is pending.
    *
    * @param username the mailbox owner
    */
   public void notifyNewEmailsClassified(String username) {
-    PendingNotification pending = pendingNotifications.remove(username);
-    if (pending == null) {
+    PendingNotification[] readyToSend = new PendingNotification[1];
+    pendingNotifications.compute(username, (user, pending) -> {
+      if (pending == null) {
+        return null;
+      }
+      int remainingClaims = Math.max(0, pending.pendingClaims() - 1);
+      if (remainingClaims == 0 && pending.syncCompleted()) {
+        cancelTimer(pending);
+        readyToSend[0] = pending;
+        return null;
+      }
+      return new PendingNotification(pending.maxLocalUid(), remainingClaims, pending.syncCompleted(), pending.future());
+    });
+    if (readyToSend[0] == null) {
       return;
     }
-    pending.future().cancel(false);
     try {
-      sendNotification(username, pending.maxLocalUid());
+      // Outside the compute: the send reads the mailbox from the database, far too much
+      // work to run while holding the map's bin lock.
+      sendNotification(username, readyToSend[0].maxLocalUid());
     } catch (Exception e) {
       LOG.warn("Error sending the new-email notification for user {}", username, e);
     }
@@ -1964,14 +2495,30 @@ public class EmailBoxService {
 
   /**
    * A notification waiting to be sent: the UID boundary that separates the newly-cached
-   * messages from the ones already there, and the task that will send it.
+   * messages from the ones already there, how many classification claims still hold it
+   * back, whether the sync that opened it has finished caching (a zero-claim window may
+   * only fire once it has), and the timer that will flush it if nobody else does.
    *
    * @param maxLocalUid the highest UID present before the sync
-   * @param future the scheduled send
+   * @param pendingClaims outstanding {@link #deferNewEmailsNotification(String)} claims
+   * @param syncCompleted whether the sync has cached its last message
+   * @param future the scheduled backstop send, {@code null} while the window is open with
+   *          no claim
    */
-  private record PendingNotification(long maxLocalUid, ScheduledFuture<?> future) {
+  private record PendingNotification(long maxLocalUid, int pendingClaims, boolean syncCompleted, ScheduledFuture<?> future) {
   }
 
+  /**
+   * Fires the new-emails notification for the messages synced into the INBOX, counting only
+   * the ones that are new (IMAP UID beyond {@code maxLocalUid}, the highest one cached
+   * before the sync), still unread, and allowed by the user's per-category notification
+   * preference (see {@link #shouldNotifyForNewEmail(Email, UserEmailSetting)}). Category
+   * links are keyed by the local email id, so the freshly-synced INBOX is re-read from the
+   * local cache (its {@code categoryIds}) rather than inspected on the raw IMAP messages.
+   *
+   * @param userName the mailbox owner
+   * @param maxLocalUid the highest UID cached before the sync -- what counts as "new"
+   */
   private void sendNotification(String userName, long maxLocalUid) {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(userName);
     List<Email> currentEmails = emailBoxStorage.getEmails(userName, MailFolder.INBOX);
