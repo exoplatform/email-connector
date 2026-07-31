@@ -27,8 +27,10 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -85,8 +87,13 @@ import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 
 import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
@@ -103,6 +110,7 @@ import org.exoplatform.services.scheduler.PeriodInfo;
 
 import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.category.service.CategoryService;
+import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { EmailBoxService.class })
@@ -1054,6 +1062,281 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, times(1)).updateThreadInfo(eq(TEST_USER), eq(1L), anyString(), any(), any(), eq("INBOX"), eq(""));
     verify(emailBoxStorage, times(1)).updateThreadIndexRoot(TEST_USER, 2L, "INBOX", "");
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void unchangedSnapshotSkipsTheFolderEntirely() {
+    // The B2 payoff and its regression guard: when every change signal matches the
+    // snapshot, the folder must never be opened, never window-FETCHed, never loaded
+    // from the cache, never broadcast -- 98% of a measured no-op sync was the window
+    // FETCH alone. A fully-skipped run must also write no sync state back.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox, never()).open(anyInt());
+    verify(inbox, never()).getMessages(anyInt(), anyInt());
+    verify(inbox, never()).fetch(any(), any());
+    verify(emailBoxStorage, never()).getSyncEmails(anyString(), anyString());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), any(), any());
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED), any(), any());
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), any());
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void newArrivalForcesTheFullPath() {
+    // uidNext moved: at least one message arrived (even if deleted again since).
+    assertFullSyncRunsWhenServerReports(11L, 502L, 100, 777L);
+  }
+
+  @Test
+  @SneakyThrows
+  void expungeForcesTheFullPath() {
+    // uidNext unchanged but the count dropped: messages were deleted elsewhere.
+    assertFullSyncRunsWhenServerReports(11L, 501L, 99, 777L);
+  }
+
+  @Test
+  @SneakyThrows
+  void remoteFlagChangeForcesTheFullPath() {
+    // Only the mod-sequence moved: metadata changed -- a read/unread flip in
+    // another client. This is the signal the whole CONDSTORE requirement exists for.
+    assertFullSyncRunsWhenServerReports(11L, 501L, 100, 778L);
+  }
+
+  @Test
+  @SneakyThrows
+  void uidValidityChangeForcesTheFullPathWithoutTouchingTheCache() {
+    // The server renumbered the folder (Gmail rebuild): every cached UID is
+    // meaningless, so the ONLY acceptable reaction is the full path, which re-lists
+    // the window and reconciles as it always did. Here the renumbered folder's
+    // window is empty and the cache is empty, so the full path must run and destroy
+    // nothing.
+    IMAPFolder inbox = assertFullSyncRunsWhenServerReports(12L, 501L, 100, 777L);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  @Test
+  @SneakyThrows
+  void missingSnapshotTakesTheFullPath() {
+    // First sync ever (or a reset invalidated the snapshot): nothing to compare,
+    // no STATUS worth issuing -- straight to the full path.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.INBOX);
+  }
+
+  @Test
+  @SneakyThrows
+  void unparseableSyncStateTakesTheFullPathAndHeals() {
+    // A corrupt state blob can never do worse than cost one full sync: it reads as
+    // an empty state, the full path runs, and the fresh snapshot overwrites the
+    // garbage.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
+    doReturn(SettingValue.create("this is not json")).when(settingService)
+                                                     .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    MailboxSyncState healed = JsonUtils.fromJsonString(savedState.getValue().getValue().toString(), MailboxSyncState.class);
+    assertEquals(501L, healed.getSnapshot(MailFolder.INBOX).getUidNext());
+  }
+
+  @Test
+  @SneakyThrows
+  void windowSizeChangeForcesTheFullPath() {
+    // The admin grew the cache: the server is unchanged, but the wider window has
+    // never been downloaded -- skipping would leave the mailbox permanently short.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 50));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+  }
+
+  @Test
+  @SneakyThrows
+  void withoutCondstoreTheSkipIsNeverTaken() {
+    // No CONDSTORE means an unchanged uidNext+messageCount still says NOTHING about
+    // read/unread flags flipped in another client. Skipping would not make those
+    // flags late -- it would make them stale forever. So on such servers the skip
+    // is refused outright, even with every other signal matching.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, false);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+  }
+
+  @Test
+  @SneakyThrows
+  void fullSyncCapturesTheSnapshotForTheNextRun() {
+    // The other half of the contract: a full sync must leave behind the snapshot
+    // that lets the NEXT run skip, with the SELECT-time signals and the window size.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 3, 777L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    FolderSyncSnapshot snapshot = JsonUtils.fromJsonString(savedState.getValue().getValue().toString(), MailboxSyncState.class)
+                                           .getSnapshot(MailFolder.INBOX);
+    assertEquals(11L, snapshot.getUidValidity());
+    assertEquals(501L, snapshot.getUidNext());
+    assertEquals(3L, snapshot.getMessageCount());
+    assertEquals(777L, snapshot.getHighestModSeq());
+    assertEquals(100, snapshot.getWindowSize());
+  }
+
+  @Test
+  @SneakyThrows
+  void cachedFolderNamesSkipTheDiscoveryScan() {
+    // Sent/Archive used to be re-discovered with a LIST * over the whole subscribed
+    // folder list on every sync; the remembered names replace that with one
+    // single-folder exists() probe each.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    state.setSentFolderName("MySent");
+    state.setArchiveFolderName("MyArchive");
+    mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
+    IMAPFolder sent = mock(IMAPFolder.class);
+    when(sent.exists()).thenReturn(true);
+    when(sent.getMessageCount()).thenReturn(0);
+    IMAPFolder archive = mock(IMAPFolder.class);
+    when(archive.exists()).thenReturn(true);
+    when(archive.getMessageCount()).thenReturn(0);
+    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    when(connectedStore.getFolder("MySent")).thenReturn(sent);
+    when(connectedStore.getFolder("MyArchive")).thenReturn(archive);
+    emailBoxService.synchronize(TEST_USER);
+    // Both folders resolved by name (and INBOX skipped): the full-list scan never runs.
+    verify(connectedStore.getDefaultFolder(), never()).listSubscribed("*");
+    verify(sent).open(Folder.READ_ONLY);
+    verify(archive).open(Folder.READ_ONLY);
+  }
+
+  @Test
+  @SneakyThrows
+  void clearingAFolderCacheDropsItsSnapshotSoTheResyncCannotSkip() {
+    // The reset flow: the INBOX rows are wiped while the SERVER still matches the
+    // old snapshot exactly. If the snapshot survived, the resync would conclude
+    // "nothing changed" over an empty cache and the mailbox would come up blank --
+    // the silent failure this feature must never cause.
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    state.setSnapshot(MailFolder.SENT, new FolderSyncSnapshot(21L, 61L, 60, 888L, 100));
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class),
+                                                                     any(Scope.class),
+                                                                     eq("emailBoxSyncState"));
+    when(emailBoxStorage.getEmails(TEST_USER, MailFolder.INBOX)).thenReturn(new ArrayList<>());
+    emailBoxService.deleteUserEmails(TEST_USER, MailFolder.INBOX);
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    MailboxSyncState cleared = JsonUtils.fromJsonString(savedState.getValue().getValue().toString(), MailboxSyncState.class);
+    assertNull(cleared.getSnapshot(MailFolder.INBOX), "the cleared folder's snapshot must be gone");
+    assertEquals(888L, cleared.getSnapshot(MailFolder.SENT).getHighestModSeq(), "other folders' snapshots must survive");
+  }
+
+  @Test
+  @SneakyThrows
+  void deletingTheWholeMailboxRemovesTheSyncState() {
+    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(new ArrayList<>());
+    emailBoxService.deleteUserEmails(TEST_USER);
+    verify(settingService).remove(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+  }
+
+  /**
+   * Runs a sync whose INBOX snapshot is {@code (uidValidity 11, uidNext 501, 100
+   * messages, highestModSeq 777, window 100)} against a CONDSTORE server reporting
+   * the given signals, and asserts the FULL path ran (folder opened, cache view
+   * loaded) -- the shape shared by every one-signal-changed test.
+   *
+   * @param uidValidity the server-side UIDVALIDITY
+   * @param uidNext the server-side UIDNEXT
+   * @param messageCount the server-side message count
+   * @param highestModSeq the server-side HIGHESTMODSEQ
+   * @return the INBOX mock, for extra assertions
+   */
+  @SneakyThrows
+  private IMAPFolder assertFullSyncRunsWhenServerReports(long uidValidity, long uidNext, int messageCount, long highestModSeq) {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, uidValidity, uidNext, messageCount, highestModSeq, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.INBOX);
+    return inbox;
+  }
+
+  /**
+   * Wires a mailbox for the skip-check tests: an IMAP store (CONDSTORE-capable or
+   * not), an INBOX reporting the given change signals over STATUS/SELECT, and the
+   * previous run's sync state persisted in the settings mock (none when null). No
+   * subscribed folders, so Sent/Archive syncs are no-ops when the full path runs.
+   *
+   * @param userEmailSetting the user's connector binding
+   * @param storedState the persisted sync state, or null for a first sync
+   * @param uidValidity the server-side UIDVALIDITY
+   * @param uidNext the server-side UIDNEXT
+   * @param messageCount the server-side message count
+   * @param highestModSeq the server-side HIGHESTMODSEQ
+   * @param condstore whether the store advertises CONDSTORE
+   * @return the INBOX mock
+   */
+  @SneakyThrows
+  private IMAPFolder mockInboxForSkipCheck(UserEmailSetting userEmailSetting,
+                                           MailboxSyncState storedState,
+                                           long uidValidity,
+                                           long uidNext,
+                                           int messageCount,
+                                           long highestModSeq,
+                                           boolean condstore) {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    lenient().when(store.hasCapability("CONDSTORE")).thenReturn(condstore);
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    IMAPFolder inbox = mock(IMAPFolder.class);
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.getUIDValidity()).thenReturn(uidValidity);
+    lenient().when(inbox.getUIDNext()).thenReturn(uidNext);
+    lenient().when(inbox.getMessageCount()).thenReturn(messageCount);
+    lenient().when(inbox.getHighestModSeq()).thenReturn(highestModSeq);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    lenient().when(inbox.getFullName()).thenReturn("INBOX");
+    if (storedState != null) {
+      doReturn(SettingValue.create(JsonUtils.toJsonString(storedState))).when(settingService)
+                                                                        .get(any(Context.class),
+                                                                             any(Scope.class),
+                                                                             eq("emailBoxSyncState"));
+    }
+    Folder defaultFolder = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    lenient().when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    return inbox;
   }
 
   /**
