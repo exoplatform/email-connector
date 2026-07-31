@@ -75,6 +75,53 @@ public class EmailBoxStorage {
     emailBoxDao.markEmailAsNotRecent(mailRemoteId, userId, folder);
   }
 
+  /**
+   * Clears the recent flag of all the given messages in one statement — the bulk
+   * companion of {@link #markEmailAsNotRecent}, introduced when the sync stopped
+   * issuing one UPDATE per already-known message. No-op on an empty list, so a
+   * steady-state sync touches nothing.
+   *
+   * @param mailRemoteIds the IMAP UIDs whose recent flag must be cleared
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   */
+  public void markEmailsAsNotRecent(List<Long> mailRemoteIds, String userId, String folder) {
+    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
+      emailBoxDao.markEmailsAsNotRecent(mailRemoteIds, userId, folder);
+    }
+  }
+
+  /**
+   * The light view of a folder the sync reconcile runs on: each cached row's id,
+   * IMAP UID, threading state and flags — no body, no attachments join, no
+   * category-link lookup. The full {@link #getEmails(String, String)} load was one
+   * of the two dominant costs of a sync that found nothing new: at 5000 cached
+   * messages it pulled every BODY CLOB through the persistence layer and ran one
+   * category-link query per row, none of which the sync ever read. Category ids
+   * are resolved lazily, only for the rows actually being deleted (see the
+   * service's delete path). Ordered newest-first, which cleanupObsoleteEmails
+   * relies on to trim the cache overflow off the end.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return light {@link Email} DTOs (body, recipients and category ids left null),
+   *         newest first
+   */
+  public List<Email> getSyncEmails(String userId, String folder) {
+    return emailBoxDao.findSyncViewByUserIdAndFolder(userId, folder).stream().map(row -> {
+      Email email = new Email();
+      email.setId((Long) row[0]);
+      email.setMailRemoteId((Long) row[1]);
+      email.setThreadId((String) row[2]);
+      email.setThreadIndexRoot((String) row[3]);
+      email.setRead(Boolean.TRUE.equals(row[4]));
+      email.setRecent(Boolean.TRUE.equals(row[5]));
+      email.setUserId(userId);
+      email.setFolder(folder);
+      return email;
+    }).toList();
+  }
+
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
     emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus, folder);
   }
