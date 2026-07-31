@@ -77,8 +77,15 @@ public class EmailConnectorUtils {
 
   public static final String   EMAIL_BOX_SYNC_JOB_NAME = "EmailBoxSyncJob";
 
+  // Chosen from measurements on a real mailbox at 500, 1000 and 5000 messages. Every size
+  // works and the cost is linear, so the number is a trade rather than a limit: at a
+  // thousand a full reset takes about five minutes, a sync that finds nothing new costs two
+  // or three seconds, and the cached bodies come to some sixty megabytes per user. Five
+  // thousand is supported and stays available to administrators, but it multiplies all
+  // three -- and the routine sync cost is paid by every user on every period, so it is the
+  // one that adds up on a busy server rather than the reset anybody actually notices.
   public static final int      DEFAULT_EMAIL_BOX_CACHE_SIZE =
-                                          Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "500"));
+                                          Integer.parseInt(System.getProperty("email.connector.sync.emails.number", "1000"));
 
   public static final String   OPEN_EMAIL              = "exo.email.openEmail";
 
