@@ -89,7 +89,16 @@ public class EmailConnectorUtils {
   // Broadcast after a sync when new emails were fetched: source = username,
   // data = the new emails' IMAP UIDs (mailRemoteIds). Lets other add-ons react
   // to freshly-arrived mail (e.g. the enterprise AI auto-categorization).
+  // A large sync broadcasts this SEVERAL times, one group of messages at a time,
+  // so a consumer can start working while the rest of the mailbox is still
+  // downloading; NEW_EMAILS_SYNC_COMPLETED marks the end of the run.
   public static final String   NEW_EMAILS_SYNCED       = "exo.email.newEmailsSynced";
+
+  // Broadcast once per inbox sync, after the last NEW_EMAILS_SYNCED group: source =
+  // username, data = ALL the IMAP UIDs this sync cached. This is the "no more groups
+  // are coming" signal a consumer needs for whole-run work -- per-message events can
+  // never tell it when a conversation split across groups is finally complete.
+  public static final String   NEW_EMAILS_SYNC_COMPLETED = "exo.email.newEmailsSyncCompleted";
 
   public static final String   EMAIL_FEATURE           = "email";
 
