@@ -22,11 +22,16 @@ import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionService;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
@@ -164,6 +169,9 @@ public class EmailBoxService {
 
   // The outside limit once a consumer has claimed the wait: if it never reports back, the
   // notification is late rather than lost.
+  // How long the notification may wait with NO sign of progress. Re-armed every time a
+  // claim is taken or released, so it bounds silence rather than the run: a mailbox that
+  // keeps classifying is never cut off, however large it is.
   private static final long       NOTIFICATION_MAX_WAIT_MS                                    = 15 * 60 * 1000L;
 
   // Cooldown before a BLOCKED mailbox is allowed to retry a sync, so BLOCKED is a temporary
@@ -208,7 +216,18 @@ public class EmailBoxService {
   // (see UserEmailSettingService#connect) already unstick a dead worker; this bound only
   // guarantees the sync thread itself can never wait forever, and losing the race is
   // harmless — unmapped messages are fetched serially, exactly as before this existed.
+  // How long the drain may go with NO slice arriving at all. Refreshed on every slice, so
+  // it bounds silence rather than the whole folder.
   private static final long       BODY_PREFETCH_TIMEOUT_MS                                    = 10 * 60 * 1000L;
+
+  // How long the drain waits for at least ONE slice to complete before giving up on the
+  // parallel prefetch. Slices are consumed in completion order, so a single slow slice no
+  // longer holds anything up -- one message trickling in behind a slow connection once
+  // stalled a whole mailbox for minutes while four workers sat idle holding finished
+  // data. What this bounds is total silence: with several connections in flight, nothing
+  // at all completing for this long means the connections are dead, not slow, and the
+  // remaining bodies are fetched serially, which costs a fraction of a second each.
+  private static final long       BODY_PREFETCH_SLICE_TIMEOUT_MS                              = 90 * 1000L;
 
   // The nameIds of the add-on's own default email categories (see default-categories.json).
   // The platform's CategoryImportService persists each nameId -> created category id in
@@ -557,10 +576,13 @@ public class EmailBoxService {
    * Two details here are load-bearing. The work is cut into slices <em>much smaller</em>
    * than the number of connections: one slice per connection would have them all finish
    * together, and nothing would appear until the end -- which is the whole point of this
-   * method. And the slices are consumed in message order rather than completion order,
-   * because {@link #computeThreadId} attaches a reply to its conversation by looking up
-   * the messages already stored; cache a reply before its parent and the conversation
-   * silently splits in two.
+   * method. And the slices are submitted newest-first but consumed in <em>completion</em>
+   * order: the user sees today's mail land first instead of watching a reset fill
+   * forward from weeks ago, and one slow slice can no longer hold hostage the finished
+   * slices behind it. Caching out of order is safe because {@link #computeThreadId}
+   * links a message to its conversation in both directions -- the cached messages it
+   * references AND the cached messages referencing it -- so thread grouping does not
+   * depend on the order messages land in.
    * <p>
    * Best effort throughout: a dead connection, one unreadable message or a total failure
    * of the prefetch only leaves UIDs unmapped, and createEmails fetches those bodies
@@ -617,6 +639,13 @@ public class EmailBoxService {
     }
     int sliceCount = (int) Math.ceil((double) newUids.size() / BODY_PREFETCH_SLICE_SIZE);
     List<long[]> uidSlices = partitionUids(newUids, sliceCount);
+    // Newest mail first: the slices are submitted (hence fetched) in reverse mailbox
+    // order, so a reset fills the inbox from today backwards instead of from weeks ago
+    // forwards -- users watched a reset "stuck at July 9th" while the newest 260
+    // messages were still pending. Only the slice ORDER is reversed: each slice keeps
+    // its own UIDs ascending, so the workers' FETCH commands still compress their
+    // contiguous UID runs into compact ranges.
+    Collections.reverse(uidSlices);
     String folderFullName = folder.getFullName();
     // Daemon workers so a hung prefetch can never keep the JVM alive; the pool lives for
     // this one folder and is shut down before returning.
@@ -629,34 +658,77 @@ public class EmailBoxService {
     List<Long> newEmailIds = new ArrayList<>();
     int prefetchedCount = 0;
     try {
-      List<Future<Map<Long, EmailContent>>> pendingSlices = new ArrayList<>();
+      CompletionService<Map<Long, EmailContent>> completedSlices = new ExecutorCompletionService<>(prefetchPool);
+      // Which UIDs each in-flight future carries, so a slice can be mapped back to its
+      // messages whatever order it completes in -- and so the slices that never complete
+      // are still cached by the serial fallback at the bottom of the loop. Insertion
+      // (= submission) order is kept, so that fallback also drains newest-first.
+      Map<Future<Map<Long, EmailContent>>, long[]> pendingSlices = new LinkedHashMap<>();
       for (long[] uidSlice : uidSlices) {
-        pendingSlices.add(prefetchPool.submit(() -> prefetchSlice(folderFullName,
-                                                                  uidSlice,
-                                                                  userEmailSetting,
-                                                                  emailConnector,
-                                                                  username)));
+        pendingSlices.put(completedSlices.submit(() -> prefetchSlice(folderFullName,
+                                                                     uidSlice,
+                                                                     userEmailSetting,
+                                                                     emailConnector,
+                                                                     username)),
+                          uidSlice);
       }
-      // One deadline for the whole folder, so a wedged connection cannot hold the sync
-      // open indefinitely -- whatever is late is simply fetched serially instead.
+      // Bounds SILENCE, not the folder: refreshed below every time a slice arrives. As an
+      // absolute deadline this abandoned the prefetch mid-download on any mailbox too big
+      // to finish inside it -- 5000 messages take roughly twice this -- dropping the rest
+      // onto the serial path, which is the very cost the prefetch exists to avoid.
       long deadline = System.currentTimeMillis() + BODY_PREFETCH_TIMEOUT_MS;
       // The UIDs cached since the last broadcast. Replaced (never cleared) after each
       // broadcast: the list is handed to asynchronous listeners, which read it on their
       // own threads after this loop has moved on.
       List<Long> broadcastGroup = new ArrayList<>();
-      for (int sliceIndex = 0; sliceIndex < uidSlices.size(); sliceIndex++) {
-        Map<Long, EmailContent> sliceContents = awaitSlice(pendingSlices.get(sliceIndex), deadline, username);
+      int processedSliceCount = 0;
+      // Slices are drained in COMPLETION order, not submission order: consuming them in
+      // sequence once stalled a whole mailbox for ~4 minutes behind one slowly-trickling
+      // message while four workers sat idle holding finished data. Out-of-order caching
+      // is safe -- computeThreadId links conversations in both directions.
+      boolean prefetchAbandoned = false;
+      while (!pendingSlices.isEmpty()) {
+        Future<Map<Long, EmailContent>> completed = null;
+        if (!prefetchAbandoned) {
+          completed = pollCompletedSlice(completedSlices, deadline, username);
+          if (completed == null) {
+            // Total silence inside the bound: stop the workers (left running they would
+            // hold their connections busy on messages the sync has given up on) and fall
+            // through to caching every remaining slice with serially-fetched bodies.
+            prefetchAbandoned = true;
+            pendingSlices.keySet().forEach(pending -> pending.cancel(true));
+          }
+        }
+        long[] uidSlice;
+        Map<Long, EmailContent> sliceContents;
+        if (completed != null) {
+          // Progress: the workers are alive, so the silence bound starts again.
+          deadline = System.currentTimeMillis() + BODY_PREFETCH_TIMEOUT_MS;
+          uidSlice = pendingSlices.remove(completed);
+          sliceContents = completedSliceContents(completed, username);
+          if (uidSlice == null) {
+            // Cannot happen (every submitted future is in the map), but a null slice
+            // must not NPE the sync thread mid-drain.
+            continue;
+          }
+        } else {
+          Iterator<Map.Entry<Future<Map<Long, EmailContent>>, long[]>> remaining = pendingSlices.entrySet().iterator();
+          uidSlice = remaining.next().getValue();
+          remaining.remove();
+          sliceContents = Map.of();
+        }
         prefetchedCount += sliceContents.size();
+        processedSliceCount++;
         List<Long> sliceEmailIds = createEmails(uidFolder,
-                                                messagesOfSlice(uidSlices.get(sliceIndex), messagesByUid),
+                                                messagesOfSlice(uidSlice, messagesByUid),
                                                 username,
                                                 folderKey,
                                                 sliceContents);
         newEmailIds.addAll(sliceEmailIds);
         if (streamNewEmails) {
           broadcastGroup.addAll(sliceEmailIds);
-          boolean groupComplete = (sliceIndex + 1) % BODY_PREFETCH_SLICES_PER_BROADCAST == 0
-              || sliceIndex == uidSlices.size() - 1;
+          boolean groupComplete = processedSliceCount % BODY_PREFETCH_SLICES_PER_BROADCAST == 0
+              || pendingSlices.isEmpty();
           if (groupComplete && !broadcastGroup.isEmpty()) {
             broadcastNewEmailsSynced(username, broadcastGroup);
             broadcastGroup = new ArrayList<>();
@@ -704,16 +776,51 @@ public class EmailBoxService {
   }
 
   /**
-   * Waits for one slice's bodies, degrading to an empty slice rather than failing the sync.
+   * Waits for the next completed prefetch slice -- whichever of the in-flight slices
+   * finishes first. Bounded by whichever comes sooner: the whole folder's deadline, or
+   * {@link #BODY_PREFETCH_SLICE_TIMEOUT_MS} of complete silence. The bound is on "no
+   * slice at all completed", not on one particular slice: a single slow slice just
+   * keeps downloading while the finished ones are drained around it, but silence that
+   * long with several connections in flight means the connections are dead, not slow.
    *
-   * @param pendingSlice the worker's pending result
+   * @param completedSlices the completion queue the workers hand finished slices to
    * @param deadline the epoch-millis bound shared by every slice of this folder
    * @param username the mailbox owner, for logging
-   * @return the slice's bodies keyed by IMAP UID, empty if it failed or ran out of time
+   * @return the next completed slice, or null when the wait timed out or was
+   *         interrupted -- the caller falls back to serial body fetching for whatever
+   *         is still pending
    */
-  private Map<Long, EmailContent> awaitSlice(Future<Map<Long, EmailContent>> pendingSlice, long deadline, String username) {
+  private Future<Map<Long, EmailContent>> pollCompletedSlice(CompletionService<Map<Long, EmailContent>> completedSlices,
+                                                             long deadline,
+                                                             String username) {
+    long waitBound = Math.min(deadline, System.currentTimeMillis() + BODY_PREFETCH_SLICE_TIMEOUT_MS);
     try {
-      return pendingSlice.get(Math.max(1, deadline - System.currentTimeMillis()), TimeUnit.MILLISECONDS);
+      Future<Map<Long, EmailContent>> completed =
+                                                completedSlices.poll(Math.max(1, waitBound - System.currentTimeMillis()),
+                                                                     TimeUnit.MILLISECONDS);
+      if (completed == null) {
+        LOG.warn("No body prefetch slice of user {} completed in time; the remaining messages are fetched serially", username);
+      }
+      return completed;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      LOG.warn("Body prefetch interrupted for user {}; the remaining bodies are fetched serially", username, e);
+      return null;
+    }
+  }
+
+  /**
+   * Reads an already-completed slice's bodies, degrading to an empty slice rather than
+   * failing the sync -- an empty map only means createEmails fetches those bodies
+   * serially, exactly as before the prefetch existed.
+   *
+   * @param completedSlice a future the completion queue already handed back
+   * @param username the mailbox owner, for logging
+   * @return the slice's bodies keyed by IMAP UID, empty if the worker failed
+   */
+  private Map<Long, EmailContent> completedSliceContents(Future<Map<Long, EmailContent>> completedSlice, String username) {
+    try {
+      return completedSlice.get();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       LOG.warn("Body prefetch interrupted for user {}; the remaining bodies are fetched serially", username, e);
@@ -725,7 +832,9 @@ public class EmailBoxService {
 
   /**
    * Lists the not-yet-cached messages of the folder window, in the order the server
-   * listed them -- which is the order they must be cached in, oldest first.
+   * listed them -- oldest first. This is only a listing order: the prefetch reverses
+   * the slices so the newest mail is fetched and cached first, and thread grouping no
+   * longer cares (computeThreadId links conversations in both directions).
    *
    * @param uidFolder the folder being synchronized, for UID resolution
    * @param serverMessages the folder window listed by the sync connection
@@ -1792,9 +1901,11 @@ public class EmailBoxService {
    * Creates a local row for every server message not yet cached, and refreshes the
    * read flag / threading backfill of the ones already there. Deliberately serial:
    * computeThreadId reads the threads of the messages inserted before it and merges
-   * threads as it goes, so processing order IS the threading contract — running these
-   * iterations concurrently would race the merges and silently re-fragment
-   * conversations. The expensive part, the per-message body fetch, is instead served
+   * threads as it goes, so running these iterations concurrently would race the
+   * merges and silently re-fragment conversations. The processing ORDER, on the
+   * other hand, stopped mattering when computeThreadId learned to look up
+   * conversations in both directions — single-threadedness is the contract now, not
+   * sequence. The expensive part, the per-message body fetch, is instead served
    * from {@code prefetchedContents} when the parallel prefetch got there first; a miss
    * falls back to the same serial fetch as always, so the map can be empty (or
    * partial, or entirely wrong about what exists) without affecting correctness.
@@ -1912,10 +2023,14 @@ public class EmailBoxService {
   }
 
   /**
-   * The conversation a message belongs to. It joins an existing thread when its
-   * References / In-Reply-To point at a cached message, otherwise it starts its own
-   * thread keyed by its Message-ID (synthesized when the sender omitted one). A message
-   * that references several distinct threads (a late, out-of-order arrival) collapses
+   * The conversation a message belongs to, resolved in BOTH directions so the answer
+   * does not depend on the order messages are cached in: forward, the cached messages
+   * its References / In-Reply-To point at; reverse, the cached messages whose
+   * References / In-Reply-To point back at it (they were cached first — routine now
+   * that the sync drains prefetch slices newest-first, in completion order). When
+   * neither direction (nor a shared Thread-Index root) finds anything, the message
+   * starts its own thread keyed by its Message-ID (synthesized when the sender
+   * omitted one). A message that lands between several distinct threads collapses
    * them into the oldest — the canonical thread id — so the conversation stays whole.
    *
    * @param username the mailbox owner
@@ -1923,6 +2038,7 @@ public class EmailBoxService {
    * @param messageUid the message's IMAP UID, used to synthesize an id when needed
    * @param inReplyTo the raw In-Reply-To header, may be null
    * @param references the raw References header, may be null
+   * @param threadIndexRoot the Exchange Thread-Index conversation root, may be null
    * @return the thread id to store on the message, never null
    */
   private String computeThreadId(String username,
@@ -1944,6 +2060,15 @@ public class EmailBoxService {
     }
     if (StringUtils.isNotEmpty(threadIndexRoot)) {
       siblingThreadIds.addAll(emailBoxStorage.getThreadIdsByThreadIndexRoot(username, threadIndexRoot));
+    }
+    // The reverse of the References lookup: messages cached BEFORE this one whose own
+    // chain points back at it. The forward lookup alone made the caching order a
+    // correctness contract (a parent had to be cached before its replies, or the
+    // conversation silently split in two); with both directions the conversation
+    // reassembles whatever order the messages land in. Only ever queried with a real
+    // Message-ID — a synthesized id cannot appear in another message's References.
+    if (StringUtils.isNotEmpty(mailHeaderId)) {
+      siblingThreadIds.addAll(emailBoxStorage.getThreadIdsReferencingMessageId(username, ownMessageId));
     }
     if (siblingThreadIds.isEmpty()) {
       return ownMessageId;
@@ -2479,7 +2604,15 @@ public class EmailBoxService {
         readyToSend[0] = pending;
         return null;
       }
-      return new PendingNotification(pending.maxLocalUid(), remainingClaims, pending.syncCompleted(), pending.future());
+      // Re-arm rather than carry the old timer: the backstop must measure silence, not
+      // total elapsed time. A large mailbox classifies for longer than any fixed deadline
+      // -- 5000 messages take far longer than the 15 minutes that suited 500 -- and a
+      // deadline that expires mid-run sends a notification counting only part of the mail.
+      cancelTimer(pending);
+      return new PendingNotification(pending.maxLocalUid(),
+                                     remainingClaims,
+                                     pending.syncCompleted(),
+                                     scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS));
     });
     if (readyToSend[0] == null) {
       return;
