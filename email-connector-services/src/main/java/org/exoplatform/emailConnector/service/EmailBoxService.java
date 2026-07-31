@@ -86,6 +86,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
+import com.sun.mail.imap.ResyncData;
 
 import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.notification.NotificationContext;
@@ -238,6 +239,11 @@ public class EmailBoxService {
   // at all completing for this long means the connections are dead, not slow, and the
   // remaining bodies are fetched serially, which costs a fraction of a second each.
   private static final long       BODY_PREFETCH_SLICE_TIMEOUT_MS                              = 90 * 1000L;
+
+  // The RFC 7162 capability behind the skip check's flag-change signal. Referenced in
+  // two places on purpose: the folder OPEN asks for mod-sequences explicitly, and the
+  // skip check refuses to skip without them.
+  private static final String     CONDSTORE_CAPABILITY                                        = "CONDSTORE";
 
   // Where each user's MailboxSyncState lives (SettingService, user context, the
   // add-on's scope). Its OWN key, not a field of userEmailSetting: the setting
@@ -514,7 +520,7 @@ public class EmailBoxService {
       // phase to attack next (IMAP window fetch? cache load? reconcile?) was guesswork
       // without a per-phase split.
       long openStart = System.currentTimeMillis();
-      folder.open(Folder.READ_ONLY);
+      openFolderForSync(folder, folderKey, username);
       UIDFolder uidFolder = (UIDFolder) folder;
       int totalMessages = folder.getMessageCount();
       if (totalMessages == 0) {
@@ -618,6 +624,53 @@ public class EmailBoxService {
   }
 
   /**
+   * Opens a folder for synchronization, asking the server for mod-sequences
+   * explicitly ({@code SELECT ... (CONDSTORE)}, RFC 7162) when it advertises
+   * CONDSTORE. Gmail volunteers {@code HIGHESTMODSEQ} on a plain SELECT, but that
+   * is generosity, not a guarantee: RFC 7162 only obliges the server once the
+   * client enables CONDSTORE, and Stalwart takes the RFC at its word — observed
+   * live as user benjamin's snapshots being stored with {@code highestModSeq -1}
+   * and every sync logging "snapshot incomplete -&gt; full sync", forever. Asking
+   * explicitly is what the RFC intends and costs Gmail nothing (one atom on the
+   * SELECT line; the response it already sent unprompted).
+   * <p>
+   * Deliberately NOT QRESYNC: {@link ResyncData#CONDSTORE} only adds the
+   * {@code (CONDSTORE)} parameter — {@code VANISHED} responses and the changed
+   * expunge surfacing that come with QRESYNC require a capability we never request
+   * (and JavaMail would reject without it), so the session's untagged responses
+   * keep today's shape. Best-effort throughout: a server that advertises CONDSTORE
+   * but rejects the parameter gets a plain open (the capture then simply yields no
+   * mod-sequence and the skip stays off, exactly as before this method existed).
+   *
+   * @param folder the remote folder to open READ_ONLY
+   * @param folderKey the {@link MailFolder} discriminator, for the log
+   * @param username the mailbox owner, for the log
+   * @throws MessagingException if even the plain open fails
+   */
+  private void openFolderForSync(Folder folder, String folderKey, String username) throws MessagingException {
+    try {
+      if (folder instanceof IMAPFolder imapFolder && folder.getStore() instanceof IMAPStore imapStore
+          && imapStore.hasCapability(CONDSTORE_CAPABILITY)) {
+        imapFolder.open(Folder.READ_ONLY, ResyncData.CONDSTORE);
+        return;
+      }
+    } catch (Exception e) {
+      if (folder.isOpen()) {
+        // The CONDSTORE open itself succeeded and something later failed; the folder
+        // is usable, so hand it over rather than re-opening it.
+        LOG.warn("Unexpected error after opening folder {} of user {} with CONDSTORE; keeping the open folder",
+                 folderKey,
+                 username,
+                 e);
+        return;
+      }
+      LOG.warn("Could not open folder {} of user {} with CONDSTORE; falling back to a plain open (the change-skip"
+          + " stays off for this folder until mod-sequences are available)", folderKey, username, e);
+    }
+    folder.open(Folder.READ_ONLY);
+  }
+
+  /**
    * The cheap-change gate in front of {@link #syncFolder}: skip the folder outright
    * when the server provably did not change since the snapshot the last full sync
    * captured, otherwise run the full sync and remember what it saw. The measured
@@ -669,13 +722,20 @@ public class EmailBoxService {
    * <ul>
    * <li>no snapshot (first sync, invalidated by a reset, or unparseable state) —
    * full sync;</li>
+   * <li>a server not advertising CONDSTORE — full sync ALWAYS: without
+   * mod-sequences, an unchanged uidNext+messageCount says nothing about
+   * read/unread flags flipped in another client, and skipping would leave them
+   * stale forever, not just slow. Checked BEFORE the snapshot's completeness so
+   * the log tells "this server cannot do it" apart from "the capture came back
+   * short" — the two were indistinguishable when Stalwart looped on "snapshot
+   * incomplete" and the real question was whether it advertised CONDSTORE at
+   * all;</li>
    * <li>snapshot captured with a different window size (admin changed the cache
    * size; the wider window must download even though the server is unchanged) —
    * full sync;</li>
-   * <li>snapshot without a positive HIGHESTMODSEQ, or a server not advertising
-   * CONDSTORE — full sync ALWAYS: without mod-sequences, an unchanged
-   * uidNext+messageCount says nothing about read/unread flags flipped in another
-   * client, and skipping would leave them stale forever, not just slow;</li>
+   * <li>snapshot with any non-positive signal (typically a mod-sequence the
+   * server did not provide at capture) — full sync, with the stored values
+   * logged;</li>
    * <li>any server signal negative/unavailable, or the STATUS failing — full
    * sync.</li>
    * </ul>
@@ -707,9 +767,13 @@ public class EmailBoxService {
     // work there means opening the folder with ResyncData.CONDSTORE to ask for the
     // mod-sequence explicitly, which is a change worth its own measurement.
     try {
-      if (snapshot.getUidValidity() <= 0 || snapshot.getUidNext() <= 0 || snapshot.getMessageCount() <= 0
-          || snapshot.getHighestModSeq() <= 0) {
-        LOG.info("Folder {} of user {} cheap change check: snapshot incomplete -> full sync", folderKey, username);
+      if (!(store instanceof IMAPStore imapStore) || !imapStore.hasCapability(CONDSTORE_CAPABILITY)
+          || !(folder instanceof IMAPFolder imapFolder)) {
+        // No CONDSTORE: flags flipped in another client are undetectable from here,
+        // and skipping would leave them stale forever. Checked FIRST (before any
+        // STATUS is issued, and before the snapshot's own fields) so the log
+        // separates "this server cannot do it" from "the capture came back short".
+        LOG.info("Folder {} of user {} cheap change check: no CONDSTORE on this server -> full sync", folderKey, username);
         return false;
       }
       if (snapshot.getWindowSize() != windowSize) {
@@ -720,12 +784,21 @@ public class EmailBoxService {
                  windowSize);
         return false;
       }
-      if (!(store instanceof IMAPStore imapStore) || !imapStore.hasCapability("CONDSTORE")
-          || !(folder instanceof IMAPFolder imapFolder)) {
-        // No CONDSTORE: flags flipped in another client are undetectable from here,
-        // and skipping would leave them stale forever. Checked before any STATUS is
-        // issued, so non-CONDSTORE servers pay nothing for this gate.
-        LOG.info("Folder {} of user {} cheap change check: no CONDSTORE on this server -> full sync", folderKey, username);
+      if (snapshot.getUidValidity() <= 0 || snapshot.getUidNext() <= 0 || snapshot.getMessageCount() <= 0
+          || snapshot.getHighestModSeq() <= 0) {
+        // The stored values are in the line on purpose: this branch looped forever on
+        // Stalwart with an invisible cause (highestModSeq -1 -- the server advertises
+        // CONDSTORE but only sends mod-sequences when asked, which the sync now does
+        // at open). If it still fires persistently, the folder's SELECT is coming
+        // back without the signal even when requested.
+        LOG.info("Folder {} of user {} cheap change check: snapshot incomplete (uidValidity {}, uidNext {}, {} message(s),"
+            + " highestModSeq {}) -> full sync",
+                 folderKey,
+                 username,
+                 snapshot.getUidValidity(),
+                 snapshot.getUidNext(),
+                 snapshot.getMessageCount(),
+                 snapshot.getHighestModSeq());
         return false;
       }
       long uidValidity = imapFolder.getUIDValidity();
