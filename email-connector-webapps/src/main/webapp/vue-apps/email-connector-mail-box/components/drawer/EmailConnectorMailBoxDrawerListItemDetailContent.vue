@@ -52,6 +52,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-list-item-action class="pt-4 my-0 d-flex flex-column align-end">
         <v-list-item-subtitle class="pb-1" v-text="receivedDate" />
         <div class="d-flex flex-row align-center">
+          <!-- The message's favorite (the server's \Flagged flag): toggling pushes to
+               the mail server, so it follows to phone, Gmail, everywhere. -->
+          <email-connector-mail-box-drawer-favorite-toggle
+            :favorite="!!email.starred"
+            :can-toggle="canToggleFavorite"
+            :size="18"
+            @toggle="toggleFavorite" />
           <v-btn
             @click="openReplyEmailDrawer"
             :title="$t('emailConnector.mailBox.list.drawer.detail.reply.button.title')"
@@ -60,7 +67,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-btn>
           <email-connector-mail-box-drawer-list-item-detail-action-menu
             :email="email" />
-        </div> 
+        </div>
       </v-list-item-action>
     </v-list-item>
     <email-connector-mail-box-drawer-list-item-detail-header 
@@ -149,10 +156,22 @@ export default {
     isMobile() {
       return this.$vuetify.breakpoint.smAndDown;
     },
+    // Only an INBOX message can be toggled: the favorite endpoint pushes the IMAP
+    // \Flagged flag through the INBOX folder. A favorite Sent/Archive copy in a
+    // conversation still shows its (read-only) favorite.
+    canToggleFavorite() {
+      return (this.email.folder || 'INBOX') === 'INBOX';
+    },
   },
   methods: {
     toggleDetails() {
       this.expandedHeader = !this.expandedHeader;
+    },
+    // The optimistic flip and the service call are centralized in the mailbox
+    // drawer's handler, which also rolls this very object back (through the
+    // thread's own listener) if the mail server refuses the flag.
+    toggleFavorite() {
+      this.$root.$emit('update-email-favorite-status', !this.email.starred, [this.email.mailRemoteId]);
     },
     openReplyEmailDrawer() {
       this.$root.$emit('open-new-email-drawer', this.email);
