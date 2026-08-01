@@ -161,10 +161,27 @@ export default {
         this.cancelSelectMode();
       }
     };
+    // Mirror favorite changes (and their rollback after a refused push) onto this
+    // drawer's own copies: the list it was opened with — a snapshot when it
+    // shows search results, which the periodic refresh never overwrites — and
+    // the opened message.
+    this.onApplyEmailFavoriteStatus = (favorite, mailRemoteIds = []) => {
+      const ids = new Set(mailRemoteIds);
+      (this.emails || []).forEach(email => {
+        if ((email.folder || 'INBOX') === 'INBOX' && ids.has(email.mailRemoteId)) {
+          this.$set(email, 'starred', favorite);
+        }
+      });
+      if (this.email && (this.email.folder || 'INBOX') === 'INBOX' && ids.has(this.email.mailRemoteId)) {
+        this.$set(this.email, 'starred', favorite);
+      }
+    };
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
+    this.$root.$on('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
+    this.$root.$on('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$on('archive-email', this.onDeleteOrArchiveEmail);
     this.$root.$on('attachment-download-started', (payload) => {
@@ -209,6 +226,8 @@ export default {
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);
+    this.$root.$off('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
+    this.$root.$off('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
   },
   computed: {
     title() {

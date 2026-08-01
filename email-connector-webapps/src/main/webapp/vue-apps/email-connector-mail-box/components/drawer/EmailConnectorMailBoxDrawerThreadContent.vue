@@ -157,7 +157,28 @@ export default {
       },
     },
   },
+  created() {
+    // The reader's messages are fetched apart from the folder list, so a favorite
+    // toggled anywhere (a list row, this very reader) — or rolled back after
+    // the mail server refused the push — must be mirrored on them here.
+    this.$root.$on('update-email-favorite-status', this.applyFavoriteStatus);
+    this.$root.$on('apply-email-favorite-status', this.applyFavoriteStatus);
+  },
+  beforeDestroy() {
+    this.$root.$off('update-email-favorite-status', this.applyFavoriteStatus);
+    this.$root.$off('apply-email-favorite-status', this.applyFavoriteStatus);
+  },
   methods: {
+    // Patch the favorite flag on this conversation's INBOX messages (favorite ids are
+    // INBOX UIDs; the same number in another folder is a different message).
+    applyFavoriteStatus(favorite, mailRemoteIds = []) {
+      const ids = new Set(mailRemoteIds);
+      this.messages.forEach(message => {
+        if ((message.folder || 'INBOX') === 'INBOX' && ids.has(message.mailRemoteId)) {
+          this.$set(message, 'starred', favorite);
+        }
+      });
+    },
     threadKey(email) {
       return email.threadId || email.mailHeaderId || String(email.mailRemoteId);
     },
