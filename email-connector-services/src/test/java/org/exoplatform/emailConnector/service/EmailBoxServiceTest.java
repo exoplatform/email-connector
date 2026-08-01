@@ -160,6 +160,9 @@ public class EmailBoxServiceTest {
   @MockBean
   private CategoryService         categoryService;
 
+  @MockBean
+  private EmailFavoriteService    emailFavoriteService;
+
   @Autowired
   private EmailBoxService         emailBoxService;
 

@@ -63,6 +63,23 @@ extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
   },
 });
 
+/*
+ * Opens the mailbox on one given message, from anywhere in the platform: the global
+ * Favorites drawer uses it to hand over a favorited mail, and any other add-on can do
+ * the same without knowing how this app is mounted.
+ *
+ * The reader is the mailbox's own — the conversation, its attachments and its replies —
+ * rather than a second, poorer copy of it living elsewhere. It costs nothing on a page
+ * where nobody opens a mail: this listener is all that is loaded, and the app itself is
+ * only built on the first open, exactly like the quick action.
+ *
+ * detail: {mailRemoteId} — the IMAP UID of the message to open.
+ */
+document.addEventListener('open-email-box-mail', event => {
+  const mailRemoteId = event?.detail?.mailRemoteId;
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, mailRemoteId));
+});
+
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
   const urlParams = new URLSearchParams(window.location.search);
   const shouldOpenEmailBox = urlParams.get('openEmailBox') === 'true';
@@ -71,7 +88,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
   }
 }
 
-async function initConnectorsMailBox(exoi18n) {
+async function initConnectorsMailBox(exoi18n, mailRemoteId) {
   const appId = 'emailConenctor-mailBox-quick-actions';
   if (!document.querySelector(`#${appId}`)) {
     const parent = document.createElement('div');
@@ -79,7 +96,8 @@ async function initConnectorsMailBox(exoi18n) {
     document.querySelector('#vuetify-apps').appendChild(parent);
     await initConnectorsDrawerApp(appId, exoi18n, eXo.env.portal.maxFileSize);
   }
-  document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer'));
+  // No id simply means "just open the mailbox", which is what the quick action does.
+  document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer', {detail: {mailRemoteId}}));
 }
 
 function initConnectorsDrawerApp(appId, exoi18n) {
