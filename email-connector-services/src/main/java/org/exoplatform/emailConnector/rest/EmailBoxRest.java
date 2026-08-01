@@ -125,6 +125,31 @@ public class EmailBoxRest {
     }
   }
 
+  @GetMapping("/favorites/{emailId}")
+  @Secured("users")
+  @Operation(summary = "Gets a favorited email by its technical id", method = "GET",
+             description = "Resolves one entry of the global Favorites drawer. Favorites are stored against the email's technical id, unlike the rest of this API which addresses messages by their IMAP UID, so this is the one read that takes that id. Answers 404 for an email that is not the caller's, so a favorite id never reveals whether it exists.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public ResponseEntity<Email> getFavoriteEmailById(HttpServletRequest request,
+                                                    @Parameter(description = "Technical id of the favorited email", required = true)
+                                                    @PathVariable("emailId")
+                                                    long emailId) {
+    try {
+      Email email = emailBoxService.getOwnedEmailById(emailId, request.getRemoteUser());
+      if (email == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return ResponseEntity.ok().cacheControl(CacheControl.noCache().cachePrivate()).body(email);
+    } catch (IllegalAccessException e) {
+      // Somebody else's mail is reported as missing rather than forbidden: the
+      // drawer drops an entry it cannot resolve, and "forbidden" would confirm
+      // that the id exists.
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+  }
+
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the mailbox on the server", method = "GET",

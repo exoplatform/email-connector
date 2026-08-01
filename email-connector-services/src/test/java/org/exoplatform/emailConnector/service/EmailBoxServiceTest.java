@@ -179,6 +179,9 @@ public class EmailBoxServiceTest {
   @MockBean
   private ApplicationEventPublisher eventPublisher;
 
+  @MockBean
+  private EmailFavoriteService    emailFavoriteService;
+
   @Autowired
   private EmailBoxService         emailBoxService;
 
