@@ -138,4 +138,12 @@ public class EmailBoxEntity {
   // directly-delivered mail.
   @Column(name = "ORIGINAL_SENDER")
   private String                      originalSender;
+
+  // Local mirror of the IMAP \Flagged flag ("star"). The server copy is the source of
+  // truth: the sync reconcile overwrites this column with whatever the server says, so a
+  // star set in Gmail or on a phone shows here and vice versa. Declared last on purpose:
+  // Lombok's all-args constructor follows field order, so appending keeps every existing
+  // positional call site intact but for one trailing argument.
+  @Column(name = "STARRED")
+  private boolean                     starred;
 }
