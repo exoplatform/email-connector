@@ -177,12 +177,14 @@ public class EmailBoxStorageTest {
 
   @Test
   void getSyncEmailsMapsTheLightViewWithoutBodiesOrCategories() {
-    // The sync view must carry exactly what the reconcile reads -- ids, flags,
-    // threading state -- and nothing that costs a CLOB read or a category lookup,
-    // because loading those for 5000 rows per sync was the point of removing it.
+    // The sync view must carry exactly what the reconcile reads -- ids, flags
+    // (including the starred mirror of \Flagged), threading state -- and nothing
+    // that costs a CLOB read or a category lookup, because loading those for 5000
+    // rows per sync was the point of removing it.
     when(emailBoxDAO.findSyncViewByUserIdAndFolder("root", "INBOX"))
                                                                    .thenReturn(List.<Object[]> of(new Object[] { 7L, 1212L,
-                                                                       "<t@host>", "", Boolean.TRUE, Boolean.FALSE }));
+                                                                       "<t@host>", "", Boolean.TRUE, Boolean.FALSE,
+                                                                       Boolean.TRUE }));
     List<Email> emails = emailBoxStorage.getSyncEmails("root", "INBOX");
     assertEquals(1, emails.size());
     Email email = emails.get(0);
@@ -192,6 +194,7 @@ public class EmailBoxStorageTest {
     assertEquals("", email.getThreadIndexRoot());
     assertTrue(email.isRead());
     assertFalse(email.isRecent());
+    assertTrue(email.isStarred());
     assertEquals("root", email.getUserId());
     assertEquals("INBOX", email.getFolder());
     assertNull(email.getContent());
@@ -207,6 +210,17 @@ public class EmailBoxStorageTest {
     verify(emailBoxDAO, never()).markEmailsAsNotRecent(anyList(), anyString(), anyString());
     emailBoxStorage.markEmailsAsNotRecent(List.of(1L), "root", "INBOX");
     verify(emailBoxDAO).markEmailsAsNotRecent(List.of(1L), "root", "INBOX");
+  }
+
+  @Test
+  void updateEmailStarredStatusSkipsTheDatabaseOnEmptyList() {
+    // Called once per direction on every folder sync; when no star changed it must
+    // not cost a statement, exactly like the recent-badge clear.
+    emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(), "root", true, "INBOX");
+    emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(null, "root", true, "INBOX");
+    verify(emailBoxDAO, never()).updateStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(1L), "root", true, "INBOX");
+    verify(emailBoxDAO).updateStarredStatusByMailRemoteIds(List.of(1L), "root", true, "INBOX");
   }
 
   @Test
@@ -288,7 +302,8 @@ public class EmailBoxStorageTest {
                                                        false,
                                                        false,
                                                        false,
-                                                       null);
+                                                       null,
+                                                       false);
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
                                                                                                           "2",
@@ -332,7 +347,8 @@ public class EmailBoxStorageTest {
                      false,
                      false,
                      false,
-                     null);
+                     null,
+                     false);
   }
 
   private EmailAttachment emailAttachment() {
