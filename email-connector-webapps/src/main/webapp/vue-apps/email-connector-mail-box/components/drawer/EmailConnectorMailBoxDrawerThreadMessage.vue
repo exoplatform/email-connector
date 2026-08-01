@@ -36,6 +36,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span class="text-light-color ms-3 text-truncate">{{ snippet }}</span>
       </div>
       <v-icon
+        v-if="email.starred"
+        size="12"
+        class="amber--text text--darken-1 ms-2 flex-shrink-0"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.favorite.label')">
+        fas fa-star
+      </v-icon>
+      <v-icon
         v-if="hasAttachment"
         size="14"
         class="icon-default-color ms-2 flex-shrink-0"
