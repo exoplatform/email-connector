@@ -70,6 +70,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :select-mode="selectMode"
           :current-folder="currentFolder"
           :available-folders="availableFolders"
+          :favorite-only="favoriteOnly"
           :sync-in-progress="syncInProgress" />
       </div>
     </template>
@@ -88,6 +89,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :select-mode="selectMode"
         :current-folder="currentFolder"
         :available-folders="availableFolders"
+        :favorite-only="favoriteOnly"
         :sync-in-progress="syncInProgress" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
@@ -229,6 +231,9 @@ export default {
       deletedEmailIds: [],
       archivedEmailIds: [],
       currentFolder: 'INBOX',
+      // The favorite view: list only the messages carrying the mail server's
+      // \Flagged flag, in the listed folder. Toggled from the ⋮ menu.
+      favoriteOnly: false,
       searchTerm: '',
       searchServerResults: [],
       searchTotalMatches: 0,
@@ -249,6 +254,9 @@ export default {
     this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.emailCategoryIds = (list || []).map(category => category.id));
     this.$root.$on('switch-folder', this.onSwitchFolder);
+    this.$root.$on('toggle-favorite-filter', this.onToggleFavoriteFilter);
+    this.$root.$on('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
+    this.$root.$on('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
     this.onOpenEmailDetailContent = (mailRemoteId) => {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
@@ -328,6 +336,9 @@ export default {
     this.$root.$off('archive-email', this.onArchiveEmail);
     this.$root.$off('email-categories-updated', this.onCategoriesUpdated);
     this.$root.$off('switch-folder', this.onSwitchFolder);
+    this.$root.$off('toggle-favorite-filter', this.onToggleFavoriteFilter);
+    this.$root.$off('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
+    this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
   },
   computed: {
     hasEmails() {
@@ -343,14 +354,17 @@ export default {
     },
     title() {
       if (!this.selectMode) {
-        const base = this.$t('emailConnector.mailBox.list.drawer.title');
+        let title = this.$t('emailConnector.mailBox.list.drawer.title');
         if (this.currentFolder === 'SENT') {
-          return `${base} · ${this.$t('emailConnector.mailBox.list.drawer.folder.sent')}`;
+          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.sent')}`;
+        } else if (this.currentFolder === 'ARCHIVE') {
+          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.archive')}`;
         }
-        if (this.currentFolder === 'ARCHIVE') {
-          return `${base} · ${this.$t('emailConnector.mailBox.list.drawer.folder.archive')}`;
+        // The favorite view reads as one more folder-like narrowing of the list.
+        if (this.favoriteOnly) {
+          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.favorites')}`;
         }
-        return base;
+        return title;
       }
       return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ?
         this.$t('emailConnector.mailBox.list.drawer.emailSelected') :
@@ -389,6 +403,9 @@ export default {
           sender: e.sender,
           receivedDate: e.receivedDate,
           read: e.read,
+          // The server search hits carry no favorite flag (envelope-only, by
+          // design), so only cached matches can show the favorite on their row.
+          starred: e.starred,
           cached: true,
           // Kept because the rows double as the reader's list, whose category
           // filter dereferences categoryIds on every row.
@@ -417,6 +434,12 @@ export default {
       let emails = this.emailBox?.emails || [];
       emails = emails.filter(e => !this.deletedEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.archivedEmailIds.includes(e.mailRemoteId));
+      // The favorite view: the server already answered with the favorite subset;
+      // filtering again here makes a just-unfavorited message leave the list at
+      // once instead of waiting for the next reload.
+      if (this.favoriteOnly) {
+        emails = emails.filter(e => e.starred);
+      }
       if (this.selectedCategoryIds.length > 0) {
         emails = emails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
       }
@@ -458,8 +481,9 @@ export default {
         this.syncInProgress = true;
         await this.$nextTick();
       }
-      // Always (re)open on the inbox, without a leftover search.
+      // Always (re)open on the inbox, without a leftover search or favorite view.
       this.currentFolder = 'INBOX';
+      this.favoriteOnly = false;
       this.clearSearch();
       this.loading = true;
       this.emailBoxDrawer = true;
@@ -623,6 +647,7 @@ export default {
       this.selectEmailPlaceHolder = false;
       this.email = null;
       this.emailBoxDrawer = false;
+      this.favoriteOnly = false;
       this.selectedCategoryId = null;
       this.selectedCategoryIds = [];
       this.deletedEmailIds = [];
@@ -646,6 +671,75 @@ export default {
           read
         );
       }
+    },
+    // Toggle the favorite-only view from the ⋮ menu, reloading the listed folder.
+    onToggleFavoriteFilter() {
+      this.favoriteOnly = !this.favoriteOnly;
+      this.cancelSelectMode();
+      this.loading = true;
+      this.loadEmailBox().finally(() => this.loading = false);
+    },
+    // Patch the favorite flag on every copy this drawer holds: the cached folder
+    // window (which the list rows and the search's local matches derive from),
+    // the server search hits, and the opened message. No service call here —
+    // this is also how a refused push is rolled back visually.
+    applyEmailsFavoriteStatus(favorite, emailIds = []) {
+      const ids = new Set(emailIds);
+      (this.emailBox?.emails || []).forEach(email => {
+        if (ids.has(email.mailRemoteId)) {
+          this.$set(email, 'starred', favorite);
+        }
+      });
+      // Server hits carry no favorite flag; stamping the toggled ones keeps the
+      // search list truthful once the user favorites a result. INBOX rows only:
+      // UIDs are per-folder, so the same number elsewhere is another message.
+      this.searchServerResults.forEach(result => {
+        if ((result.folder || 'INBOX') === 'INBOX' && ids.has(result.mailRemoteId)) {
+          this.$set(result, 'starred', favorite);
+        }
+      });
+      if (this.email && ids.has(this.email.mailRemoteId) && (this.email.folder || 'INBOX') === 'INBOX') {
+        this.$set(this.email, 'starred', favorite);
+      }
+    },
+    // Favorite/unfavorite messages: optimistic locally, then pushed to the mail server
+    // (it is the server's own \Flagged flag). The push's outcome is REAL, not
+    // assumed: the answer counts the messages the server refused — the backend
+    // already reverted those in its cache, so the interface must not leave
+    // their favorite lit either, or the next synchronization silently takes it
+    // away after the user believed the message was favorite.
+    onUpdateEmailFavoriteStatus(favorite, emailIds = []) {
+      if (!emailIds.length) {
+        return;
+      }
+      this.applyEmailsFavoriteStatus(favorite, emailIds);
+      this.$emailConnectorMailBoxService.updateEmailsFavoriteStatus(emailIds, favorite)
+        .then(result => {
+          const failedUpdates = result?.failedUpdates ?? 0;
+          if (failedUpdates > 0) {
+            this.onFavoriteUpdateFailed(favorite, emailIds, failedUpdates);
+          }
+        })
+        .catch(() => this.onFavoriteUpdateFailed(favorite, emailIds, emailIds.length));
+    },
+    // Reflect a refused push. When everything failed (or the lone message did),
+    // the exact set to roll back is known: broadcast the revert so every copy —
+    // list rows, reader, detail drawer — flips back. When only part of a bulk
+    // toggle failed, the server does not say which ones, but its cache is
+    // already truthful: reload the listed window from it.
+    onFavoriteUpdateFailed(favorite, emailIds, failedUpdates) {
+      if (failedUpdates >= emailIds.length) {
+        this.$root.$emit('apply-email-favorite-status', !favorite, emailIds);
+      } else {
+        this.loadEmailBox();
+      }
+      const errorKey = favorite
+        ? (failedUpdates === 1 && 'emailConnector.mailBox.list.drawer.addFavorite.email.error' || 'emailConnector.mailBox.list.drawer.addFavorite.emails.error')
+        : (failedUpdates === 1 && 'emailConnector.mailBox.list.drawer.removeFavorite.email.error' || 'emailConnector.mailBox.list.drawer.removeFavorite.emails.error');
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'error',
+        alertMessage: this.$t(errorKey, { 0: failedUpdates }),
+      }}));
     },
     deleteEmails(emailIdsToDelete = []) {
       this.deletedEmailIds.push(...emailIdsToDelete);
@@ -708,7 +802,7 @@ export default {
       }
     },
     async loadEmailBox() {
-      this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder);
+      this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
       this.emails = this.emailBox.emails || [];
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
       this.webmailUrl = this.emailBox.webmailUrl;

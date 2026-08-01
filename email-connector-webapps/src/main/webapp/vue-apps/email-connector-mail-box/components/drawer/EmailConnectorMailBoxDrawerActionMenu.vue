@@ -41,6 +41,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-mail-box-drawer-action-menu-items
         :current-folder="currentFolder"
         :available-folders="availableFolders"
+        :favorite-only="favoriteOnly"
         :sync-in-progress="syncInProgress"
         :has-webmail-access="hasWebmailAccess" />
     </v-menu>
@@ -57,6 +58,11 @@ export default {
     availableFolders: {
       type: Array,
       default: () => ['INBOX'],
+    },
+    // Whether the list is narrowed to the favorite messages, for the menu state.
+    favoriteOnly: {
+      type: Boolean,
+      default: false,
     },
     syncInProgress: {
       type: Boolean,
