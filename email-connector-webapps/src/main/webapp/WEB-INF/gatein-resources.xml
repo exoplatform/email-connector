@@ -213,4 +213,32 @@
       <module>extensionRegistry</module>
     </depends>
   </module>
+
+  <!-- Contributes the "Emails" section to the platform's global Favorites drawer. The
+       name MUST contain "FavoriteDrawerExtension": the favorites portlet discovers its
+       contributors with includeExtensions('FavoriteDrawerExtension'), which matches on
+       the module name, so a module that merely sits in the load-group is defined and
+       then never executed. In FavoriteDrawerGRP so it loads with that drawer. -->
+  <module>
+    <name>EmailConnectorFavoriteDrawerExtension</name>
+    <load-group>FavoriteDrawerGRP</load-group>
+    <script>
+      <path>/js/emailConnectorFavoriteDrawerExtension.bundle.js</path>
+    </script>
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>vuetify</module>
+    </depends>
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+    <depends>
+      <module>commonVueComponents</module>
+    </depends>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+  </module>
 </gatein-resources>
