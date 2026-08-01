@@ -105,4 +105,10 @@ public class Email {
   // Backend-only.
   @JsonIgnore
   private String               originalSender;
+
+  // Mirror of the IMAP \Flagged flag ("star"); the server copy is authoritative and the
+  // sync reconcile keeps this in step with it. Exposed to the client so the list can
+  // render the star. Declared last so the Lombok all-args constructor only grows a
+  // trailing argument (existing positional call sites stay aligned).
+  private boolean              starred;
 }
