@@ -181,6 +181,23 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("threadIds")
   List<String> threadIds);
 
+  /**
+   * Of the given IMAP UIDs, the ones already cached in a folder — one IN query
+   * for the whole search result list, so decorating hits with their "already
+   * openable locally" flag costs a single statement rather than one lookup per
+   * hit (the same per-row discipline the sync reconcile follows).
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   * @param mailRemoteIds the candidate IMAP UIDs
+   * @return the subset of {@code mailRemoteIds} present in the local cache
+   */
+  @Query("SELECT email.mailRemoteId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
+  List<Long> findCachedMailRemoteIds(@Param("userId")
+  String userId, @Param("folder")
+  String folder, @Param("mailRemoteIds")
+  List<Long> mailRemoteIds);
+
   @Transactional
   @Modifying
   @Query("UPDATE EmailBoxEntity email SET email.threadId = :canonicalThreadId WHERE email.userId = :userId AND email.threadId IN :threadIds")
