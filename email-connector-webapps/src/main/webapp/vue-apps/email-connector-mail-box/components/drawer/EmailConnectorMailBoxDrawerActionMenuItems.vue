@@ -37,6 +37,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t(folder.label) }}
       </span>
     </v-list-item>
+    <!-- Favorite view: the listed folder narrowed to the messages carrying the
+         mail server's \Flagged flag. It reads as one more folder-like view, so
+         it lives with the folder switch rather than with the category chips. -->
+    <v-list-item
+      class="ps-2 pe-3 height-auto"
+      @click="toggleFavoriteFilter()">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="mx-auto"
+          :class="favoriteOnly ? 'primary--text' : 'icon-default-color'"
+          size="16">
+          {{ favoriteOnly ? 'fas fa-star' : 'far fa-star' }}
+        </v-icon>
+      </v-sheet>
+      <span :class="{ 'primary--text font-weight-bold': favoriteOnly }">
+        {{ $t('emailConnector.mailBox.list.drawer.folder.favorites') }}
+      </span>
+    </v-list-item>
     <v-divider class="my-1" />
     <!-- Synchronize now (progress is shown by the header spinner while it runs). -->
     <v-list-item
@@ -103,6 +124,11 @@ export default {
       type: Array,
       default: () => ['INBOX'],
     },
+    // Whether the favorite view is on, highlighted like the active folder.
+    favoriteOnly: {
+      type: Boolean,
+      default: false,
+    },
     syncInProgress: {
       type: Boolean,
       default: false,
@@ -128,6 +154,9 @@ export default {
       if (folder !== this.currentFolder) {
         this.$root.$emit('switch-folder', folder);
       }
+    },
+    toggleFavoriteFilter() {
+      this.$root.$emit('toggle-favorite-filter');
     },
     synchronize() {
       if (this.syncInProgress) {
