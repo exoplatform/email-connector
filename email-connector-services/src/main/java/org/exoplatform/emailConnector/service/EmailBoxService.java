@@ -315,6 +315,9 @@ public class EmailBoxService {
   @Autowired
   private CategoryLinkService     categoryLinkService;
 
+  @Autowired
+  private EmailFavoriteService    emailFavoriteService;
+
   // Mailboxes with a synchronization running right now, so two can never overlap and cache
   // the same message twice.
   private final Set<String>                      syncingUsers          = ConcurrentHashMap.newKeySet();
@@ -436,6 +439,10 @@ public class EmailBoxService {
         }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
+      // The flags just pulled from the server are the ones the Favorites drawer
+      // must show: a mail starred from a phone arrives here, and a reset gave
+      // every cached mail a new id that the stored favorites no longer match.
+      emailFavoriteService.reconcileFavorites(username);
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
@@ -1931,6 +1938,30 @@ public class EmailBoxService {
   }
 
   /**
+   * The same read as {@link #getEmailById(long, String)}, but refusing an email
+   * that is not the caller's.
+   * <p>
+   * The plain lookup finds a row by its technical id alone — the username only
+   * decorates what comes back — which is right for callers that have already
+   * established who owns it, and wrong for anything reached from outside. This
+   * is the one the Favorites drawer uses: it holds an email id the platform
+   * stored for the user, and an id is guessable.
+   *
+   * @param id the cached email's technical id
+   * @param username the user asking, who must be the mailbox owner
+   * @return the email, never another user's
+   * @throws IllegalAccessException if the email belongs to somebody else
+   */
+  @Transactional
+  public Email getOwnedEmailById(long id, String username) throws IllegalAccessException {
+    Email email = getEmailById(id, username);
+    if (email != null && !StringUtils.equals(email.getUserId(), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
+    return email;
+  }
+
+  /**
    * Update the read/unread status of one or more emails (by IMAP mailRemoteId),
    * optimistically in the local mirror first and then, when requested, on the IMAP
    * server. Each per-message remote failure (including a message that no longer
@@ -2098,6 +2129,11 @@ public class EmailBoxService {
           LOG.warn("Error when closing store", e);
         }
       }
+      // Realign the Favorites drawer on what the local rows now say. Reading them
+      // back rather than mirroring the requested change is what keeps the drawer
+      // honest when the server refused a star: that row was reverted above, and
+      // the favorite has to follow it back.
+      emailFavoriteService.reconcileFavorites(username);
     }
     return failedEmailUpdates;
   }
