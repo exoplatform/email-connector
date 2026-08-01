@@ -38,7 +38,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-list-item-content :class="['py-0', { 'font-weight-bold': unread }]">
         <v-list-item-title v-text="senderName" />
       </v-list-item-content>
-      <v-list-item-action class="my-0">
+      <v-list-item-action class="my-0 flex-row align-center">
+        <!-- Only hits that came from the local cache know their favorite (the server
+             search answers envelope-only); the rest simply show none. -->
+        <v-icon
+          v-if="result.starred"
+          size="12"
+          class="amber--text text--darken-1 me-1"
+          :title="$t('emailConnector.mailBox.list.drawer.detail.favorite.label')">
+          fas fa-star
+        </v-icon>
         <v-list-item-subtitle v-text="receivedDate" />
       </v-list-item-action>
     </v-list-item>
