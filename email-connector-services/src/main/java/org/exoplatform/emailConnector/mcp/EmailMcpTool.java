@@ -206,6 +206,7 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                                   result.getSender(),
                                                                                   result.getReceivedDate(),
                                                                                   result.isRead(),
+                                                                                  result.isStarred(),
                                                                                   result.isCached()))
                                            .toList();
       return new EmailSearchResultsModel(page.getTotalMatches(), hits);
