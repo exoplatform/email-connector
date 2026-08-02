@@ -130,6 +130,18 @@ export default {
         this.close();
       }
     };
+    // A message opened from outside the mailbox shows before the folder behind it
+    // has finished loading, so the list it belongs to arrives late. Taking it here
+    // gives the reader its conversation and its webmail link without re-fetching the
+    // message or disturbing what the user is already reading.
+    this.onRefreshEmailDetailContext = ({emails, syncInProgress, webmailUrl}) => {
+      if (!this.emailDetailDrawer) {
+        return;
+      }
+      this.emails = emails && emails.length && emails || this.emails;
+      this.syncInProgress = syncInProgress;
+      this.webmailUrl = webmailUrl || this.webmailUrl;
+    };
     this.onOpenEmailDetailContent = (mailRemoteId) => {
       if (!this.emailDetailDrawer) {
         return; 
@@ -177,6 +189,7 @@ export default {
       }
     };
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
+    this.$root.$on('email-detail-context', this.onRefreshEmailDetailContext);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
@@ -223,6 +236,7 @@ export default {
   beforeDestroy() {
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
+    this.$root.$off('email-detail-context', this.onRefreshEmailDetailContext);
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);

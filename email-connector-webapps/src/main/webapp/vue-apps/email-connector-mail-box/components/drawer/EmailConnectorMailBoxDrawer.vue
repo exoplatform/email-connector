@@ -313,8 +313,26 @@ export default {
     // and wrongly show the drawer as synchronizing.
     this.$root.$on('open-mail-box-drawer', async (payload) => {
       const options = payload && typeof payload === 'object' ? payload : {loading: payload};
+      // The message goes up first and the folder loads behind it. Opening the mailbox
+      // first meant a favorited mail waited on the whole inbox — a thousand messages
+      // fetched before its own single one — which felt slow for something the user
+      // asked for by name. The narrow reader is a drawer of its own, mounted beside
+      // this one, so it can show while this list is still empty; the wide reader is a
+      // pane of this drawer and only renders once the folder is there, so that one
+      // still waits.
+      const readerFirst = options.mailRemoteId && !this.expanded;
+      if (readerFirst) {
+        this.openMailFromOutside(options.mailRemoteId);
+      }
       await this.open(options.loading);
-      if (options.mailRemoteId) {
+      if (readerFirst) {
+        // Hand the reader the conversation and webmail link it opened without.
+        this.$root.$emit('email-detail-context', {
+          emails: this.emails,
+          syncInProgress: this.syncInProgress,
+          webmailUrl: this.webmailUrl,
+        });
+      } else if (options.mailRemoteId) {
         this.openMailFromOutside(options.mailRemoteId);
       }
     });
