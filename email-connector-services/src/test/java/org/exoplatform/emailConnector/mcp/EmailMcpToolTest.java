@@ -21,11 +21,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Date;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -39,12 +43,16 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
+import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchResult;
+import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailBoxService;
@@ -165,32 +173,49 @@ class EmailMcpToolTest {
   // --- search_emails -------------------------------------------------------
 
   @Test
-  void searchEmailsFiltersInMemory() throws Exception {
-    Email read = buildEmail(1L);
-    read.setRead(true);
-    read.setSubject("Weekly report");
-    Email unread = buildEmail(2L);
-    unread.setRead(false);
-    unread.setSubject("Invoice due");
-    unread.setSender(new EmailSender("Alice", "alice@example.com", null, null));
-    EmailBox emailBox = new EmailBox();
-    emailBox.setEmails(List.of(read, unread));
-    when(emailBoxService.getEmailBox(eq(USERNAME))).thenReturn(emailBox);
+  void searchEmailsAsksTheServerAndReportsTheTotal() throws Exception {
+    EmailSearchResult hit = new EmailSearchResult(42L,
+                                                  MailFolder.INBOX,
+                                                  "Invoice due",
+                                                  new EmailSender("Alice", "alice@example.com", null, null),
+                                                  new Date(),
+                                                  false,
+                                                  true);
+    when(emailBoxService.searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.INBOX), anyInt()))
+                                                                                                                                 .thenReturn(new EmailSearchResultPage(List.of(hit),
+                                                                                                                                                                       90));
 
-    // unread only
-    List<EmailModel> unreadOnly = emailMcpTool.searchEmails(null, true, null);
-    assertEquals(1, unreadOnly.size());
-    assertEquals("Invoice due", unreadOnly.get(0).getSubject());
+    EmailSearchResultsModel results = emailMcpTool.searchEmails("invoice", null, null, null, null, null);
 
-    // query over subject
-    List<EmailModel> byQuery = emailMcpTool.searchEmails("weekly", null, null);
-    assertEquals(1, byQuery.size());
-    assertEquals("Weekly report", byQuery.get(0).getSubject());
+    // The count is what keeps the agent honest: it saw one of ninety.
+    assertEquals(90, results.getTotalMatches());
+    assertEquals(1, results.getResults().size());
+    assertEquals(42L, results.getResults().get(0).getMailRemoteId());
+    assertEquals("Invoice due", results.getResults().get(0).getSubject());
+    assertTrue(results.getResults().get(0).isCached());
+  }
 
-    // from filter over sender address
-    List<EmailModel> byFrom = emailMcpTool.searchEmails(null, null, "alice@");
-    assertEquals(1, byFrom.size());
-    assertEquals("Invoice due", byFrom.get(0).getSubject());
+  @Test
+  void searchEmailsDefaultsToTheInboxAndUppercasesTheFolder() throws Exception {
+    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), eq(MailFolder.ARCHIVE), anyInt()))
+                                                                                                                        .thenReturn(new EmailSearchResultPage(List.of(),
+                                                                                                                                                              0));
+
+    emailMcpTool.searchEmails("invoice", null, null, null, "archive", null);
+
+    verify(emailBoxService).searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.ARCHIVE), anyInt());
+  }
+
+  @Test
+  void searchEmailsTranslatesAMessageCodeIntoSomethingAModelCanAct() throws Exception {
+    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
+                                                                                                       .thenThrow(new IllegalArgumentException("emailConnector.search.criteriaRequired"));
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                   () -> emailMcpTool.searchEmails(null, null, null, null, null, null));
+    // A message code tells a model nothing about what to change.
+    assertFalse(thrown.getMessage().contains("emailConnector."));
+    assertTrue(thrown.getMessage().contains("query"));
   }
 
   // --- list_attachments ----------------------------------------------------
