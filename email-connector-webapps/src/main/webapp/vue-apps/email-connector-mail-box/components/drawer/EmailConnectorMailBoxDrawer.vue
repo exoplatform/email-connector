@@ -331,6 +331,9 @@ export default {
         this.openMailFromOutside(options.mailRemoteId);
       }
       await this.open(options.loading);
+      if (options.searchTerm) {
+        this.openSearchFromOutside(options.searchTerm);
+      }
       if (readerFirst) {
         // Hand the reader the conversation and webmail link it opened without.
         this.$root.$emit('email-detail-context', {
@@ -557,6 +560,25 @@ export default {
       }).finally(() => {
         this.loading = false;
       });
+    },
+    /**
+     * Opens the mailbox on a search someone started elsewhere — today, in the
+     * platform's unified search, which only looks at the locally held mail.
+     *
+     * The term is put in the drawer's own filter field rather than searched
+     * silently: the user sees what is being searched, can refine it, and lands in
+     * the field that reaches the whole mailbox, which is the point of coming here.
+     *
+     * @param {String} term the text to search for
+     * @returns {void}
+     */
+    openSearchFromOutside(term) {
+      const drawer = this.$refs.emailBoxDrawer;
+      if (drawer) {
+        drawer.showFilter = true;
+        drawer.filterText = term;
+      }
+      this.runSearch(term);
     },
     /**
      * Opens one message picked outside the mailbox — today, from the platform's

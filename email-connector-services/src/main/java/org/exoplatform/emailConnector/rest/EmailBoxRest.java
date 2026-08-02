@@ -150,6 +150,31 @@ public class EmailBoxRest {
     }
   }
 
+  @GetMapping("/search/cached")
+  @Secured("users")
+  @Operation(summary = "Searches the locally cached mail", method = "GET",
+             description = "Filters the messages this add-on already holds locally, over their subject, sender and body. Answers immediately, without touching the mail server, which is what the platform's unified search needs: it queries every connector at once and shows the page when the slowest answers. Use /search to reach the whole mailbox.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: no search text"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public EmailSearchResultPage searchCachedEmails(HttpServletRequest request,
+                                                  @Parameter(description = "Text searched over subject, sender and body", required = true)
+                                                  @RequestParam("q")
+                                                  String query,
+                                                  @Parameter(description = "How many hits to return, newest first")
+                                                  @RequestParam(value = "limit", required = false, defaultValue = "5")
+                                                  int limit) {
+    try {
+      return emailBoxService.searchCachedEmails(request.getRemoteUser(), query, limit);
+    } catch (IllegalAccessException e) {
+      // No mailbox connected is the normal state for most users: the unified search
+      // asks every connector, so this is not an error, it is an empty section.
+      return new EmailSearchResultPage(List.of(), 0);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the mailbox on the server", method = "GET",
