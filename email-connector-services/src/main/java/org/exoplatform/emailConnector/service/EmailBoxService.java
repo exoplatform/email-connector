@@ -23,6 +23,7 @@ import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -3115,6 +3116,84 @@ public class EmailBoxService {
     }
     emailBoxStorage.mergeThreads(username, threadId, new ArrayList<>(threadIds));
     return threadId;
+  }
+
+  /**
+   * Search only what is already cached locally, for the platform's unified search.
+   * <p>
+   * The global search bar fires every connector at once and shows the page when the
+   * slowest answers. This add-on is the only one that could go to a mail server, and
+   * an IMAP round-trip next to a set of Elasticsearch queries would make every
+   * search in the platform wait on email — including the ones that were never about
+   * email. So this reads the local mirror and answers immediately;
+   * {@link #searchEmails} remains the way to reach the whole mailbox, offered from
+   * the results as a deliberate second step.
+   * <p>
+   * The matching is done in Java rather than in SQL on purpose: the subject and body
+   * are CLOB columns, and HSQLDB refuses {@code LOCATE} on a CLOB, so a database-side
+   * text search would work on MySQL and fail on a developer's machine. The set is
+   * bounded by the mailbox cache size, so filtering it in memory is cheap.
+   *
+   * @param username the mailbox owner
+   * @param query free text matched against the subject, the sender and the body
+   * @param limit how many hits to return, newest first
+   * @return the newest matching cached messages plus how many matched in total
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public EmailSearchResultPage searchCachedEmails(String username, String query, int limit) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
+    }
+    if (StringUtils.isBlank(query)) {
+      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
+    }
+    String term = query.trim().toLowerCase();
+    List<Email> matches = emailBoxStorage.getEmails(username)
+                                         .stream()
+                                         .filter(email -> matchesCachedEmail(email, term))
+                                         .sorted(Comparator.comparing(Email::getReceivedDate,
+                                                                      Comparator.nullsLast(Comparator.reverseOrder())))
+                                         .toList();
+    List<EmailSearchResult> results = matches.stream()
+                                             .limit(Math.max(limit, 1))
+                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
+                                                                                 email.getFolder(),
+                                                                                 email.getSubject(),
+                                                                                 email.getSender(),
+                                                                                 email.getReceivedDate(),
+                                                                                 email.isRead(),
+                                                                                 email.isStarred(),
+                                                                                 true))
+                                             .toList();
+    return new EmailSearchResultPage(results, matches.size());
+  }
+
+  /**
+   * Whether a cached message matches the searched text, over its subject, its sender
+   * and its body.
+   * <p>
+   * The body is stored as HTML, so it is reduced to text before matching: without
+   * that, a search for "style" or "div" would hit half the mailbox on markup the
+   * user never sees.
+   *
+   * @param email the cached message
+   * @param term the searched text, already lower-cased and trimmed
+   * @return {@code true} when the message matches
+   */
+  private boolean matchesCachedEmail(Email email, String term) {
+    if (StringUtils.containsIgnoreCase(email.getSubject(), term)) {
+      return true;
+    }
+    EmailSender sender = email.getSender();
+    if (sender != null
+        && (StringUtils.containsIgnoreCase(sender.getName(), term)
+            || StringUtils.containsIgnoreCase(sender.getAddress(), term))) {
+      return true;
+    }
+    String body = email.getContent() == null ? null : email.getContent().getBody();
+    return StringUtils.isNotBlank(body) && StringUtils.containsIgnoreCase(Jsoup.parse(body).text(), term);
   }
 
   /**
