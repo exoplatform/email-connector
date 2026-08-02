@@ -39,8 +39,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item-title v-text="senderName" />
       </v-list-item-content>
       <v-list-item-action class="my-0 flex-row align-center">
-        <!-- Only hits that came from the local cache know their favorite (the server
-             search answers envelope-only); the rest simply show none. -->
+        <!-- Every hit knows whether it is favorited: the flag rides in the FLAGS the
+             search already fetches, so a mail favorited long ago shows its star even
+             when it is far outside the cached window. -->
         <v-icon
           v-if="result.starred"
           size="12"
