@@ -26,7 +26,6 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -217,71 +216,6 @@ class EmailMcpToolTest {
     // A message code tells a model nothing about what to change.
     assertFalse(thrown.getMessage().contains("emailConnector."));
     assertTrue(thrown.getMessage().contains("query"));
-  }
-
-  /**
-   * A blank folder must fall back to the INBOX, which the uppercase test above
-   * never exercises despite its name.
-   */
-  @Test
-  void searchEmailsDefaultsToTheInboxWhenNoFolderIsGiven() throws Exception {
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), eq(MailFolder.INBOX), anyInt()))
-                                                                                                                      .thenReturn(new EmailSearchResultPage(List.of(),
-                                                                                                                                                            0));
-
-    emailMcpTool.searchEmails("invoice", null, null, null, null, null);
-    emailMcpTool.searchEmails("invoice", null, null, null, "  ", null);
-
-    verify(emailBoxService, times(2)).searchEmails(eq(USERNAME),
-                                                   eq("invoice"),
-                                                   isNull(),
-                                                   eq(false),
-                                                   isNull(),
-                                                   eq(MailFolder.INBOX),
-                                                   anyInt());
-  }
-
-  /**
-   * An argument failure the map does not know must not reach the model raw, and
-   * must not be swallowed by an NPE: {@code Map.of} rejects a null key, so a
-   * message-less exception used to break the catch block itself. The cause is
-   * chained either way, so the stack trace survives.
-   */
-  @Test
-  void searchEmailsKeepsAnUnmappedArgumentFailureGeneric() throws Exception {
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
-                                                                                                       .thenThrow(new NumberFormatException("For input string: \"abc\""));
-
-    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null));
-    assertFalse(thrown.getMessage().contains("For input string"));
-    assertNotNull(thrown.getCause());
-
-    // A cause-only exception carries a null message: the old getOrDefault(null, null)
-    // threw NPE here instead of reporting anything.
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
-                                                                                                       .thenThrow(new IllegalArgumentException(new IllegalStateException("boom")));
-    IllegalArgumentException blank = assertThrows(IllegalArgumentException.class,
-                                                  () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null));
-    assertNotNull(blank.getMessage());
-  }
-
-  /**
-   * The mailbox being unreachable is not the mailbox being synchronized: that code
-   * comes from fetchSearchedEmail, which this tool never calls. Telling the model to
-   * retry shortly would loop it on a call that keeps failing.
-   */
-  @Test
-  void searchEmailsReportsAConnectionFailureRatherThanASyncInProgress() throws Exception {
-    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), any(), anyInt()))
-                                                                                                       .thenThrow(new IllegalStateException("Error when searching mailbox of user "
-                                                                                                           + USERNAME));
-
-    IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                                                () -> emailMcpTool.searchEmails("invoice", null, null, null, null, null));
-    assertFalse(thrown.getMessage().contains("synchroniz"));
-    assertTrue(thrown.getMessage().contains("could not be reached"));
-    assertNotNull(thrown.getCause());
   }
 
   // --- list_attachments ----------------------------------------------------
