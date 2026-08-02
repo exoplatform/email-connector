@@ -181,6 +181,7 @@ class EmailMcpToolTest {
                                                   new EmailSender("Alice", "alice@example.com", null, null),
                                                   new Date(),
                                                   false,
+                                                  true,
                                                   true);
     when(emailBoxService.searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.INBOX), anyInt()))
                                                                                                                                  .thenReturn(new EmailSearchResultPage(List.of(hit),
@@ -194,6 +195,8 @@ class EmailMcpToolTest {
     assertEquals(42L, results.getResults().get(0).getMailRemoteId());
     assertEquals("Invoice due", results.getResults().get(0).getSubject());
     assertTrue(results.getResults().get(0).isCached());
+    // The favorite the server reported must reach the agent, not stop at the model.
+    assertTrue(results.getResults().get(0).isStarred());
   }
 
   @Test
