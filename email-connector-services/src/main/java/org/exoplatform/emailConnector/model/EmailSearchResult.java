@@ -50,6 +50,11 @@ public class EmailSearchResult {
 
   private boolean     read;
 
+  // Whether the message carries the mail server's \Flagged flag, i.e. the user
+  // favorited it. It rides along free: the search already fetches FLAGS to read
+  // \Seen above, so this costs no extra round-trip.
+  private boolean     starred;
+
   // Whether the message is already in the local cache — i.e. openable without
   // another IMAP round-trip.
   private boolean     cached;
