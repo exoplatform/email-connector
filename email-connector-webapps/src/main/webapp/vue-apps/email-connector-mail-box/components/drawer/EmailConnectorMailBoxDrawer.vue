@@ -435,8 +435,8 @@ export default {
           sender: e.sender,
           receivedDate: e.receivedDate,
           read: e.read,
-          // The server search hits carry no favorite flag (envelope-only, by
-          // design), so only cached matches can show the favorite on their row.
+          // The server reports the flag on its own hits, and merges last, so a
+          // favorite set from another mail client wins over this cached copy.
           starred: e.starred,
           cached: true,
           // Kept because the rows double as the reader's list, whose category
