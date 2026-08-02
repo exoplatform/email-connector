@@ -1988,6 +1988,76 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * The unified-search connector reads the local mirror, so the match has to be made
+   * over the subject, the sender AND the body — and the body is stored as HTML, so it
+   * is reduced to text first: without that, searching "div" or "style" would hit half
+   * the mailbox on markup nobody sees.
+   */
+  @Test
+  @SneakyThrows
+  void searchCachedEmailsMatchesSubjectSenderAndBodyText() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Email bySubject = email(TEST_USER);
+    bySubject.setSubject("Quarterly budget");
+    Email bySender = email(TEST_USER);
+    bySender.setSubject("Nothing to see");
+    bySender.setSender(new EmailSender("Budget Team", "budget@example.com", null, null));
+    Email byBody = email(TEST_USER);
+    byBody.setSubject("Nothing to see either");
+    byBody.setContent(new EmailContent("<p>the <b>budget</b> is attached</p>"));
+    Email markupOnly = email(TEST_USER);
+    markupOnly.setSubject("Unrelated");
+    markupOnly.setContent(new EmailContent("<div style=\"budget\">unrelated</div>"));
+    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(bySubject, bySender, byBody, markupOnly));
+
+    EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 10);
+
+    assertEquals(3, page.getTotalMatches());
+    // The one that only matched inside an HTML attribute must not be there.
+    assertTrue(page.getResults().stream().noneMatch(result -> "Unrelated".equals(result.getSubject())));
+  }
+
+  /**
+   * The connector asks for a handful of rows, but the section has to be able to say
+   * how much it did not show, so the total counts every match.
+   */
+  @Test
+  @SneakyThrows
+  void searchCachedEmailsCapsTheRowsButCountsEveryMatch() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    List<Email> emails = new ArrayList<>();
+    for (int i = 0; i < 7; i++) {
+      Email email = email(TEST_USER);
+      email.setSubject("budget " + i);
+      email.setReceivedDate(new Date(System.currentTimeMillis() - i * 1000L));
+      emails.add(email);
+    }
+    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(emails);
+
+    EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 3);
+
+    assertEquals(3, page.getResults().size());
+    assertEquals(7, page.getTotalMatches());
+    // Newest first, so the section leads with what the user most likely means.
+    assertEquals("budget 0", page.getResults().get(0).getSubject());
+  }
+
+  /**
+   * An empty search would return the whole mailbox, which is never what the search
+   * bar means.
+   */
+  @Test
+  @SneakyThrows
+  void searchCachedEmailsRefusesAnEmptyTerm() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.searchCachedEmails(TEST_USER, "  ", 10));
+  }
+
+  /**
    * A hit reports whether the user favorited it, so a mail favorited long ago shows
    * its star in the search list even though it is far outside the cached window.
    * The flag costs nothing extra: it is read from the FLAGS the page already fetches
