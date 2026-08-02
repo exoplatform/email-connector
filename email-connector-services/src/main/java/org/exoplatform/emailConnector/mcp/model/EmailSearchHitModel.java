@@ -60,6 +60,9 @@ public class EmailSearchHitModel {
 
   private boolean     read;
 
+  /** Whether the user favorited the message (the server's \Flagged flag). */
+  private boolean     starred;
+
   /**
    * Whether the message is also in the local mirror. A hit that is not cached
    * still opens, it is simply fetched from the server on demand.

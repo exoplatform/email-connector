@@ -76,7 +76,7 @@
     {
       "name": "search_emails",
       "title": "Search emails",
-      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender (NOT the body), 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit carries mail_remote_id to chain into get_email_full, reply_email, mark_read and the other tools.",
+      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender (NOT the body), 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit says whether it is unread and whether the user favorited it (starred), and carries mail_remote_id to chain into get_email_full, reply_email, mark_read and the other tools.",
       "input_schema": {
         "type": "object",
         "properties": {
