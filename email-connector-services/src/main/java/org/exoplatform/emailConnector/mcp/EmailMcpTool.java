@@ -20,6 +20,7 @@ import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import org.apache.commons.lang3.StringUtils;
@@ -32,12 +33,16 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
+import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
+import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailBoxService;
@@ -55,6 +60,20 @@ import io.meeds.mcp.server.plugin.McpToolPlugin;
 @Service
 @Profile("mcp-server")
 public class EmailMcpTool implements McpToolPlugin {
+
+  /** Hits returned when the caller names no limit: a readable page, not a dump. */
+  private static final int              DEFAULT_SEARCH_LIMIT = 20;
+
+  /**
+   * The service reports a refused search with a message code, the right currency
+   * for REST and useless to a model. These are the same refusals in words a model
+   * can act on, since it is the one that has to correct the call.
+   */
+  private static final Map<String, String> SEARCH_MESSAGES   =
+                                                            Map.of("emailConnector.search.criteriaRequired",
+                                                                   "Give at least one of query, from, unread or sinceDays: an empty search would return the whole folder.",
+                                                                   "emailConnector.folder.notBrowsable",
+                                                                   "folder must be one of INBOX, SENT or ARCHIVE.");
 
   private final EmailBoxService         emailBoxService;
 
@@ -146,26 +165,58 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * Filter the synced INBOX mirror IN MEMORY (there is no server-side search):
-   * free-text query over subject/sender/body, an unread-only flag, and a sender
-   * address/name filter. Only covers already-synced emails, not the whole server.
+   * Search the mail server itself (IMAP SEARCH over the whole folder), not the
+   * locally synced mirror, so a message from months ago is found even though the
+   * add-on only caches a recent window.
+   * <p>
+   * Free text matches the subject or the sender, and the other filters narrow by
+   * sender, unread state and age. The newest matches come back with the total the
+   * server found, so the caller can tell how much of the answer it is holding.
+   *
+   * @param query free text matched against the subject or the sender, may be blank
+   * @param from text matched against the sender only, may be blank
+   * @param unread when {@code true}, only unread messages match
+   * @param sinceDays only messages received in the last N days match, null for the
+   *          whole history
+   * @param folder INBOX (default), SENT or ARCHIVE
+   * @param limit how many hits to return, newest first
+   * @return the newest matching messages and the total number that matched
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public List<EmailModel> searchEmails(String query, Boolean unread, String from) throws IllegalAccessException {
-    EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName());
-    String normalizedQuery = query == null ? null : query.toLowerCase().trim();
-    String normalizedFrom = from == null ? null : from.toLowerCase().trim();
-    return emailBox.getEmails().stream().filter(email -> {
-      if (Boolean.TRUE.equals(unread) && email.isRead()) {
-        return false;
-      }
-      if (StringUtils.isNotBlank(normalizedFrom) && !matchesSender(email.getSender(), normalizedFrom)) {
-        return false;
-      }
-      if (StringUtils.isNotBlank(normalizedQuery) && !matchesQuery(email, normalizedQuery)) {
-        return false;
-      }
-      return true;
-    }).map(email -> toEmailModel(email, false)).toList();
+  public EmailSearchResultsModel searchEmails(String query,
+                                              String from,
+                                              Boolean unread,
+                                              Integer sinceDays,
+                                              String folder,
+                                              Integer limit) throws IllegalAccessException {
+    try {
+      EmailSearchResultPage page = emailBoxService.searchEmails(getCurrentUserName(),
+                                                                query,
+                                                                from,
+                                                                Boolean.TRUE.equals(unread),
+                                                                sinceDays,
+                                                                StringUtils.isBlank(folder) ? MailFolder.INBOX
+                                                                                            : folder.trim().toUpperCase(),
+                                                                limit == null ? DEFAULT_SEARCH_LIMIT : limit);
+      List<EmailSearchHitModel> hits = page.getResults()
+                                           .stream()
+                                           .map(result -> new EmailSearchHitModel(result.getMailRemoteId(),
+                                                                                  result.getFolder(),
+                                                                                  result.getSubject(),
+                                                                                  result.getSender(),
+                                                                                  result.getReceivedDate(),
+                                                                                  result.isRead(),
+                                                                                  result.isCached()))
+                                           .toList();
+      return new EmailSearchResultsModel(page.getTotalMatches(), hits);
+    } catch (IllegalArgumentException e) {
+      // The service answers with a message code, which is the right currency for
+      // the REST layer and useless to a model. Say the same thing in words it can
+      // act on -- it is the one who has to correct the call.
+      throw new IllegalArgumentException(SEARCH_MESSAGES.getOrDefault(e.getMessage(), e.getMessage()));
+    } catch (IllegalStateException e) {
+      throw new IllegalStateException("The mailbox is synchronizing right now, so it cannot be searched. Try again in a moment.");
+    }
   }
 
   /**
@@ -429,28 +480,6 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private String buildAttachmentDownloadUrl(long mailRemoteId, String attachmentId) {
     return String.format("/portal/rest/email-box/attachments/%d/%s", mailRemoteId, attachmentId);
-  }
-
-  /**
-   * Case-insensitive match of a free-text term against subject, sender and body.
-   */
-  private boolean matchesQuery(Email email, String query) {
-    if (StringUtils.containsIgnoreCase(email.getSubject(), query)) {
-      return true;
-    }
-    if (matchesSender(email.getSender(), query)) {
-      return true;
-    }
-    return email.getContent() != null && StringUtils.containsIgnoreCase(email.getContent().getBody(), query);
-  }
-
-  /**
-   * Case-insensitive match of a term against a sender's name and address.
-   */
-  private boolean matchesSender(EmailSender sender, String term) {
-    return sender != null
-        && (StringUtils.containsIgnoreCase(sender.getAddress(), term)
-            || StringUtils.containsIgnoreCase(sender.getName(), term));
   }
 
   /**
