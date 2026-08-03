@@ -70,7 +70,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :select-mode="selectMode"
           :current-folder="currentFolder"
           :available-folders="availableFolders"
-          :categories="menuCategories"
+          :categories="emailCategories"
           :category-view-id="categoryViewId"
           :sync-in-progress="syncInProgress" />
       </div>
@@ -90,7 +90,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :select-mode="selectMode"
         :current-folder="currentFolder"
         :available-folders="availableFolders"
-        :categories="menuCategories"
+        :categories="emailCategories"
         :category-view-id="categoryViewId"
         :sync-in-progress="syncInProgress" />
     </template>
@@ -105,12 +105,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template v-else>
         <email-connector-mail-box-drawer-filter-chips
           :important-category="importantCategory"
-          :important-only="importantOnly"
+          :category-view-id="categoryViewId"
           :favorite-only="favoriteOnly"
           :unread-only="unreadOnly"
-          :in-category-view="!!categoryViewId"
           class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-          @toggle-important="toggleImportantFilter"
+          @toggle-important="toggleImportantView"
           @toggle-favorite="onToggleFavoriteFilter"
           @toggle-unread="toggleUnreadFilter" />
         <email-connector-mail-box-drawer-content
@@ -154,12 +153,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-mail-box-drawer-filter-chips
           v-if="!expanded"
           :important-category="importantCategory"
-          :important-only="importantOnly"
+          :category-view-id="categoryViewId"
           :favorite-only="favoriteOnly"
           :unread-only="unreadOnly"
-          :in-category-view="!!categoryViewId"
           class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-          @toggle-important="toggleImportantFilter"
+          @toggle-important="toggleImportantView"
           @toggle-favorite="onToggleFavoriteFilter"
           @toggle-unread="toggleUnreadFilter" />
         <template v-if="hasEmails">
@@ -241,17 +239,14 @@ export default {
       // The category VIEW: picking a category in the ⋮ menu switches the list to
       // it, the way picking Sent or Archive does — single selection, left by
       // selecting a folder (or re-picking the same category). Holds the id, or
-      // null outside any category view.
+      // null outside any category view. The Important chip above the list is a
+      // SHORTCUT to this same state for the Important category — one state, two
+      // controls, so the chip, the menu highlight and the title always agree.
       categoryViewId: null,
-      // The Important quick filter (the chip above the list). Important is a
-      // category too, but deliberately kept one click away as a chip — it is the
-      // most-used one — while the other categories are views in the ⋮ menu.
-      // Mutually exclusive with a category view, whose chip row hides it.
-      importantOnly: false,
-      // The active category (view or Important chip) expanded to its
-      // subcategories, which is what rows are matched against.
+      // The active category view expanded to its subcategories, which is what
+      // rows are matched against.
       selectedCategoryIds: [],
-      // The add-on's own categories ({id, name, nameId}), fetched once.
+      // The add-on's own categories ({id, name, nameId, icon}), fetched once.
       emailCategories: [],
       // Whether the user toggled any filter or view (chip, folder or menu
       // category) since the drawer opened; the "open on Important" default
@@ -283,9 +278,10 @@ export default {
     // out-of-order answers: only the latest toggle's expansion may land.
     this.categoryExpansionToken = 0;
     // The add-on's own categories (Important / Invitation / Notification, each
-    // {id, name, nameId}). The Important one becomes a chip above the list; the
-    // rest are views in the ⋮ menu. The promise is kept so open() can await
-    // the categories before trusting the "open on Important" default.
+    // {id, name, nameId, icon}). All of them are views in the ⋮ menu; Important
+    // additionally gets a shortcut chip above the list. The promise is kept so
+    // open() can await the categories before trusting the "open on Important"
+    // default.
     this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.emailCategories = list || []);
     this.$root.$on('switch-folder', this.onSwitchFolder);
@@ -439,33 +435,20 @@ export default {
     hasFullAppLeft() {
       return this.expanded && (this.hasEmails || this.hasActiveFilters || this.searchActive) && !this.syncBlocked;
     },
-    // The Important category, surfaced as a dedicated chip above the list; null
-    // until categories load (or when the default categories are not seeded).
+    // The Important category, which gets a shortcut chip above the list on top
+    // of its ⋮ menu entry; null until categories load (or when the default
+    // categories are not seeded) — the chip simply doesn't show then.
     importantCategory() {
       return this.emailCategories.find(category => category.nameId === 'emailImportantCategory') || null;
-    },
-    // The remaining categories, offered as views in the ⋮ menu — picking one
-    // switches the list to it, the way picking Sent or Archive does.
-    menuCategories() {
-      return this.emailCategories.filter(category => category !== this.importantCategory);
     },
     // The category the list is switched to, or null outside any category view.
     categoryView() {
       return this.emailCategories.find(category => category.id === this.categoryViewId) || null;
     },
-    // The single category the list is narrowed on — the category view when one
-    // is open, else the Important chip when it is on, else none. Feeding both
-    // through one computed keeps a single subcategory-expansion path.
-    activeCategoryId() {
-      if (this.categoryViewId) {
-        return this.categoryViewId;
-      }
-      return this.importantOnly && this.importantCategory ? this.importantCategory.id : null;
-    },
     // Whether any filter or view narrows the list (used to keep the expanded
     // left pane on screen when a filter empties it).
     hasActiveFilters() {
-      return this.favoriteOnly || this.unreadOnly || this.importantOnly || !!this.categoryViewId;
+      return this.favoriteOnly || this.unreadOnly || !!this.categoryViewId;
     },
     // The header filter is the platform's own (exo-drawer); it hides the go-back
     // button, so it steps aside while select mode needs that button.
@@ -527,9 +510,9 @@ export default {
       emails = emails.filter(e => !this.archivedEmailIds.includes(e.mailRemoteId));
       // The filters combine: each one narrows what the others left, so "unread
       // important" or "unread favorites" is just both toggles on. A category
-      // VIEW is different — single selection, and its chip row offers only
-      // Unread, so at most one category ever narrows the list (see
-      // activeCategoryId).
+      // VIEW is different — single selection (categoryViewId), and its chip
+      // row keeps only its own chips, so at most one category ever narrows
+      // the list.
       // The favorite view: the server already answered with the favorite subset;
       // filtering again here makes a just-unfavorited message leave the list at
       // once instead of waiting for the next reload.
@@ -549,11 +532,11 @@ export default {
     }
   },
   watch: {
-    // The narrowing category changed (a category view opened/left, or the
-    // Important chip toggled): expand it to its subcategories, which is what
-    // rows are matched against. The token drops an expansion that finishes
-    // after a newer change already superseded it.
-    async activeCategoryId(id) {
+    // The category view changed (opened, replaced or left — from the ⋮ menu or
+    // the Important shortcut chip): expand it to its subcategories, which is
+    // what rows are matched against. The token drops an expansion that
+    // finishes after a newer change already superseded it.
+    async categoryViewId(id) {
       this.cancelSelectMode();
       const token = ++this.categoryExpansionToken;
       const expanded = id ? await this.$emailConnectorMailBoxService.getSubcategoryIds(id) : [];
@@ -598,7 +581,6 @@ export default {
       this.currentFolder = 'INBOX';
       this.favoriteOnly = false;
       this.unreadOnly = false;
-      this.importantOnly = false;
       this.categoryViewId = null;
       this.filtersTouched = false;
       this.clearSearch();
@@ -608,23 +590,25 @@ export default {
       this.loading = false;
       // The user settings' "Default view" toggle: when on, the stored default
       // category view holds the Important category's id, and opening the
-      // mailbox lights the Important chip; when off (or when the stored id is
-      // not Important's — e.g. one left by the former category select), the
-      // inbox opens unfiltered. Checked against the real Important category,
-      // so it only applies once the categories are loaded.
+      // mailbox opens the Important category view (chip lit, menu entry
+      // highlighted, title suffixed — one state); when off (or when the stored
+      // id is not Important's — e.g. one left by the former category select),
+      // the inbox opens unfiltered. Checked against the real Important
+      // category, so it only applies once the categories are loaded.
       this.$emailConnectorCommonService.getUserEmailSetting()
         .then(async setting => {
           const defaultView = setting && setting.defaultCategoryView || null;
           await this.emailCategoryIdsPromise;
           // Precedence between the user's own toggles and the stored default:
-          // the toggle only SEEDS the Important chip at open. It lands
-          // asynchronously, so if the user already toggled any chip, folder or
-          // view by then, their choice wins and the default is skipped — the
-          // drawer never overrides a manual filter.
+          // the toggle only SEEDS the view at open. It lands asynchronously,
+          // so if the user already toggled any chip, folder or view by then,
+          // their choice wins and the default is skipped — the drawer never
+          // overrides a manual filter.
           if (this.filtersTouched) {
             return;
           }
-          this.importantOnly = !!defaultView && !!this.importantCategory && defaultView === this.importantCategory.id;
+          this.categoryViewId = defaultView && this.importantCategory && defaultView === this.importantCategory.id
+            ? this.importantCategory.id : null;
         })
         .catch(() => {
           // Keep the inbox unfiltered when the setting cannot be read.
@@ -853,7 +837,6 @@ export default {
       this.emailBoxDrawer = false;
       this.favoriteOnly = false;
       this.unreadOnly = false;
-      this.importantOnly = false;
       this.categoryViewId = null;
       this.selectedCategoryIds = [];
       this.filtersTouched = false;
@@ -895,23 +878,24 @@ export default {
       this.unreadOnly = !this.unreadOnly;
       this.cancelSelectMode();
     },
-    // Toggle the Important quick filter from the chip row. Important is a
-    // category, but stays a combinable chip (with Favorites and Unread) rather
-    // than a view — it is the most-used category, kept one click away.
-    toggleImportantFilter() {
-      this.filtersTouched = true;
-      this.importantOnly = !this.importantOnly;
+    // The Important chip: a shortcut into (and out of) the Important category
+    // view — the very state the ⋮ menu's Important entry drives, so the chip,
+    // the menu highlight and the title can never disagree.
+    toggleImportantView() {
+      if (this.importantCategory) {
+        this.openCategoryView(this.importantCategory.id);
+      }
     },
-    // Switch the list to one category, from the ⋮ menu — a view like Sent or
-    // Archive, not a checkbox: single selection, replacing whatever category
-    // view was active. Picking the active category again leaves the view, as
-    // does selecting any folder. The chip filters that the category view hides
-    // (Important, Favorites) are dropped so nothing narrows the list invisibly;
-    // Unread stays, its chip stays on screen.
+    // Switch the list to one category — from the ⋮ menu or the Important
+    // shortcut chip — a view like Sent or Archive, not a checkbox: single
+    // selection, replacing whatever category view was active. Picking the
+    // active category again leaves the view, as does selecting any folder.
+    // The Favorites chip filter is dropped (its chip hides inside a category
+    // view) so nothing narrows the list invisibly; Unread stays, its chip
+    // stays on screen.
     openCategoryView(categoryId) {
       this.filtersTouched = true;
       this.categoryViewId = this.categoryViewId === categoryId ? null : categoryId;
-      this.importantOnly = false;
       if (this.favoriteOnly) {
         // Favorites is answered server-side: dropping it needs a reload.
         this.favoriteOnly = false;
