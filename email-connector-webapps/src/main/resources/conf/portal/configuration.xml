@@ -275,6 +275,14 @@
             <field name="icon">
               <string>fas fa-envelope</string>
             </field>
+            <!-- The search page's Favorites filter. A connector has to declare it,
+                 or the filter simply drops the connector's results: the app only
+                 sends "&favorites=true" to connectors that say they understand it.
+                 A favorite email is the mail server's \Flagged flag, the same one
+                 the mailbox shows. -->
+            <field name="favoritesEnabled">
+              <boolean>true</boolean>
+            </field>
             <!-- A mail belongs to one mailbox, not to a space, so the space filter
                  would only ever narrow it to nothing. -->
             <field name="spaceFilterEnabled">
