@@ -319,30 +319,22 @@ export default {
     // and wrongly show the drawer as synchronizing.
     this.$root.$on('open-mail-box-drawer', async (payload) => {
       const options = payload && typeof payload === 'object' ? payload : {loading: payload};
-      // The message goes up first and the folder loads behind it. Opening the mailbox
-      // first meant a favorited mail waited on the whole inbox — a thousand messages
-      // fetched before its own single one — which felt slow for something the user
-      // asked for by name. The narrow reader is a drawer of its own, mounted beside
-      // this one, so it can show while this list is still empty; the wide reader is a
-      // pane of this drawer and only renders once the folder is there, so that one
-      // still waits.
-      const readerFirst = options.mailRemoteId && !this.expanded;
-      if (readerFirst) {
-        this.openMailFromOutside(options.mailRemoteId);
+      // Opening the mailbox, on a message, on a search, or on nothing in particular.
+      // The payload used to be the plain "loading" flag and callers still pass it
+      // that way, so an object is what marks the richer form: passing one where a
+      // flag is expected would read as truthy and wrongly show the drawer as
+      // synchronizing.
+      if (options.mailRemoteId) {
+        // One message asked for by name -- from the platform's search, or from the
+        // Favorites drawer -- opens the reader on its own. Opening the mailbox behind
+        // it would leave the user standing in a folder they never asked for the
+        // moment they close the message, instead of back where they were looking.
+        await this.openMailFromOutside(options);
+        return;
       }
       await this.open(options.loading);
       if (options.searchTerm) {
         this.openSearchFromOutside(options.searchTerm);
-      }
-      if (readerFirst) {
-        // Hand the reader the conversation and webmail link it opened without.
-        this.$root.$emit('email-detail-context', {
-          emails: this.emails,
-          syncInProgress: this.syncInProgress,
-          webmailUrl: this.webmailUrl,
-        });
-      } else if (options.mailRemoteId) {
-        this.openMailFromOutside(options.mailRemoteId);
       }
     });
     this.$root.$on('attachment-download-started', (payload) => {
@@ -581,30 +573,55 @@ export default {
       this.runSearch(term);
     },
     /**
-     * Opens one message picked outside the mailbox — today, from the platform's
-     * global Favorites drawer.
+     * Opens one message picked outside the mailbox — from the platform's unified
+     * search, or from the global Favorites drawer.
      *
-     * It goes through the same two doors as a search hit, and for the same reason:
-     * such a message is usually not in the listed window. Wide, the reader is a pane
-     * of this drawer, so the message is set here and pinned against the next list
-     * refresh; narrow, the reader is a drawer of its own, which has to be told to
-     * open — setting the message here would only have changed a pane that the narrow
-     * layout never shows, leaving the user looking at the list.
+     * Such a message is a search hit in everything but name: it may sit in another
+     * folder, and it may not be held locally at all. So an uncached one is pulled in
+     * before it is opened, and a mailbox busy synchronizing says "one moment" rather
+     * than failing.
      *
-     * @param {Number} mailRemoteId the IMAP UID of the message to open
+     * The reader is handed a list containing the message itself. That is not a
+     * detail: the reader works out which folder to read from by looking the id up in
+     * the list it was given, and a UID is only unique within its folder. Handed
+     * nothing, it assumed the inbox -- and every hit that was not a cached inbox
+     * message opened as an empty reader titled "(no subject)".
+     *
+     * @param {Object} opening what to open: {mailRemoteId, folder, cached}
      * @returns {Promise} resolved once the message is on screen
      */
-    async openMailFromOutside(mailRemoteId) {
-      if (!this.expanded) {
-        this.$root.$emit('open-email-detail-drawer', mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl, true);
-        return;
-      }
+    async openMailFromOutside(opening) {
+      // No folder means the inbox, and anything that does not say otherwise is
+      // already cached: that is the Favorites drawer, which only holds cached inbox
+      // mail.
+      const hit = {
+        mailRemoteId: opening.mailRemoteId,
+        folder: opening.folder || 'INBOX',
+        cached: opening.cached !== false,
+      };
+      this.pinnedEmail = true;
       this.loading = true;
       try {
-        this.pinnedEmail = true;
-        this.email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId);
-        this.selectEmailPlaceHolder = false;
-        this.$root.$emit('set-opened', mailRemoteId);
+        if (!hit.cached) {
+          await this.fetchSearchedEmail(hit);
+        }
+        if (this.expanded && this.emailBoxDrawer) {
+          this.email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder);
+          this.selectEmailPlaceHolder = false;
+          this.$root.$emit('set-opened', hit.mailRemoteId);
+        } else {
+          this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer);
+        }
+      } catch (error) {
+        // A mailbox held by a running synchronization is a "one moment", not a
+        // failure.
+        const syncing = error?.status === 409;
+        const messageKey = syncing && 'emailConnector.mailBox.search.syncInProgress'
+          || 'emailConnector.mailBox.search.openError';
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: syncing && 'warning' || 'error',
+          alertMessage: this.$t(messageKey),
+        }}));
       } finally {
         this.loading = false;
       }
