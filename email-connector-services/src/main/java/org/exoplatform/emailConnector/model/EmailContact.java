@@ -1,0 +1,96 @@
+/**
+ * Copyright (C) 2025 eXo Platform SAS
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <gnu.org/licenses>.
+ */
+package org.exoplatform.emailConnector.model;
+
+import java.util.Date;
+import java.util.List;
+
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+/**
+ * One contact of one user's personal contact store. No all-args constructor on
+ * purpose: this model is built at several sites (storage mapping, REST bodies,
+ * tests) and a growing positional constructor breaks call sites silently at a
+ * distance — setters keep every site explicit.
+ */
+@Data
+@NoArgsConstructor
+public class EmailContact {
+
+  private Long         id;
+
+  /** The store owner; every query is scoped by it. */
+  private String       userId;
+
+  /** One of the {@link EmailContactSource} discriminators. */
+  private String       source;
+
+  /** Lowercased, trimmed; with the owner it is the contact's natural key. */
+  private String       primaryEmail;
+
+  /** Secondary addresses (phase 3 fills them from vCards). */
+  private List<String> secondaryEmails;
+
+  private String       displayName;
+
+  private String       givenName;
+
+  private String       familyName;
+
+  /**
+   * The uppercased, diacritic-stripped sort key ("FAMILY GIVEN", falling back to
+   * the display name, falling back to the address local-part). Derived, never
+   * user-visible.
+   */
+  private String       sortName;
+
+  /**
+   * The alphabetical letter this contact files under: "A".."Z", or "#" for sort
+   * keys that do not start with a Latin letter. Computed server-side from the
+   * sort bucket so the client groups exactly the way the server orders.
+   */
+  private String       letter;
+
+  private List<String> phones;
+
+  private String       organization;
+
+  private String       title;
+
+  /**
+   * The removed-collected-contact tombstone: a suppressed row is visible nowhere
+   * and the collection upsert skips it, so a deleted collected contact does not
+   * resurrect on the next mail from that person.
+   */
+  private boolean      suppressed;
+
+  /** How many times collection saw this address; feeds the suggest ranking (phase 2). */
+  private long         seenCount;
+
+  private Date         lastSeenDate;
+
+  private Date         createdDate;
+
+  private Date         updatedDate;
+
+  /** Platform profile avatar when the address is a platform user's, resolved at read time. */
+  private String       avatarUrl;
+
+  /** Platform profile link when the address is a platform user's, resolved at read time. */
+  private String       profileUrl;
+}

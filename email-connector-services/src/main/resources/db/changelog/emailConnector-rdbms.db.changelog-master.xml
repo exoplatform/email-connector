@@ -301,4 +301,79 @@
       </column>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-26" dbms="oracle,postgresql,hsqldb">
+    <createSequence sequenceName="SEQ_EMAIL_CONTACT_ID" startValue="1"/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-27">
+    <!-- The per-user contact store. Rows are collected from the user's own cached mail
+         (SOURCE=COLLECTED), typed by hand (MANUAL), or synced from a CardDAV address
+         book (CARDDAV, phase 3). The lowercased PRIMARY_EMAIL with USER_ID is the
+         natural key: the same person arriving from several sources resolves in place
+         on the one row. SUPPRESSED is the tombstone for "remove a collected contact":
+         a hard delete would only see the row re-collected on the next mail from that
+         person. SORT_BUCKET is the alphabetical bucket (0..25 = A..Z of the
+         diacritic-stripped sort key, 26 = everything else): ordering by an integer
+         keeps the letter buckets contiguous on every dialect, where ordering
+         punctuation and non-Latin scripts against letters is collation-dependent.
+         EMAILS and PHONES are semicolon-joined value lists (the EMAIL_BOX recipients
+         precedent) and stay VARCHAR so they remain LIKE-searchable on HSQLDB.
+         HREF / ETAG / VCARD_UID / CONNECTOR_ID / PHOTO_FILE_ID / ORGANIZATION / TITLE
+         are the CardDAV bookkeeping seam, null until phase 3 fills them. -->
+    <createTable tableName="EMAIL_CONTACT">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_CONTACT"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SOURCE" type="VARCHAR(20)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="PRIMARY_EMAIL" type="VARCHAR(320)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="EMAILS" type="VARCHAR(2000)"/>
+      <column name="DISPLAY_NAME" type="NVARCHAR(500)"/>
+      <column name="GIVEN_NAME" type="NVARCHAR(250)"/>
+      <column name="FAMILY_NAME" type="NVARCHAR(250)"/>
+      <column name="SORT_NAME" type="NVARCHAR(255)"/>
+      <column name="SORT_BUCKET" type="INT" defaultValueNumeric="26">
+        <constraints nullable="false"/>
+      </column>
+      <column name="PHONES" type="VARCHAR(500)"/>
+      <column name="ORGANIZATION" type="NVARCHAR(250)"/>
+      <column name="TITLE" type="NVARCHAR(250)"/>
+      <column name="PHOTO_FILE_ID" type="BIGINT"/>
+      <column name="HREF" type="VARCHAR(1000)"/>
+      <column name="ETAG" type="VARCHAR(250)"/>
+      <column name="VCARD_UID" type="VARCHAR(250)"/>
+      <column name="CONNECTOR_ID" type="BIGINT"/>
+      <column name="SUPPRESSED" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SEEN_COUNT" type="BIGINT" defaultValueNumeric="0">
+        <constraints nullable="false"/>
+      </column>
+      <column name="LAST_SEEN_DATE" type="TIMESTAMP"/>
+      <column name="CREATED_DATE" type="TIMESTAMP"/>
+      <column name="UPDATED_DATE" type="TIMESTAMP"/>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci" />
+    </modifySql>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-28">
+    <createIndex tableName="EMAIL_CONTACT" indexName="IDX_EMAIL_CONTACT_USER_ID">
+      <column name="USER_ID"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_CONTACT" indexName="UQ_EMAIL_CONTACT_USER_EMAIL" unique="true">
+      <column name="USER_ID"/>
+      <column name="PRIMARY_EMAIL"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_CONTACT" indexName="IDX_EMAIL_CONTACT_USER_SORT">
+      <column name="USER_ID"/>
+      <column name="SORT_BUCKET"/>
+      <column name="SORT_NAME"/>
+    </createIndex>
+  </changeSet>
 </databaseChangeLog>
