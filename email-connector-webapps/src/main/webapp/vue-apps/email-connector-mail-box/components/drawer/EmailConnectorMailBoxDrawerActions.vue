@@ -153,8 +153,8 @@ export default {
       type: Array,
       default: () => ['INBOX'],
     },
-    // The categories offered as views in the ⋮ menu (the add-on's categories
-    // minus Important, which stays a chip).
+    // The categories offered as views in the ⋮ menu (the add-on's full set,
+    // Important included — its chip is a shortcut to the same view).
     categories: {
       type: Array,
       default: () => [],
