@@ -439,10 +439,6 @@ export default {
     hasFullAppLeft() {
       return this.expanded && (this.hasEmails || this.hasActiveFilters || this.searchActive) && !this.syncBlocked;
     },
-    // The ids of the add-on's own categories, for validating a stored default view.
-    emailCategoryIds() {
-      return this.emailCategories.map(category => category.id);
-    },
     // The Important category, surfaced as a dedicated chip above the list; null
     // until categories load (or when the default categories are not seeded).
     importantCategory() {
