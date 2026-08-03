@@ -38,4 +38,18 @@ public class EmailSearchResultPage {
 
   // How many messages matched in total on the server.
   private int                     totalMatches;
+
+  // Whether this page was narrowed to the user's favorites. It travels back so the
+  // results can continue the same search on the mail server without being told twice.
+  private boolean                 favoritesOnly;
+
+  /**
+   * A page that was not narrowed to favorites, which is the ordinary case.
+   *
+   * @param results the newest matching messages
+   * @param totalMatches how many matched in total
+   */
+  public EmailSearchResultPage(List<EmailSearchResult> results, int totalMatches) {
+    this(results, totalMatches, false);
+  }
 }

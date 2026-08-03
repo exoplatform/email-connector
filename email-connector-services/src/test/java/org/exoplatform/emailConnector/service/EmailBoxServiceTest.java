@@ -2019,6 +2019,75 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * The unified search's Favorites filter narrows the section to the messages the
+   * user favorited — the mail server's own flag, so the filter agrees with what they
+   * see in their webmail.
+   */
+  @Test
+  @SneakyThrows
+  void searchCachedEmailsCanBeNarrowedToFavorites() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Email favorited = email(TEST_USER);
+    favorited.setSubject("budget, kept");
+    favorited.setStarred(true);
+    Email plain = email(TEST_USER);
+    plain.setSubject("budget, not kept");
+    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(favorited, plain));
+
+    EmailSearchResultPage narrowed = emailBoxService.searchCachedEmails(TEST_USER, "budget", true, 10);
+
+    assertEquals(1, narrowed.getTotalMatches());
+    assertEquals("budget, kept", narrowed.getResults().get(0).getSubject());
+    // It says so, so the results can continue the same narrowed search on the server.
+    assertTrue(narrowed.isFavoritesOnly());
+
+    // Without the filter, both come back.
+    assertEquals(2, emailBoxService.searchCachedEmails(TEST_USER, "budget", 10).getTotalMatches());
+  }
+
+  /**
+   * A cached hit quotes the message around the searched words, so the reader can see
+   * why it came back — and quotes its opening words when the match was in the subject
+   * or the sender instead.
+   */
+  @Test
+  @SneakyThrows
+  void searchCachedEmailsQuotesTheMessageAroundTheMatch() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Email matchedInBody = email(TEST_USER);
+    matchedInBody.setSubject("Nothing to see");
+    matchedInBody.setContent(new EmailContent("<p>Ahead of Friday, the <b>budget</b> figures are attached for review.</p>"));
+    Email matchedInSubject = email(TEST_USER);
+    matchedInSubject.setSubject("Quarterly budget");
+    matchedInSubject.setContent(new EmailContent("<p>Opening words of a message that never says the word.</p>"));
+    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(matchedInBody, matchedInSubject));
+
+    EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 10);
+
+    String bodyExcerpt = page.getResults()
+                             .stream()
+                             .filter(result -> "Nothing to see".equals(result.getSubject()))
+                             .findFirst()
+                             .orElseThrow()
+                             .getExcerpt();
+    // Around the match, and as text: the markup around it must not be quoted.
+    assertTrue(bodyExcerpt.contains("budget"));
+    assertTrue(bodyExcerpt.contains("figures are attached"));
+    assertFalse(bodyExcerpt.contains("<b>"));
+
+    String subjectExcerpt = page.getResults()
+                                .stream()
+                                .filter(result -> "Quarterly budget".equals(result.getSubject()))
+                                .findFirst()
+                                .orElseThrow()
+                                .getExcerpt();
+    // Nothing matched in the body, so it opens the message instead of quoting nothing.
+    assertTrue(subjectExcerpt.startsWith("Opening words"));
+  }
+
+  /**
    * The connector asks for a handful of rows, but the section has to be able to say
    * how much it did not show, so the total counts every match.
    */
