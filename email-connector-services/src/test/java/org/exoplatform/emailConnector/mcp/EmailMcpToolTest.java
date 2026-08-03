@@ -181,7 +181,8 @@ class EmailMcpToolTest {
                                                   new Date(),
                                                   false,
                                                   true,
-                                                  true);
+                                                  true,
+                                                  null);
     when(emailBoxService.searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.INBOX), anyInt()))
                                                                                                                                  .thenReturn(new EmailSearchResultPage(List.of(hit),
                                                                                                                                                                        90));
