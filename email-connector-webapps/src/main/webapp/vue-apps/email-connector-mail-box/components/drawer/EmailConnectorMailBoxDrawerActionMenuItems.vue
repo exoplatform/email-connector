@@ -138,46 +138,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.webmail.button.title') }}
       </span>
     </v-list-item>
-    <v-divider class="my-1" />
-    <!-- Settings: the mailbox's own settings drawer, and the local-cache reset. -->
-    <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
-      {{ $t('emailConnector.mailBox.list.drawer.menu.settings') }}
-    </div>
-    <v-list-item
-      class="ps-2 pe-3 height-auto"
-      @click="openSettings()">
-      <v-sheet
-        class="d-flex"
-        width="28"
-        height="36">
-        <v-icon
-          class="icon-default-color mx-auto"
-          size="16">
-          fa-cog
-        </v-icon>
-      </v-sheet>
-      <span>
-        {{ $t('emailConnector.mailBox.list.drawer.menu.mailboxSettings') }}
-      </span>
-    </v-list-item>
-    <v-list-item
-      class="ps-2 pe-3 height-auto"
-      :disabled="syncInProgress"
-      @click="requestReset()">
-      <v-sheet
-        class="d-flex"
-        width="28"
-        height="36">
-        <v-icon
-          class="error--text mx-auto"
-          size="16">
-          fa-history
-        </v-icon>
-      </v-sheet>
-      <span class="error--text">
-        {{ $t('UserSettings.emailConnector.reset.button') }}
-      </span>
-    </v-list-item>
   </v-list>
 </template>
 
@@ -287,26 +247,6 @@ export default {
      */
     openWebmail() {
       this.$root.$emit('open-webmail');
-    },
-    /**
-     * Opens the mailbox settings drawer (connector, credentials, preferences).
-     *
-     * @returns {void}
-     */
-    openSettings() {
-      this.$root.$emit('open-user-setting-drawer');
-    },
-    /**
-     * Asks for the local mailbox cache to be cleared and re-synchronized; the
-     * mailbox drawer owns the confirmation dialog and the actual call.
-     *
-     * @returns {void}
-     */
-    requestReset() {
-      if (this.syncInProgress) {
-        return;
-      }
-      this.$root.$emit('reset-email-box-request');
     },
   }
 };
