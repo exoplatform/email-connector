@@ -159,7 +159,8 @@ public class UserEmailSettingService {
    * @param notifyAllCategories notify for every new email (null/true) or only for the selected
    *          categories (false)
    * @param notifyCategories the Inbox category ids to notify about when notifyAllCategories is false
-   * @param defaultCategoryView the Inbox category the mailbox drawer opens positioned to (null = None)
+   * @param defaultCategoryView the Inbox category the mailbox drawer opens positioned to — in practice the
+   *          Important category's id when the user's "open on Important" toggle is on, null when it is off
    */
   public void updateEmailPreferences(String username,
                                      Boolean notifyAllCategories,

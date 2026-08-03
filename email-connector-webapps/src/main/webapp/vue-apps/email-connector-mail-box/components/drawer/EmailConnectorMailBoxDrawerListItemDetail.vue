@@ -205,9 +205,16 @@ export default {
     this.$root.$on('attachment-download-finished', () => {
       this.activeDownload = null;
     });
+    // "Select several" from the ⋮ menu: when this drawer is the one on screen,
+    // enter its multi-select mode (the mailbox drawer ignores the event then).
+    this.$root.$on('enter-select-mode', () => {
+      if (this.emailDetailDrawer) {
+        this.selectMode = true;
+      }
+    });
     this.$root.$on('select-email', ({ emailId, selected }) => {
       if (!this.emailDetailDrawer) {
-        return; 
+        return;
       }
       this.selectMode = true;
       if (selected) {
