@@ -2420,11 +2420,18 @@ public class EmailBoxService {
    */
   public List<EmailCategory> getAvailableEmailCategories(String username, Locale locale) {
     List<EmailCategory> categories = new ArrayList<>();
-    for (Long categoryId : getDefaultEmailCategoryIds()) {
+    for (String nameId : DEFAULT_EMAIL_CATEGORY_NAME_IDS) {
+      Long categoryId = getDefaultEmailCategoryId(nameId);
+      if (categoryId == null) {
+        continue;
+      }
       try {
         CategoryWithName category = categoryService.getCategory(categoryId, username, locale);
         if (category != null) {
-          categories.add(new EmailCategory(categoryId, category.getName()));
+          // The nameId travels with the category: the display name is localized,
+          // so the interface keys on the nameId to single out the Important
+          // category (surfaced as its own filter chip in the mailbox).
+          categories.add(new EmailCategory(categoryId, category.getName(), nameId));
         }
       } catch (ObjectNotFoundException | IllegalAccessException e) {
         // Skip a default category the user cannot see (unexpected with *:/platform/users).
@@ -2442,16 +2449,31 @@ public class EmailBoxService {
   public List<Long> getDefaultEmailCategoryIds() {
     List<Long> ids = new ArrayList<>();
     for (String nameId : DEFAULT_EMAIL_CATEGORY_NAME_IDS) {
-      SettingValue<?> settingValue = settingService.get(CATEGORY_IMPORT_CONTEXT, CATEGORY_IMPORT_SCOPE, nameId);
-      if (settingValue != null && settingValue.getValue() != null) {
-        try {
-          ids.add(Long.parseLong(settingValue.getValue().toString()));
-        } catch (NumberFormatException e) {
-          LOG.debug("Invalid category id stored for {}", nameId);
-        }
+      Long categoryId = getDefaultEmailCategoryId(nameId);
+      if (categoryId != null) {
+        ids.add(categoryId);
       }
     }
     return ids;
+  }
+
+  /**
+   * Resolves one default email category's id from the {@code nameId -> id} mapping
+   * the platform's category importer persisted in settings.
+   *
+   * @param nameId the category's declared nameId (see {@code default-categories.json})
+   * @return the category id, or null when the importer has not created it (yet)
+   */
+  private Long getDefaultEmailCategoryId(String nameId) {
+    SettingValue<?> settingValue = settingService.get(CATEGORY_IMPORT_CONTEXT, CATEGORY_IMPORT_SCOPE, nameId);
+    if (settingValue != null && settingValue.getValue() != null) {
+      try {
+        return Long.parseLong(settingValue.getValue().toString());
+      } catch (NumberFormatException e) {
+        LOG.debug("Invalid category id stored for {}", nameId);
+      }
+    }
+    return null;
   }
 
   public void sendEmail(Email email, String username) throws IllegalAccessException {
