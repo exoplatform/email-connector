@@ -15,53 +15,65 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The way out to the whole mailbox: the connector only searched what is cached
-       locally, so the user is told so and handed to the mailbox's own search. -->
-  <v-card
-    v-if="searchAll"
-    class="d-flex align-center pa-3 my-2"
-    flat
-    @click="openMailboxSearch">
-    <v-icon size="18" class="primary--text me-3">fas fa-search</v-icon>
-    <span class="primary--text text-truncate">{{ $t('emailConnector.search.connector.searchWholeMailbox') }}</span>
-  </v-card>
-  <v-card
+  <!-- The rest of the mailbox, continued quietly. The connector answered from the
+       locally held mail so that no search in the platform waits on IMAP; this row
+       then asks the mail server for what the cache could not know, once the page is
+       already drawn, and shows whatever else it finds. The user sees one list
+       filling in, not two searches. -->
+  <div v-if="continuation">
+    <!-- Both of these sit in the same list skeleton as a result row, so the icon
+         gutter and the text start line up with the rows above them. -->
+    <v-list v-if="searching" class="pa-0">
+      <v-list-item>
+        <v-list-item-icon class="ms-1 me-3">
+          <v-progress-circular
+            indeterminate
+            size="18"
+            width="2"
+            class="mt-2 icon-default-color" />
+        </v-list-item-icon>
+        <v-list-item-content>
+          <v-list-item-subtitle>{{ $t('emailConnector.mailBox.search.searching') }}</v-list-item-subtitle>
+        </v-list-item-content>
+      </v-list-item>
+    </v-list>
+    <email-search-row
+      v-for="extra in extras"
+      :key="extra.id"
+      :result="extra"
+      :term="searchedTerm" />
+    <!-- The mailbox could not be reached. The cached hits are still on screen, so
+         this is not an error to shout about -- but the way through should not
+         disappear with it. -->
+    <v-card
+      v-if="failed"
+      flat
+      class="pa-0"
+      @click.stop.prevent="openMailboxSearch">
+      <v-list class="pa-0">
+        <v-list-item>
+          <v-list-item-icon class="ms-1 me-3">
+            <v-icon size="18" class="primary--text mt-2">fas fa-search</v-icon>
+          </v-list-item-icon>
+          <v-list-item-content>
+            <v-list-item-subtitle class="primary--text">
+              {{ $t('emailConnector.search.connector.searchWholeMailbox') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+        </v-list-item>
+      </v-list>
+    </v-card>
+  </div>
+  <email-search-row
     v-else
-    class="d-flex align-start pa-3 my-2"
-    flat
-    @click="openEmail">
-    <v-icon
-      size="18"
-      :class="unread ? 'primary--text' : 'icon-default-color'"
-      class="me-3 mt-1">
-      {{ unread ? 'fas fa-envelope' : 'far fa-envelope-open' }}
-    </v-icon>
-    <div class="d-flex flex-column flex-grow-1 overflow-hidden">
-      <div class="d-flex align-center">
-        <span :class="['text-truncate', {'font-weight-bold': unread}]">{{ subject }}</span>
-        <v-icon
-          v-if="result.starred"
-          size="12"
-          class="amber--text text--darken-1 ms-2"
-          :title="$t('emailConnector.mailBox.list.drawer.detail.favorite.label')">
-          fas fa-star
-        </v-icon>
-        <v-chip
-          v-if="folderLabel"
-          x-small
-          class="ms-2 flex-grow-0 flex-shrink-0">
-          {{ folderLabel }}
-        </v-chip>
-      </div>
-      <div class="d-flex align-center caption text-light-color">
-        <span class="text-truncate">{{ senderName }}</span>
-        <v-icon class="flex-grow-0 flex-shrink-0 mx-2" size="2">fa-circle</v-icon>
-        <date-format class="flex-grow-0 flex-shrink-0" :value="result.receivedDate" />
-      </div>
-    </div>
-  </v-card>
+    :result="result"
+    :term="term" />
 </template>
 <script>
+// The mail server is asked for a little more than the section shows, because the
+// newest hits it returns are often ones the cache already had.
+const REMOTE_LIMIT = 10;
+
 export default {
   props: {
     id: {
@@ -77,45 +89,77 @@ export default {
       default: () => null,
     },
   },
+  data: () => ({
+    extras: [],
+    searching: false,
+    failed: false,
+  }),
   computed: {
-    searchAll() {
-      return !!this.result?.searchAll;
+    continuation() {
+      return !!this.result?.continuation;
     },
-    unread() {
-      return this.result && !this.result.read;
-    },
-    subject() {
-      return this.result?.subject?.trim?.() || this.$t('emailConnector.mailBox.list.drawer.noSubject');
-    },
-    senderName() {
-      return this.result?.sender?.name || this.result?.sender?.address || '';
-    },
-    folderLabel() {
-      // The inbox is where mail normally is, so only the other folders are worth a
-      // chip: seeing "Sent" explains why a hit reads as something the user wrote.
-      if (this.result?.folder === 'SENT') {
-        return this.$t('emailConnector.mailBox.list.drawer.folder.sent');
-      }
-      return this.result?.folder === 'ARCHIVE' ? this.$t('emailConnector.mailBox.list.drawer.folder.archive') : '';
+    searchedTerm() {
+      return this.term || this.result?.term;
     },
   },
+  created() {
+    if (this.continuation) {
+      this.continueOnTheServer();
+    }
+  },
   methods: {
-    openEmail() {
-      // The mailbox owns the reader, wherever the user is standing. Requiring the
-      // module first covers the page that has not loaded it yet; it is a no-op once
-      // it has.
-      window.require(['SHARED/emailConnectorQuickActionExtension'], () =>
-        document.dispatchEvent(new CustomEvent('open-email-box-mail', {
-          detail: {mailRemoteId: this.result?.mailRemoteId},
-        })));
+    /**
+     * Runs the whole-mailbox search and appends what the cached answer could not
+     * contain.
+     *
+     * It runs from a row rather than from the connector because the search app owns
+     * its result list and hands each row over one at a time: a row can grow, the list
+     * cannot. Failing is silent on purpose — the cached results are already on
+     * screen, and a mailbox that cannot be reached is not something the person
+     * searching the platform asked about.
+     *
+     * @returns {void}
+     */
+    continueOnTheServer() {
+      const term = this.searchedTerm;
+      if (!term) {
+        return;
+      }
+      const alreadyShown = new Set(this.result?.shownIds || []);
+      this.searching = true;
+      const favorites = this.result?.favoritesOnly && '&favorites=true' || '';
+      fetch(`/email-connector/rest/email-box/search?query=${encodeURIComponent(term)}${favorites}&limit=${REMOTE_LIMIT}`, {
+        method: 'GET',
+        credentials: 'include',
+      }).then(response => {
+        if (!response?.ok) {
+          throw new Error('The mailbox could not be searched');
+        }
+        return response.json();
+      }).then(page => {
+        this.extras = (page?.results || []).map(hit => ({
+          ...hit,
+          id: `${hit.folder}:${hit.mailRemoteId}`,
+        })).filter(hit => !alreadyShown.has(hit.id));
+      }).catch(() => {
+        // The section keeps the results it already showed, and offers the mailbox's
+        // own search instead of ending on silence.
+        this.extras = [];
+        this.failed = true;
+      }).finally(() => {
+        this.searching = false;
+      });
     },
+    /**
+     * Hands the term to the mailbox's own search field, which is the other way to
+     * reach the whole mailbox when this one could not.
+     *
+     * @returns {void}
+     */
     openMailboxSearch() {
-      // Hand the term to the mailbox's own search rather than running a second one
-      // here: that field already searches the whole mailbox, shows what it found and
-      // what it did not, and opens what it finds.
       window.require(['SHARED/emailConnectorQuickActionExtension'], () =>
         document.dispatchEvent(new CustomEvent('open-email-box-search', {
-          detail: {term: this.term || this.result?.term},
+          detail: {term: this.searchedTerm},
         })));
     },
   },
