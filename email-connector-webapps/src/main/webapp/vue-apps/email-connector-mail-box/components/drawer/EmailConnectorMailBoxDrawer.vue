@@ -508,11 +508,11 @@ export default {
       let emails = this.emailBox?.emails || [];
       emails = emails.filter(e => !this.deletedEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.archivedEmailIds.includes(e.mailRemoteId));
-      // The filters combine: each one narrows what the others left, so "unread
-      // important" or "unread favorites" is just both toggles on. A category
-      // VIEW is different — single selection (categoryViewId), and its chip
-      // row keeps only its own chips, so at most one category ever narrows
-      // the list.
+      // The filters combine: each one narrows what the others left, so
+      // "unread favorites in this category" is just everything toggled on. A
+      // category VIEW is single selection (categoryViewId), so at most one
+      // category ever narrows the list; Favorites and Unread apply on top of
+      // whichever view is open.
       // The favorite view: the server already answered with the favorite subset;
       // filtering again here makes a just-unfavorited message leave the list at
       // once instead of waiting for the next reload.
@@ -890,18 +890,13 @@ export default {
     // shortcut chip — a view like Sent or Archive, not a checkbox: single
     // selection, replacing whatever category view was active. Picking the
     // active category again leaves the view, as does selecting any folder.
-    // The Favorites chip filter is dropped (its chip hides inside a category
-    // view) so nothing narrows the list invisibly; Unread stays, its chip
-    // stays on screen.
+    // The Favorites and Unread chips survive the switch and combine with the
+    // view (their chips stay on screen inside it, so nothing narrows the list
+    // invisibly): Favorites' server-answered subset stays loaded and the
+    // category narrows it client-side — no reload needed either way.
     openCategoryView(categoryId) {
       this.filtersTouched = true;
       this.categoryViewId = this.categoryViewId === categoryId ? null : categoryId;
-      if (this.favoriteOnly) {
-        // Favorites is answered server-side: dropping it needs a reload.
-        this.favoriteOnly = false;
-        this.loading = true;
-        this.loadEmailBox().finally(() => this.loading = false);
-      }
     },
     // "Select several" from the ⋮ menu: enter the same multi-select mode a row
     // checkbox starts, with nothing selected yet.
