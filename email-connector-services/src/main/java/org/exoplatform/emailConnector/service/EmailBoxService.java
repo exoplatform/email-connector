@@ -2410,9 +2410,10 @@ public class EmailBoxService {
 
   /**
    * The add-on's own email categories a user can assign — Important / Invitation /
-   * Notification — resolved to their localized name. These are the leaf
-   * categories seeded from the add-on's {@code default-categories.json}, returned
-   * whether or not they are already in use, so the picker always offers the full set.
+   * Notification — resolved to their localized name and their declared icon.
+   * These are the leaf categories seeded from the add-on's
+   * {@code default-categories.json}, returned whether or not they are already
+   * in use, so the picker always offers the full set.
    *
    * @param username the mailbox owner
    * @param locale the locale to resolve category names in
@@ -2430,8 +2431,10 @@ public class EmailBoxService {
         if (category != null) {
           // The nameId travels with the category: the display name is localized,
           // so the interface keys on the nameId to single out the Important
-          // category (surfaced as its own filter chip in the mailbox).
-          categories.add(new EmailCategory(categoryId, category.getName(), nameId));
+          // category (surfaced as its own filter chip in the mailbox). The icon
+          // travels too — it is the category's own, persisted by the importer
+          // from default-categories.json, so the interface never hardcodes one.
+          categories.add(new EmailCategory(categoryId, category.getName(), nameId, category.getIcon()));
         }
       } catch (ObjectNotFoundException | IllegalAccessException e) {
         // Skip a default category the user cannot see (unexpected with *:/platform/users).

@@ -15,31 +15,40 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The mailbox's quick filters: Important (one of the add-on's categories),
-       Favorites (the mail server's \Flagged flag) and Unread (the read flag).
-       Three independent axes, deliberately combinable: each chip narrows what
-       the others left, so "unread important" or "unread favorites" just work.
-       Inside a category VIEW (picked in the ⋮ menu) only Unread remains:
-       Important is itself a category, so offering it inside another category's
-       view would be contradictory, and Favorites is a different pile — but
-       "the unread ones in this category" is the natural follow-up question.
+  <!-- The mailbox's quick chips: Important, Favorites (the mail server's
+       \Flagged flag) and Unread (the read flag).
+       The Important chip is a SHORTCUT into the Important category view — the
+       same state the ⋮ menu's Important entry drives, so the chip carries the
+       category's own icon and lights exactly when that view is open: two
+       controls, one state, and the two surfaces can never disagree.
+       Inside another category's view only Unread remains: Important is itself
+       a category, so offering it there would be contradictory, and Favorites
+       is a different pile — but "the unread ones in this category" is the
+       natural follow-up question. Inside the Important view the Important chip
+       stays (lit — it is the view's own control) next to Unread.
        Same chip language as the platform's category filters (outlined, filled
        primary when active): toggling only restyles the chip, never resizes it,
        so the row cannot flicker under the pointer. -->
   <div class="d-flex align-center flex-nowrap overflow-x-auto category-chips-thin-scrollbar">
     <v-chip
-      v-if="importantCategory && !inCategoryView"
-      :outlined="!importantOnly"
-      :color="importantOnly ? 'primary' : ''"
+      v-if="importantCategory && !inOtherCategoryView"
+      :outlined="!importantViewActive"
+      :color="importantViewActive ? 'primary' : ''"
       class="me-2 flex-shrink-0"
       small
       @click="$emit('toggle-important')">
-      <span :class="importantOnly ? 'white--text' : 'primary--text'">
+      <v-icon
+        size="12"
+        class="me-1"
+        :class="importantViewActive ? 'white--text' : 'primary--text'">
+        {{ importantCategory.icon || 'fa-tag' }}
+      </v-icon>
+      <span :class="importantViewActive ? 'white--text' : 'primary--text'">
         {{ importantCategory.name }}
       </span>
     </v-chip>
     <v-chip
-      v-if="!inCategoryView"
+      v-if="!categoryViewId"
       :outlined="!favoriteOnly"
       :color="favoriteOnly ? 'primary' : ''"
       class="me-2 flex-shrink-0"
@@ -65,16 +74,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
-    // The Important category ({id, name}), or null while categories load or when
-    // the default categories are not seeded — the chip simply doesn't show then.
+    // The Important category ({id, name, icon}), or null while categories load
+    // or when the default categories are not seeded — the chip simply doesn't
+    // show then.
     importantCategory: {
       type: Object,
       default: null,
     },
-    // Whether the Important quick filter is on.
-    importantOnly: {
-      type: Boolean,
-      default: false,
+    // The category view the list is switched to (shared state with the ⋮
+    // menu's Categories section), or null outside any category view.
+    categoryViewId: {
+      type: [Number, String],
+      default: null,
     },
     // Whether the favorite view is on (server-side \Flagged filter).
     favoriteOnly: {
@@ -86,11 +97,25 @@ export default {
       type: Boolean,
       default: false,
     },
-    // Whether the list is switched to a category view (from the ⋮ menu); the
-    // row then keeps only the Unread chip.
-    inCategoryView: {
-      type: Boolean,
-      default: false,
+  },
+  computed: {
+    /**
+     * Whether the Important chip is lit — i.e. the Important category view is
+     * the one the list is switched to.
+     *
+     * @returns {Boolean} true when the Important view is open
+     */
+    importantViewActive() {
+      return !!this.importantCategory && this.categoryViewId === this.importantCategory.id;
+    },
+    /**
+     * Whether the list is switched to a category view other than Important;
+     * the row then keeps only the Unread chip.
+     *
+     * @returns {Boolean} true inside a non-Important category view
+     */
+    inOtherCategoryView() {
+      return !!this.categoryViewId && !this.importantViewActive;
     },
   },
 };
