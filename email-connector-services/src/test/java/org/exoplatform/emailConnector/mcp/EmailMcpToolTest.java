@@ -182,7 +182,8 @@ class EmailMcpToolTest {
                                                   new Date(),
                                                   false,
                                                   true,
-                                                  false);
+                                                  false,
+                                                  null);
     // A second hit with starred and cached CROSSED the other way: the two booleans are
     // adjacent in both constructors, so a page where they agree would let a
     // transposition through unnoticed.
@@ -193,7 +194,8 @@ class EmailMcpToolTest {
                                                        new Date(),
                                                        false,
                                                        false,
-                                                       true);
+                                                       true,
+                                                       null);
     when(emailBoxService.searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.INBOX), anyInt()))
                                                                                                                                  .thenReturn(new EmailSearchResultPage(List.of(hit,
                                                                                                                                                                                cachedHit),

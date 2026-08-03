@@ -244,6 +244,12 @@ public class EmailBoxService {
   // whatever the match count. The full count is still reported to the caller.
   private static final int        SEARCH_MAX_RESULTS                                          = 50;
 
+  /** How much of a message to quote when the search matched nothing in its body. */
+  private static final int        EXCERPT_LENGTH                                              = 180;
+
+  /** How much text to keep on either side of the words that matched. */
+  private static final int        EXCERPT_CONTEXT                                             = 80;
+
   // Concurrent IMAP connections used to prefetch new message bodies during a sync.
   // Bodies are the one per-message cost the batched FETCH profile cannot absorb: each
   // body is its own FETCH BODY[n] round-trip (several for nested multiparts, plus a
@@ -3347,6 +3353,27 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
    */
   public EmailSearchResultPage searchCachedEmails(String username, String query, int limit) throws IllegalAccessException {
+    return searchCachedEmails(username, query, false, limit);
+  }
+
+  /**
+   * The same search, narrowed to the messages the user favorited.
+   * <p>
+   * This is what the unified search's Favorites filter asks for. A favorite here is
+   * the mail server's {@code \Flagged} flag, the same one the mailbox shows, so the
+   * filter agrees with what the user sees in their webmail.
+   *
+   * @param username the mailbox owner
+   * @param query free text matched against the subject, the sender and the body
+   * @param favoritesOnly when {@code true}, only favorited messages match
+   * @param limit how many hits to return, newest first
+   * @return the newest matching cached messages plus how many matched in total
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public EmailSearchResultPage searchCachedEmails(String username,
+                                                  String query,
+                                                  boolean favoritesOnly,
+                                                  int limit) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -3358,6 +3385,7 @@ public class EmailBoxService {
     String term = query.trim().toLowerCase();
     List<Email> matches = emailBoxStorage.getEmails(username)
                                          .stream()
+                                         .filter(email -> !favoritesOnly || email.isStarred())
                                          .filter(email -> matchesCachedEmail(email, term))
                                          .sorted(Comparator.comparing(Email::getReceivedDate,
                                                                       Comparator.nullsLast(Comparator.reverseOrder())))
@@ -3371,9 +3399,41 @@ public class EmailBoxService {
                                                                                  email.getReceivedDate(),
                                                                                  email.isRead(),
                                                                                  email.isStarred(),
-                                                                                 true))
+                                                                                 true,
+                                                                                 buildExcerpt(email, term)))
                                              .toList();
-    return new EmailSearchResultPage(results, matches.size());
+    return new EmailSearchResultPage(results, matches.size(), favoritesOnly);
+  }
+
+  /**
+   * A short piece of the message to show under the subject in the results.
+   * <p>
+   * It is the text around the searched words when the body is what matched, so the
+   * reader can see why the message came back; when the match was in the subject or
+   * the sender, it is simply how the message opens. The body is reduced to text
+   * first, or the quote would be a mouthful of markup.
+   *
+   * @param email the cached message
+   * @param term the searched text, already lower-cased and trimmed
+   * @return the excerpt, or {@code null} when the message has no readable body
+   */
+  private String buildExcerpt(Email email, String term) {
+    String body = email.getContent() == null ? null : email.getContent().getBody();
+    if (StringUtils.isBlank(body)) {
+      return null;
+    }
+    String text = Jsoup.parse(body).text().trim();
+    if (StringUtils.isBlank(text)) {
+      return null;
+    }
+    int match = StringUtils.indexOfIgnoreCase(text, term);
+    if (match < 0) {
+      return StringUtils.abbreviate(text, EXCERPT_LENGTH);
+    }
+    int start = Math.max(0, match - EXCERPT_CONTEXT);
+    int end = Math.min(text.length(), match + term.length() + EXCERPT_CONTEXT);
+    String window = text.substring(start, end).trim();
+    return (start > 0 ? "… " : "") + window + (end < text.length() ? " …" : "");
   }
 
   /**
@@ -3447,6 +3507,36 @@ public class EmailBoxService {
                                             Integer sinceDays,
                                             String folder,
                                             int limit) throws IllegalAccessException {
+    return searchEmails(username, query, from, unreadOnly, false, sinceDays, folder, limit);
+  }
+
+  /**
+   * The same server-side search, narrowed to the messages the user favorited.
+   * <p>
+   * The narrowing is done by the mail server, as one more term of the IMAP SEARCH:
+   * asking for everything and dropping the rest here would return the newest hits and
+   * then throw most of them away, leaving an older favorite invisible behind a page of
+   * discarded matches.
+   *
+   * @param username the mailbox owner
+   * @param query free text matched against the subject or the sender
+   * @param from text matched against the sender only, may be blank
+   * @param unreadOnly when {@code true}, only unread messages match
+   * @param favoritesOnly when {@code true}, only messages carrying \Flagged match
+   * @param sinceDays only messages received in the last N days match, null for no limit
+   * @param folder the folder to search: INBOX, SENT or ARCHIVE
+   * @param limit how many hits to return
+   * @return the newest matching messages plus the total match count
+   * @throws IllegalAccessException if the user is not allowed to search their mailbox
+   */
+  public EmailSearchResultPage searchEmails(String username,
+                                            String query,
+                                            String from,
+                                            boolean unreadOnly,
+                                            boolean favoritesOnly,
+                                            Integer sinceDays,
+                                            String folder,
+                                            int limit) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -3461,7 +3551,7 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
     }
     Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
-    SearchTerm searchTerm = buildEmailSearchTerm(query, from, unreadOnly, since);
+    SearchTerm searchTerm = buildEmailSearchTerm(query, from, unreadOnly, favoritesOnly, since);
     if (searchTerm == null) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
@@ -3508,13 +3598,16 @@ public class EmailBoxService {
                                             page[i].getReceivedDate(),
                                             page[i].isSet(Flags.Flag.SEEN),
                                             page[i].isSet(Flags.Flag.FLAGGED),
-                                            cachedUids.contains(messageUid)));
+                                            cachedUids.contains(messageUid),
+                                            // Envelope-only: quoting the body would cost
+                                            // one round-trip per hit.
+                                            null));
         } catch (Exception e) {
           // One unreadable hit must not lose the rest of the page.
           LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);
         }
       }
-      return new EmailSearchResultPage(results, found.length);
+      return new EmailSearchResultPage(results, found.length, favoritesOnly);
     } catch (SearchException e) {
       // The server refused the CRITERIA, not the mailbox — the CHARSET path: a query
       // carrying accents ("réunion") makes JavaMail issue SEARCH CHARSET UTF-8, and a
@@ -3720,6 +3813,24 @@ public class EmailBoxService {
    * @return the combined term, or null when no criterion at all was given
    */
   static SearchTerm buildEmailSearchTerm(String query, String from, boolean unreadOnly, Date since) {
+    return buildEmailSearchTerm(query, from, unreadOnly, false, since);
+  }
+
+  /**
+   * The same term, with the favorites narrowing the unified search's filter asks for.
+   *
+   * @param query free text matched against the subject or the sender
+   * @param from text matched against the sender only
+   * @param unreadOnly when {@code true}, only unread messages match
+   * @param favoritesOnly when {@code true}, only messages carrying \Flagged match
+   * @param since only messages received after this date match
+   * @return the IMAP search term, or {@code null} when no criterion was given
+   */
+  static SearchTerm buildEmailSearchTerm(String query,
+                                         String from,
+                                         boolean unreadOnly,
+                                         boolean favoritesOnly,
+                                         Date since) {
     List<SearchTerm> terms = new ArrayList<>();
     if (StringUtils.isNotBlank(query)) {
       terms.add(new OrTerm(new SubjectTerm(query.trim()), new FromStringTerm(query.trim())));
@@ -3729,6 +3840,9 @@ public class EmailBoxService {
     }
     if (unreadOnly) {
       terms.add(new FlagTerm(new Flags(Flags.Flag.SEEN), false));
+    }
+    if (favoritesOnly) {
+      terms.add(new FlagTerm(new Flags(Flags.Flag.FLAGGED), true));
     }
     if (since != null) {
       terms.add(new ReceivedDateTerm(ComparisonTerm.GE, since));
