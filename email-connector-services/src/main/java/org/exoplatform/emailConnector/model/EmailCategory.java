@@ -44,13 +44,24 @@ public class EmailCategory {
   private String nameId;
 
   /**
-   * Builds a category with no known nameId, for categories resolved from links
-   * rather than from the add-on's default set.
+   * The category's own icon (a Font Awesome name such as
+   * {@code fa-exclamation-circle}), as declared in
+   * {@code default-categories.json} and persisted by the platform's category
+   * importer on the {@link io.meeds.social.category.model.Category} itself.
+   * The mailbox renders it wherever the category is offered (the ⋮ menu's
+   * Categories section, the Important chip). Null when the category declares
+   * none — the interface falls back to a generic tag icon then.
+   */
+  private String icon;
+
+  /**
+   * Builds a category with no known nameId or icon, for categories resolved
+   * from links rather than from the add-on's default set.
    *
    * @param id the category id
    * @param name the locale-resolved display name
    */
   public EmailCategory(long id, String name) {
-    this(id, name, null);
+    this(id, name, null, null);
   }
 }
