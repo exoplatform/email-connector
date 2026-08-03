@@ -52,6 +52,7 @@ import EmailConnectorMailBoxDrawerSearchResultItem from './components/drawer/Ema
 import EmailConnectorMailBoxDrawerNoEmail from './components/drawer/EmailConnectorMailBoxDrawerNoEmail.vue';
 import EmailConnectorMailBoxDrawerSelectEmail from './components/drawer/EmailConnectorMailBoxDrawerSelectEmail.vue';
 import EmailConnectorMailBoxDrawerFavoriteToggle from './components/drawer/EmailConnectorMailBoxDrawerFavoriteToggle.vue';
+import EmailConnectorMailBoxDrawerFilterChips from './components/drawer/EmailConnectorMailBoxDrawerFilterChips.vue';
 import EmailConnectorNewEmailDrawer from './components/drawer/EmailConnectorNewEmailDrawer.vue';
 import EmailConnectorNewEmailDrawerAttachments from './components/drawer/EmailConnectorNewEmailDrawerAttachments.vue';
 import EmailConnectorNewEmailDrawerNoSubjectConfirmPopup from './components/drawer/EmailConnectorNewEmailDrawerNoSubjectConfirmPopup.vue';
@@ -95,6 +96,7 @@ const components = {
   'email-connector-mail-box-drawer-no-email': EmailConnectorMailBoxDrawerNoEmail,
   'email-connector-mail-box-drawer-select-email': EmailConnectorMailBoxDrawerSelectEmail,
   'email-connector-mail-box-drawer-favorite-toggle': EmailConnectorMailBoxDrawerFavoriteToggle,
+  'email-connector-mail-box-drawer-filter-chips': EmailConnectorMailBoxDrawerFilterChips,
   'email-connector-new-email-drawer': EmailConnectorNewEmailDrawer,
   'email-connector-new-email-drawer-attachments': EmailConnectorNewEmailDrawerAttachments,
   'email-connector-new-email-drawer-no-subject-confirm-popup': EmailConnectorNewEmailDrawerNoSubjectConfirmPopup
