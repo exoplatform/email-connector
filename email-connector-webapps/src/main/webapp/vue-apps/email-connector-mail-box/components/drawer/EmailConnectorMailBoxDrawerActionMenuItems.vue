@@ -40,10 +40,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t(folder.label) }}
       </span>
     </v-list-item>
-    <!-- Categories: the categories other than Important (which stays a quick
-         chip above the list). Each one is a VIEW like the folders above it —
-         picking one switches the list to that category and closes the menu;
-         picking it again, or any folder, leaves the view. -->
+    <!-- Categories: the complete list, Important included — its quick chip
+         above the list is a shortcut to the same view this entry opens, so the
+         two can never disagree. Each category is a VIEW like the folders above
+         it, shown with its own declared icon — picking one switches the list to
+         that category and closes the menu; picking it again, or any folder,
+         leaves the view. -->
     <template v-if="categories.length">
       <v-divider class="my-1" />
       <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
@@ -62,7 +64,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             class="mx-auto"
             :class="category.id === categoryViewId ? 'primary--text' : 'icon-default-color'"
             size="16">
-            fa-tag
+            {{ category.icon || 'fa-tag' }}
           </v-icon>
         </v-sheet>
         <span :class="{ 'primary--text font-weight-bold': category.id === categoryViewId }">
@@ -158,9 +160,9 @@ export default {
       type: Array,
       default: () => ['INBOX'],
     },
-    // The categories offered as views ({id, name}) — the add-on's categories
-    // minus Important, which lives as a chip above the list. Empty hides the
-    // section.
+    // The categories offered as views ({id, name, icon}) — the add-on's full
+    // set, Important included (its chip above the list is a shortcut to the
+    // same view). Empty hides the section.
     categories: {
       type: Array,
       default: () => [],
