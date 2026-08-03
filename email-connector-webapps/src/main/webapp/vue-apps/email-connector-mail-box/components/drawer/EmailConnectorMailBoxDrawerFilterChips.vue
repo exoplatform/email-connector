@@ -20,12 +20,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        The Important chip is a SHORTCUT into the Important category view — the
        same state the ⋮ menu's Important entry drives, so the chip carries the
        category's own icon and lights exactly when that view is open: two
-       controls, one state, and the two surfaces can never disagree.
-       Inside another category's view only Unread remains: Important is itself
-       a category, so offering it there would be contradictory, and Favorites
-       is a different pile — but "the unread ones in this category" is the
-       natural follow-up question. Inside the Important view the Important chip
-       stays (lit — it is the view's own control) next to Unread.
+       controls, one state, and the two surfaces can never disagree. Inside the
+       Important view it stays (lit — it is the view's own control); inside
+       another category's view it hides, since Important is itself a view.
+       Favorites and Unread show in EVERY view and combine with it — "the ones
+       I kept in this category" and "the unread ones in this category" are both
+       real questions: each chip narrows what the view and the other chip left.
        Same chip language as the platform's category filters (outlined, filled
        primary when active): toggling only restyles the chip, never resizes it,
        so the row cannot flicker under the pointer. -->
@@ -48,7 +48,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-chip>
     <v-chip
-      v-if="!categoryViewId"
       :outlined="!favoriteOnly"
       :color="favoriteOnly ? 'primary' : ''"
       class="me-2 flex-shrink-0"
@@ -110,7 +109,9 @@ export default {
     },
     /**
      * Whether the list is switched to a category view other than Important;
-     * the row then keeps only the Unread chip.
+     * only the Important chip hides then (Important is itself a view, so
+     * offering it inside another category's view would be contradictory) —
+     * Favorites and Unread stay and combine with the view.
      *
      * @returns {Boolean} true inside a non-Important category view
      */
