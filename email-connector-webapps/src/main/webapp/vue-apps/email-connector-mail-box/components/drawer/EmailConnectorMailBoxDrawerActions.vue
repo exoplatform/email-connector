@@ -36,7 +36,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-mail-box-drawer-action-menu
       :current-folder="currentFolder"
       :available-folders="availableFolders"
-      :favorite-only="favoriteOnly"
+      :categories="categories"
+      :category-view-id="categoryViewId"
       :sync-in-progress="syncInProgress"
       :has-webmail-access="hasWebmailAccess" />
   </div>
@@ -152,10 +153,16 @@ export default {
       type: Array,
       default: () => ['INBOX'],
     },
-    // Whether the list is narrowed to the favorite messages, for the ⋮ menu state.
-    favoriteOnly: {
-      type: Boolean,
-      default: false,
+    // The categories offered as views in the ⋮ menu (the add-on's categories
+    // minus Important, which stays a chip).
+    categories: {
+      type: Array,
+      default: () => [],
+    },
+    // The category the list is currently switched to, so the ⋮ menu highlights it.
+    categoryViewId: {
+      type: [Number, String],
+      default: null,
     },
     top: {
       type: Boolean,
