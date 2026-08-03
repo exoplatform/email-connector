@@ -15,12 +15,16 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
+  <!-- Expanding puts the mailbox list beside the message. Opened on its own — from
+       the platform's search, or the Favorites drawer — there is no list to put there,
+       so the wide layout has nothing to show on its left half and expanding is not
+       offered. -->
   <exo-drawer
     id="emailDetailDrawer"
     ref="emailDetailDrawer"
     v-model="emailDetailDrawer"
     right
-    allow-expand
+    :allow-expand="!standalone"
     @expand-updated="updateExpand"
     :loading="loading"
     go-back-button
@@ -32,6 +36,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       cancel: $t('emailConnector.mailBox.attachment.download.confirmAbort.button.no')
     }"
     @confirm-close="onAbortDownloadConfirmed"
+    @opened="onDrawerOpened"
     @closed="close">
     <template #title>
       <span></span>
@@ -98,6 +103,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// The dimmed page behind a drawer that opened on its own; kept by id so a second
+// open can never leave two of them stacked.
+const BACKDROP_ID = 'emailDetailDrawerBackdrop';
+
 export default {
   data() {
     return {
@@ -111,6 +120,7 @@ export default {
       // cached window. Search reaches the whole mailbox, so those messages are
       // routinely outside the window and must not be reconciled against it.
       detachedFromList: false,
+      standalone: false,
       selectedEmails: [],
       syncInProgress: false,
       webmailUrl: null,
@@ -121,26 +131,19 @@ export default {
     };
   },
   created() {
-    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList) => {
+    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList, standalone) => {
       this.detachedFromList = !!detachedFromList;
+      // Opened with the mailbox behind it, this drawer sits on an already-dimmed page
+      // and the platform's shared overlay covers it. Opened on its own -- from the
+      // platform's search, or from the Favorites drawer -- nothing is dimming the
+      // page underneath, so it draws its own.
+      this.standalone = !!standalone;
       this.open(mailRemoteId, emails, syncInProgress, webmailUrl);
     };
     this.onCloseEmailDetailDrawer = () => {
       if (!this.expanded) {
         this.close();
       }
-    };
-    // A message opened from outside the mailbox shows before the folder behind it
-    // has finished loading, so the list it belongs to arrives late. Taking it here
-    // gives the reader its conversation and its webmail link without re-fetching the
-    // message or disturbing what the user is already reading.
-    this.onRefreshEmailDetailContext = ({emails, syncInProgress, webmailUrl}) => {
-      if (!this.emailDetailDrawer) {
-        return;
-      }
-      this.emails = emails && emails.length && emails || this.emails;
-      this.syncInProgress = syncInProgress;
-      this.webmailUrl = webmailUrl || this.webmailUrl;
     };
     this.onOpenEmailDetailContent = (mailRemoteId) => {
       if (!this.emailDetailDrawer) {
@@ -189,7 +192,6 @@ export default {
       }
     };
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
-    this.$root.$on('email-detail-context', this.onRefreshEmailDetailContext);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
@@ -234,9 +236,9 @@ export default {
     });
   },
   beforeDestroy() {
+    this.hideStandaloneBackdrop();
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
-    this.$root.$off('email-detail-context', this.onRefreshEmailDetailContext);
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);
@@ -341,8 +343,58 @@ export default {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
       this.close();
     },
+    /**
+     * Puts the backdrop up once the drawer reports itself open.
+     *
+     * Not before: the drawer is given its z-index as it opens, so a backdrop placed
+     * on the same tick was measured against a drawer that did not have one yet, and
+     * landed too low to be seen -- which is why the dimming only showed from the
+     * second open onwards.
+     *
+     * @returns {void}
+     */
+    onDrawerOpened() {
+      if (this.standalone) {
+        this.showStandaloneBackdrop();
+      }
+    },
+    /**
+     * Dims the page behind a drawer that opened with nothing behind it.
+     *
+     * The platform's shared overlay is driven by the page's own drawer stack and
+     * does not cover this one when it opens alone, from the platform's search or the
+     * Favorites drawer. Asking exo-drawer for its overlay instead is worse: that
+     * renders Vuetify's scrim, which stacks ABOVE this drawer because the drawer's
+     * z-index is set by hand. So the backdrop is placed here, one step below whatever
+     * z-index the drawer ended up with, and clicking it closes the message like any
+     * other drawer.
+     *
+     * @returns {void}
+     */
+    showStandaloneBackdrop() {
+      this.hideStandaloneBackdrop();
+      const drawer = this.$refs.emailDetailDrawer;
+      const drawerZIndex = Number(drawer?.zIndex)
+        || Number(drawer?.$el && window.getComputedStyle(drawer.$el).zIndex)
+        || 2000;
+      const backdrop = document.createElement('div');
+      backdrop.id = BACKDROP_ID;
+      backdrop.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background-color:rgba(0,0,0,0.46);z-index:${drawerZIndex - 1};`;
+      backdrop.addEventListener('click', () => this.close());
+      document.body.appendChild(backdrop);
+    },
+    /**
+     * Removes the backdrop, whether the message was closed or the drawer destroyed.
+     *
+     * @returns {void}
+     */
+    hideStandaloneBackdrop() {
+      document.getElementById(BACKDROP_ID)?.remove();
+    },
     close() {
       this.detachedFromList = false;
+      this.standalone = false;
+      this.hideStandaloneBackdrop();
       this.emailDetailDrawer = false;
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
