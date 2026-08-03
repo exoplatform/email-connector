@@ -60,7 +60,7 @@ export default {
       type: Array,
       default: () => ['INBOX'],
     },
-    // The categories offered as views (the add-on's categories minus Important).
+    // The categories offered as views (the add-on's full set, Important included).
     categories: {
       type: Array,
       default: () => [],
