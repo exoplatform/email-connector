@@ -27,6 +27,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-new-email-drawer-no-subject-confirm-popup />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
+    <!-- The "Reset & re-sync" confirmation, requested from the mailbox ⋮ menu.
+         Hosted here (not in the drawer) so the request works from whichever
+         drawer's menu raised it, and reuses the settings page's wording. -->
+    <exo-confirm-dialog
+      ref="resetConfirmDialog"
+      :title="$t('UserSettings.emailConnector.reset.confirm.title')"
+      :message="$t('UserSettings.emailConnector.reset.confirm.message')"
+      :ok-label="$t('UserSettings.emailConnector.reset.confirm.ok')"
+      :cancel-label="$t('UserSettings.emailConnector.reset.confirm.cancel')"
+      @ok="resetEmailBox" />
   </v-app>
 </template>
 
@@ -41,17 +51,38 @@ export default {
         emailAddress: '',
         emailPassword: ''
       }
-    }; 
+    };
+  },
+  created() {
+    this.$root.$on('reset-email-box-request', this.confirmResetEmailBox);
   },
   mounted() {
     document.addEventListener('quick-action-mailBox-drawer', this.openDrawer);
     document.addEventListener('open-email-compose-with-attachment', this.openComposeWithAttachment);
   },
   beforeDestroy() {
+    this.$root.$off('reset-email-box-request', this.confirmResetEmailBox);
     document.removeEventListener('quick-action-mailBox-drawer', this.openDrawer);
     document.removeEventListener('open-email-compose-with-attachment', this.openComposeWithAttachment);
   },
   methods: {
+    // Ask before clearing the local mailbox copy: the reset also drops manually
+    // applied categories, which the confirmation message spells out.
+    confirmResetEmailBox() {
+      this.$refs.resetConfirmDialog.open();
+    },
+    // Clear the local copy and re-download from the server. Broadcasting the
+    // sync start first puts the open mailbox drawer in its refreshing loop, so
+    // the rebuilt list appears without the user reopening anything.
+    resetEmailBox() {
+      this.$root.$emit('synchronize-in-progress');
+      this.$emailConnectorCommonService.resetAndResyncMailbox()
+        .then(() => {
+          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.reset.success'), 'success');
+          document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
+        })
+        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.reset.error'), 'error'));
+    },
     openDrawer(event) {
       this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
         this.userEmailSetting = userEmailSetting;
