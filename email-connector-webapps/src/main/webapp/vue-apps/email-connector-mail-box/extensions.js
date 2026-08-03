@@ -76,8 +76,12 @@ extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
  * detail: {mailRemoteId} — the IMAP UID of the message to open.
  */
 document.addEventListener('open-email-box-mail', event => {
-  const mailRemoteId = event?.detail?.mailRemoteId;
-  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {mailRemoteId}));
+  // The whole payload travels: a UID alone is not enough to find a message. UIDs are
+  // per-folder, and a message the caller found on the server may not be in the local
+  // cache at all -- both of which the mailbox knows how to handle, and neither of
+  // which the caller should have to.
+  const opening = event?.detail || {};
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, opening));
 });
 
 /*
