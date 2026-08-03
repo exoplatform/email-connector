@@ -33,8 +33,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       height="2"
       class="my-1" />
     <template v-for="(item, index) in renderItems">
+      <!-- No separator against the count badge on either side: the badge sits on a
+           rule of its own, so a divider before it and another after it drew three
+           lines where one was meant. -->
       <v-divider
-        v-if="index > 0"
+        v-if="index > 0 && item.type !== 'bubble' && renderItems[index - 1].type !== 'bubble'"
         :key="`divider-${item.key}`"
         class="my-2" />
       <!-- A run of consecutive collapsed messages, folded into a single Gmail-style
@@ -46,14 +49,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="clickable d-flex align-center py-2"
         style="position: relative;"
         tabindex="0"
-        :aria-label="$t('emailConnector.mailBox.list.drawer.thread.showHidden', item.count)"
-        :title="$t('emailConnector.mailBox.list.drawer.thread.showHidden', item.count)"
+        :aria-label="$t('emailConnector.mailBox.list.drawer.thread.showHidden', [item.count])"
+        :title="$t('emailConnector.mailBox.list.drawer.thread.showHidden', [item.count])"
         @click="revealBubble(item)"
         @keydown.enter="revealBubble(item)"
         @keydown.space.prevent="revealBubble(item)">
+        <!-- Two hairlines rather than one: a doubled rule reads as "something is folded
+             here", where a single one reads as an ordinary separator between messages. -->
         <span
           class="d-block"
-          style="position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--v-borderColor, #e1e8ee);"></span>
+          style="position: absolute; left: 0; right: 0; top: 50%; height: 3px; border-top: 1px solid var(--v-borderColor, #e1e8ee); border-bottom: 1px solid var(--v-borderColor, #e1e8ee);"></span>
         <span
           class="d-flex align-center justify-center rounded-circle text-caption text-light-color"
           style="position: relative; z-index: 1; width: 40px; height: 40px; border: 1px solid var(--v-borderColor, #e1e8ee); background-color: var(--v-surface-base, #fff);">
