@@ -17,8 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The contact card, used inline (expanded two-pane) and inside the detail
        drawer alike. Every address row is a "compose to" affordance; edit and
-       delete follow the source rules (colleagues are the live directory, so
-       neither applies to them). -->
+       delete follow the source rules. A directory-linked contact shows the
+       live profile — current name, avatar, address — resolved server-side. -->
   <div class="pa-4 d-flex flex-column">
     <div class="d-flex flex-column align-center mb-4">
       <v-avatar
@@ -47,7 +47,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.contacts.detail.profile') }}
       </a>
       <v-chip
-        v-if="!contact.colleague"
         x-small
         outlined
         class="mt-2">
@@ -87,9 +86,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item-content>
       </v-list-item>
     </v-list>
-    <div
-      v-if="!contact.colleague"
-      class="d-flex justify-center mt-4">
+    <div class="d-flex justify-center mt-4">
       <v-btn
         v-if="editable"
         class="btn me-2"
@@ -109,7 +106,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
-    // The contact (or colleague pseudo-contact) to show.
+    // The contact to show, already resolved server-side for display.
     contact: {
       type: Object,
       required: true,
@@ -122,13 +119,12 @@ export default {
   },
   computed: {
     /**
-     * The line under the name: organization/title, or the directory position.
+     * The line under the name: organization/title, when known.
      *
      * @returns {string} the subtitle
      */
     subtitle() {
-      return [this.contact.title, this.contact.organization].filter(part => part).join(' - ')
-        || this.contact.position || '';
+      return [this.contact.title, this.contact.organization].filter(part => part).join(' - ');
     },
     /**
      * The initials of the fallback avatar.
@@ -151,8 +147,9 @@ export default {
       return [this.contact.primaryEmail].concat(this.contact.secondaryEmails || []).filter(address => address);
     },
     /**
-     * Whether editing applies: manual and collected rows only — a CardDAV row
-     * is the server's to edit, a colleague is the directory's.
+     * Whether editing applies: manual and collected rows only — a CardDAV
+     * row is the server's to edit, a directory-linked row is the platform
+     * profile's.
      *
      * @returns {boolean} true when the edit button shows
      */
@@ -160,13 +157,15 @@ export default {
       return this.contact.source === 'MANUAL' || this.contact.source === 'COLLECTED';
     },
     /**
-     * The delete button's honest label: a manual contact deletes for real, a
-     * collected/CardDAV one is removed from the list (suppressed).
+     * The delete button's honest label: manual and directory-linked contacts
+     * delete for real (both exist by an explicit act), a collected/CardDAV
+     * one is removed from the list (suppressed).
      *
      * @returns {string} the localized label
      */
     deleteLabel() {
-      return this.contact.source === 'MANUAL' ? this.$t('emailConnector.contacts.detail.delete')
+      return this.contact.source === 'MANUAL' || this.contact.source === 'DIRECTORY'
+        ? this.$t('emailConnector.contacts.detail.delete')
         : this.$t('emailConnector.contacts.detail.remove');
     },
     /**
@@ -177,6 +176,9 @@ export default {
     sourceLabel() {
       if (this.contact.source === 'MANUAL') {
         return this.$t('emailConnector.contacts.source.manual');
+      }
+      if (this.contact.source === 'DIRECTORY') {
+        return this.$t('emailConnector.contacts.source.directory');
       }
       if (this.contact.source === 'CARDDAV') {
         return this.$t('emailConnector.contacts.source.addressBook');

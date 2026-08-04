@@ -61,7 +61,7 @@ const INITIALS_COLORS = ['#ef5350', '#1976d2', '#ab47bc', '#00897b', '#9e9d24', 
 
 export default {
   props: {
-    // The contact (or colleague pseudo-contact) to render.
+    // The contact to render.
     contact: {
       type: Object,
       required: true,
@@ -83,7 +83,7 @@ export default {
     },
     /**
      * The second line: the address when the first line is a name, else the
-     * organization or position.
+     * organization.
      *
      * @returns {string} the sub-line
      */
@@ -91,7 +91,7 @@ export default {
       if (this.contact.displayName && this.contact.primaryEmail) {
         return this.contact.primaryEmail;
       }
-      return this.contact.organization || this.contact.position || '';
+      return this.contact.organization || '';
     },
     /**
      * The initials shown when no avatar exists.
@@ -114,14 +114,17 @@ export default {
       return INITIALS_COLORS[this.displayedName.length % INITIALS_COLORS.length];
     },
     /**
-     * The small source badge of curated rows; collected rows and colleagues —
-     * the normal cases — carry none.
+     * The small source badge of curated rows; collected rows — the normal
+     * case — carry none.
      *
      * @returns {string} the badge icon, or null
      */
     sourceIcon() {
       if (this.contact.source === 'MANUAL') {
         return 'fas fa-user-edit';
+      }
+      if (this.contact.source === 'DIRECTORY') {
+        return 'fas fa-users';
       }
       if (this.contact.source === 'CARDDAV') {
         return 'fas fa-address-book';
@@ -134,8 +137,13 @@ export default {
      * @returns {string} the localized source label
      */
     sourceLabel() {
-      return this.contact.source === 'MANUAL' ? this.$t('emailConnector.contacts.source.manual')
-        : this.$t('emailConnector.contacts.source.addressBook');
+      if (this.contact.source === 'MANUAL') {
+        return this.$t('emailConnector.contacts.source.manual');
+      }
+      if (this.contact.source === 'DIRECTORY') {
+        return this.$t('emailConnector.contacts.source.directory');
+      }
+      return this.$t('emailConnector.contacts.source.addressBook');
     },
   },
 };

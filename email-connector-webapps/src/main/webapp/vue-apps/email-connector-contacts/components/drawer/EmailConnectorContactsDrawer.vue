@@ -16,7 +16,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- The Contacts drawer: the mailbox's shell shape — right drawer, built-in
-       filter, expandable to the two-pane layout (list left, detail right). -->
+       filter, expandable to the two-pane layout (list left, detail right).
+       Every row shown here is the user's own store; the platform directory is
+       reached through the "Add from directory" picker, never browsed as a
+       list, so the A–Z rail and letter index apply to every view. -->
   <exo-drawer
     id="emailContactsDrawer"
     ref="emailContactsDrawer"
@@ -39,6 +42,36 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="hasFullAppLeft" #fullAppLeftTitle>
       <div class="d-flex align-center justify-space-between width-full">
         <span>{{ $t('emailConnector.contacts.drawer.title') }}</span>
+        <div>
+          <v-btn
+            :title="$t('emailConnector.contacts.addFromDirectory')"
+            icon
+            @click="openDirectoryPicker()">
+            <v-icon size="18">
+              fas fa-users
+            </v-icon>
+          </v-btn>
+          <v-btn
+            :title="$t('emailConnector.contacts.add')"
+            icon
+            @click="openForm()">
+            <v-icon size="18">
+              fas fa-user-plus
+            </v-icon>
+          </v-btn>
+        </div>
+      </div>
+    </template>
+    <template #titleIcons>
+      <div v-if="!hasFullAppLeft">
+        <v-btn
+          :title="$t('emailConnector.contacts.addFromDirectory')"
+          icon
+          @click="openDirectoryPicker()">
+          <v-icon size="18">
+            fas fa-users
+          </v-icon>
+        </v-btn>
         <v-btn
           :title="$t('emailConnector.contacts.add')"
           icon
@@ -49,25 +82,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </div>
     </template>
-    <template #titleIcons>
-      <v-btn
-        v-if="!hasFullAppLeft"
-        :title="$t('emailConnector.contacts.add')"
-        icon
-        @click="openForm()">
-        <v-icon size="18">
-          fas fa-user-plus
-        </v-icon>
-      </v-btn>
-    </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <email-connector-contacts-source-chips
         :source="source"
-        :has-address-book="hasAddressBook"
         class="full-width border-box-sizing py-3 px-3"
         @update:source="switchSource" />
       <email-connector-contacts-list
-        :contacts="displayedContacts"
+        :contacts="contacts"
         :letter-index="letterIndex"
         :rail-visible="railVisible"
         :selected-id="selectedContact?.id"
@@ -78,11 +99,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template v-if="!expanded">
         <email-connector-contacts-source-chips
           :source="source"
-          :has-address-book="hasAddressBook"
           class="full-width border-box-sizing py-3 px-3"
           @update:source="switchSource" />
         <email-connector-contacts-list
-          :contacts="displayedContacts"
+          :contacts="contacts"
           :letter-index="letterIndex"
           :rail-visible="railVisible"
           :empty-label="emptyLabel"
@@ -120,15 +140,12 @@ export default {
       contactsDrawer: false,
       expanded: false,
       loading: false,
-      // null = All (the local store), 'collected', 'addressBook', or the
-      // pseudo-source 'colleagues' (the live platform directory, never stored).
+      // null = All (the whole store), or 'collected'.
       source: null,
       term: null,
       contacts: [],
       letterIndex: {},
       size: 0,
-      colleagues: [],
-      hasAddressBook: false,
       selectedContact: null,
       searchTimeout: null,
       // Increments on every reload; late pages of an outdated load are dropped.
@@ -153,23 +170,13 @@ export default {
       return this.expanded;
     },
     /**
-     * The rows the list shows: the store, or the live directory on the
-     * Colleagues chip.
-     *
-     * @returns {Array} the contacts to render
-     */
-    displayedContacts() {
-      return this.source === 'colleagues' ? this.colleagues : this.contacts;
-    },
-    /**
      * Whether the A–Z rail earns its pixels: enough contacts that sticky
-     * headers alone stop being a way to navigate. Colleagues are served by the
-     * directory's own ordering, without the letter index, so no rail there.
+     * headers alone stop being a way to navigate.
      *
      * @returns {boolean} true when the rail should render
      */
     railVisible() {
-      return this.source !== 'colleagues' && this.size >= RAIL_MIN_CONTACTS;
+      return this.size >= RAIL_MIN_CONTACTS;
     },
     /**
      * The empty-state label of the current view.
@@ -182,8 +189,7 @@ export default {
   },
   methods: {
     /**
-     * Opens the drawer and loads the store (and the Address book chip's
-     * presence probe) on the way in.
+     * Opens the drawer and loads the store on the way in.
      *
      * @returns {void}
      */
@@ -191,7 +197,6 @@ export default {
       this.contactsDrawer = true;
       this.$refs.emailContactsDrawer.open();
       this.reload();
-      this.probeAddressBook();
     },
     /**
      * Resets the drawer's transient state on close.
@@ -231,7 +236,7 @@ export default {
     /**
      * Switches the source chip and reloads that view.
      *
-     * @param {string} source - null, 'collected', 'addressBook' or 'colleagues'
+     * @param {string} source - null or 'collected'
      * @returns {void}
      */
     switchSource(source) {
@@ -240,28 +245,15 @@ export default {
       this.reload();
     },
     /**
-     * Reloads the current view: the store eagerly page by page (which keeps
-     * the A–Z rail's jumps exact without offset bookkeeping client-side), or
-     * the live directory for Colleagues.
-     *
-     * @returns {void}
-     */
-    reload() {
-      this.loadToken++;
-      if (this.source === 'colleagues') {
-        this.loadColleagues();
-      } else {
-        this.loadContacts();
-      }
-    },
-    /**
-     * Loads the whole filtered store, sequential pages of {@link PAGE_SIZE},
-     * bounded by {@link MAX_ROWS}. The first page renders immediately; the
-     * rest stream in behind it.
+     * Reloads the current view eagerly, sequential pages of {@link PAGE_SIZE}
+     * bounded by {@link MAX_ROWS} — which keeps the A–Z rail's jumps exact
+     * without offset bookkeeping client-side. The first page renders
+     * immediately; the rest stream in behind it.
      *
      * @returns {Promise<void>} resolves when every page landed
      */
-    async loadContacts() {
+    async reload() {
+      this.loadToken++;
       const token = this.loadToken;
       this.loading = true;
       try {
@@ -302,48 +294,10 @@ export default {
         });
     },
     /**
-     * Loads the Colleagues view straight from the platform's people directory
-     * — queried live with the platform's own ACLs, never copied into the
-     * store — and maps each user onto the contact shape the list renders.
-     *
-     * @returns {Promise<void>} resolves when the directory answered
-     */
-    async loadColleagues() {
-      const token = this.loadToken;
-      this.loading = true;
-      try {
-        const data = await this.$emailConnectorContactsService.getColleagues(this.term, 0, PAGE_SIZE);
-        if (token !== this.loadToken) {
-          return;
-        }
-        this.colleagues = (data?.users || []).map(user => ({
-          colleague: true,
-          displayName: user.fullname,
-          primaryEmail: user.email,
-          avatarUrl: user.avatar,
-          profileUrl: user.username && `/portal/dw/profile/${user.username}`,
-          position: user.position,
-        }));
-      } finally {
-        if (token === this.loadToken) {
-          this.loading = false;
-        }
-      }
-    },
-    /**
-     * Probes once whether curated rows exist, which is what makes the Address
-     * book chip appear before phase 3 fills it (manual contacts count).
-     *
-     * @returns {void}
-     */
-    probeAddressBook() {
-      this.$emailConnectorContactsService.getContacts('addressBook', null, 0, 1)
-        .then(page => this.hasAddressBook = (page?.size || 0) > 0);
-    },
-    /**
      * Opens a contact: inline in the right pane when expanded, in the sibling
-     * detail drawer otherwise. Stored rows are re-read so the detail carries
-     * the read-time profile enrichment (avatar, profile link).
+     * detail drawer otherwise. Rows are re-read so the detail carries the
+     * read-time enrichment (profile avatar and link, live directory data for
+     * imported colleagues).
      *
      * @param {object} contact - the selected row
      * @returns {void}
@@ -357,8 +311,7 @@ export default {
       }
     },
     /**
-     * Re-reads a stored contact for its profile enrichment; colleagues are
-     * already what the directory said.
+     * Re-reads a stored contact for its read-time enrichment.
      *
      * @param {object} contact - the selected row
      * @returns {Promise<object>} the contact to show
@@ -375,6 +328,15 @@ export default {
      */
     openForm(contact) {
       this.$root.$emit('open-email-contact-form', contact);
+    },
+    /**
+     * Opens the search-driven directory picker, which imports the chosen
+     * colleagues as linked contacts.
+     *
+     * @returns {void}
+     */
+    openDirectoryPicker() {
+      this.$root.$emit('open-email-contact-directory-picker');
     },
     /**
      * Clears the inline detail after its contact was deleted or suppressed,

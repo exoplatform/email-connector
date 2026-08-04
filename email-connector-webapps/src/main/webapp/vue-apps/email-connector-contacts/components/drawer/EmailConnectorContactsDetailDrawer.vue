@@ -55,8 +55,8 @@ export default {
   methods: {
     /**
      * Opens the drawer on a contact. Stored rows are re-read so the card
-     * carries the read-time profile enrichment; colleagues show as the
-     * directory handed them over.
+     * carries the read-time enrichment (profile avatar and link, live
+     * directory data for imported colleagues).
      *
      * @param {object} contact - the selected row
      * @returns {void}

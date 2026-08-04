@@ -17,9 +17,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The source chips, in the mailbox filter chips' language (outlined,
        filled primary when active, flex-shrink-0 so toggling restyles but never
-       resizes). "All" is the LOCAL store — the people you correspond with —
-       not the whole company directory; Colleagues is its own live view. The
-       Address book chip only appears once curated rows exist. -->
+       resizes). "All" is the user's own store — unambiguously "my contacts",
+       since the directory is never browsed here, only imported from. The
+       Address book chip joins in phase 3. -->
   <div class="d-flex align-center flex-nowrap overflow-x-auto">
     <v-chip
       v-for="chip in chips"
@@ -39,15 +39,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
-    // The active source: null (All), 'collected', 'addressBook' or 'colleagues'.
+    // The active source: null (All) or 'collected'.
     source: {
       type: String,
       default: null,
-    },
-    // Whether curated rows exist (manual now, CardDAV in phase 3).
-    hasAddressBook: {
-      type: Boolean,
-      default: false,
     },
   },
   computed: {
@@ -57,15 +52,10 @@ export default {
      * @returns {Array} chip descriptors {id, label}
      */
     chips() {
-      const chips = [
+      return [
         {id: null, label: this.$t('emailConnector.contacts.source.all')},
         {id: 'collected', label: this.$t('emailConnector.contacts.source.collected')},
       ];
-      if (this.hasAddressBook) {
-        chips.push({id: 'addressBook', label: this.$t('emailConnector.contacts.source.addressBook')});
-      }
-      chips.push({id: 'colleagues', label: this.$t('emailConnector.contacts.source.colleagues')});
-      return chips;
     },
   },
 };

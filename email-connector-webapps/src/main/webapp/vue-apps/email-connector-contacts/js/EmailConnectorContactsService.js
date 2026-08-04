@@ -170,22 +170,18 @@ export function restoreContact(id) {
 }
 
 /**
- * The platform's own people directory, queried live — the Colleagues chip is
- * that directory, never a copy of it, so paging and ACLs are the platform's.
+ * Searches the platform's people directory live — the "Add from directory"
+ * picker's engine. Search only, never browse: reaching a person in a large
+ * directory is typing their name, not paging 50 000 rows.
  *
- * @param {string} query - free text
- * @param {number} offset - row offset
- * @param {number} limit - page size
- * @returns {Promise<object>} the social users REST answer {users, size}
+ * @param {string} query - the text the user typed, required
+ * @param {number} limit - how many hits to return
+ * @returns {Promise<object>} the social users REST answer {users}
  */
-export function getColleagues(query, offset, limit) {
+export function searchDirectoryUsers(query, limit) {
   const params = new URLSearchParams();
-  if (query) {
-    params.append('q', query);
-  }
-  params.append('offset', offset || 0);
+  params.append('q', query);
   params.append('limit', limit || 50);
-  params.append('returnSize', 'true');
   return fetch(`/portal/rest/v1/social/users?${params}`, {
     headers: {
       'Content-Type': 'application/json'
@@ -196,7 +192,32 @@ export function getColleagues(query, offset, limit) {
     if (resp?.ok) {
       return resp.json();
     } else {
-      throw new Error('Error when getting colleagues');
+      throw new Error('Error when searching the directory');
+    }
+  });
+}
+
+/**
+ * Imports platform users as linked contacts: the server stores the platform
+ * identity and resolves name/avatar/address live at read time — never a copy
+ * that rots when a colleague renames or leaves.
+ *
+ * @param {Array} usernames - the platform usernames to import
+ * @returns {Promise<Array>} the imported contacts
+ */
+export function importDirectoryContacts(usernames) {
+  return fetch('/email-connector/rest/contacts/directory', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(usernames)
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when importing directory contacts');
     }
   });
 }

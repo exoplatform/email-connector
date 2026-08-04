@@ -22,6 +22,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-contacts-drawer />
     <email-connector-contacts-detail-drawer />
     <email-connector-contact-form-drawer />
+    <email-connector-contacts-directory-picker-drawer />
     <!-- The undo toast after a suppression: the one mis-click recovery the
          tombstone model needs, instead of a trash UI. -->
     <v-snackbar
