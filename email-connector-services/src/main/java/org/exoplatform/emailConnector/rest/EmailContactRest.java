@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.rest;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -124,6 +125,23 @@ public class EmailContactRest {
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     }
+  }
+
+  @PostMapping("/directory")
+  @Secured("users")
+  @Operation(summary = "Imports platform colleagues as contacts", method = "POST",
+             description = "Imports the given platform users into the caller's contact store as LINKS: each row keeps the platform username, and name/avatar/address resolve live from the profile at read time - never a copy that rots. Importing somebody already collected, hand-typed or previously removed upgrades that one row in place. Unknown usernames and profiles without an address are skipped silently.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "No usernames given"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public List<EmailContact> importDirectoryContacts(HttpServletRequest request,
+                                                    @Parameter(description = "The platform usernames to import", required = true)
+                                                    @RequestBody
+                                                    List<String> usernames) {
+    if (usernames == null || usernames.isEmpty()) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+    }
+    return emailContactService.importDirectoryContacts(usernames, request.getRemoteUser());
   }
 
   @PutMapping("/{id}")

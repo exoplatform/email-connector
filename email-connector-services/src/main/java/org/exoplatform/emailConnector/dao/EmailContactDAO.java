@@ -140,6 +140,17 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
   String term);
 
   /**
+   * The row already linking a platform identity, if any — the directory
+   * import's first dedupe key: an identity stays one row even when its profile
+   * email changed since it was imported.
+   *
+   * @param userId the store owner
+   * @param platformUsername the platform identity
+   * @return the linked row, if one exists
+   */
+  Optional<EmailContactEntity> findFirstByUserIdAndPlatformUsername(String userId, String platformUsername);
+
+  /**
    * How many rows — INCLUDING suppressed ones — the user has in any source. This
    * is a presence probe (does the Address book chip have anything to show, has
    * anything ever been stored), not a display count.

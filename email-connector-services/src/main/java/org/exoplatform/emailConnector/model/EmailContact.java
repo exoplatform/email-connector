@@ -73,6 +73,13 @@ public class EmailContact {
   private String       title;
 
   /**
+   * The platform identity a {@link EmailContactSource#DIRECTORY} row links to.
+   * Display fields of such a row resolve live from this profile at read time;
+   * the stored name/address are only the fallback when the profile is gone.
+   */
+  private String       platformUsername;
+
+  /**
    * The removed-collected-contact tombstone: a suppressed row is visible nowhere
    * and the collection upsert skips it, so a deleted collected contact does not
    * resurrect on the next mail from that person.

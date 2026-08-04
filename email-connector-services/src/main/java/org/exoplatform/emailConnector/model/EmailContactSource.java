@@ -20,9 +20,10 @@ package org.exoplatform.emailConnector.model;
  * Where a contact row came from. Stored as a string discriminator on
  * {@code EMAIL_CONTACT.SOURCE} (the {@link MailFolder} precedent) rather than an
  * enum column, so later sources (GRAPH) are a constant away, never a schema or
- * enum-ordinal migration. Colleagues (the platform directory) are deliberately
- * NOT a source: they are never copied into the table, only queried live and
- * joined at read time.
+ * enum-ordinal migration. The platform directory is never COPIED into the
+ * table: a {@link #DIRECTORY} row is a link — the platform username — whose
+ * display fields (name, avatar, address) resolve live from the profile at read
+ * time, so a renamed or departed colleague never rots into a stale snapshot.
  */
 public final class EmailContactSource {
 
@@ -34,6 +35,12 @@ public final class EmailContactSource {
 
   /** Typed by hand in the contact form. */
   public static final String MANUAL    = "MANUAL";
+
+  /**
+   * Imported from the platform's people directory: a link to the platform
+   * identity, resolved live at read time — never a copy of the profile.
+   */
+  public static final String DIRECTORY = "DIRECTORY";
 
   /** Synced from a CardDAV address book (phase 3 fills these). */
   public static final String CARDDAV   = "CARDDAV";

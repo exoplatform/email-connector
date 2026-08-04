@@ -94,6 +94,11 @@ public class EmailContactEntity {
   @Column(name = "TITLE")
   private String  title;
 
+  // The platform identity a DIRECTORY row links to. The row's name/email columns are
+  // only the fallback for when this profile is gone: display resolves live from it.
+  @Column(name = "PLATFORM_USERNAME")
+  private String  platformUsername;
+
   // CardDAV bookkeeping (phase 3): the vCard photo stored via FileService, the resource
   // href/etag/uid on the server, and the email connector carrying the address book.
   @Column(name = "PHOTO_FILE_ID")

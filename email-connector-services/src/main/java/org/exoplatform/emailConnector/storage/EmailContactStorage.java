@@ -112,6 +112,19 @@ public class EmailContactStorage {
   }
 
   /**
+   * The row already linking a platform identity, if any, suppressed or not —
+   * the directory import's first dedupe key, ahead of the address (an
+   * identity's profile email may have changed since it was imported).
+   *
+   * @param userId the store owner
+   * @param platformUsername the platform identity
+   * @return the linked contact, or null when the identity was never imported
+   */
+  public EmailContact getContactByPlatformUsername(String userId, String platformUsername) {
+    return emailContactDAO.findFirstByUserIdAndPlatformUsername(userId, platformUsername).map(this::fromEntity).orElse(null);
+  }
+
+  /**
    * Creates a row from the DTO, deriving the sort key/bucket and stamping the
    * creation date.
    *
@@ -209,6 +222,7 @@ public class EmailContactStorage {
     entity.setPhones(joinValues(contact.getPhones()));
     entity.setOrganization(contact.getOrganization());
     entity.setTitle(contact.getTitle());
+    entity.setPlatformUsername(contact.getPlatformUsername());
     entity.setSuppressed(contact.isSuppressed());
     entity.setSeenCount(contact.getSeenCount());
     entity.setLastSeenDate(contact.getLastSeenDate());
@@ -243,6 +257,7 @@ public class EmailContactStorage {
     contact.setPhones(splitValues(entity.getPhones()));
     contact.setOrganization(entity.getOrganization());
     contact.setTitle(entity.getTitle());
+    contact.setPlatformUsername(entity.getPlatformUsername());
     contact.setSuppressed(entity.isSuppressed());
     contact.setSeenCount(entity.getSeenCount());
     contact.setLastSeenDate(entity.getLastSeenDate());

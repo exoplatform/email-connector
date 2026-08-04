@@ -16,7 +16,9 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
@@ -38,7 +40,9 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
  * The per-user contact store: browse/search with the letter index the drawer's
@@ -63,6 +67,12 @@ public class EmailContactService {
 
   /** Message code answered as a 400 when editing a CardDAV row (read-only in v1). */
   public static final String      CONTACT_CARDDAV_READ_ONLY   = "emailConnector.contacts.carddavReadOnly";
+
+  /**
+   * Message code answered as a 400 when editing a directory-linked row: its
+   * truth lives in the platform profile, not in the stored fallback fields.
+   */
+  public static final String      CONTACT_DIRECTORY_READ_ONLY = "emailConnector.contacts.directoryReadOnly";
 
   /** The chips' "collected" filter value. */
   public static final String      SOURCE_FILTER_COLLECTED     = "collected";
@@ -89,11 +99,20 @@ public class EmailContactService {
   @Autowired
   private SettingService          settingService;
 
+  // Resolves DIRECTORY rows' display fields from the platform profile at read
+  // time; identity lookups by username ride the social identity cache, which is
+  // what makes per-row resolution affordable on a list page.
+  @Autowired
+  private IdentityManager         identityManager;
+
   /**
    * One page of the user's visible contacts, sorted alphabetically, with the
    * letter-index map and the filtered total. "All" (no source) means the whole
-   * LOCAL store — collected, manual and address book together — never the
-   * platform directory, which the drawer queries live on its own chip.
+   * local store — every row is the user's own; the platform directory is never
+   * browsed, only imported from, so "my contacts" is unambiguously true.
+   * Directory-linked rows come out resolved: their name, avatar and address are
+   * read live from the platform profile, the stored fields being only the
+   * fallback for a profile that is gone.
    *
    * @param username the store owner
    * @param source null/"all" for the whole store, "collected", or "addressBook"
@@ -103,7 +122,16 @@ public class EmailContactService {
    * @return the page, never null
    */
   public EmailContactPage getContacts(String username, String source, String query, int offset, int limit) {
-    return emailContactStorage.getContacts(username, resolveSources(source), query, Math.max(offset, 0), sanitizeLimit(limit));
+    EmailContactPage page =
+                          emailContactStorage.getContacts(username,
+                                                          resolveSources(source),
+                                                          query,
+                                                          Math.max(offset, 0),
+                                                          sanitizeLimit(limit));
+    if (page != null && page.getContacts() != null) {
+      page.getContacts().forEach(this::resolveDirectoryContact);
+    }
+    return page;
   }
 
   /**
@@ -122,7 +150,13 @@ public class EmailContactService {
     if (contact == null || !StringUtils.equals(contact.getUserId(), username) || contact.isSuppressed()) {
       return null;
     }
-    enrichWithProfile(contact);
+    if (EmailContactSource.DIRECTORY.equals(contact.getSource())) {
+      // A directory-linked row resolves through its identity link — exact and
+      // cheap — never through the by-email organization query.
+      resolveDirectoryContact(contact);
+    } else {
+      enrichWithProfile(contact);
+    }
     return contact;
   }
 
@@ -170,9 +204,11 @@ public class EmailContactService {
   /**
    * Updates a contact the user can see. Manual and collected rows are editable
    * (a collected row keeps its source — collection never overwrites a name a
-   * user set, it only backfills empty ones); CardDAV rows are read-only in v1,
-   * they would resurrect at the next address book sync. Changing the address
-   * re-checks uniqueness; when the new address belongs to a suppressed
+   * user set, it only backfills empty ones). CardDAV rows are read-only in v1
+   * (they would resurrect at the next address book sync), and directory-linked
+   * rows are read-only always: their truth is the platform profile, and editing
+   * the stored fallback would change nothing the user sees. Changing the
+   * address re-checks uniqueness; when the new address belongs to a suppressed
    * tombstone, the tombstone is absorbed rather than reported as a conflict the
    * user cannot see.
    *
@@ -180,8 +216,9 @@ public class EmailContactService {
    * @param contact the fields to apply
    * @param username the store owner
    * @return the updated contact, or null when there is nothing this user can see
-   * @throws IllegalArgumentException with {@link #CONTACT_INVALID_EMAIL} or
-   *           {@link #CONTACT_CARDDAV_READ_ONLY}
+   * @throws IllegalArgumentException with {@link #CONTACT_INVALID_EMAIL},
+   *           {@link #CONTACT_CARDDAV_READ_ONLY} or
+   *           {@link #CONTACT_DIRECTORY_READ_ONLY}
    * @throws IllegalStateException with {@link #CONTACT_ALREADY_EXISTS} when the
    *           new address collides with another visible row
    */
@@ -192,6 +229,9 @@ public class EmailContactService {
     }
     if (EmailContactSource.CARDDAV.equals(existing.getSource())) {
       throw new IllegalArgumentException(CONTACT_CARDDAV_READ_ONLY);
+    }
+    if (EmailContactSource.DIRECTORY.equals(existing.getSource())) {
+      throw new IllegalArgumentException(CONTACT_DIRECTORY_READ_ONLY);
     }
     String address = EmailContactUtils.normalizeAddress(contact == null ? null : contact.getPrimaryEmail());
     if (address == null) {
@@ -212,11 +252,14 @@ public class EmailContactService {
   }
 
   /**
-   * Deletes a contact, with the rule its source imposes. A MANUAL row deletes
-   * for real. A COLLECTED row is SUPPRESSED instead: deleting it outright would
-   * only see it re-collected on the next mail from that person, so the tombstone
-   * is what makes the removal stick. A CARDDAV row is also suppressed — locally
-   * hidden — because a local delete would resurrect at the next sync.
+   * Deletes a contact, with the rule its source imposes. MANUAL and DIRECTORY
+   * rows delete for real — both exist by an explicit user act, so an explicit
+   * delete undoes it cleanly (a re-import re-links, and later mail from that
+   * person re-collects them as COLLECTED, which is the honest state). A
+   * COLLECTED row is SUPPRESSED instead: deleting it outright would only see it
+   * re-collected on the next mail from that person, so the tombstone is what
+   * makes the removal stick. A CARDDAV row is also suppressed — locally hidden —
+   * because a local delete would resurrect at the next sync.
    *
    * @param id the contact id
    * @param username the store owner
@@ -229,7 +272,7 @@ public class EmailContactService {
     if (existing == null || !StringUtils.equals(existing.getUserId(), username) || existing.isSuppressed()) {
       return null;
     }
-    if (EmailContactSource.MANUAL.equals(existing.getSource())) {
+    if (EmailContactSource.MANUAL.equals(existing.getSource()) || EmailContactSource.DIRECTORY.equals(existing.getSource())) {
       emailContactStorage.deleteContact(id);
       existing.setSuppressed(false);
       return existing;
@@ -253,6 +296,93 @@ public class EmailContactService {
     }
     if (!existing.isSuppressed()) {
       return existing;
+    }
+    existing.setSuppressed(false);
+    return emailContactStorage.updateContact(existing);
+  }
+
+  /**
+   * Imports platform colleagues as contacts — as LINKS, not copies: each row
+   * stores the platform username, and name/avatar/address resolve live from
+   * the profile at every read, so a rename or a departure never rots into a
+   * stale snapshot; the profile fields captured here are only the fallback
+   * (and the sort key) for a profile that later disappears. Dedupe is by
+   * identity first, then by address: importing somebody already collected (or
+   * hand-typed, or previously removed) upgrades that one row in place to a
+   * directory link, keeping its counters — never a second row for the same
+   * person. Unknown usernames and profiles without an address are skipped, not
+   * errors: the picker's list may lag the directory.
+   *
+   * @param platformUsernames the platform usernames to import
+   * @param username the store owner
+   * @return the imported (created or upgraded) contacts, resolved for display
+   */
+  public List<EmailContact> importDirectoryContacts(List<String> platformUsernames, String username) {
+    List<EmailContact> imported = new ArrayList<>();
+    if (platformUsernames == null) {
+      return imported;
+    }
+    for (String platformUsername : new LinkedHashSet<>(platformUsernames)) {
+      if (StringUtils.isBlank(platformUsername)) {
+        continue;
+      }
+      Profile profile = getDirectoryProfile(platformUsername.trim());
+      if (profile == null) {
+        LOG.debug("Directory import for user {} skipped {}: no such platform profile", username, platformUsername);
+        continue;
+      }
+      String address = EmailContactUtils.normalizeAddress(profile.getEmail());
+      if (address == null) {
+        LOG.debug("Directory import for user {} skipped {}: the profile has no usable email", username, platformUsername);
+        continue;
+      }
+      EmailContact contact = linkDirectoryContact(username, platformUsername.trim(), address, profile);
+      resolveDirectoryContact(contact);
+      imported.add(contact);
+    }
+    return imported;
+  }
+
+  /**
+   * Creates or upgrades the ONE row a platform identity resolves to: looked up
+   * by identity link first (its profile email may have changed since a previous
+   * import), then by any of its addresses (the same person may already be
+   * collected, hand-typed, or suppressed). An existing row is upgraded in place
+   * — source, link, fallback name — with its counters kept and its tombstone
+   * lifted, an import being as explicit an act as the manual add that revives
+   * one.
+   *
+   * @param username the store owner
+   * @param platformUsername the platform identity
+   * @param address the profile's normalized address
+   * @param profile the resolved profile
+   * @return the stored contact
+   */
+  private EmailContact linkDirectoryContact(String username, String platformUsername, String address, Profile profile) {
+    EmailContact existing = emailContactStorage.getContactByPlatformUsername(username, platformUsername);
+    if (existing == null) {
+      existing = emailContactStorage.getContactByAddress(username, address);
+    }
+    if (existing == null) {
+      EmailContact created = new EmailContact();
+      created.setUserId(username);
+      created.setSource(EmailContactSource.DIRECTORY);
+      created.setPlatformUsername(platformUsername);
+      created.setPrimaryEmail(address);
+      created.setDisplayName(StringUtils.trimToNull(profile.getFullName()));
+      created.setSeenCount(0);
+      return emailContactStorage.createContact(created);
+    }
+    if (EmailContactSource.DIRECTORY.equals(existing.getSource()) && platformUsername.equals(existing.getPlatformUsername())
+        && !existing.isSuppressed()) {
+      return existing;
+    }
+    existing.setSource(EmailContactSource.DIRECTORY);
+    existing.setPlatformUsername(platformUsername);
+    if (StringUtils.isNotBlank(profile.getFullName())) {
+      // Refresh the fallback snapshot (and through it the sort key): the live
+      // profile is what renders anyway.
+      existing.setDisplayName(profile.getFullName().trim());
     }
     existing.setSuppressed(false);
     return emailContactStorage.updateContact(existing);
@@ -495,6 +625,58 @@ public class EmailContactService {
     if (profile != null) {
       contact.setAvatarUrl(profile.getAvatarUrl());
       contact.setProfileUrl(profile.getUrl());
+    }
+  }
+
+  /**
+   * Resolves a directory-linked row for display: name, avatar, profile link
+   * and address are read LIVE from the linked platform profile, overriding the
+   * stored fallback — so a renamed colleague shows their current name and a
+   * changed address is composed to correctly. When the profile is gone
+   * (identity deleted or unknown), the row silently falls back to the stored
+   * snapshot: the person the user knew, as last seen. No-op on any other
+   * source.
+   *
+   * @param contact the contact being answered, mutated in place
+   */
+  private void resolveDirectoryContact(EmailContact contact) {
+    if (contact == null || !EmailContactSource.DIRECTORY.equals(contact.getSource())
+        || StringUtils.isBlank(contact.getPlatformUsername())) {
+      return;
+    }
+    Profile profile = getDirectoryProfile(contact.getPlatformUsername());
+    if (profile == null) {
+      return;
+    }
+    if (StringUtils.isNotBlank(profile.getFullName())) {
+      contact.setDisplayName(profile.getFullName());
+    }
+    contact.setAvatarUrl(profile.getAvatarUrl());
+    contact.setProfileUrl(profile.getUrl());
+    String liveAddress = EmailContactUtils.normalizeAddress(profile.getEmail());
+    if (liveAddress != null) {
+      contact.setPrimaryEmail(liveAddress);
+    }
+  }
+
+  /**
+   * The live profile of a platform username, or null when the identity does
+   * not exist, is deleted, or cannot be read — the caller's cue to fall back
+   * to stored data. Lookups by username ride the social identity cache.
+   *
+   * @param platformUsername the platform identity
+   * @return the profile, or null
+   */
+  private Profile getDirectoryProfile(String platformUsername) {
+    try {
+      Identity identity = identityManager.getOrCreateUserIdentity(platformUsername);
+      if (identity == null || identity.isDeleted()) {
+        return null;
+      }
+      return identity.getProfile();
+    } catch (Exception e) {
+      LOG.debug("Could not resolve the platform profile of {}", platformUsername, e);
+      return null;
     }
   }
 

@@ -376,4 +376,14 @@
       <column name="SORT_NAME"/>
     </createIndex>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-29">
+    <!-- The platform identity a DIRECTORY row links to. Imported colleagues are
+         stored as a LINK (this username), not a copy: name, avatar and address
+         resolve live from the profile at read time, so a rename or a departure
+         never rots into a stale snapshot. The name/email columns of such a row
+         are only the fallback shown when the profile is gone. -->
+    <addColumn tableName="EMAIL_CONTACT">
+      <column name="PLATFORM_USERNAME" type="VARCHAR(250)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>

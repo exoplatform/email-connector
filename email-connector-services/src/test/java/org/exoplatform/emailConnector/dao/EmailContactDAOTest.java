@@ -115,6 +115,20 @@ public class EmailContactDAOTest {
 
     // The presence probe counts tombstones too.
     assertEquals(4, emailContactDAO.countByUserIdAndSourceIn(USERNAME, List.of(EmailContactSource.COLLECTED)));
+
+    // The directory import's identity-link lookup.
+    EmailContactEntity linked = new EmailContactEntity();
+    linked.setUserId(USERNAME);
+    linked.setSource(EmailContactSource.DIRECTORY);
+    linked.setPrimaryEmail("jdoe@example.org");
+    linked.setSortName("JDOE");
+    linked.setSortBucket(9);
+    linked.setPlatformUsername("jdoe");
+    entityManager.persist(linked);
+    entityManager.flush();
+    assertEquals("jdoe@example.org",
+                 emailContactDAO.findFirstByUserIdAndPlatformUsername(USERNAME, "jdoe").orElseThrow().getPrimaryEmail());
+    assertTrue(emailContactDAO.findFirstByUserIdAndPlatformUsername(USERNAME, "ghost").isEmpty());
   }
 
   @Test

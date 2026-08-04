@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -58,6 +59,9 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailContactStorage;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 @ExtendWith(MockitoExtension.class)
 @SpringBootTest(classes = { EmailContactService.class })
@@ -78,6 +82,9 @@ public class EmailContactServiceTest {
 
   @MockBean
   private SettingService          settingService;
+
+  @MockBean
+  private IdentityManager         identityManager;
 
   @Autowired
   private EmailContactService     emailContactService;
@@ -432,6 +439,161 @@ public class EmailContactServiceTest {
     assertEquals(EmailContactService.CONTACT_CARDDAV_READ_ONLY, readOnly.getMessage());
   }
 
+  // ---------------------------------------------------------------- directory import
+
+  @Test
+  void importCreatesALinkedRowNotACopy() {
+    givenDirectoryProfile("jdoe", "Jane Doe", "Jane.Doe@Example.com", "avatar-url", "profile-url");
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    List<EmailContact> imported = emailContactService.importDirectoryContacts(List.of("jdoe"), USERNAME);
+
+    ArgumentCaptor<EmailContact> created = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).createContact(created.capture());
+    assertEquals(EmailContactSource.DIRECTORY, created.getValue().getSource());
+    assertEquals("jdoe", created.getValue().getPlatformUsername());
+    assertEquals("jane.doe@example.com", created.getValue().getPrimaryEmail());
+    // The stored name is only the fallback snapshot; display resolves live.
+    assertEquals("Jane Doe", created.getValue().getDisplayName());
+    assertEquals(1, imported.size());
+    assertEquals("avatar-url", imported.get(0).getAvatarUrl());
+    assertEquals("profile-url", imported.get(0).getProfileUrl());
+  }
+
+  @Test
+  void importOfAnAlreadyCollectedAddressUpgradesThatRowInPlace() {
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    EmailContact collected = collectedContact(5L, "jane.doe@example.com", "jane");
+    collected.setSeenCount(7);
+    when(emailContactStorage.getContactByAddress(USERNAME, "jane.doe@example.com")).thenReturn(collected);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    emailContactService.importDirectoryContacts(List.of("jdoe"), USERNAME);
+
+    ArgumentCaptor<EmailContact> updated = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).updateContact(updated.capture());
+    verify(emailContactStorage, never()).createContact(any());
+    assertEquals(EmailContactSource.DIRECTORY, updated.getValue().getSource());
+    assertEquals("jdoe", updated.getValue().getPlatformUsername());
+    assertEquals(5L, updated.getValue().getId());
+    // The one row keeps its history: same id, counters untouched.
+    assertEquals(7, updated.getValue().getSeenCount());
+  }
+
+  @Test
+  void importOfASuppressedRowRevivesIt() {
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    EmailContact suppressed = collectedContact(5L, "jane.doe@example.com", "Jane");
+    suppressed.setSuppressed(true);
+    when(emailContactStorage.getContactByAddress(USERNAME, "jane.doe@example.com")).thenReturn(suppressed);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    List<EmailContact> imported = emailContactService.importDirectoryContacts(List.of("jdoe"), USERNAME);
+
+    assertFalse(imported.get(0).isSuppressed());
+    assertEquals(EmailContactSource.DIRECTORY, imported.get(0).getSource());
+  }
+
+  @Test
+  void importIsIdempotentOnAnAlreadyLinkedIdentity() {
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    EmailContact linked = collectedContact(5L, "jane.doe@example.com", "Jane Doe");
+    linked.setSource(EmailContactSource.DIRECTORY);
+    linked.setPlatformUsername("jdoe");
+    when(emailContactStorage.getContactByPlatformUsername(USERNAME, "jdoe")).thenReturn(linked);
+
+    List<EmailContact> imported = emailContactService.importDirectoryContacts(List.of("jdoe", "jdoe"), USERNAME);
+
+    verify(emailContactStorage, never()).createContact(any());
+    verify(emailContactStorage, never()).updateContact(any());
+    assertEquals(1, imported.size());
+  }
+
+  @Test
+  void importSkipsUnknownIdentitiesAndProfilesWithoutAnAddress() {
+    when(identityManager.getOrCreateUserIdentity("ghost")).thenReturn(null);
+    givenDirectoryProfile("noaddress", "No Address", null, null, null);
+
+    List<EmailContact> imported = emailContactService.importDirectoryContacts(List.of("ghost", "noaddress"), USERNAME);
+
+    assertTrue(imported.isEmpty());
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void directoryRowsRenderLiveFromTheProfile() {
+    // The person was imported as "Jane Doe" and later renamed and changed
+    // address: the row must show the profile of TODAY, not the import day.
+    EmailContact linked = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContactById(5L)).thenReturn(linked);
+    givenDirectoryProfile("jdoe", "Jane Doe-Martin", "jane.doe-martin@example.com", "new-avatar", "profile-url");
+
+    EmailContact shown = emailContactService.getContact(5L, USERNAME);
+
+    assertEquals("Jane Doe-Martin", shown.getDisplayName());
+    assertEquals("jane.doe-martin@example.com", shown.getPrimaryEmail());
+    assertEquals("new-avatar", shown.getAvatarUrl());
+  }
+
+  @Test
+  void directoryRowsFallBackToTheSnapshotWhenTheProfileIsGone() {
+    // The colleague left the company: the row shows the person as last known
+    // instead of blanking out or erroring.
+    EmailContact linked = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContactById(5L)).thenReturn(linked);
+    Identity deleted = mock(Identity.class);
+    when(deleted.isDeleted()).thenReturn(true);
+    when(identityManager.getOrCreateUserIdentity("jdoe")).thenReturn(deleted);
+
+    EmailContact shown = emailContactService.getContact(5L, USERNAME);
+
+    assertEquals("Jane Doe", shown.getDisplayName());
+    assertEquals("jane.doe@example.com", shown.getPrimaryEmail());
+    assertNull(shown.getAvatarUrl());
+  }
+
+  @Test
+  void listPagesResolveDirectoryRowsLive() {
+    EmailContact linked = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContacts(USERNAME, null, null, 0, 100))
+                                                                       .thenReturn(new org.exoplatform.emailConnector.model.EmailContactPage(List.of(linked),
+                                                                                                                                             java.util.Map.of(),
+                                                                                                                                             1,
+                                                                                                                                             0,
+                                                                                                                                             100));
+    givenDirectoryProfile("jdoe", "Jane Renamed", "jane.doe@example.com", "avatar", null);
+
+    List<EmailContact> contacts = emailContactService.getContacts(USERNAME, null, null, 0, 100).getContacts();
+
+    assertEquals("Jane Renamed", contacts.get(0).getDisplayName());
+    assertEquals("avatar", contacts.get(0).getAvatarUrl());
+  }
+
+  @Test
+  void deleteRemovesADirectoryContactForReal() {
+    // A directory link exists by an explicit user act, so an explicit delete
+    // undoes it cleanly — no tombstone, later mail simply re-collects them.
+    when(emailContactStorage.getContactById(5L)).thenReturn(directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe"));
+
+    EmailContact result = emailContactService.deleteOrSuppressContact(5L, USERNAME);
+
+    verify(emailContactStorage).deleteContact(5L);
+    verify(emailContactStorage, never()).updateContact(any());
+    assertFalse(result.isSuppressed());
+  }
+
+  @Test
+  void editingADirectoryContactIsRefused() {
+    when(emailContactStorage.getContactById(5L)).thenReturn(directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe"));
+
+    IllegalArgumentException readOnly =
+                                      assertThrows(IllegalArgumentException.class,
+                                                   () -> emailContactService.updateContact(5L,
+                                                                                           manualInput("J", "jane.doe@example.com"),
+                                                                                           USERNAME));
+    assertEquals(EmailContactService.CONTACT_DIRECTORY_READ_ONLY, readOnly.getMessage());
+  }
+
   // ---------------------------------------------------------------- listing
 
   @Test
@@ -499,6 +661,43 @@ public class EmailContactServiceTest {
     email.setReceivedDate(new Date());
     customizer.accept(email);
     return email;
+  }
+
+  /**
+   * Mocks a resolvable platform identity with the given profile fields.
+   *
+   * @param username the platform username
+   * @param fullName the profile's current full name
+   * @param email the profile's current email, may be null
+   * @param avatarUrl the profile's avatar, may be null
+   * @param profileUrl the profile's page link, may be null
+   */
+  private void givenDirectoryProfile(String username, String fullName, String email, String avatarUrl, String profileUrl) {
+    Identity identity = mock(Identity.class);
+    Profile profile = mock(Profile.class);
+    lenient().when(identity.isDeleted()).thenReturn(false);
+    lenient().when(identity.getProfile()).thenReturn(profile);
+    lenient().when(profile.getFullName()).thenReturn(fullName);
+    lenient().when(profile.getEmail()).thenReturn(email);
+    lenient().when(profile.getAvatarUrl()).thenReturn(avatarUrl);
+    lenient().when(profile.getUrl()).thenReturn(profileUrl);
+    when(identityManager.getOrCreateUserIdentity(username)).thenReturn(identity);
+  }
+
+  /**
+   * An existing directory-linked row, as the import leaves them.
+   *
+   * @param id the row id
+   * @param address the fallback address stored at import time
+   * @param displayName the fallback name stored at import time
+   * @param platformUsername the linked platform identity
+   * @return the contact
+   */
+  private EmailContact directoryContact(Long id, String address, String displayName, String platformUsername) {
+    EmailContact contact = collectedContact(id, address, displayName);
+    contact.setSource(EmailContactSource.DIRECTORY);
+    contact.setPlatformUsername(platformUsername);
+    return contact;
   }
 
   /**
