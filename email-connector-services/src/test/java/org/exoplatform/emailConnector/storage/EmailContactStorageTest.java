@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import java.util.Date;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -157,6 +159,43 @@ public class EmailContactStorageTest {
     assertEquals(4, saved.getValue().getSortBucket());
     assertNull(saved.getValue().getId());
     assertTrue(saved.getValue().getCreatedDate() != null && saved.getValue().getUpdatedDate() != null);
+  }
+
+  @Test
+  void updateKeepsTheColumnsTheDtoKnowsNothingAbout() {
+    // The CardDAV columns live only on the entity: the DTO cannot carry them, so
+    // an update that rebuilt the row from the DTO erased them -- silently, and
+    // only once phase 3 had filled them in. The created date has the same shape
+    // of problem and used to be rescued by hand.
+    Date created = new Date(1000L);
+    EmailContactEntity stored = entity(7L, "jane@example.com", "Jane Doe", 10);
+    stored.setHref("/dav/addressbooks/jane.vcf");
+    stored.setEtag("\"abc123\"");
+    stored.setVcardUid("uid-42");
+    stored.setConnectorId(3L);
+    stored.setCreatedDate(created);
+    when(emailContactDAO.findById(7L)).thenReturn(java.util.Optional.of(stored));
+    when(emailContactDAO.save(any(EmailContactEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact contact = new EmailContact();
+    contact.setId(7L);
+    contact.setUserId(USERNAME);
+    contact.setSource(EmailContactSource.COLLECTED);
+    contact.setPrimaryEmail("jane@example.com");
+    contact.setDisplayName("Jane Doe");
+    contact.setOrganization("Acme");
+
+    emailContactStorage.updateContact(contact);
+
+    ArgumentCaptor<EmailContactEntity> saved = ArgumentCaptor.forClass(EmailContactEntity.class);
+    verify(emailContactDAO).save(saved.capture());
+    assertEquals("/dav/addressbooks/jane.vcf", saved.getValue().getHref());
+    assertEquals("\"abc123\"", saved.getValue().getEtag());
+    assertEquals("uid-42", saved.getValue().getVcardUid());
+    assertEquals(3L, saved.getValue().getConnectorId());
+    assertEquals(created, saved.getValue().getCreatedDate());
+    // and the payload still lands
+    assertEquals("Acme", saved.getValue().getOrganization());
   }
 
   /**

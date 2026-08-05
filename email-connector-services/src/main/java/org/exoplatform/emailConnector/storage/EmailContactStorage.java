@@ -171,11 +171,18 @@ public class EmailContactStorage {
    * @return the persisted contact
    */
   public EmailContact updateContact(EmailContact contact) {
-    Date createdDate = emailContactDAO.findById(contact.getId())
-                                      .map(EmailContactEntity::getCreatedDate)
-                                      .orElse(null);
-    EmailContactEntity entity = toEntity(contact);
-    entity.setCreatedDate(createdDate);
+    // Written ONTO the stored row, never rebuilt from the DTO. The DTO does not
+    // carry every column -- the CardDAV ones (href, etag, vCard uid, connector)
+    // exist only on the entity -- so rebuilding erased whatever it did not know
+    // about, and the erasure was silent. Rescuing them one at a time is what the
+    // created date already needed; copying only the fields the DTO owns retires
+    // that whole class of bug, including for columns nobody has added yet.
+    EmailContactEntity entity = emailContactDAO.findById(contact.getId()).orElse(null);
+    if (entity == null) {
+      entity = toEntity(contact);
+    } else {
+      applyAuthoredColumns(contact, entity);
+    }
     entity.setUpdatedDate(new Date());
     return fromEntity(emailContactDAO.save(entity));
   }
@@ -297,6 +304,25 @@ public class EmailContactStorage {
   private EmailContactEntity toEntity(EmailContact contact) {
     EmailContactEntity entity = new EmailContactEntity();
     entity.setId(contact.getId());
+    applyAuthoredColumns(contact, entity);
+    entity.setCreatedDate(contact.getCreatedDate());
+    entity.setUpdatedDate(contact.getUpdatedDate());
+    return entity;
+  }
+
+  /**
+   * Copies onto the entity exactly the columns the DTO owns, and nothing else.
+   *
+   * This is the whole point of the split: what the DTO does not carry -- the
+   * CardDAV href, etag and vCard uid, the address book's connector, and whatever
+   * a later phase adds -- belongs to the stored row and must survive a save that
+   * knows nothing about it. The identity and the created date are deliberately
+   * absent: they are the row's, not the payload's.
+   *
+   * @param contact the payload being saved
+   * @param entity the row being written, mutated in place
+   */
+  private void applyAuthoredColumns(EmailContact contact, EmailContactEntity entity) {
     entity.setUserId(contact.getUserId());
     entity.setSource(contact.getSource());
     entity.setPrimaryEmail(contact.getPrimaryEmail());
@@ -314,15 +340,10 @@ public class EmailContactStorage {
     entity.setOrganization(contact.getOrganization());
     entity.setTitle(contact.getTitle());
     entity.setPlatformUsername(contact.getPlatformUsername());
-    // Carried through explicitly: an update rebuilds the whole entity from the DTO,
-    // so a column the mapper does not write is a column the next save erases.
     entity.setPhotoFileId(contact.getPhotoFileId());
     entity.setSuppressed(contact.isSuppressed());
     entity.setSeenCount(contact.getSeenCount());
     entity.setLastSeenDate(contact.getLastSeenDate());
-    entity.setCreatedDate(contact.getCreatedDate());
-    entity.setUpdatedDate(contact.getUpdatedDate());
-    return entity;
   }
 
   /**
