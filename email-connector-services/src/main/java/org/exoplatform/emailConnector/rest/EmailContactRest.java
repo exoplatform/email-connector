@@ -44,6 +44,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
+import org.exoplatform.emailConnector.model.EmailContactSuggestion;
 import org.exoplatform.emailConnector.service.EmailContactService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -98,6 +99,22 @@ public class EmailContactRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+  }
+
+  @GetMapping("/suggest")
+  @Secured("users")
+  @Operation(summary = "Suggests recipients for the compose field", method = "GET",
+             description = "One ranked, de-duplicated recipient list merging the caller's own contact store with the platform's people directory, so a recipient field is useful before the store has collected anybody. Ranking: the store first, ordered by usefulness (most-corresponded-with, then most recent, then alphabetical), then the directory-only matches. De-duplication is by normalized address and the store wins, the platform profile supplying the live name and avatar. A blank term answers the top of the store - capped by the same limit - and does not query the directory at all.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public List<EmailContactSuggestion> suggestRecipients(HttpServletRequest request,
+                                                        @Parameter(description = "What the user typed; blank answers their top contacts")
+                                                        @RequestParam(value = "q", required = false)
+                                                        String query,
+                                                        @Parameter(description = "How many suggestions to answer; 0 takes the server's default, and the server caps it either way")
+                                                        @RequestParam(value = "limit", required = false, defaultValue = "0")
+                                                        int limit) {
+    return emailContactService.suggestRecipients(request.getRemoteUser(), query, limit);
   }
 
   @GetMapping("/{id}")
