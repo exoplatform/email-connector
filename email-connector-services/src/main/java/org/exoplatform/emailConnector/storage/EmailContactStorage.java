@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.storage;
 
 import java.io.ByteArrayInputStream;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -325,7 +326,7 @@ public class EmailContactStorage {
     entity.setUserId(contact.getUserId());
     entity.setSource(contact.getSource());
     entity.setPrimaryEmail(contact.getPrimaryEmail());
-    entity.setEmails(toEmailsList(contact.getSecondaryEmails()));
+    entity.setEmails(toEmailsString(contact.getSecondaryEmails()));
     entity.setDisplayName(contact.getDisplayName());
     entity.setGivenName(contact.getGivenName());
     entity.setFamilyName(contact.getFamilyName());
@@ -335,7 +336,7 @@ public class EmailContactStorage {
                                                         contact.getPrimaryEmail());
     entity.setSortName(sortName);
     entity.setSortBucket(EmailContactUtils.sortBucketOf(sortName));
-    entity.setPhones(contact.getPhones());
+    entity.setPhones(joinValues(contact.getPhones()));
     entity.setOrganization(contact.getOrganization());
     entity.setTitle(contact.getTitle());
     entity.setPlatformUsername(contact.getPlatformUsername());
@@ -362,13 +363,13 @@ public class EmailContactStorage {
     contact.setUserId(entity.getUserId());
     contact.setSource(entity.getSource());
     contact.setPrimaryEmail(entity.getPrimaryEmail());
-    contact.setSecondaryEmails(fromEmailsList(entity.getEmails()));
+    contact.setSecondaryEmails(fromEmailsString(entity.getEmails()));
     contact.setDisplayName(entity.getDisplayName());
     contact.setGivenName(entity.getGivenName());
     contact.setFamilyName(entity.getFamilyName());
     contact.setSortName(entity.getSortName());
     contact.setLetter(EmailContactUtils.letterOfBucket(entity.getSortBucket()));
-    contact.setPhones(entity.getPhones());
+    contact.setPhones(splitValues(entity.getPhones()));
     contact.setOrganization(entity.getOrganization());
     contact.setTitle(entity.getTitle());
     contact.setPlatformUsername(entity.getPlatformUsername());
@@ -382,39 +383,65 @@ public class EmailContactStorage {
   }
 
   /**
-   * Encodes secondary addresses as {@code type,value} pairs, one per list
-   * entry (the entity's {@code SemicolonListConverter} joins them for storage).
-   * Phase 1 has no address types yet, so every entry is typed "other" — the
-   * format, and the LIKE shapes that search it, are the phase-3 seam.
+   * Encodes secondary addresses as the stored {@code type,value;type,value}
+   * string. Phase 1 has no address types yet, so every entry is typed "other" —
+   * the format, and the LIKE shapes that search it, are the phase-3 seam.
    *
    * @param secondaryEmails the plain addresses, may be null
-   * @return the {@code type,value} pairs, or null when there is nothing to store
+   * @return the joined string, or null when there is nothing to store
    */
-  private List<String> toEmailsList(List<String> secondaryEmails) {
+  private String toEmailsString(List<String> secondaryEmails) {
     if (secondaryEmails == null || secondaryEmails.isEmpty()) {
       return null;
     }
-    List<String> pairs = secondaryEmails.stream()
-                                        .filter(StringUtils::isNotBlank)
-                                        .map(address -> "other," + address.trim().toLowerCase(Locale.ROOT))
-                                        .toList();
-    return pairs.isEmpty() ? null : pairs;
+    return secondaryEmails.stream()
+                          .filter(StringUtils::isNotBlank)
+                          .map(address -> "other," + address.trim().toLowerCase(Locale.ROOT))
+                          .reduce((a, b) -> a + ";" + b)
+                          .orElse(null);
   }
 
   /**
-   * Decodes the stored {@code type,value} pairs back to plain addresses (the
-   * types are dropped until something displays them).
+   * Decodes the stored {@code type,value;type,value} string back to plain
+   * addresses (the types are dropped until something displays them).
    *
-   * @param emails the stored {@code type,value} pairs, may be null
+   * @param emails the stored string, may be null
    * @return the plain addresses, or null when nothing is stored
    */
-  private List<String> fromEmailsList(List<String> emails) {
-    if (emails == null || emails.isEmpty()) {
+  private List<String> fromEmailsString(String emails) {
+    if (StringUtils.isBlank(emails)) {
       return null;
     }
-    return emails.stream()
-                .map(entry -> entry.contains(",") ? entry.substring(entry.indexOf(',') + 1) : entry)
-                .filter(StringUtils::isNotBlank)
-                .toList();
+    return Arrays.stream(emails.split(";"))
+                 .map(entry -> entry.contains(",") ? entry.substring(entry.indexOf(',') + 1) : entry)
+                 .filter(StringUtils::isNotBlank)
+                 .toList();
+  }
+
+  /**
+   * Joins plain values with semicolons for storage.
+   *
+   * @param values the values, may be null
+   * @return the joined string, or null when there is nothing to store
+   */
+  private String joinValues(List<String> values) {
+    if (values == null || values.isEmpty()) {
+      return null;
+    }
+    String joined = values.stream().filter(StringUtils::isNotBlank).map(String::trim).reduce((a, b) -> a + ";" + b).orElse(null);
+    return StringUtils.isBlank(joined) ? null : joined;
+  }
+
+  /**
+   * Splits a semicolon-joined stored string back to its values.
+   *
+   * @param joined the stored string, may be null
+   * @return the values, or null when nothing is stored
+   */
+  private List<String> splitValues(String joined) {
+    if (StringUtils.isBlank(joined)) {
+      return null;
+    }
+    return Arrays.stream(joined.split(";")).map(String::trim).filter(StringUtils::isNotBlank).toList();
   }
 }

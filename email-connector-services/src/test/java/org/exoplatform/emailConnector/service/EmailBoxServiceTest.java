@@ -96,6 +96,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
@@ -105,6 +107,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -162,6 +165,9 @@ public class EmailBoxServiceTest {
 
   @MockBean
   private EmailFavoriteService    emailFavoriteService;
+
+  @MockBean
+  private ApplicationEventPublisher eventPublisher;
 
   @Autowired
   private EmailBoxService         emailBoxService;
@@ -590,6 +596,48 @@ public class EmailBoxServiceTest {
       verify(sentFolder).appendMessages(any(Message[].class));
       verify(sentFolder).close(false);
       verify(store).close();
+    }
+  }
+
+  @Test
+  void sendEmailPublishesSentRecipientsWithoutBcc() throws Exception {
+    // The sent-mail event is what contact collection feeds on: it must carry To
+    // and Cc, and must NEVER carry Bcc — that exclusion lives at the publish
+    // site, not in the consumers.
+    // The mock is pinned into the service by hand: for ApplicationEventPublisher the
+    // context registers ITSELF as a resolvable dependency, and that candidate can win
+    // the @Autowired resolution over the @MockBean, leaving the mock unobserved.
+    ReflectionTestUtils.setField(emailBoxService, "eventPublisher", eventPublisher);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email email = email(TEST_USER);
+    email.setTo(List.of(new EmailRecipient("Bob", "bob@example.org", null, false)));
+    email.setCc(List.of(new EmailRecipient("Carol", "carol@example.org", null, false)));
+    email.setBcc(List.of(new EmailRecipient("Hidden", "hidden@example.org", null, false)));
+    Session session = mock(Session.class);
+    when(session.getProperties()).thenReturn(new Properties());
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    when(store.isConnected()).thenReturn(true);
+    IMAPFolder sentFolder = mock(IMAPFolder.class);
+    when(sentFolder.getFullName()).thenReturn("sent");
+    when(folder.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
+    when(sentFolder.exists()).thenReturn(true);
+    when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    when(sentFolder.isOpen()).thenReturn(true);
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      emailBoxService.sendEmail(email, TEST_USER);
+      ArgumentCaptor<EmailSentEvent> published = ArgumentCaptor.forClass(EmailSentEvent.class);
+      verify(eventPublisher).publishEvent(published.capture());
+      assertEquals(TEST_USER, published.getValue().getUsername());
+      List<String> addresses = published.getValue().getRecipients().stream().map(EmailRecipient::getAddress).toList();
+      assertEquals(List.of("bob@example.org", "carol@example.org"), addresses);
     }
   }
 
