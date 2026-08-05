@@ -166,8 +166,8 @@ export default {
     };
   },
   created() {
-    this.$root.$on('open-new-email-drawer', (email, forward, replyAll) => {
-      this.open(email, forward, replyAll);
+    this.$root.$on('open-new-email-drawer', (email, forward, replyAll, prefill) => {
+      this.open(email, forward, replyAll, prefill);
     });
     this.$root.$on('send-email', (email) => {
       this.sendEmail(email);
@@ -182,8 +182,14 @@ export default {
     }
   },
   methods: {
-    open(email, forward, replyAll) {
+    // prefill ({to: [{name, address}]}) seeds a NEW email's recipients — the
+    // Contacts drawer's "compose to" hand-off. It only applies when no email is
+    // passed, so reply/forward prefills stay exactly what they were.
+    open(email, forward, replyAll, prefill) {
       this.attachments = [];
+      if (!email && prefill?.to?.length) {
+        this.toEmails = prefill.to.map(recipient => recipient.address?.trim()).filter(Boolean).join(', ');
+      }
       this.title = forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.title') : email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
       if (email) {
         if (!forward) {
