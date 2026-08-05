@@ -22,6 +22,28 @@
                     "*:/platform/externals"
                 ]
             }
+        },
+        {
+            "name": "contacts",
+            "overrideMode": "merge",
+            "override": false,
+            "enabled": true,
+            "application": {
+                "title": "Contacts",
+                "icon": "fa-address-book",
+                "type": "DRAWER",
+                "url": "contacts",
+                "mandatory": false,
+                "active": false,
+                "mobile": true,
+                "default": true,
+                "pwa": true,
+                "order": 41,
+                "permissions": [
+                    "*:/platform/users",
+                    "*:/platform/externals"
+                ]
+            }
         }
     ]
 }
