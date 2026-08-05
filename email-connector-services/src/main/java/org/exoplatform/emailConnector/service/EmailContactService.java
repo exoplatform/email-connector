@@ -16,11 +16,11 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
@@ -35,6 +35,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSource;
+import org.exoplatform.emailConnector.model.EmailContactSuggestion;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -45,7 +46,9 @@ import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
 import org.exoplatform.social.core.manager.IdentityManager;
+import org.exoplatform.social.core.profile.ProfileFilter;
 
 /**
  * The per-user contact store: browse/search with the letter index the drawer's
@@ -89,6 +92,12 @@ public class EmailContactService {
 
   /** The chips' "address book" filter value: the curated rows (manual + CardDAV). */
   public static final String      SOURCE_FILTER_ADDRESS_BOOK  = "addressBook";
+
+  /** The suggestion window a recipient field gets when it asks for none (limit &lt;= 0). */
+  public static final int         SUGGEST_DEFAULT_LIMIT       = 10;
+
+  /** The hard cap on a suggestion window, whatever the caller asks for. */
+  public static final int         SUGGEST_MAX_LIMIT           = 25;
 
   // The one-time backfill marker, per user, in the same settings scope as the rest
   // of the add-on. Its ABSENCE is what routes collection through the backfill: sync
@@ -163,15 +172,153 @@ public class EmailContactService {
     if (contact == null || !StringUtils.equals(contact.getUserId(), username) || contact.isSuppressed()) {
       return null;
     }
+    enrichForDisplay(contact);
+    return contact;
+  }
+
+  /**
+   * The compose field's type-ahead: one ranked, de-duplicated recipient list
+   * merging the caller's own contact store with the platform's people
+   * directory, so the field is useful on the very first mail a user writes —
+   * before their store has collected anybody.
+   * <p>
+   * <b>Ranking</b>, in one sentence: the store first, ordered by usefulness
+   * (see {@code EmailContactStorage.SUGGEST_SORT} — most-corresponded-with
+   * first, then most recent, then alphabetical), and the directory-only
+   * matches after it, in the directory's own name order. Store rows lead
+   * because they encode this user's own history, which no directory can know;
+   * within them, an address the user has written to twenty times outranks an
+   * address they were once cc'd on, which is what {@code SEEN_COUNT} is for.
+   * <p>
+   * <b>De-duplication</b> is by normalized address, and the store wins: a
+   * colleague who is also a collected contact appears once, as their contact
+   * row, with the platform profile supplying the live name, avatar and profile
+   * link through the same read-time enrichment every other contact read uses.
+   * <p>
+   * <b>A blank term answers the top of the store</b> rather than nothing: the
+   * field is most often opened to write to somebody written to before, and
+   * offering those few immediately is the whole value of having counters. It
+   * cannot degenerate into "list everyone" — the same {@code limit} caps it,
+   * and the directory is not queried at all without a term (a directory query
+   * with no term is the company address book, which this endpoint has no
+   * business dumping into a type-ahead).
+   * <p>
+   * Accepted cost: enriching each store row resolves its platform profile by
+   * address, one lookup per answered row. It is what makes a colleague's face
+   * appear next to a merely-collected address, and the hard cap on
+   * {@code limit} is what keeps a keystroke's worth of them affordable.
+   *
+   * @param username the store owner and the acting user, never suggested to
+   *          themselves
+   * @param query what the user typed, or null/blank for their top contacts
+   * @param limit how many suggestions to answer, clamped to a sane window
+   * @return the ranked suggestions, never null
+   */
+  public List<EmailContactSuggestion> suggestRecipients(String username, String query, int limit) {
+    int size = sanitizeSuggestLimit(limit);
+    Map<String, EmailContactSuggestion> byAddress = new LinkedHashMap<>();
+    for (EmailContact contact : emailContactStorage.suggestContacts(username, query, size)) {
+      String address = EmailContactUtils.normalizeAddress(contact.getPrimaryEmail());
+      if (address == null || byAddress.containsKey(address)) {
+        continue;
+      }
+      enrichForDisplay(contact);
+      byAddress.put(address, toSuggestion(contact));
+    }
+    if (StringUtils.isNotBlank(query) && byAddress.size() < size) {
+      appendDirectoryMatches(username, query.trim(), size, byAddress);
+    }
+    return byAddress.values().stream().limit((long) size).toList();
+  }
+
+  /**
+   * Appends the platform users matching the term whose address the store did
+   * not already answer — the half of the list that makes an empty store usable.
+   * The directory is searched by name only (which is how the platform's own
+   * people search behaves), and the acting user is dropped from it: the store
+   * never holds its owner either, so suggesting yourself would be the one
+   * inconsistency between the two halves.
+   *
+   * @param username the acting user, excluded from the results
+   * @param term the typed text, already trimmed and known non-blank
+   * @param size how many suggestions the answer holds in all
+   * @param byAddress the merged list so far, mutated in place
+   */
+  private void appendDirectoryMatches(String username, String term, int size, Map<String, EmailContactSuggestion> byAddress) {
+    for (Identity identity : searchDirectory(term, size)) {
+      if (byAddress.size() >= size) {
+        return;
+      }
+      String platformUsername = identity == null ? null : identity.getRemoteId();
+      if (StringUtils.isBlank(platformUsername) || StringUtils.equals(platformUsername, username)) {
+        continue;
+      }
+      Profile profile = getDirectoryProfile(platformUsername);
+      String address = profile == null ? null : EmailContactUtils.normalizeAddress(profile.getEmail());
+      if (address == null || byAddress.containsKey(address)) {
+        continue;
+      }
+      byAddress.put(address,
+                    new EmailContactSuggestion(address, profile.getFullName(), profile.getAvatarUrl(), true, profile.getUrl()));
+    }
+  }
+
+  /**
+   * The platform users whose name matches the term, or an empty list when the
+   * directory cannot be reached. A failing directory must not fail the whole
+   * suggestion: the store's own answer is still perfectly usable, and a
+   * recipient field that errors out mid-typing is worse than one that offers
+   * fewer names.
+   *
+   * @param term the typed text
+   * @param limit how many identities to ask for
+   * @return the matching identities, never null
+   */
+  private List<Identity> searchDirectory(String term, int limit) {
+    try {
+      ProfileFilter filter = new ProfileFilter();
+      filter.setName(term);
+      List<Identity> identities = identityManager.getIdentitiesByProfileFilter(OrganizationIdentityProvider.NAME, filter, 0, limit);
+      return identities == null ? List.of() : identities;
+    } catch (Exception e) {
+      LOG.debug("Could not search the platform directory for recipient suggestions matching {}", term, e);
+      return List.of();
+    }
+  }
+
+  /**
+   * Narrows an enriched contact to what a recipient chip renders. A contact is
+   * reported as a platform user exactly when the read-time enrichment found a
+   * profile behind its address, which is the same fact its profile link
+   * expresses — so the two can never disagree.
+   *
+   * @param contact the enriched store row
+   * @return the suggestion
+   */
+  private EmailContactSuggestion toSuggestion(EmailContact contact) {
+    return new EmailContactSuggestion(EmailContactUtils.normalizeAddress(contact.getPrimaryEmail()),
+                                      contact.getDisplayName(),
+                                      contact.getAvatarUrl(),
+                                      StringUtils.isNotBlank(contact.getProfileUrl()),
+                                      contact.getProfileUrl());
+  }
+
+  /**
+   * The one read-time enrichment of a stored contact, shared by every read that
+   * shows a person rather than a row: a directory-linked contact resolves
+   * through its identity link (exact and cheap), any other resolves its
+   * platform profile by address, and the picture the user set by hand is
+   * applied last so it outranks a profile that merely shares the address.
+   *
+   * @param contact the contact being answered, mutated in place
+   */
+  private void enrichForDisplay(EmailContact contact) {
     if (EmailContactSource.DIRECTORY.equals(contact.getSource())) {
-      // A directory-linked row resolves through its identity link — exact and
-      // cheap — never through the by-email organization query.
       resolveDirectoryContact(contact);
     } else {
       enrichWithProfile(contact);
     }
     applyStoredPhoto(contact);
-    return contact;
   }
 
   /**
@@ -848,6 +995,20 @@ public class EmailContactService {
    */
   private int sanitizeLimit(int limit) {
     return Math.min(Math.max(limit, 1), 500);
+  }
+
+  /**
+   * Clamps a suggestion window. The cap is deliberately much tighter than the
+   * browse one: a type-ahead is read at a glance, every answered row costs a
+   * profile resolution, and the request runs on every keystroke — so an
+   * unbounded {@code limit} here would be a way to turn a recipient field into
+   * a directory dump.
+   *
+   * @param limit the requested number of suggestions, zero or less for the default
+   * @return a size between 1 and {@link #SUGGEST_MAX_LIMIT}
+   */
+  private int sanitizeSuggestLimit(int limit) {
+    return limit <= 0 ? SUGGEST_DEFAULT_LIMIT : Math.min(limit, SUGGEST_MAX_LIMIT);
   }
 
   /**

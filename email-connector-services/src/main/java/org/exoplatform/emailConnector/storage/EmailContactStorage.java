@@ -61,6 +61,17 @@ public class EmailContactStorage {
   // then id as the stable tiebreaker the rail's offset arithmetic needs.
   private static final Sort CONTACT_SORT = Sort.by(Sort.Direction.ASC, "sortBucket", "sortName", "id");
 
+  // The compose field's ordering: usefulness, not alphabet. SEEN_COUNT descending
+  // puts the people the user actually corresponds with on top and, because an
+  // un-corresponded row counts 0, drops the rest of the store below them without
+  // needing a tier expression the databases would each render differently. Recency
+  // then breaks ties between equally-frequent correspondents, the sort key breaks
+  // those, and the id keeps the window stable when everything else is equal.
+  private static final Sort SUGGEST_SORT = Sort.by(Sort.Order.desc("seenCount"),
+                                                   Sort.Order.desc("lastSeenDate").nullsLast(),
+                                                   Sort.Order.asc("sortName"),
+                                                   Sort.Order.asc("id"));
+
   // Contact photos share the add-on's file namespace with the connector illustrations:
   // one namespace per add-on is what the FileService expects, the name below is what
   // tells the two apart.
@@ -102,6 +113,25 @@ public class EmailContactStorage {
     }
     List<EmailContact> contacts = page.getContent().stream().map(this::fromEntity).toList();
     return new EmailContactPage(contacts, toLetterIndex(bucketCounts), page.getTotalElements(), offset, limit);
+  }
+
+  /**
+   * The store's half of the compose field's type-ahead: the best {@code limit}
+   * matches by usefulness ({@link #SUGGEST_SORT}), not alphabetically. A blank
+   * term ranks the whole visible store, which is what makes an empty field able
+   * to offer the user's top correspondents.
+   *
+   * @param userId the store owner
+   * @param query the raw typed text, or null/blank to rank the whole store
+   * @param limit how many rows to return, already sanitized by the service
+   * @return the ranked rows, never null
+   */
+  public List<EmailContact> suggestContacts(String userId, String query, int limit) {
+    String term = StringUtils.isBlank(query) ? null : query.trim().toLowerCase(Locale.ROOT);
+    return emailContactDAO.suggestContacts(userId, term, PageRequest.of(0, limit, SUGGEST_SORT))
+                          .stream()
+                          .map(this::fromEntity)
+                          .toList();
   }
 
   /**
