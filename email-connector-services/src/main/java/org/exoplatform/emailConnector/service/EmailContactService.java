@@ -30,6 +30,7 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -75,6 +76,13 @@ public class EmailContactService {
    * truth lives in the platform profile, not in the stored fallback fields.
    */
   public static final String      CONTACT_DIRECTORY_READ_ONLY = "emailConnector.contacts.directoryReadOnly";
+
+  /**
+   * Message code answered as a 400 when a photo is written onto a row whose
+   * picture is not ours to own — a directory link, whose avatar is the platform
+   * profile's.
+   */
+  public static final String      CONTACT_PHOTO_NOT_EDITABLE  = "emailConnector.contacts.photoNotEditable";
 
   /** The chips' "collected" filter value. */
   public static final String      SOURCE_FILTER_COLLECTED     = "collected";
@@ -131,7 +139,10 @@ public class EmailContactService {
                                                           Math.max(offset, 0),
                                                           sanitizeLimit(limit));
     if (page != null && page.getContacts() != null) {
-      page.getContacts().forEach(this::resolveDirectoryContact);
+      page.getContacts().forEach(contact -> {
+        resolveDirectoryContact(contact);
+        applyStoredPhoto(contact);
+      });
     }
     return page;
   }
@@ -159,7 +170,29 @@ public class EmailContactService {
     } else {
       enrichWithProfile(contact);
     }
+    applyStoredPhoto(contact);
     return contact;
+  }
+
+  /**
+   * The photo the user set on one of their own contacts, bytes and mimetype
+   * together. Ownership is checked exactly as everywhere else in this class and
+   * the same answer — null — covers a missing row, a suppressed one, somebody
+   * else's, and one that simply has no photo: a photo URL must not become a way
+   * to probe another user's store. Deliberately does NOT go through
+   * {@link #getContact}, whose profile enrichment costs a directory query this
+   * read has no use for and which every avatar in a list would pay.
+   *
+   * @param id the contact id
+   * @param username the store owner
+   * @return the stored photo, or null when this user has no photo to read here
+   */
+  public FileItem getContactPhoto(long id, String username) {
+    EmailContact contact = emailContactStorage.getContactById(id);
+    if (contact == null || !StringUtils.equals(contact.getUserId(), username) || contact.isSuppressed()) {
+      return null;
+    }
+    return emailContactStorage.getPhotoFileItem(contact.getPhotoFileId());
   }
 
   /**
@@ -169,6 +202,9 @@ public class EmailContactService {
    * behaves as a normal create: answering "already exists" about a row the user
    * cannot see would be a dead end. A VISIBLE row with the same address is a
    * real conflict.
+   *
+   * A {@code photoUploadId} on the body sets the new contact's picture in the
+   * same round-trip, per the three-state contract documented on the field.
    *
    * @param contact what the user typed (names, address, phone, organization)
    * @param username the store owner
@@ -192,7 +228,8 @@ public class EmailContactService {
       applyAuthoredFields(existing, contact);
       existing.setSource(EmailContactSource.MANUAL);
       existing.setSuppressed(false);
-      return emailContactStorage.updateContact(existing);
+      applyPhoto(existing, contact.getPhotoUploadId());
+      return answer(emailContactStorage.updateContact(existing));
     }
     EmailContact created = new EmailContact();
     created.setUserId(username);
@@ -200,7 +237,8 @@ public class EmailContactService {
     created.setPrimaryEmail(address);
     applyAuthoredFields(created, contact);
     created.setSeenCount(0);
-    return emailContactStorage.createContact(created);
+    applyPhoto(created, contact.getPhotoUploadId());
+    return answer(emailContactStorage.createContact(created));
   }
 
   /**
@@ -212,15 +250,18 @@ public class EmailContactService {
    * the stored fallback would change nothing the user sees. Changing the
    * address re-checks uniqueness; when the new address belongs to a suppressed
    * tombstone, the tombstone is absorbed rather than reported as a conflict the
-   * user cannot see.
+   * user cannot see. A {@code photoUploadId} on the body sets, replaces or
+   * clears the picture, per the three-state contract documented on the field —
+   * so one save carries every edit the form made.
    *
    * @param id the contact id
    * @param contact the fields to apply
    * @param username the store owner
    * @return the updated contact, or null when there is nothing this user can see
    * @throws IllegalArgumentException with {@link #CONTACT_INVALID_EMAIL},
-   *           {@link #CONTACT_CARDDAV_READ_ONLY} or
-   *           {@link #CONTACT_DIRECTORY_READ_ONLY}
+   *           {@link #CONTACT_CARDDAV_READ_ONLY},
+   *           {@link #CONTACT_DIRECTORY_READ_ONLY} or
+   *           {@link #CONTACT_PHOTO_NOT_EDITABLE}
    * @throws IllegalStateException with {@link #CONTACT_ALREADY_EXISTS} when the
    *           new address collides with another visible row
    */
@@ -245,12 +286,13 @@ public class EmailContactService {
         if (!other.isSuppressed()) {
           throw new IllegalStateException(CONTACT_ALREADY_EXISTS);
         }
-        emailContactStorage.deleteContact(other.getId());
+        deleteContactRow(other);
       }
       existing.setPrimaryEmail(address);
     }
     applyAuthoredFields(existing, contact);
-    return emailContactStorage.updateContact(existing);
+    applyPhoto(existing, contact.getPhotoUploadId());
+    return answer(emailContactStorage.updateContact(existing));
   }
 
   /**
@@ -275,7 +317,7 @@ public class EmailContactService {
       return null;
     }
     if (EmailContactSource.MANUAL.equals(existing.getSource()) || EmailContactSource.DIRECTORY.equals(existing.getSource())) {
-      emailContactStorage.deleteContact(id);
+      deleteContactRow(existing);
       existing.setSuppressed(false);
       return existing;
     }
@@ -605,6 +647,87 @@ public class EmailContactService {
     }
     emailContactStorage.updateContact(existing);
     return true;
+  }
+
+  /**
+   * Applies a request's photo intent onto the row about to be saved, and owns
+   * the rule about whose picture may be written at all: a DIRECTORY row's
+   * avatar IS the platform profile's, and a local copy of it would silently
+   * drift from the colleague's real one, so the write is refused here rather
+   * than only in the UI. (The public entry points already stop directory and
+   * CardDAV rows earlier; this guard is what makes the rule a property of the
+   * service instead of a property of the order its callers happen to check
+   * things in.)
+   * <p>
+   * The three states of {@code photoUploadId} are the field's documented
+   * contract: null keeps, empty clears, anything else replaces. The previous
+   * file is always disposed of — replaced in place, or deleted — so a store
+   * never accumulates pictures no row points at.
+   *
+   * @param stored the row being written
+   * @param photoUploadId the request's photo intent
+   * @throws IllegalArgumentException with {@link #CONTACT_PHOTO_NOT_EDITABLE}
+   *           when the row's picture is not this add-on's to own
+   */
+  private void applyPhoto(EmailContact stored, String photoUploadId) {
+    if (photoUploadId == null) {
+      return;
+    }
+    if (EmailContactSource.DIRECTORY.equals(stored.getSource())) {
+      throw new IllegalArgumentException(CONTACT_PHOTO_NOT_EDITABLE);
+    }
+    Long currentFileId = stored.getPhotoFileId();
+    if (StringUtils.isBlank(photoUploadId)) {
+      emailContactStorage.deletePhotoFile(currentFileId);
+      stored.setPhotoFileId(null);
+      return;
+    }
+    stored.setPhotoFileId(emailContactStorage.savePhotoFileItem(currentFileId, photoUploadId));
+  }
+
+  /**
+   * Points a contact's avatar at the picture the user stored for it, when there
+   * is one. Called LAST, after any profile enrichment, because a photo the user
+   * chose by hand outranks a profile that merely happens to share the address —
+   * and because filling the existing {@code avatarUrl} is what makes the list,
+   * the card and the compose autocomplete show it without any of them knowing
+   * this feature exists. Versioned on the row's update date rather than on the
+   * file id: replacing a photo reuses the file id, so the id alone would leave
+   * every client showing the old picture.
+   *
+   * @param contact the contact being answered, mutated in place
+   */
+  private void applyStoredPhoto(EmailContact contact) {
+    if (contact == null || contact.getPhotoFileId() == null || contact.getPhotoFileId() <= 0
+        || EmailContactSource.DIRECTORY.equals(contact.getSource())) {
+      return;
+    }
+    long version = contact.getUpdatedDate() == null ? contact.getPhotoFileId() : contact.getUpdatedDate().getTime();
+    contact.setAvatarUrl(String.format("/email-connector/rest/contacts/%s/photo?v=%s", contact.getId(), version));
+  }
+
+  /**
+   * The stored row as the caller should see it: with its photo URL resolved, so
+   * a save answers something the client can render straight away instead of
+   * having to re-read.
+   *
+   * @param contact the saved row
+   * @return the same contact, enriched
+   */
+  private EmailContact answer(EmailContact contact) {
+    applyStoredPhoto(contact);
+    return contact;
+  }
+
+  /**
+   * Hard-deletes a row and the picture it owned — the one place a contact
+   * disappears for real, so the one place its file can be cleaned up.
+   *
+   * @param contact the row to remove
+   */
+  private void deleteContactRow(EmailContact contact) {
+    emailContactStorage.deletePhotoFile(contact.getPhotoFileId());
+    emailContactStorage.deleteContact(contact.getId());
   }
 
   /**

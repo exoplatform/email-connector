@@ -27,8 +27,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.io.ByteArrayInputStream;
+import java.util.Date;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -54,6 +58,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.service.EmailContactService;
@@ -126,6 +131,24 @@ public class EmailContactRestTest {
     mockMvc.perform(get(CONTACTS_PATH + "/12").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.primaryEmail").value("bob@example.org"));
+  }
+
+  @Test
+  void getAContactPhotoAnswersItWithItsOwnMimetype() throws Exception {
+    // Whatever the user cropped is served as what it is: relabelling a JPEG as PNG
+    // only makes clients sniff.
+    when(emailContactService.getContactPhoto(eq(12L), anyString())).thenReturn(photo("image/jpeg"));
+    mockMvc.perform(get(CONTACTS_PATH + "/12/photo").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(content().contentType(MediaType.IMAGE_JPEG));
+  }
+
+  @Test
+  void getAMissingOrForeignContactPhotoAnswersNotFound() throws Exception {
+    // The service answers null for "no photo", "no such contact" and "not yours"
+    // alike, so a photo URL can never be probed for another user's rows.
+    when(emailContactService.getContactPhoto(anyLong(), anyString())).thenReturn(null);
+    mockMvc.perform(get(CONTACTS_PATH + "/12/photo").with(testSimpleUser())).andExpect(status().isNotFound());
   }
 
   @Test
@@ -233,6 +256,25 @@ public class EmailContactRestTest {
     contact.setPrimaryEmail("bob@example.org");
     contact.setDisplayName("Bob");
     return contact;
+  }
+
+  /**
+   * A stored photo as the file service hands it back.
+   *
+   * @param mimetype the stored mimetype
+   * @return the file item
+   */
+  @SneakyThrows
+  private FileItem photo(String mimetype) {
+    return new FileItem(77L,
+                        "emailContactPhoto",
+                        mimetype,
+                        "emailConnector",
+                        3,
+                        new Date(),
+                        null,
+                        false,
+                        new ByteArrayInputStream(new byte[] { 1, 2, 3 }));
   }
 
   /**

@@ -95,6 +95,29 @@ public class EmailContact {
 
   private Date         updatedDate;
 
+  /**
+   * The {@code FileService} id of the photo the user set on this contact, null
+   * when they never set one. Read-only for the caller: it is the service's
+   * answer about whether a photo of OURS exists (which
+   * {@link #avatarUrl} alone cannot say, a platform profile matching the
+   * address filling that same field), so the form knows whether to offer
+   * removal. Writing a photo goes through {@link #photoUploadId}.
+   */
+  private Long         photoFileId;
+
+  /**
+   * Write-only, never answered: how a request asks for a photo change. Three
+   * distinct states, because "keep what is stored" and "remove what is stored"
+   * are different intents and a DTO the client round-trips cannot express them
+   * with one value:
+   * <ul>
+   * <li>{@code null} (absent from the body) — leave the stored photo alone;</li>
+   * <li>an empty string — remove the stored photo;</li>
+   * <li>an upload id — set (or replace) the photo from that upload.</li>
+   * </ul>
+   */
+  private String       photoUploadId;
+
   /** Platform profile avatar when the address is a platform user's, resolved at read time. */
   private String       avatarUrl;
 

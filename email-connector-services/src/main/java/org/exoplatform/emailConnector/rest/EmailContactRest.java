@@ -16,12 +16,19 @@
  */
 package org.exoplatform.emailConnector.rest;
 
+import java.io.ByteArrayInputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -34,6 +41,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.service.EmailContactService;
@@ -57,6 +65,10 @@ import jakarta.servlet.http.HttpServletRequest;
 @RequestMapping("/contacts")
 @Tag(name = "/email-connector/rest/contacts", description = "Manages the user's personal email contacts")
 public class EmailContactRest {
+
+  // Photo responses may be cached hard because their URL carries the row's update
+  // date: a replaced picture is a different URL, so a stale one is unreachable.
+  private static final long   PHOTO_CACHE_DAYS = 365;
 
   @Autowired
   private EmailContactService emailContactService;
@@ -106,10 +118,32 @@ public class EmailContactRest {
     return contact;
   }
 
+  @GetMapping("/{id}/photo")
+  @Secured("users")
+  @Operation(summary = "Gets a contact photo", method = "GET",
+             description = "Streams the picture the caller set on one of their own contacts. Answers 404 for a contact that does not exist, belongs to somebody else, or simply has no photo - a photo URL is never a way to probe another user's store. The URL answered in the contact's avatarUrl carries a version parameter, so responses are cached privately.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public ResponseEntity<InputStreamResource> getContactPhoto(HttpServletRequest request,
+                                                             @Parameter(description = "Contact id", required = true)
+                                                             @PathVariable("id")
+                                                             long id) {
+    FileItem photo = emailContactService.getContactPhoto(id, request.getRemoteUser());
+    if (photo == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+    String mimetype = photo.getFileInfo() == null ? null : photo.getFileInfo().getMimetype();
+    return ResponseEntity.ok()
+                         .cacheControl(CacheControl.maxAge(PHOTO_CACHE_DAYS, TimeUnit.DAYS).cachePrivate())
+                         .contentType(StringUtils.isBlank(mimetype) ? MediaType.IMAGE_PNG : MediaType.parseMediaType(mimetype))
+                         .body(new InputStreamResource(new ByteArrayInputStream(photo.getAsByte())));
+  }
+
   @PostMapping
   @Secured("users")
   @Operation(summary = "Creates a manual contact", method = "POST",
-             description = "Adds a contact by hand. If the address belongs to a previously removed (suppressed) collected contact, that row is revived and updated from this body - the caller sees a normal create, never a conflict about a row it cannot see. A visible row with the same address answers 409.")
+             description = "Adds a contact by hand. If the address belongs to a previously removed (suppressed) collected contact, that row is revived and updated from this body - the caller sees a normal create, never a conflict about a row it cannot see. A visible row with the same address answers 409. A 'photoUploadId' on the body gives the new contact its picture in the same round-trip.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Unusable email address"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
@@ -147,9 +181,9 @@ public class EmailContactRest {
   @PutMapping("/{id}")
   @Secured("users")
   @Operation(summary = "Updates a contact", method = "PUT",
-             description = "Edits a manual or collected contact (a collected one keeps its source; collection never overwrites a name a user set). CardDAV rows are read-only in this version. Changing the address re-checks uniqueness.")
+             description = "Edits a manual or collected contact (a collected one keeps its source; collection never overwrites a name a user set). CardDAV rows are read-only in this version, and directory-linked ones always are. Changing the address re-checks uniqueness. The photo travels in the same body as 'photoUploadId': absent leaves the stored photo alone, an empty string removes it, an upload id sets or replaces it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Unusable email address, or a read-only CardDAV row"),
+      @ApiResponse(responseCode = "400", description = "Unusable email address, a read-only CardDAV or directory row, or a photo on a row whose picture is not editable"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "The new address collides with another contact"), })

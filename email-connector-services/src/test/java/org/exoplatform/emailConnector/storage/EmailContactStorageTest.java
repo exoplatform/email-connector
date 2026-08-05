@@ -42,11 +42,13 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 
+import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.dao.EmailContactDAO;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSource;
+import org.exoplatform.upload.UploadService;
 
 @ExtendWith(MockitoExtension.class)
 @SpringBootTest(classes = { EmailContactStorage.class })
@@ -56,6 +58,12 @@ public class EmailContactStorageTest {
 
   @MockBean
   private EmailContactDAO     emailContactDAO;
+
+  @MockBean
+  private UploadService       uploadService;
+
+  @MockBean
+  private FileService         fileService;
 
   @Autowired
   private EmailContactStorage emailContactStorage;

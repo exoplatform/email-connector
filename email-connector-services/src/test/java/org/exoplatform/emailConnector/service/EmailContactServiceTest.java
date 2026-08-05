@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -42,6 +43,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -60,6 +62,7 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailContactStorage;
+import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -459,6 +462,155 @@ public class EmailContactServiceTest {
                                                                                            manualInput("B", "bob@example.org"),
                                                                                            USERNAME));
     assertEquals(EmailContactService.CONTACT_CARDDAV_READ_ONLY, readOnly.getMessage());
+  }
+
+  // ---------------------------------------------------------------- contact photo
+
+  @Test
+  void savingAPhotoStoresTheUploadAndAnswersItsUrl() {
+    when(emailContactStorage.getContactById(5L)).thenReturn(collectedContact(5L, "bob@example.org", "Bob"));
+    when(emailContactStorage.savePhotoFileItem(null, "upload-1")).thenReturn(77L);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setPhotoUploadId("upload-1");
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    assertEquals(77L, updated.getPhotoFileId());
+    // The avatar the whole UI already reads now points at our own photo, so the list,
+    // the card and the compose autocomplete show it without knowing this feature exists.
+    assertTrue(updated.getAvatarUrl().startsWith("/email-connector/rest/contacts/5/photo?v="));
+    verify(emailContactStorage, never()).deletePhotoFile(any());
+  }
+
+  @Test
+  void replacingAPhotoWritesOverTheSameFile() {
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setPhotoFileId(77L);
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.savePhotoFileItem(77L, "upload-2")).thenReturn(77L);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setPhotoUploadId("upload-2");
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    // Replaced in place, never deleted-then-written: the file id stays stable, which
+    // is exactly why the read URL is versioned on the update date instead.
+    verify(emailContactStorage).savePhotoFileItem(77L, "upload-2");
+    verify(emailContactStorage, never()).deletePhotoFile(any());
+    assertEquals(77L, updated.getPhotoFileId());
+  }
+
+  @Test
+  void anEmptyUploadIdClearsThePhotoAndItsFile() {
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setPhotoFileId(77L);
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setPhotoUploadId("");
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    verify(emailContactStorage).deletePhotoFile(77L);
+    assertNull(updated.getPhotoFileId());
+    assertNull(updated.getAvatarUrl());
+  }
+
+  @Test
+  void anAbsentUploadIdLeavesTheStoredPhotoAlone() {
+    // The client round-trips the contact it read, so "no photo field" has to mean
+    // "I am not talking about the photo" - anything else would erase it on every
+    // name edit.
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setPhotoFileId(77L);
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact updated = emailContactService.updateContact(5L, manualInput("Bob", "bob@example.org"), USERNAME);
+
+    verify(emailContactStorage, never()).deletePhotoFile(any());
+    verify(emailContactStorage, never()).savePhotoFileItem(any(), anyString());
+    assertEquals(77L, updated.getPhotoFileId());
+  }
+
+  @Test
+  void aDirectoryContactRefusesAPhoto() {
+    // The colleague's picture is the platform profile's; a local copy would drift
+    // from it silently, so the service refuses rather than trusting the form to hide
+    // the button.
+    EmailContact directory = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContactById(5L)).thenReturn(directory);
+
+    EmailContact input = manualInput("Jane Doe", "jane.doe@example.com");
+    input.setPhotoUploadId("upload-1");
+    IllegalArgumentException refused =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> emailContactService.updateContact(5L, input, USERNAME));
+
+    assertEquals(EmailContactService.CONTACT_DIRECTORY_READ_ONLY, refused.getMessage());
+    verify(emailContactStorage, never()).savePhotoFileItem(any(), anyString());
+  }
+
+  @Test
+  void aDirectoryRowNeverAnswersAStoredPhotoUrl() {
+    // Defence in depth for a row that somehow carries a file id: the live profile
+    // avatar stays the answer, so an imported colleague can never show a stale copy.
+    EmailContact directory = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    directory.setPhotoFileId(77L);
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", "profile-avatar", "profile-url");
+    when(emailContactStorage.getContactById(5L)).thenReturn(directory);
+
+    assertEquals("profile-avatar", emailContactService.getContact(5L, USERNAME).getAvatarUrl());
+  }
+
+  @Test
+  void aPhotoOfSomebodyElsesContactIsNotReadable() {
+    EmailContact other = collectedContact(5L, "bob@example.org", "Bob");
+    other.setUserId("mallory");
+    other.setPhotoFileId(77L);
+    when(emailContactStorage.getContactById(5L)).thenReturn(other);
+
+    assertNull(emailContactService.getContactPhoto(5L, USERNAME));
+    verify(emailContactStorage, never()).getPhotoFileItem(any());
+  }
+
+  @Test
+  void hardDeletingAContactDisposesOfItsPhoto() {
+    EmailContact manual = collectedContact(5L, "bob@example.org", "Bob");
+    manual.setSource(EmailContactSource.MANUAL);
+    manual.setPhotoFileId(77L);
+    when(emailContactStorage.getContactById(5L)).thenReturn(manual);
+
+    emailContactService.deleteOrSuppressContact(5L, USERNAME);
+
+    verify(emailContactStorage).deletePhotoFile(77L);
+    verify(emailContactStorage).deleteContact(5L);
+  }
+
+  @Test
+  void aStoredPhotoOutranksAProfileThatMerelySharesTheAddress() {
+    // The user chose this picture by hand; a platform profile that happens to carry
+    // the same address does not get to override it.
+    EmailContact manual = collectedContact(5L, "bob@example.org", "Bob");
+    manual.setSource(EmailContactSource.MANUAL);
+    manual.setPhotoFileId(77L);
+    manual.setUpdatedDate(new Date(1700000000000L));
+    when(emailContactStorage.getContactById(5L)).thenReturn(manual);
+    Profile matched = mock(Profile.class);
+    lenient().when(matched.getAvatarUrl()).thenReturn("profile-avatar");
+    lenient().when(matched.getUrl()).thenReturn("profile-url");
+
+    EmailContact read;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bob@example.org")).thenReturn(matched);
+      read = emailContactService.getContact(5L, USERNAME);
+    }
+
+    assertEquals("/email-connector/rest/contacts/5/photo?v=1700000000000", read.getAvatarUrl());
+    // The profile link still resolves: only the picture is the user's to override.
+    assertEquals("profile-url", read.getProfileUrl());
   }
 
   // ---------------------------------------------------------------- directory import

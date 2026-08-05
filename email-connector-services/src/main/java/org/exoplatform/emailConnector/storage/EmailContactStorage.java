@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import java.io.ByteArrayInputStream;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedHashMap;
@@ -31,11 +32,20 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.commons.file.model.FileItem;
+import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.commons.utils.IOUtil;
 import org.exoplatform.emailConnector.dao.EmailContactDAO;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+import org.exoplatform.upload.UploadResource;
+import org.exoplatform.upload.UploadService;
+
+import lombok.SneakyThrows;
 
 /**
  * Storage of the per-user contact store: converts between the JPA entity and
@@ -45,12 +55,25 @@ import org.exoplatform.emailConnector.utils.EmailContactUtils;
 @Component
 public class EmailContactStorage {
 
+  private static final Log  LOG          = ExoLogger.getLogger(EmailContactStorage.class);
+
   // The list's one ordering, everywhere: bucket (collation-proof), then sort key,
   // then id as the stable tiebreaker the rail's offset arithmetic needs.
   private static final Sort CONTACT_SORT = Sort.by(Sort.Direction.ASC, "sortBucket", "sortName", "id");
 
+  // Contact photos share the add-on's file namespace with the connector illustrations:
+  // one namespace per add-on is what the FileService expects, the name below is what
+  // tells the two apart.
+  private static final String PHOTO_FILE_NAME = "emailContactPhoto";
+
   @Autowired
   private EmailContactDAO   emailContactDAO;
+
+  @Autowired
+  private UploadService     uploadService;
+
+  @Autowired
+  private FileService       fileService;
 
   /**
    * One page of the visible store, with the letter-index map computed over the
@@ -181,6 +204,74 @@ public class EmailContactStorage {
   }
 
   /**
+   * Writes a cropped photo upload into the add-on's file namespace, following
+   * the connector-illustration shape: an existing file id is UPDATED in place
+   * (the id is stable across replacements, which is why the read URL is
+   * versioned on the row's update date rather than on this id), a null one is
+   * written fresh. The upload's own mimetype is kept — the cropper hands back
+   * whatever the user picked, and re-labelling a JPEG as PNG only makes clients
+   * sniff.
+   *
+   * @param photoFileId the file id to replace, or null to write a new file
+   * @param uploadId the upload id the crop drawer produced
+   * @return the stored file id, or null when the file service wrote nothing
+   */
+  @SneakyThrows
+  public Long savePhotoFileItem(Long photoFileId, String uploadId) {
+    UploadResource uploadResource = uploadService.getUploadResource(uploadId);
+    if (uploadResource == null) {
+      // An expired or already-consumed upload: the caller's photo intent simply
+      // cannot be honored, and dropping the whole save over it would be worse.
+      LOG.warn("Upload {} is gone; the contact photo was not written", uploadId);
+      return photoFileId;
+    }
+    byte[] bytesContent = IOUtil.getFileContentAsBytes(uploadResource.getStoreLocation());
+    FileItem fileItem = new FileItem(photoFileId,
+                                     PHOTO_FILE_NAME,
+                                     StringUtils.defaultIfBlank(uploadResource.getMimeType(), "image/png"),
+                                     EmailConnectorStorage.NAME_SPACE,
+                                     bytesContent.length,
+                                     new Date(),
+                                     null,
+                                     false,
+                                     new ByteArrayInputStream(bytesContent));
+    if (photoFileId != null && photoFileId > 0) {
+      fileItem = fileService.updateFile(fileItem);
+    } else {
+      fileItem = fileService.writeFile(fileItem);
+    }
+    return fileItem == null || fileItem.getFileInfo() == null ? null : fileItem.getFileInfo().getId();
+  }
+
+  /**
+   * Deletes a stored contact photo — the cleanup of a replaced, cleared or
+   * hard-deleted contact's file.
+   *
+   * @param photoFileId the file id, ignored when null or unset
+   */
+  public void deletePhotoFile(Long photoFileId) {
+    if (photoFileId != null && photoFileId > 0) {
+      fileService.deleteFile(photoFileId);
+    }
+  }
+
+  /**
+   * Reads a stored contact photo back, bytes and mimetype together — the REST
+   * layer needs both to answer with an honest content type.
+   *
+   * @param photoFileId the file id
+   * @return the file item, or null when nothing is stored under that id
+   */
+  @SneakyThrows
+  public FileItem getPhotoFileItem(Long photoFileId) {
+    if (photoFileId == null || photoFileId <= 0) {
+      return null;
+    }
+    FileItem fileItem = fileService.getFile(photoFileId);
+    return fileItem == null || fileItem.getAsByte() == null ? null : fileItem;
+  }
+
+  /**
    * Folds the GROUP BY rows into the ordered letter → count map the rail
    * consumes: "A".."Z" in bucket order, "#" (the everything-else bucket) last —
    * which is also exactly where its rows sort, bucket 26 being the largest.
@@ -223,6 +314,9 @@ public class EmailContactStorage {
     entity.setOrganization(contact.getOrganization());
     entity.setTitle(contact.getTitle());
     entity.setPlatformUsername(contact.getPlatformUsername());
+    // Carried through explicitly: an update rebuilds the whole entity from the DTO,
+    // so a column the mapper does not write is a column the next save erases.
+    entity.setPhotoFileId(contact.getPhotoFileId());
     entity.setSuppressed(contact.isSuppressed());
     entity.setSeenCount(contact.getSeenCount());
     entity.setLastSeenDate(contact.getLastSeenDate());
@@ -258,6 +352,7 @@ public class EmailContactStorage {
     contact.setOrganization(entity.getOrganization());
     contact.setTitle(entity.getTitle());
     contact.setPlatformUsername(entity.getPlatformUsername());
+    contact.setPhotoFileId(entity.getPhotoFileId());
     contact.setSuppressed(entity.isSuppressed());
     contact.setSeenCount(entity.getSeenCount());
     contact.setLastSeenDate(entity.getLastSeenDate());
