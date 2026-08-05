@@ -29,11 +29,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
        A raw address is always accepted: this is mail, not a closed directory. -->
   <div>
-    <div class="d-flex align-start">
-      <v-label :for="fieldId">
+    <!-- The label sits in a fixed column so To, Cc and Bcc share one left edge,
+         and the row centres rather than top-aligns: the field carries Vuetify's
+         own vertical padding, so aligning to the top dropped the input a line
+         below its label and gave each row a different indent. The chips wrap
+         inside their own box, which is what needs min-width 0 -- a flex item
+         will not shrink below its content otherwise, and the box pushed the
+         label out of the row. -->
+    <div class="d-flex align-center">
+      <v-label :for="fieldId" class="flex-grow-0 flex-shrink-0" style="width: 34px;">
         <span class="text-subtitle-color">{{ label }}</span>
       </v-label>
-      <div class="d-flex flex-wrap align-center flex-grow-1 ms-2 py-1">
+      <div class="d-flex flex-wrap align-center flex-grow-1" style="min-width: 0;">
         <v-chip
           v-for="(recipient, index) in value"
           :key="recipient.address"
@@ -55,7 +62,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :value="term"
           :placeholder="inputPlaceholder"
           :aria-label="label"
-          class="pt-0 mt-0 flex-grow-1"
+          class="pa-0 ma-0 flex-grow-1"
           type="text"
           autocomplete="off"
           solo
