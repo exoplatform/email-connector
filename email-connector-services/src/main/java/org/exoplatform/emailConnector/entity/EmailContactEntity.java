@@ -17,10 +17,8 @@
 package org.exoplatform.emailConnector.entity;
 
 import java.util.Date;
-import java.util.List;
 
 import jakarta.persistence.Column;
-import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -29,8 +27,6 @@ import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-
-import org.exoplatform.emailConnector.utils.SemicolonListConverter;
 
 /**
  * One row of the per-user contact store. No all-args constructor on purpose
@@ -60,13 +56,11 @@ public class EmailContactEntity {
   @Column(name = "PRIMARY_EMAIL")
   private String  primaryEmail;
 
-  // Secondary addresses, each element a "type,value" pair (the EMAIL_BOX recipients
-  // precedent; a child table for at most a handful of values is overkill). The converter
-  // keeps the column a semicolon-joined VARCHAR, not CLOB, so it stays LIKE-searchable
-  // on HSQLDB.
-  @Convert(converter = SemicolonListConverter.class)
+  // Secondary addresses as a joined "type,value;type,value" string (the EMAIL_BOX recipients
+  // precedent; a child table for at most a handful of values is overkill). VARCHAR, not CLOB,
+  // so it stays LIKE-searchable on HSQLDB.
   @Column(name = "EMAILS")
-  private List<String> emails;
+  private String  emails;
 
   @Column(name = "DISPLAY_NAME")
   private String  displayName;
@@ -90,10 +84,9 @@ public class EmailContactEntity {
   @Column(name = "SORT_BUCKET")
   private int     sortBucket;
 
-  // Phone numbers; phase 1 manual add may set one.
-  @Convert(converter = SemicolonListConverter.class)
+  // Semicolon-joined phone numbers; phase 1 manual add may set one.
   @Column(name = "PHONES")
-  private List<String> phones;
+  private String  phones;
 
   @Column(name = "ORGANIZATION")
   private String  organization;
