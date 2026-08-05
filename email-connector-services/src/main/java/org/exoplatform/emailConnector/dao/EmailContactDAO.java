@@ -140,6 +140,34 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
   String term);
 
   /**
+   * The compose field's type-ahead over the user's own store. Matched — on an
+   * already-lowercased term — against the display name, the structured given
+   * and family names and every address, which is what somebody typing into a
+   * recipient field actually has in mind; the derived sort key is deliberately
+   * NOT searched here, since it only ever restates the same names in a form
+   * nobody types (uppercased, diacritics stripped, family first).
+   * <p>
+   * Ordering is the caller's {@link Pageable} sort, and it is the whole point
+   * of this query being separate from {@link #findContacts}: browse is
+   * alphabetical, suggest is by usefulness. Returns a plain list rather than a
+   * {@link Page} so the type-ahead never pays for a COUNT it does not display.
+   *
+   * @param userId the store owner
+   * @param term the lowercased filter text, or null to rank the whole store
+   * @param pageable the window plus the usefulness sort
+   * @return at most one window of rows, in the requested order
+   */
+  @Query("SELECT c FROM EmailContactEntity c WHERE c.userId = :userId AND c.suppressed = false"
+      + " AND (:term IS NULL OR LOWER(c.displayName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.givenName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.familyName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.primaryEmail) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.emails) LIKE CONCAT('%', :term, '%'))")
+  List<EmailContactEntity> suggestContacts(@Param("userId")
+  String userId, @Param("term")
+  String term, Pageable pageable);
+
+  /**
    * The row already linking a platform identity, if any — the directory
    * import's first dedupe key: an identity stays one row even when its profile
    * email changed since it was imported.

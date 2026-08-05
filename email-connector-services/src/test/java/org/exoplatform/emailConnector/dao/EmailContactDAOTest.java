@@ -58,6 +58,11 @@ public class EmailContactDAOTest {
 
   private static final Sort   CONTACT_SORT = Sort.by(Sort.Direction.ASC, "sortBucket", "sortName", "id");
 
+  private static final Sort   SUGGEST_SORT = Sort.by(Sort.Order.desc("seenCount"),
+                                                     Sort.Order.desc("lastSeenDate").nullsLast(),
+                                                     Sort.Order.asc("sortName"),
+                                                     Sort.Order.asc("id"));
+
   @Autowired
   private TestEntityManager   entityManager;
 
@@ -132,6 +137,36 @@ public class EmailContactDAOTest {
   }
 
   @Test
+  void suggestionsRankByUsefulnessOnARealDatabase() {
+    // The ranking rule of the compose type-ahead, stated as data: written-to often
+    // beats written-to once, recency breaks a frequency tie, and a row nobody has
+    // corresponded with (count 0, no date) falls below both — with the NULLS LAST
+    // the sort asks for actually honored by the database rather than assumed.
+    persistRankedContact("often@example.org", "Often Written", 14, date(3));
+    persistRankedContact("recent@example.org", "Recent Tie", 3, date(9));
+    persistRankedContact("older@example.org", "Older Tie", 3, date(1));
+    persistRankedContact("never@example.org", "Never Written", 0, null);
+
+    List<EmailContactEntity> ranked = emailContactDAO.suggestContacts(USERNAME, null, PageRequest.of(0, 10, SUGGEST_SORT));
+
+    assertEquals(List.of("often@example.org", "recent@example.org", "older@example.org", "never@example.org"),
+                 ranked.stream().map(EmailContactEntity::getPrimaryEmail).toList());
+
+    // The term is matched on what a person types into a recipient field.
+    assertEquals(List.of("often@example.org"),
+                 emailContactDAO.suggestContacts(USERNAME, "often writ", PageRequest.of(0, 10, SUGGEST_SORT))
+                                .stream()
+                                .map(EmailContactEntity::getPrimaryEmail)
+                                .toList());
+    assertEquals(1, emailContactDAO.suggestContacts(USERNAME, "never@exa", PageRequest.of(0, 10, SUGGEST_SORT)).size());
+
+    // Suppressed rows stay invisible here too, and the window is honored.
+    persistContact("gone@example.org", "Gone", "GONE", 6, true, null);
+    assertEquals(2, emailContactDAO.suggestContacts(USERNAME, null, PageRequest.of(0, 2, SUGGEST_SORT)).size());
+    assertEquals(4, emailContactDAO.suggestContacts(USERNAME, null, PageRequest.of(0, 10, SUGGEST_SORT)).size());
+  }
+
+  @Test
   void contactSourceProjectionRunsOnARealDatabase() {
     EmailBoxEntity email = new EmailBoxEntity();
     email.setMailRemoteId(101L);
@@ -154,6 +189,38 @@ public class EmailContactDAOTest {
                                                                                     List.of(101L));
     assertEquals(1, byUid.size());
     assertTrue(emailBoxDAO.findContactSourceRowsByUserIdAndFolderAndUids(USERNAME, MailFolder.INBOX, List.of(999L)).isEmpty());
+  }
+
+  /**
+   * Persists one contact row with the counters the suggestion ranking reads.
+   *
+   * @param address the primary email
+   * @param displayName the display name, also used as the sort key
+   * @param seenCount how many times collection saw the address
+   * @param lastSeenDate when it was last seen, null for a never-corresponded row
+   */
+  private void persistRankedContact(String address, String displayName, long seenCount, java.util.Date lastSeenDate) {
+    EmailContactEntity entity = new EmailContactEntity();
+    entity.setUserId(USERNAME);
+    entity.setSource(EmailContactSource.COLLECTED);
+    entity.setPrimaryEmail(address);
+    entity.setDisplayName(displayName);
+    entity.setSortName(displayName.toUpperCase(java.util.Locale.ROOT));
+    entity.setSortBucket(0);
+    entity.setSeenCount(seenCount);
+    entity.setLastSeenDate(lastSeenDate);
+    entityManager.persist(entity);
+    entityManager.flush();
+  }
+
+  /**
+   * A fixed instant, so an ordering assertion never depends on the clock.
+   *
+   * @param day the day offset from an arbitrary epoch
+   * @return the date
+   */
+  private java.util.Date date(int day) {
+    return new java.util.Date(1700000000000L + day * 86400000L);
   }
 
   /**
