@@ -678,6 +678,42 @@ public class EmailContactServiceTest {
   }
 
   @Test
+  void savingTheFormDoesNotEraseACollectedName() {
+    // The form has no display-name field, so a collected contact -- whose name came
+    // from the mail header as one string -- saves both name halves empty. That must
+    // not cost it its name, or setting a picture would rename the person to their
+    // own address.
+    EmailContact stored = collectedContact(5L, "amelie@tech.rocks", "Amelie Deguerry");
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    EmailContact input = new EmailContact();
+    input.setPrimaryEmail("amelie@tech.rocks");
+
+    emailContactService.updateContact(5L, input, USERNAME);
+
+    ArgumentCaptor<EmailContact> updated = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).updateContact(updated.capture());
+    assertEquals("Amelie Deguerry", updated.getValue().getDisplayName());
+  }
+
+  @Test
+  void namingAContactExplicitlyOverridesTheCollectedName() {
+    // The other half of the rule: filling the form's name fields IS the user saying
+    // what this person is called, and it must win over what the mail header said.
+    EmailContact stored = collectedContact(5L, "amelie@tech.rocks", "Amelie Deguerry");
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    EmailContact input = new EmailContact();
+    input.setPrimaryEmail("amelie@tech.rocks");
+    input.setGivenName("Amelie");
+    input.setFamilyName("Dupont");
+
+    emailContactService.updateContact(5L, input, USERNAME);
+
+    ArgumentCaptor<EmailContact> updated = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).updateContact(updated.capture());
+    assertEquals("Amelie Dupont", updated.getValue().getDisplayName());
+  }
+
+  @Test
   void editingADirectoryContactIsRefused() {
     when(emailContactStorage.getContactById(5L)).thenReturn(directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe"));
 

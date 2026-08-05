@@ -655,16 +655,25 @@ public class EmailContactService {
     if (authored == null) {
       return;
     }
-    target.setDisplayName(StringUtils.trimToNull(authored.getDisplayName()));
     target.setGivenName(StringUtils.trimToNull(authored.getGivenName()));
     target.setFamilyName(StringUtils.trimToNull(authored.getFamilyName()));
     target.setPhones(authored.getPhones());
     target.setOrganization(StringUtils.trimToNull(authored.getOrganization()));
     target.setTitle(StringUtils.trimToNull(authored.getTitle()));
-    if (StringUtils.isBlank(target.getDisplayName())
-        && (StringUtils.isNotBlank(target.getGivenName()) || StringUtils.isNotBlank(target.getFamilyName()))) {
+    // The display name is not simply overwritten by what the request carries,
+    // because a collected contact HAS one and the form does not offer it: the name
+    // came from the mail header as a single string, while the form only knows the
+    // given/family pair. Saving that form -- to set a picture, say -- used to send
+    // both halves empty and erase the name the mail had given, leaving an address
+    // where "Amelie Deguerry" had been. So: naming the person explicitly wins,
+    // whether as the pair or as the whole; saying nothing about the name leaves it
+    // alone.
+    String authoredDisplayName = StringUtils.trimToNull(authored.getDisplayName());
+    if (StringUtils.isNotBlank(target.getGivenName()) || StringUtils.isNotBlank(target.getFamilyName())) {
       target.setDisplayName(StringUtils.trim(StringUtils.trimToEmpty(target.getGivenName()) + " "
           + StringUtils.trimToEmpty(target.getFamilyName())));
+    } else if (authoredDisplayName != null) {
+      target.setDisplayName(authoredDisplayName);
     }
   }
 
