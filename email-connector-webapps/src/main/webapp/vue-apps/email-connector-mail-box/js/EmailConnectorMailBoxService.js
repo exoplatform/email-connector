@@ -302,6 +302,38 @@ export function completeThreadByThreadId(threadId) {
 }
 
 /**
+ * Suggests recipients for a compose field: one ranked, de-duplicated list
+ * merging the user's own contact store with the platform's people directory.
+ * A blank term answers their top contacts rather than nothing, so opening the
+ * field already offers the people they usually write to.
+ *
+ * @param {String} query what the user typed, may be blank
+ * @param {Number} limit how many suggestions to ask for; the server caps it
+ * @returns {Promise} resolves with an array of
+ *          {address, displayName, avatarUrl, platformUser, profileUrl}
+ */
+export function suggestRecipients(query, limit) {
+  const params = new URLSearchParams();
+  if (query) {
+    params.append('q', query);
+  }
+  params.append('limit', limit || 0);
+  return fetch(`/email-connector/rest/contacts/suggest?${params}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when suggesting recipients');
+    }
+  });
+}
+
+/**
  * Searches the WHOLE mailbox on the server (IMAP SEARCH over the remote folder),
  * not just the locally-cached window. Matches subject or sender, like the local
  * instant filter, so the two result sets agree. Each hit carries a `cached` flag
