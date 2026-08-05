@@ -86,20 +86,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item-content>
       </v-list-item>
     </v-list>
-    <div class="d-flex justify-center mt-4">
-      <v-btn
-        v-if="editable"
-        class="btn me-2"
-        @click="$emit('edit')">
-        {{ $t('emailConnector.contacts.detail.edit') }}
-      </v-btn>
-      <v-btn
-        class="btn"
-        :loading="deleting"
-        @click="removeContact">
-        {{ deleteLabel }}
-      </v-btn>
-    </div>
   </div>
 </template>
 
@@ -114,7 +100,6 @@ export default {
   },
   data() {
     return {
-      deleting: false,
     };
   },
   computed: {
@@ -147,28 +132,6 @@ export default {
       return [this.contact.primaryEmail].concat(this.contact.secondaryEmails || []).filter(address => address);
     },
     /**
-     * Whether editing applies: manual and collected rows only — a CardDAV
-     * row is the server's to edit, a directory-linked row is the platform
-     * profile's.
-     *
-     * @returns {boolean} true when the edit button shows
-     */
-    editable() {
-      return this.contact.source === 'MANUAL' || this.contact.source === 'COLLECTED';
-    },
-    /**
-     * The delete button's honest label: manual and directory-linked contacts
-     * delete for real (both exist by an explicit act), a collected/CardDAV
-     * one is removed from the list (suppressed).
-     *
-     * @returns {string} the localized label
-     */
-    deleteLabel() {
-      return this.contact.source === 'MANUAL' || this.contact.source === 'DIRECTORY'
-        ? this.$t('emailConnector.contacts.detail.delete')
-        : this.$t('emailConnector.contacts.detail.remove');
-    },
-    /**
      * The localized source of this row.
      *
      * @returns {string} the source label
@@ -198,25 +161,6 @@ export default {
         name: this.contact.displayName || '',
         address,
       });
-    },
-    /**
-     * Deletes or suppresses the contact, per its source, and reports which
-     * happened so the app can offer undo after a suppression.
-     *
-     * @returns {void}
-     */
-    removeContact() {
-      this.deleting = true;
-      this.$emailConnectorContactsService.deleteContact(this.contact.id)
-        .then(result => {
-          if (result.suppressed) {
-            this.$root.$emit('email-contact-suppressed', result.id);
-          }
-          this.$root.$emit('email-contacts-refresh');
-          this.$emit('removed');
-        })
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.contacts.delete.error'), 'error'))
-        .finally(() => this.deleting = false);
     },
   },
 };

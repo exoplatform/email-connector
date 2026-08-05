@@ -23,11 +23,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <div
     v-if="groups.length"
     class="d-flex flex-row"
-    style="position: relative;">
+    style="position: relative; overflow-x: hidden;">
+      <!-- min-width:0 is what lets this column shrink. A flex item defaults to
+           min-width:auto, so it refuses to be narrower than its widest content: one
+           long address then made every row wider than the drawer, the list scrolled
+           sideways, and the names and avatars slid off the start edge instead of
+           ellipsing. The rail is a sibling column, so the list needs a small gap
+           beside it, not the rail's whole width a second time. -->
     <v-list
       dense
       class="pt-0 flex-grow-1"
-      :style="railVisible ? 'padding-inline-end: 18px;' : ''">
+      :style="`min-width: 0;${railVisible ? ' padding-inline-end: 4px;' : ''}`">
       <template v-for="group in groups">
         <div
           :key="`header-${group.letter}`"

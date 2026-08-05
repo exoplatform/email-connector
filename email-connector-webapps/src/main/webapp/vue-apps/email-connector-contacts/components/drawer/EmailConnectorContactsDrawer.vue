@@ -25,8 +25,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     ref="emailContactsDrawer"
     v-model="contactsDrawer"
     right
-    allow-expand
-    @expand-updated="updateExpand"
     :loading="loading"
     use-filter
     :filter-placeholder="$t('emailConnector.contacts.filter.placeholder')"
@@ -44,14 +42,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span>{{ $t('emailConnector.contacts.drawer.title') }}</span>
         <div>
           <v-btn
-            :title="$t('emailConnector.contacts.addFromDirectory')"
-            icon
-            @click="openDirectoryPicker()">
-            <v-icon size="18">
-              fas fa-users
-            </v-icon>
-          </v-btn>
-          <v-btn
             :title="$t('emailConnector.contacts.add')"
             icon
             @click="openForm()">
@@ -64,14 +54,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template #titleIcons>
       <div v-if="!hasFullAppLeft">
-        <v-btn
-          :title="$t('emailConnector.contacts.addFromDirectory')"
-          icon
-          @click="openDirectoryPicker()">
-          <v-icon size="18">
-            fas fa-users
-          </v-icon>
-        </v-btn>
         <v-btn
           :title="$t('emailConnector.contacts.add')"
           icon
@@ -210,16 +192,6 @@ export default {
       this.contactsDrawer = false;
     },
     /**
-     * Tracks the expand toggle, the mailbox way (delayed so the drawer's own
-     * transition finishes first).
-     *
-     * @param {boolean} expanded - the new expand state
-     * @returns {void}
-     */
-    updateExpand(expanded) {
-      window.setTimeout(() => this.expanded = expanded, 200);
-    },
-    /**
      * The drawer's built-in filter: debounced, then queried server-side so the
      * letter index and the list can never disagree.
      *
@@ -328,15 +300,6 @@ export default {
      */
     openForm(contact) {
       this.$root.$emit('open-email-contact-form', contact);
-    },
-    /**
-     * Opens the search-driven directory picker, which imports the chosen
-     * colleagues as linked contacts.
-     *
-     * @returns {void}
-     */
-    openDirectoryPicker() {
-      this.$root.$emit('open-email-contact-directory-picker');
     },
     /**
      * Clears the inline detail after its contact was deleted or suppressed,

@@ -16,7 +16,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- The contact card as a sibling drawer — the non-expanded reading path,
-       the way the mailbox opens its reader next to its list. -->
+       the way the mailbox opens its reader next to its list.
+
+       The actions live in the drawer's header, where this drawer's siblings keep
+       theirs (the mail reader does the same), rather than as buttons stranded under
+       the card. What they may do is the contact's business, not the header's: a
+       contact whose truth is a directory profile or a CardDAV server cannot be
+       edited here, and the delete tooltip says whether it removes the row or merely
+       stops collecting the person. -->
   <exo-drawer
     id="emailContactDetailDrawer"
     ref="emailContactDetailDrawer"
@@ -28,11 +35,32 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template #title>
       <span>{{ $t('emailConnector.contacts.detail.title') }}</span>
     </template>
+    <template #titleIcons>
+      <div
+        v-if="contact"
+        class="d-flex align-center">
+        <v-btn
+          v-if="editable"
+          :title="$t('emailConnector.contacts.detail.edit')"
+          icon
+          @click="editContact">
+          <v-icon size="18">
+            fas fa-edit
+          </v-icon>
+        </v-btn>
+        <v-btn
+          :title="deleteLabel"
+          :loading="deleting"
+          icon
+          @click="removeContact">
+          <v-icon size="18">
+            fas fa-trash
+          </v-icon>
+        </v-btn>
+      </div>
+    </template>
     <template v-if="contact" #content>
-      <email-connector-contacts-detail
-        :contact="contact"
-        @edit="editContact"
-        @removed="close" />
+      <email-connector-contacts-detail :contact="contact" />
     </template>
   </exo-drawer>
 </template>
@@ -43,8 +71,33 @@ export default {
     return {
       detailDrawer: false,
       loading: false,
+      deleting: false,
       contact: null,
     };
+  },
+  computed: {
+    /**
+     * Whether editing applies: manual and collected rows only. A CardDAV row is the
+     * server's to edit, and a directory-linked row is the platform profile's.
+     *
+     * @returns {boolean} true when the edit icon shows
+     */
+    editable() {
+      return this.contact?.source === 'MANUAL' || this.contact?.source === 'COLLECTED';
+    },
+    /**
+     * The delete icon's honest tooltip. A manual or directory-linked contact deletes
+     * for real, both existing by an explicit act; a collected one is only removed
+     * from the list, because the next mail from that person would bring it straight
+     * back.
+     *
+     * @returns {string} the localized tooltip
+     */
+    deleteLabel() {
+      return (this.contact?.source === 'MANUAL' || this.contact?.source === 'DIRECTORY')
+        && this.$t('emailConnector.contacts.detail.delete')
+        || this.$t('emailConnector.contacts.detail.remove');
+    },
   },
   created() {
     this.$root.$on('open-email-contact-detail', this.open);
@@ -54,9 +107,9 @@ export default {
   },
   methods: {
     /**
-     * Opens the drawer on a contact. Stored rows are re-read so the card
-     * carries the read-time enrichment (profile avatar and link, live
-     * directory data for imported colleagues).
+     * Opens the drawer on a contact. Stored rows are re-read so the card carries the
+     * read-time enrichment (profile avatar and link, live directory data for
+     * imported colleagues).
      *
      * @param {object} contact - the selected row
      * @returns {void}
@@ -83,6 +136,25 @@ export default {
       this.close();
     },
     /**
+     * Deletes or suppresses the contact, per its source, and reports which of the two
+     * happened so the app can offer undo after a suppression.
+     *
+     * @returns {void}
+     */
+    removeContact() {
+      this.deleting = true;
+      this.$emailConnectorContactsService.deleteContact(this.contact.id)
+        .then(result => {
+          if (result.suppressed) {
+            this.$root.$emit('email-contact-suppressed', result.id);
+          }
+          this.$root.$emit('email-contacts-refresh');
+          this.close();
+        })
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.contacts.delete.error'), 'error'))
+        .finally(() => this.deleting = false);
+    },
+    /**
      * Closes and clears the drawer.
      *
      * @returns {void}
@@ -90,6 +162,7 @@ export default {
     close() {
       this.detailDrawer = false;
       this.contact = null;
+      this.deleting = false;
       this.$refs.emailContactDetailDrawer.close();
     },
   },
