@@ -284,6 +284,18 @@ export default {
     // default.
     this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.emailCategories = list || []);
+    // Read the "Default view" setting from here rather than from open(), for the
+    // same reason the categories are read from here: both are needed to know
+    // WHICH list to show, and asking for them only once the drawer is opening is
+    // what made the mailbox render the whole inbox and then narrow it to
+    // Important in front of the user. Started at creation, they are settled long
+    // before the first click, so open() awaits nothing in practice.
+    this.readDefaultCategoryView();
+    // The setting is cached, so it has to be re-read when it changes -- otherwise
+    // switching the toggle in the user settings would only take effect on the
+    // next page load.
+    this.onRefreshUserEmailSetting = () => this.readDefaultCategoryView();
+    document.addEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
     this.$root.$on('switch-folder', this.onSwitchFolder);
     this.$root.$on('open-category-view', this.openCategoryView);
     this.$root.$on('enter-select-mode', this.onEnterSelectMode);
@@ -384,6 +396,7 @@ export default {
     });
   },
   beforeDestroy() {
+    document.removeEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$off('delete-email', this.onDeleteEmail);
@@ -572,6 +585,45 @@ export default {
     }
   },
   methods: {
+    /**
+     * Re-reads the user's "Default view" setting into the cached promise open()
+     * awaits. Failing is silent and answers null: an unreadable setting means an
+     * unfiltered inbox, never a blocked drawer.
+     *
+     * @returns {void}
+     */
+    readDefaultCategoryView() {
+      this.defaultCategoryViewPromise = this.$emailConnectorCommonService.getUserEmailSetting()
+        .then(setting => setting && setting.defaultCategoryView || null)
+        .catch(() => null);
+    },
+    /**
+     * Seeds the view the mailbox opens on, before anything is rendered.
+     *
+     * When the user settings' "Default view" toggle is on, the stored default
+     * holds the Important category's id and the mailbox opens on the Important
+     * view — chip lit, menu entry highlighted, title suffixed, one state. When
+     * it is off, or when the stored id is not Important's (one left behind by
+     * the former category select, say), the inbox opens unfiltered.
+     *
+     * Awaited BEFORE the first load on purpose. Doing it afterwards showed the
+     * user the whole inbox and then narrowed it under them, which read as the
+     * mailbox being slow and changing its mind. Both promises are started when
+     * the component is created, so by the time anyone opens the drawer there is
+     * nothing left to wait for.
+     *
+     * A filter the user has already touched still wins: the default only seeds.
+     *
+     * @returns {Promise<void>} resolves once the view is decided
+     */
+    async applyDefaultCategoryView() {
+      const [defaultView] = await Promise.all([this.defaultCategoryViewPromise, this.emailCategoryIdsPromise]);
+      if (this.filtersTouched) {
+        return;
+      }
+      this.categoryViewId = defaultView && this.importantCategory && defaultView === this.importantCategory.id
+        ? this.importantCategory.id : null;
+    },
     async open(loading) {
       if (loading) {
         this.syncInProgress = true;
@@ -586,33 +638,9 @@ export default {
       this.clearSearch();
       this.loading = true;
       this.emailBoxDrawer = true;
+      await this.applyDefaultCategoryView();
       await this.loadEmailBox();
       this.loading = false;
-      // The user settings' "Default view" toggle: when on, the stored default
-      // category view holds the Important category's id, and opening the
-      // mailbox opens the Important category view (chip lit, menu entry
-      // highlighted, title suffixed — one state); when off (or when the stored
-      // id is not Important's — e.g. one left by the former category select),
-      // the inbox opens unfiltered. Checked against the real Important
-      // category, so it only applies once the categories are loaded.
-      this.$emailConnectorCommonService.getUserEmailSetting()
-        .then(async setting => {
-          const defaultView = setting && setting.defaultCategoryView || null;
-          await this.emailCategoryIdsPromise;
-          // Precedence between the user's own toggles and the stored default:
-          // the toggle only SEEDS the view at open. It lands asynchronously,
-          // so if the user already toggled any chip, folder or view by then,
-          // their choice wins and the default is skipped — the drawer never
-          // overrides a manual filter.
-          if (this.filtersTouched) {
-            return;
-          }
-          this.categoryViewId = defaultView && this.importantCategory && defaultView === this.importantCategory.id
-            ? this.importantCategory.id : null;
-        })
-        .catch(() => {
-          // Keep the inbox unfiltered when the setting cannot be read.
-        });
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
