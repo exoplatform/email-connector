@@ -110,6 +110,39 @@
     </depends>
   </module>
 
+  <!-- The Contacts quick-action drawer: a sibling app to the mailbox, in the
+       same QuickActionsGrp so its extension registers with the "+" menu. The
+       app itself only mounts on first click. -->
+  <module>
+    <name>emailConnectorContactsQuickActionExtension</name>
+    <load-group>QuickActionsGrp</load-group>
+    <script>
+      <minify>false</minify>
+      <path>/js/emailConnectorContacts.bundle.js</path>
+    </script>
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>vuetify</module>
+    </depends>
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+    <depends>
+      <module>commonVueComponents</module>
+    </depends>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+    <!-- The platform's profile-picture cropper, which registers
+         <image-crop-drawer>: the contact form borrows it whole rather than
+         growing a second, differently-behaved picture editor. -->
+    <depends>
+      <module>imageCropper</module>
+    </depends>
+  </module>
+
   <module>
     <name>emailConnectorCommon</name>
 	<load-group>EmailGrp</load-group>
