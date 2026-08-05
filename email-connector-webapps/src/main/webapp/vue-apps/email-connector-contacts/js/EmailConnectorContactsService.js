@@ -19,17 +19,13 @@
  * One page of the caller's own contact store, with the letter-index map and
  * the filtered total.
  *
- * @param {string} source - null/'' for all, 'collected', or 'addressBook'
  * @param {string} query - free text matched against names and addresses
  * @param {number} offset - row offset, a multiple of limit
  * @param {number} limit - page size
  * @returns {Promise<object>} the page {contacts, letterIndex, size, offset, limit}
  */
-export function getContacts(source, query, offset, limit) {
+export function getContacts(query, offset, limit) {
   const params = new URLSearchParams();
-  if (source) {
-    params.append('source', source);
-  }
   if (query) {
     params.append('q', query);
   }
@@ -169,58 +165,7 @@ export function restoreContact(id) {
   });
 }
 
-/**
- * Searches the platform's people directory live — the "Add from directory"
- * picker's engine. Search only, never browse: reaching a person in a large
- * directory is typing their name, not paging 50 000 rows.
- *
- * @param {string} query - the text the user typed, required
- * @param {number} limit - how many hits to return
- * @returns {Promise<object>} the social users REST answer {users}
- */
-export function searchDirectoryUsers(query, limit) {
-  const params = new URLSearchParams();
-  params.append('q', query);
-  params.append('limit', limit || 50);
-  return fetch(`/portal/rest/v1/social/users?${params}`, {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    method: 'GET'
-  }).then((resp) => {
-    if (resp?.ok) {
-      return resp.json();
-    } else {
-      throw new Error('Error when searching the directory');
-    }
-  });
-}
 
-/**
- * Imports platform users as linked contacts: the server stores the platform
- * identity and resolves name/avatar/address live at read time — never a copy
- * that rots when a colleague renames or leaves.
- *
- * @param {Array} usernames - the platform usernames to import
- * @returns {Promise<Array>} the imported contacts
- */
-export function importDirectoryContacts(usernames) {
-  return fetch('/email-connector/rest/contacts/directory', {
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    credentials: 'include',
-    method: 'POST',
-    body: JSON.stringify(usernames)
-  }).then((resp) => {
-    if (resp?.ok) {
-      return resp.json();
-    } else {
-      throw new Error('Error when importing directory contacts');
-    }
-  });
-}
 
 /**
  * Opens the email composer prefilled with a recipient, mounting the mailbox

@@ -182,25 +182,6 @@ public class EmailContactRestTest {
   }
 
   @Test
-  void directoryImportAnswersOk() throws Exception {
-    when(emailContactService.importDirectoryContacts(any(), anyString())).thenReturn(java.util.List.of(contact(12L)));
-    mockMvc.perform(post(CONTACTS_PATH + "/directory").with(testSimpleUser())
-                                                      .content(asJsonString(java.util.List.of("jdoe", "bsmith")))
-                                                      .contentType(MediaType.APPLICATION_JSON)
-                                                      .accept(MediaType.APPLICATION_JSON))
-           .andExpect(status().isOk())
-           .andExpect(jsonPath("$[0].primaryEmail").value("bob@example.org"));
-  }
-
-  @Test
-  void directoryImportOfNothingAnswersBadRequest() throws Exception {
-    mockMvc.perform(post(CONTACTS_PATH + "/directory").with(testSimpleUser())
-                                                      .content("[]")
-                                                      .contentType(MediaType.APPLICATION_JSON))
-           .andExpect(status().isBadRequest());
-  }
-
-  @Test
   void updateOfAMissingContactAnswersNotFound() throws Exception {
     when(emailContactService.updateContact(anyLong(), any(EmailContact.class), anyString())).thenReturn(null);
     mockMvc.perform(put(CONTACTS_PATH + "/12").with(testSimpleUser())

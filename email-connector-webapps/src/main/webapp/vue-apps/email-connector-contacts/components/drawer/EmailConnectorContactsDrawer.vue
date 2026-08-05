@@ -65,10 +65,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
-      <email-connector-contacts-source-chips
-        :source="source"
-        class="full-width border-box-sizing py-3 px-3"
-        @update:source="switchSource" />
       <email-connector-contacts-list
         :contacts="contacts"
         :letter-index="letterIndex"
@@ -79,10 +75,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
-        <email-connector-contacts-source-chips
-          :source="source"
-          class="full-width border-box-sizing py-3 px-3"
-          @update:source="switchSource" />
         <email-connector-contacts-list
           :contacts="contacts"
           :letter-index="letterIndex"
@@ -122,8 +114,6 @@ export default {
       contactsDrawer: false,
       expanded: false,
       loading: false,
-      // null = All (the whole store), or 'collected'.
-      source: null,
       term: null,
       contacts: [],
       letterIndex: {},
@@ -188,7 +178,6 @@ export default {
     close() {
       this.selectedContact = null;
       this.term = null;
-      this.source = null;
       this.contactsDrawer = false;
     },
     /**
@@ -206,17 +195,6 @@ export default {
       }, 300);
     },
     /**
-     * Switches the source chip and reloads that view.
-     *
-     * @param {string} source - null or 'collected'
-     * @returns {void}
-     */
-    switchSource(source) {
-      this.source = source;
-      this.selectedContact = null;
-      this.reload();
-    },
-    /**
      * Reloads the current view eagerly, sequential pages of {@link PAGE_SIZE}
      * bounded by {@link MAX_ROWS} — which keeps the A–Z rail's jumps exact
      * without offset bookkeeping client-side. The first page renders
@@ -229,7 +207,7 @@ export default {
       const token = this.loadToken;
       this.loading = true;
       try {
-        const firstPage = await this.$emailConnectorContactsService.getContacts(this.source, this.term, 0, PAGE_SIZE);
+        const firstPage = await this.$emailConnectorContactsService.getContacts(this.term, 0, PAGE_SIZE);
         if (token !== this.loadToken) {
           return;
         }
@@ -256,7 +234,7 @@ export default {
       if (offset >= total || token !== this.loadToken) {
         return Promise.resolve();
       }
-      return this.$emailConnectorContactsService.getContacts(this.source, this.term, offset, PAGE_SIZE)
+      return this.$emailConnectorContactsService.getContacts(this.term, offset, PAGE_SIZE)
         .then(page => {
           if (token !== this.loadToken) {
             return;

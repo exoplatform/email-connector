@@ -16,7 +16,6 @@
  */
 import EmailConnectorContactsApp from './components/EmailConnectorContactsApp.vue';
 import EmailConnectorContactsDrawer from './components/drawer/EmailConnectorContactsDrawer.vue';
-import EmailConnectorContactsSourceChips from './components/drawer/EmailConnectorContactsSourceChips.vue';
 import EmailConnectorContactsList from './components/drawer/EmailConnectorContactsList.vue';
 import EmailConnectorContactsListItem from './components/drawer/EmailConnectorContactsListItem.vue';
 import EmailConnectorContactsAlphabetRail from './components/drawer/EmailConnectorContactsAlphabetRail.vue';
@@ -27,7 +26,6 @@ import EmailConnectorContactFormDrawer from './components/drawer/EmailConnectorC
 const components = {
   'email-connector-contacts-app': EmailConnectorContactsApp,
   'email-connector-contacts-drawer': EmailConnectorContactsDrawer,
-  'email-connector-contacts-source-chips': EmailConnectorContactsSourceChips,
   'email-connector-contacts-list': EmailConnectorContactsList,
   'email-connector-contacts-list-item': EmailConnectorContactsListItem,
   'email-connector-contacts-alphabet-rail': EmailConnectorContactsAlphabetRail,

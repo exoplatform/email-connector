@@ -15,14 +15,17 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- One door for "I want a new contact".
+  <!-- The contact form, and nothing else: adding a contact means filling it in,
+       editing one means finding it filled in.
 
-       There were two before — add by hand, and import from the company directory —
-       which made the user choose where the data comes from before typing anything.
-       They type instead, and the typing says which they meant: a name searches
-       colleagues, an address is unmistakably somebody new. The form stays out of
-       sight until the search cannot answer, so this reads as a search box rather
-       than a form. Editing an existing contact opens straight into the form.
+       Browsing the company directory used to live here too, so that colleagues
+       could be added as contacts by hand. It is gone on purpose. Colleagues
+       already arrive on their own -- writing to one, or hearing from one, collects
+       them -- and a contact whose address matches a platform profile is linked to
+       that profile when it is read, so it shows their name, their picture and a way
+       to their page without anybody importing anything. Offering an import as well
+       meant two ways to end up with the same person, and a mode to choose between
+       before any typing could start.
 
        Adding an address the user once removed revives that contact server-side; the
        form never sees that as an error.
@@ -42,90 +45,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span>{{ title }}</span>
       </template>
       <template v-if="formDrawer" #content>
-        <div v-if="searchMode" class="pa-4">
-          <v-text-field
-            v-model="term"
-            :placeholder="$t('emailConnector.contacts.new.searchPlaceholder')"
-            prepend-inner-icon="fas fa-search"
-            class="pt-0"
-            outlined
-            dense
-            clearable
-            @input="onSearchInput" />
-          <!-- Nobody in the directory matches and what was typed is an address: offer
-               it as the new contact, rather than making the user find a second button
-               for the very case the search just failed at. -->
-          <v-list v-if="offerTypedAddress" class="pa-0">
-            <v-list-item @click="startFormWithTypedAddress">
-              <v-list-item-avatar
-                size="36"
-                class="my-1 me-3">
-                <v-avatar color="primary" size="36">
-                  <v-icon size="16" class="white--text">
-                    fas fa-user-plus
-                  </v-icon>
-                </v-avatar>
-              </v-list-item-avatar>
-              <v-list-item-content class="py-1" style="min-width: 0;">
-                <v-list-item-title class="text-color">
-                  {{ $t('emailConnector.contacts.new.addTyped') }}
-                </v-list-item-title>
-                <v-list-item-subtitle class="text-sub-title">
-                  {{ trimmedTerm }}
-                </v-list-item-subtitle>
-              </v-list-item-content>
-            </v-list-item>
-          </v-list>
-          <v-list v-if="users.length" class="pa-0">
-            <v-list-item
-              v-for="user in users"
-              :key="user.username"
-              @click="toggle(user)">
-              <v-list-item-avatar
-                size="36"
-                class="my-1 me-3">
-                <v-img v-if="user.avatar" :src="user.avatar" />
-                <v-avatar
-                  v-else
-                  color="primary"
-                  size="36">
-                  <span class="white--text text-caption">{{ initials(user) }}</span>
-                </v-avatar>
-              </v-list-item-avatar>
-              <v-list-item-content class="py-1" style="min-width: 0;">
-                <v-list-item-title class="text-color">
-                  {{ user.fullname }}
-                </v-list-item-title>
-                <v-list-item-subtitle class="text-sub-title">
-                  {{ user.position || user.email }}
-                </v-list-item-subtitle>
-              </v-list-item-content>
-              <v-list-item-action class="my-auto">
-                <v-icon
-                  :class="isSelected(user) && 'primary--text' || 'icon-default-color'"
-                  size="18">
-                  {{ isSelected(user) && 'fas fa-check-square' || 'far fa-square' }}
-                </v-icon>
-              </v-list-item-action>
-            </v-list-item>
-          </v-list>
-          <div
-            v-if="!trimmedTerm"
-            class="text-sub-title text-center py-6">
-            {{ $t('emailConnector.contacts.new.hint') }}
-          </div>
-          <div class="text-center pt-4">
-            <v-btn
-              text
-              small
-              class="primary--text"
-              @click="startFormManually">
-              {{ $t('emailConnector.contacts.new.manual') }}
-            </v-btn>
-          </div>
-        </div>
         <v-form
-          v-else
           ref="contactForm"
           class="pa-4"
           @submit.prevent="save">
@@ -223,15 +143,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             {{ $t('emailConnector.contacts.form.cancel') }}
           </v-btn>
           <v-btn
-            v-if="searchMode"
-            :disabled="!selected.length"
-            :loading="importing"
-            class="btn btn-primary"
-            @click="importSelected">
-            {{ $t('emailConnector.contacts.new.add', [selected.length]) }}
-          </v-btn>
-          <v-btn
-            v-else
             :disabled="!form.primaryEmail"
             :loading="saving"
             class="btn btn-primary"
@@ -262,15 +173,7 @@ export default {
   data() {
     return {
       formDrawer: false,
-      // The drawer opens searching and becomes a form only when the search cannot
-      // answer — or straight away, when editing an existing contact.
-      searchMode: false,
       saving: false,
-      importing: false,
-      term: '',
-      users: [],
-      selected: [],
-      searchToken: 0,
       editedId: null,
       // The edited row's source: it is what says whether the picture is ours to
       // own. A brand-new contact is MANUAL, so it always is.
@@ -300,7 +203,7 @@ export default {
      * @returns {boolean} true when the photo block shows
      */
     photoEditable() {
-      return !this.searchMode && this.editedSource !== 'DIRECTORY' && this.editedSource !== 'CARDDAV';
+      return this.editedSource !== 'DIRECTORY' && this.editedSource !== 'CARDDAV';
     },
     /**
      * The initials standing in for a contact with no picture, read from the form as
@@ -318,34 +221,13 @@ export default {
         .join('') || (this.form.primaryEmail || '?').charAt(0).toUpperCase();
     },
     /**
-     * The drawer's title: searching, adding by hand, or editing.
+     * The drawer's title: adding, or editing.
      *
      * @returns {string} the localized title
      */
     title() {
-      if (this.editedId) {
-        return this.$t('emailConnector.contacts.form.edit.title');
-      }
-      return this.searchMode && this.$t('emailConnector.contacts.new.title')
+      return this.editedId && this.$t('emailConnector.contacts.form.edit.title')
         || this.$t('emailConnector.contacts.form.add.title');
-    },
-    /**
-     * What was typed, trimmed — the term both the search and the offer read.
-     *
-     * @returns {string} the trimmed term
-     */
-    trimmedTerm() {
-      return (this.term || '').trim();
-    },
-    /**
-     * Whether to offer the typed text as a new contact: it looks like an address and
-     * the directory has nobody by that name. Anything else is a name still being
-     * typed, and offering to "add" it would be noise.
-     *
-     * @returns {boolean} true when the offer row shows
-     */
-    offerTypedAddress() {
-      return !this.users.length && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(this.trimmedTerm);
     },
   },
   created() {
@@ -370,8 +252,8 @@ export default {
       };
     },
     /**
-     * Opens the drawer: searching for a new contact, or on the filled form when
-     * editing an existing one.
+     * Opens the drawer: an empty form for a new contact, a filled one for an
+     * existing contact.
      *
      * @param {object} contact - the contact to edit, or nothing to add
      * @returns {void}
@@ -379,10 +261,6 @@ export default {
     open(contact) {
       this.editedId = contact?.id || null;
       this.editedSource = contact?.source || 'MANUAL';
-      this.searchMode = !contact;
-      this.term = '';
-      this.users = [];
-      this.selected = [];
       this.errorMessage = null;
       this.resetPhoto(contact);
       this.form = contact ? {
@@ -413,10 +291,18 @@ export default {
     /**
      * Opens the platform's crop drawer on top of this one.
      *
+     * The mimetype has to be handed over here, and cannot be left out: the
+     * cropper only ever reads it from this call, while picking a file sets the
+     * image but not the mimetype. Opened empty, Apply runs `mimetype.split('/')`
+     * on null inside its upload promise, which then never settles -- the button
+     * spins for good and no request is ever made. PNG is the honest answer
+     * regardless of what the user picked, because the cropper re-encodes through
+     * `canvas.toBlob()`, whose default is PNG.
+     *
      * @returns {void}
      */
     openPhotoCropper() {
-      this.$refs.contactPhotoCropDrawer?.open();
+      this.$refs.contactPhotoCropDrawer?.open({mimetype: 'image/png'});
     },
     /**
      * Takes the cropped result: the upload id travels with the next save, and the
@@ -442,110 +328,6 @@ export default {
       this.photoUploadId = '';
       this.photoPreview = null;
       this.hasOwnPhoto = false;
-    },
-    /**
-     * Debounces the directory search while the user types.
-     *
-     * @returns {void}
-     */
-    onSearchInput() {
-      window.clearTimeout(this.searchTimer);
-      this.searchTimer = window.setTimeout(() => this.searchDirectory(), 300);
-    },
-    /**
-     * Searches the platform directory. A blank term shows nothing rather than
-     * listing everyone: this is a search box, and a directory of tens of thousands
-     * is not a list anybody browses.
-     *
-     * @returns {Promise} resolves once the directory answered
-     */
-    async searchDirectory() {
-      this.searchToken++;
-      const token = this.searchToken;
-      if (!this.trimmedTerm) {
-        this.users = [];
-        return;
-      }
-      try {
-        const data = await this.$emailConnectorContactsService.searchDirectoryUsers(this.trimmedTerm, 50);
-        if (token === this.searchToken) {
-          this.users = (data?.users || []).filter(user => user.username);
-        }
-      } catch (error) {
-        if (token === this.searchToken) {
-          this.users = [];
-        }
-      }
-    },
-    /**
-     * Whether a directory user is picked.
-     *
-     * @param {object} user - the directory user
-     * @returns {boolean} true when picked
-     */
-    isSelected(user) {
-      return this.selected.includes(user.username);
-    },
-    /**
-     * Picks or unpicks a directory user.
-     *
-     * @param {object} user - the directory user
-     * @returns {void}
-     */
-    toggle(user) {
-      this.selected = this.isSelected(user)
-        && this.selected.filter(username => username !== user.username)
-        || this.selected.concat(user.username);
-    },
-    /**
-     * The initials of a directory user with no avatar.
-     *
-     * @param {object} user - the directory user
-     * @returns {string} one or two letters
-     */
-    initials(user) {
-      return (user.fullname || user.username || '')
-        .split(/\s+/)
-        .filter(part => part)
-        .slice(0, 2)
-        .map(part => part.charAt(0).toUpperCase())
-        .join('');
-    },
-    /**
-     * Imports the picked colleagues as linked contacts.
-     *
-     * @returns {void}
-     */
-    importSelected() {
-      this.importing = true;
-      this.$emailConnectorContactsService.importDirectoryContacts(this.selected)
-        .then(() => {
-          this.$root.$emit('email-contacts-refresh');
-          this.close();
-        })
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.contacts.new.importError'), 'error'))
-        .finally(() => this.importing = false);
-    },
-    /**
-     * Turns the typed address into a new contact: the form opens with it filled in,
-     * so the typing the user already did is not thrown away.
-     *
-     * @returns {void}
-     */
-    startFormWithTypedAddress() {
-      this.form = this.emptyForm();
-      this.form.primaryEmail = this.trimmedTerm;
-      this.searchMode = false;
-    },
-    /**
-     * Opens the empty form, for somebody who is neither a colleague nor an address
-     * the user has to hand.
-     *
-     * @returns {void}
-     */
-    startFormManually() {
-      this.form = this.emptyForm();
-      this.searchMode = false;
     },
     /**
      * Creates or updates the contact, translating the server's message codes
@@ -585,10 +367,6 @@ export default {
      */
     close() {
       this.formDrawer = false;
-      this.searchMode = false;
-      this.term = '';
-      this.users = [];
-      this.selected = [];
       this.editedId = null;
       this.editedSource = 'MANUAL';
       this.errorMessage = null;
