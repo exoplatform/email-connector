@@ -135,6 +135,12 @@
     <depends>
       <module>extensionRegistry</module>
     </depends>
+    <!-- The platform's profile-picture cropper, which registers
+         <image-crop-drawer>: the contact form borrows it whole rather than
+         growing a second, differently-behaved picture editor. -->
+    <depends>
+      <module>imageCropper</module>
+    </depends>
   </module>
 
   <module>
