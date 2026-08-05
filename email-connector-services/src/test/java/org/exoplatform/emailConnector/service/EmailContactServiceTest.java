@@ -34,6 +34,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -123,6 +124,7 @@ public class EmailContactServiceTest {
   @Test
   void collectionKeepsAPostableListMessageAndCreditsTheOriginalAuthor() {
     givenBackfillDone();
+    givenWrittenTo("someone@example.com");
     givenInboxMessages(inboxEmail("Jane Doe via dev-list", "dev-list@lists.example.com", email -> {
       email.setHasListId(true);
       email.setHasListPost(true);
@@ -164,6 +166,7 @@ public class EmailContactServiceTest {
   @Test
   void collectionCreatesACollectedRowForAPlainHumanSender() {
     givenBackfillDone();
+    givenWrittenTo("someone@example.org");
     Date receivedDate = new Date(1000000L);
     givenInboxMessages(inboxEmail("Bob Smith", "Bob@Example.org", email -> email.setReceivedDate(receivedDate)));
 
@@ -175,6 +178,22 @@ public class EmailContactServiceTest {
     assertEquals("Bob Smith", created.getValue().getDisplayName());
     assertEquals(1, created.getValue().getSeenCount());
     assertEquals(receivedDate, created.getValue().getLastSeenDate());
+  }
+
+  @Test
+  void collectionSkipsASenderFromAnOrganisationTheUserNeverWroteTo() {
+    // The rule the header checks cannot express: a transactional sender carries no
+    // list headers and is not marked auto-submitted, so the only thing separating
+    // it from a person is that the user has never written back to it.
+    givenBackfillDone();
+    givenWrittenTo("someone@example.org");
+    givenInboxMessages(inboxEmail("DocuSign EU System", "_na3@docusign.net", email -> {
+    }));
+
+    emailContactService.collectFromSyncedEmails(USERNAME, List.of(1L));
+
+    verify(emailContactStorage, never()).createContact(any());
+    verify(emailContactStorage, never()).updateContact(any());
   }
 
   @Test
@@ -195,6 +214,7 @@ public class EmailContactServiceTest {
   @Test
   void upsertBumpsCountersOnAKnownAddress() {
     givenBackfillDone();
+    givenWrittenTo("someone@example.org");
     EmailContact existing = collectedContact(5L, "bob@example.org", "Bob Smith");
     existing.setSeenCount(3);
     existing.setLastSeenDate(new Date(1000L));
@@ -214,6 +234,7 @@ public class EmailContactServiceTest {
   @Test
   void upsertBackfillsOnlyAnEmptyCollectedName() {
     givenBackfillDone();
+    givenWrittenTo("someone@example.org");
     EmailContact anonymous = collectedContact(5L, "bob@example.org", null);
     when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(anonymous);
     givenInboxMessages(inboxEmail("Bob Smith", "bob@example.org", email -> {
@@ -229,6 +250,7 @@ public class EmailContactServiceTest {
   @Test
   void upsertNeverRenamesAManualContact() {
     givenBackfillDone();
+    givenWrittenTo("someone@example.org");
     EmailContact manual = collectedContact(5L, "bob@example.org", null);
     manual.setSource(EmailContactSource.MANUAL);
     when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(manual);
@@ -643,6 +665,23 @@ public class EmailContactServiceTest {
    */
   private void givenInboxMessages(Email... emails) {
     when(emailBoxStorage.getContactSourceEmails(eq(USERNAME), eq(MailFolder.INBOX), anyList())).thenReturn(List.of(emails));
+  }
+
+  /**
+   * Stubs the sent side of collection: the people the user has written to. Their
+   * domains are what opens an inbox sender to collection, so a test that expects a
+   * sender to be collected has to say that the user has written to them.
+   *
+   * @param addresses the addresses the user has written to
+   */
+  private void givenWrittenTo(String... addresses) {
+    Email sent = new Email();
+    List<EmailRecipient> recipients = new ArrayList<>();
+    for (String address : addresses) {
+      recipients.add(new EmailRecipient(null, address, null, false));
+    }
+    sent.setTo(recipients);
+    when(emailBoxStorage.getContactSourceEmails(USERNAME, MailFolder.SENT, null)).thenReturn(List.of(sent));
   }
 
   /**

@@ -18,8 +18,10 @@ package org.exoplatform.emailConnector.service;
 
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -403,9 +405,10 @@ public class EmailContactService {
       return;
     }
     String ownAddress = getOwnAddress(username);
+    Set<String> writtenToDomains = getWrittenToDomains(username);
     int collected = 0;
     for (Email email : emailBoxStorage.getContactSourceEmails(username, MailFolder.INBOX, mailRemoteIds)) {
-      collected += collectInboxSender(username, email, ownAddress) ? 1 : 0;
+      collected += collectInboxSender(username, email, ownAddress, writtenToDomains) ? 1 : 0;
     }
     LOG.debug("Contact collection for user {}: {} of {} new inbox messages produced a contact upsert",
               username,
@@ -454,18 +457,27 @@ public class EmailContactService {
       return;
     }
     String ownAddress = getOwnAddress(username);
-    int inboxCollected = 0;
-    List<Email> inboxEmails = emailBoxStorage.getContactSourceEmails(username, MailFolder.INBOX, null);
-    for (Email email : inboxEmails) {
-      inboxCollected += collectInboxSender(username, email, ownAddress) ? 1 : 0;
-    }
+    // Sent mail is read FIRST: everyone the user wrote to is a contact outright, and
+    // the domains they wrote to are what the inbox pass then judges senders against.
+    // Reading the inbox first would judge it against nothing and collect nobody.
     int sentCollected = 0;
+    Set<String> writtenToDomains = new HashSet<>();
     List<Email> sentEmails = emailBoxStorage.getContactSourceEmails(username, MailFolder.SENT, null);
     for (Email email : sentEmails) {
       Date seenDate = email.getReceivedDate() == null ? new Date() : email.getReceivedDate();
       for (EmailRecipient recipient : recipientsOf(email)) {
+        String normalized = EmailContactUtils.normalizeAddress(recipient.getAddress());
+        String domain = EmailContactUtils.domainOf(normalized);
+        if (domain != null) {
+          writtenToDomains.add(domain);
+        }
         sentCollected += collect(username, recipient.getName(), recipient.getAddress(), seenDate, ownAddress) ? 1 : 0;
       }
+    }
+    int inboxCollected = 0;
+    List<Email> inboxEmails = emailBoxStorage.getContactSourceEmails(username, MailFolder.INBOX, null);
+    for (Email email : inboxEmails) {
+      inboxCollected += collectInboxSender(username, email, ownAddress, writtenToDomains) ? 1 : 0;
     }
     markBackfillDone(username);
     LOG.info("Contact backfill for user {}: {} inbox messages and {} sent messages read, {} sender upserts, {} recipient upserts",
@@ -490,7 +502,7 @@ public class EmailContactService {
    * @param ownAddress the user's own normalized address, never collected
    * @return true when an upsert happened
    */
-  private boolean collectInboxSender(String username, Email email, String ownAddress) {
+  private boolean collectInboxSender(String username, Email email, String ownAddress, Set<String> writtenToDomains) {
     if (email == null || email.getSender() == null || email.isAutoSubmitted()
         || (email.isHasListUnsubscribe() && !email.isHasListPost())) {
       return false;
@@ -503,8 +515,46 @@ public class EmailContactService {
       address = email.getOriginalSender();
       name = EmailContactUtils.authorNameFromListSender(name);
     }
+    // The strongest signal available, and a free one: has the user ever written to
+    // this organisation? Someone they have answered is unmistakably a person, while
+    // an address that has only ever written AT them is exactly what a transactional
+    // sender looks like -- and those are the ones the header rules cannot catch,
+    // because a booking confirmation carries no list headers and is not marked
+    // auto-submitted. This is a rule about the user's own behaviour rather than a
+    // list of words, so it does not need maintaining as senders invent new names.
+    // The cost, accepted deliberately: a genuine first-time correspondent is not
+    // collected until the user replies to them.
+    String domain = EmailContactUtils.domainOf(EmailContactUtils.normalizeAddress(address));
+    if (domain == null || !writtenToDomains.contains(domain)) {
+      return false;
+    }
     Date seenDate = email.getReceivedDate() == null ? new Date() : email.getReceivedDate();
     return collect(username, name, address, seenDate, ownAddress);
+  }
+
+  /**
+   * The domains the user has written to, read from their sent mail.
+   * <p>
+   * Sent mail is the record of who the user actually deals with, so it is what
+   * decides which inbox senders are people. Recomputed per collection run rather
+   * than cached: it is one indexed read of a bounded folder, and a stale copy would
+   * silently stop collecting the correspondents of somebody the user just started
+   * writing to.
+   *
+   * @param username the mailbox owner
+   * @return the lower-cased domains, never null
+   */
+  private Set<String> getWrittenToDomains(String username) {
+    Set<String> domains = new HashSet<>();
+    for (Email sent : emailBoxStorage.getContactSourceEmails(username, MailFolder.SENT, null)) {
+      for (EmailRecipient recipient : recipientsOf(sent)) {
+        String domain = EmailContactUtils.domainOf(EmailContactUtils.normalizeAddress(recipient.getAddress()));
+        if (domain != null) {
+          domains.add(domain);
+        }
+      }
+    }
+    return domains;
   }
 
   /**

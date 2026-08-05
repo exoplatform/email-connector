@@ -77,6 +77,21 @@ public final class EmailContactUtils {
   }
 
   /**
+   * The domain of an address, lower-cased — the part that says which organisation
+   * a correspondent belongs to.
+   *
+   * @param address a normalized address
+   * @return the domain, or {@code null} when the address has none
+   */
+  public static String domainOf(String address) {
+    if (StringUtils.isBlank(address)) {
+      return null;
+    }
+    int at = address.lastIndexOf('@');
+    return at < 0 || at == address.length() - 1 ? null : address.substring(at + 1).toLowerCase();
+  }
+
+  /**
    * Whether an address is machine plumbing nobody should have in their contacts:
    * no-reply variants, mailer-daemon, postmaster, bounce and notification
    * senders. Judged on the local part only, so a person named
