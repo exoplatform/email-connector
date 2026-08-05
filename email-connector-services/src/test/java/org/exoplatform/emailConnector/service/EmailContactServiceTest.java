@@ -200,6 +200,51 @@ public class EmailContactServiceTest {
   }
 
   @Test
+  void aConsumerProviderAdmitsOnlyThePersonWrittenTo() {
+    // Writing to one friend at gmail.com must not admit every gmail.com sender:
+    // at a consumer provider the domain says nothing about the people behind it,
+    // so the address itself is the only signal worth anything.
+    givenBackfillDone();
+    givenWrittenTo("friend@gmail.com");
+    givenInboxMessages(inboxEmail("Marketing", "offers@gmail.com", email -> {
+    }));
+
+    emailContactService.collectFromSyncedEmails(USERNAME, List.of(1L));
+
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void aConsumerProviderStillCollectsThePersonWrittenTo() {
+    givenBackfillDone();
+    givenWrittenTo("friend@gmail.com");
+    givenInboxMessages(inboxEmail("A Friend", "Friend@Gmail.com", email -> {
+    }));
+
+    emailContactService.collectFromSyncedEmails(USERNAME, List.of(1L));
+
+    ArgumentCaptor<EmailContact> created = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).createContact(created.capture());
+    assertEquals("friend@gmail.com", created.getValue().getPrimaryEmail());
+  }
+
+  @Test
+  void aCompanyDomainStillAdmitsAnyoneThere() {
+    // The other half of the rule, unchanged: at a real organisation, having
+    // written to one person is a good reason to keep their colleague too.
+    givenBackfillDone();
+    givenWrittenTo("someone@acme.com");
+    givenInboxMessages(inboxEmail("Someone Else", "other.person@acme.com", email -> {
+    }));
+
+    emailContactService.collectFromSyncedEmails(USERNAME, List.of(1L));
+
+    ArgumentCaptor<EmailContact> created = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).createContact(created.capture());
+    assertEquals("other.person@acme.com", created.getValue().getPrimaryEmail());
+  }
+
+  @Test
   void collectionIsSkippedEntirelyUntilTheBackfillRan() {
     // Before the one-time backfill, sync groups must not collect: the backfill's
     // whole-cache pass covers those very messages, and skipping here is what

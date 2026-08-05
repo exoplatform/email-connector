@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.utils;
 
 import java.text.Normalizer;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
@@ -83,6 +84,76 @@ public final class EmailContactUtils {
    * @param address a normalized address
    * @return the domain, or {@code null} when the address has none
    */
+  /**
+   * The domains where sharing a domain means nothing about the people.
+   *
+   * The collection rule asks "has the user ever written to this organisation?",
+   * which is a good question at a company domain and a meaningless one at a
+   * consumer mail provider: writing to one friend at gmail.com would otherwise
+   * admit every gmail.com sender on earth, transactional ones included. These
+   * are the providers where the domain says nothing, so the rule falls back to
+   * the address itself.
+   *
+   * Deliberately a short list of the large providers rather than an attempt at
+   * completeness: a domain missing from it merely keeps the old, more generous
+   * behaviour, while a wrong entry would cost a real correspondent.
+   */
+  private static final Set<String> FREEMAIL_DOMAINS =
+                                                    Set.of("gmail.com",
+                                                           "googlemail.com",
+                                                           "outlook.com",
+                                                           "outlook.fr",
+                                                           "hotmail.com",
+                                                           "hotmail.fr",
+                                                           "hotmail.co.uk",
+                                                           "live.com",
+                                                           "live.fr",
+                                                           "msn.com",
+                                                           "yahoo.com",
+                                                           "yahoo.fr",
+                                                           "yahoo.co.uk",
+                                                           "ymail.com",
+                                                           "aol.com",
+                                                           "icloud.com",
+                                                           "me.com",
+                                                           "mac.com",
+                                                           "proton.me",
+                                                           "protonmail.com",
+                                                           "pm.me",
+                                                           "gmx.com",
+                                                           "gmx.de",
+                                                           "gmx.fr",
+                                                           "web.de",
+                                                           "mail.com",
+                                                           "mail.ru",
+                                                           "yandex.com",
+                                                           "yandex.ru",
+                                                           "zoho.com",
+                                                           "fastmail.com",
+                                                           "tutanota.com",
+                                                           "free.fr",
+                                                           "orange.fr",
+                                                           "wanadoo.fr",
+                                                           "sfr.fr",
+                                                           "laposte.net",
+                                                           "bbox.fr",
+                                                           "qq.com",
+                                                           "163.com",
+                                                           "126.com",
+                                                           "naver.com",
+                                                           "hanmail.net");
+
+  /**
+   * Whether this domain is a consumer mail provider, where having written to one
+   * person says nothing about anyone else who writes from it.
+   *
+   * @param domain the lower-cased domain, may be null
+   * @return true when the domain is a known consumer provider
+   */
+  public static boolean isFreemailDomain(String domain) {
+    return domain != null && FREEMAIL_DOMAINS.contains(domain);
+  }
+
   public static String domainOf(String address) {
     if (StringUtils.isBlank(address)) {
       return null;

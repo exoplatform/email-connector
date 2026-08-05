@@ -360,10 +360,10 @@ public class EmailContactService {
       return;
     }
     String ownAddress = getOwnAddress(username);
-    Set<String> writtenToDomains = getWrittenToDomains(username);
+    WrittenTo writtenTo = getWrittenTo(username);
     int collected = 0;
     for (Email email : emailBoxStorage.getContactSourceEmails(username, MailFolder.INBOX, mailRemoteIds)) {
-      collected += collectInboxSender(username, email, ownAddress, writtenToDomains) ? 1 : 0;
+      collected += collectInboxSender(username, email, ownAddress, writtenTo) ? 1 : 0;
     }
     LOG.debug("Contact collection for user {}: {} of {} new inbox messages produced a contact upsert",
               username,
@@ -416,23 +416,19 @@ public class EmailContactService {
     // the domains they wrote to are what the inbox pass then judges senders against.
     // Reading the inbox first would judge it against nothing and collect nobody.
     int sentCollected = 0;
-    Set<String> writtenToDomains = new HashSet<>();
+    WrittenTo writtenTo = new WrittenTo();
     List<Email> sentEmails = emailBoxStorage.getContactSourceEmails(username, MailFolder.SENT, null);
     for (Email email : sentEmails) {
       Date seenDate = email.getReceivedDate() == null ? new Date() : email.getReceivedDate();
       for (EmailRecipient recipient : recipientsOf(email)) {
-        String normalized = EmailContactUtils.normalizeAddress(recipient.getAddress());
-        String domain = EmailContactUtils.domainOf(normalized);
-        if (domain != null) {
-          writtenToDomains.add(domain);
-        }
+        writtenTo.add(EmailContactUtils.normalizeAddress(recipient.getAddress()));
         sentCollected += collect(username, recipient.getName(), recipient.getAddress(), seenDate, ownAddress) ? 1 : 0;
       }
     }
     int inboxCollected = 0;
     List<Email> inboxEmails = emailBoxStorage.getContactSourceEmails(username, MailFolder.INBOX, null);
     for (Email email : inboxEmails) {
-      inboxCollected += collectInboxSender(username, email, ownAddress, writtenToDomains) ? 1 : 0;
+      inboxCollected += collectInboxSender(username, email, ownAddress, writtenTo) ? 1 : 0;
     }
     markBackfillDone(username);
     LOG.info("Contact backfill for user {}: {} inbox messages and {} sent messages read, {} sender upserts, {} recipient upserts",
@@ -457,7 +453,7 @@ public class EmailContactService {
    * @param ownAddress the user's own normalized address, never collected
    * @return true when an upsert happened
    */
-  private boolean collectInboxSender(String username, Email email, String ownAddress, Set<String> writtenToDomains) {
+  private boolean collectInboxSender(String username, Email email, String ownAddress, WrittenTo writtenTo) {
     if (email == null || email.getSender() == null || email.isAutoSubmitted()
         || (email.isHasListUnsubscribe() && !email.isHasListPost())) {
       return false;
@@ -479,8 +475,8 @@ public class EmailContactService {
     // list of words, so it does not need maintaining as senders invent new names.
     // The cost, accepted deliberately: a genuine first-time correspondent is not
     // collected until the user replies to them.
-    String domain = EmailContactUtils.domainOf(EmailContactUtils.normalizeAddress(address));
-    if (domain == null || !writtenToDomains.contains(domain)) {
+    String normalized = EmailContactUtils.normalizeAddress(address);
+    if (!writtenTo.admits(normalized)) {
       return false;
     }
     Date seenDate = email.getReceivedDate() == null ? new Date() : email.getReceivedDate();
@@ -499,17 +495,63 @@ public class EmailContactService {
    * @param username the mailbox owner
    * @return the lower-cased domains, never null
    */
-  private Set<String> getWrittenToDomains(String username) {
-    Set<String> domains = new HashSet<>();
+  private WrittenTo getWrittenTo(String username) {
+    WrittenTo writtenTo = new WrittenTo();
     for (Email sent : emailBoxStorage.getContactSourceEmails(username, MailFolder.SENT, null)) {
       for (EmailRecipient recipient : recipientsOf(sent)) {
-        String domain = EmailContactUtils.domainOf(EmailContactUtils.normalizeAddress(recipient.getAddress()));
-        if (domain != null) {
-          domains.add(domain);
-        }
+        writtenTo.add(EmailContactUtils.normalizeAddress(recipient.getAddress()));
       }
     }
-    return domains;
+    return writtenTo;
+  }
+
+  /**
+   * Who the user has written to, as the collection rule needs to ask about them:
+   * the organisations, and — where the organisation means nothing — the people.
+   *
+   * At a company domain, having written to anyone there says the user deals with
+   * that organisation, and a sender from it is worth keeping. At a consumer mail
+   * provider it says nothing at all: one mail to a friend at gmail.com would
+   * otherwise admit every gmail.com sender there is. So addresses at those
+   * providers are remembered individually and only they are admitted.
+   */
+  private static final class WrittenTo {
+
+    private final Set<String> domains   = new HashSet<>();
+
+    private final Set<String> addresses = new HashSet<>();
+
+    /**
+     * Records one address the user wrote to.
+     *
+     * @param normalizedAddress the normalized recipient address, may be null
+     */
+    private void add(String normalizedAddress) {
+      String domain = EmailContactUtils.domainOf(normalizedAddress);
+      if (domain == null) {
+        return;
+      }
+      if (EmailContactUtils.isFreemailDomain(domain)) {
+        addresses.add(normalizedAddress);
+      } else {
+        domains.add(domain);
+      }
+    }
+
+    /**
+     * Whether a sender at this address has earned collection.
+     *
+     * @param normalizedAddress the normalized sender address, may be null
+     * @return true when the user has written to that organisation, or to that
+     *         very person when the organisation is a consumer provider
+     */
+    private boolean admits(String normalizedAddress) {
+      String domain = EmailContactUtils.domainOf(normalizedAddress);
+      if (domain == null) {
+        return false;
+      }
+      return EmailContactUtils.isFreemailDomain(domain) ? addresses.contains(normalizedAddress) : domains.contains(domain);
+    }
   }
 
   /**
