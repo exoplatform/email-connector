@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -163,6 +164,24 @@ public class UserEmailSettingServiceTest {
     String json = stored.getValue().getValue().toString();
     assertTrue("the encoded form is what reaches the store", json.contains("ENCODED"));
     assertFalse("and the clear one never does", json.contains("carddav-secret"));
+  }
+
+  @Test
+  @SneakyThrows
+  void aUserWithNoAddressBookPasswordIsNotAnError() {
+    // The regression this exists for: reading the settings of any user who never
+    // bound an address book handed a null to the codec and failed the whole read.
+    // Mocked codecs hid it -- only a real one throws on null.
+    // The codec is deliberately NOT stubbed: if this path still reached it, the
+    // unstubbed mock would answer null and the call would fail exactly as it did in
+    // production. Passing means the codec was never asked.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    userEmailSetting.setEmailPassword(null);
+    userEmailSetting.setCarddavPassword(null);
+
+    userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
+
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }
 
   @Test

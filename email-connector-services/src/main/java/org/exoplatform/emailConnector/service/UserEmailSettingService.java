@@ -428,6 +428,13 @@ public class UserEmailSettingService {
   }
 
   private String decodePassword(String password) {
+    // Nothing to decode is not an error. The mail password always exists, so this
+    // never came up until a second, optional password arrived: every user who has
+    // never bound an address book stores a null one, and handing that to the codec
+    // failed the whole settings read.
+    if (StringUtils.isBlank(password)) {
+      return null;
+    }
     try {
       return codecInitializer.getCodec().decode(password);
     } catch (TokenServiceInitializationException e) {
@@ -437,6 +444,9 @@ public class UserEmailSettingService {
   }
 
   private String encodePassword(String password) {
+    if (StringUtils.isBlank(password)) {
+      return null;
+    }
     try {
       return codecInitializer.getCodec().encode(password);
     } catch (TokenServiceInitializationException e) {
