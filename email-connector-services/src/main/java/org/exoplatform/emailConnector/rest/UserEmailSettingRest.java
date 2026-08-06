@@ -105,17 +105,14 @@ public class UserEmailSettingRest {
   @Secured("users")
   @Operation(summary = "Turns the CardDAV address-book sync on or off for the caller",
              method = "PUT",
-             description = "Stores whether the caller's address book should sync, and the account to use for it. A blank password leaves the stored one unchanged; a blank username means the mailbox's own account.")
+             description = "Stores whether the caller's address book should sync. It signs in with the mailbox's own credentials, so there is nothing else to configure.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"), })
   public void updateAddressBookBinding(HttpServletRequest request,
                                        @RequestBody
                                        UserEmailSetting userEmailSetting) {
-    userEmailSettingService.updateAddressBookBinding(request.getRemoteUser(),
-                                                     userEmailSetting.getCarddavEnabled(),
-                                                     userEmailSetting.getCarddavUsername(),
-                                                     userEmailSetting.getCarddavPassword());
+    userEmailSettingService.updateAddressBookBinding(request.getRemoteUser(), userEmailSetting.getCarddavEnabled());
   }
 
   @DeleteMapping()

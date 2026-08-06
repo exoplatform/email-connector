@@ -56,21 +56,14 @@ public class UserEmailSettingEntity {
    * Whether this user wants their address book synced. Opt-in: a connector
    * offering CardDAV does not mean every user of it wants their contacts pulled
    * in, and the sync costs a request per user per period.
+   * <p>
+   * There is deliberately no second credential beside it. The address book is the
+   * same provider as the mailbox, reached with the same account, so the sync uses
+   * the mail credentials. A deployment whose address book lives on a different
+   * account is the multi-account plan's problem, not this one's.
    */
   private Boolean      carddavEnabled;
 
-  /**
-   * The CardDAV account, when it differs from the mail one. Null means "the same
-   * account as the mailbox", which is the truth on every provider that serves
-   * both from one login.
-   */
-  private String       carddavUsername;
-
-  /**
-   * That account's password, encoded exactly like the mail one and by the same
-   * codec. Null means reuse the mail password.
-   */
-  private String       carddavPassword;
 
   public UserEmailSettingEntity(String emailConnectorId,
                                 String emailAddress,

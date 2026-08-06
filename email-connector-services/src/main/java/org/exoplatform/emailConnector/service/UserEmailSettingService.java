@@ -151,13 +151,9 @@ public class UserEmailSettingService {
     userEmailSettingEntity.setNotifyAllCategories(userEmailSetting.getNotifyAllCategories());
     userEmailSettingEntity.setNotifyCategories(userEmailSetting.getNotifyCategories());
     userEmailSettingEntity.setDefaultCategoryView(userEmailSetting.getDefaultCategoryView());
-    // The address-book binding travels with the mailbox one because it IS the same
-    // account on every provider that serves both. Its password is encoded by the
-    // same codec as the mail password, and for the same reason: it must never sit
-    // in the settings store in the clear.
+    // Only the switch: the sync signs in with the mailbox's own credentials, so
+    // there is no second secret to store.
     userEmailSettingEntity.setCarddavEnabled(userEmailSetting.getCarddavEnabled());
-    userEmailSettingEntity.setCarddavUsername(StringUtils.trimToNull(userEmailSetting.getCarddavUsername()));
-    userEmailSettingEntity.setCarddavPassword(encodePassword(userEmailSetting.getCarddavPassword()));
     settingService.set(Context.USER.id(username),
                        EMAIL_CONNECTOR_SCOPE,
                        USER_EMAIL_SETTING_KEY,
@@ -193,29 +189,22 @@ public class UserEmailSettingService {
   }
 
   /**
-   * Turns the address-book sync on or off for one user, and stores the account it
-   * should use.
+   * Turns the address-book sync on or off for one user.
    * <p>
-   * A blank password means "leave the stored one alone", so the settings screen
-   * never has to send a secret back to the server just to toggle a switch — and a
-   * blank username means "the same account as the mailbox", which is the truth on
-   * every provider that serves mail and contacts from one login.
+   * There is nothing else to configure. The address book belongs to the same
+   * provider as the mailbox and answers to the same account, so the sync signs in
+   * with the mail credentials — no second password to enter, to store, or to
+   * re-enter when the mail one changes.
    *
    * @param username the mailbox owner
    * @param enabled whether the address book should sync
-   * @param carddavUsername the CardDAV account, or null/blank to reuse the mailbox's
-   * @param carddavPassword the CardDAV password, or null/blank to leave it unchanged
    */
-  public void updateAddressBookBinding(String username, Boolean enabled, String carddavUsername, String carddavPassword) {
+  public void updateAddressBookBinding(String username, Boolean enabled) {
     UserEmailSetting userEmailSetting = getUserEmailSetting(username);
     if (StringUtils.isBlank(userEmailSetting.getEmailConnectorId())) {
       return;
     }
     userEmailSetting.setCarddavEnabled(enabled);
-    userEmailSetting.setCarddavUsername(StringUtils.trimToNull(carddavUsername));
-    if (StringUtils.isNotBlank(carddavPassword)) {
-      userEmailSetting.setCarddavPassword(carddavPassword);
-    }
     setUserEmailSetting(userEmailSetting, username, false);
   }
 
@@ -236,7 +225,6 @@ public class UserEmailSettingService {
       if (storedUserEmailSetting.getEmailConnectorId() != null) {
         userEmailSetting = storedUserEmailSetting;
         userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword()));
-        userEmailSetting.setCarddavPassword(decodePassword(userEmailSetting.getCarddavPassword()));
         EmailConnector emailConnector =
                                       emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
         if (emailConnector != null) {

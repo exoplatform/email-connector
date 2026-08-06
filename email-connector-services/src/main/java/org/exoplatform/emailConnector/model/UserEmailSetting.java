@@ -40,11 +40,6 @@ public class UserEmailSetting extends UserEmailSettingEntity {
   /** Whether this user wants their address book synced over CardDAV. */
   private Boolean carddavEnabled;
 
-  /** The CardDAV account, or null to reuse the mailbox's. */
-  private String  carddavUsername;
-
-  /** The CardDAV password, or null to reuse the mailbox's. */
-  private String  carddavPassword;
 
   /** Whether the bound connector offers an address book at all, filled at read time. */
   private boolean carddavAvailable;

@@ -107,53 +107,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @change="saveAddressBook" />
           </v-list-item-action>
         </v-list-item>
-        <!-- No second sign-in by default. On every provider that serves mail and
-             contacts from one account -- which is all of them, in practice -- the
-             mailbox credentials already work, and the server falls back to them
-             when these are empty. Showing two empty boxes said the opposite, so
-             they are now behind a link that only the rare split-account case
-             needs to click.
-
-             Stacked explicitly: v-list-item-content lays its children out in a
-             row, which put the two fields side by side and overlapping. -->
-        <v-list-item v-if="carddavAvailable && carddavEnabled">
-          <v-list-item-content class="py-0">
-            <div class="d-flex flex-column full-width">
-              <v-btn
-                v-if="!showAddressBookCredentials"
-                text
-                small
-                class="primary--text align-self-start ps-0"
-                @click="showAddressBookCredentials = true">
-                {{ $t('UserSettings.emailConnector.addressBook.useOtherAccount') }}
-              </v-btn>
-              <template v-else>
-                <div class="text-sub-title mb-2">
-                  {{ $t('UserSettings.emailConnector.addressBook.credentials') }}
-                </div>
-                <v-text-field
-                  v-model="carddavUsername"
-                  :placeholder="$t('UserSettings.emailConnector.addressBook.username.placeholder')"
-                  class="pt-0 mb-3 full-width"
-                  type="text"
-                  outlined
-                  dense
-                  hide-details
-                  @blur="saveAddressBook" />
-                <v-text-field
-                  v-model="carddavPassword"
-                  :placeholder="$t('UserSettings.emailConnector.addressBook.password.placeholder')"
-                  class="pt-0 full-width"
-                  type="password"
-                  autocomplete="new-password"
-                  outlined
-                  dense
-                  hide-details
-                  @blur="saveAddressBook" />
-              </template>
-            </div>
-          </v-list-item-content>
-        </v-list-item>
         <v-list-item v-if="!notifyAll">
           <v-list-item-content>
             <v-list-item-subtitle>
@@ -227,13 +180,7 @@ export default {
     notifyAll: true,
     carddavAvailable: false,
     carddavEnabled: false,
-    carddavUsername: '',
-    // Never filled from the server: the stored password is not sent back, and an
-    // empty box means "leave it alone" rather than "clear it".
-    carddavPassword: '',
     savingAddressBook: false,
-    // Revealed only on request, or when a split account is already stored.
-    showAddressBookCredentials: false,
     notifyCategoryIds: [],
     saving: false,
     resetting: false,
@@ -281,29 +228,18 @@ export default {
       this.notifyCategoryIds = setting.notifyCategories || [];
       this.carddavAvailable = !!setting.carddavAvailable;
       this.carddavEnabled = !!setting.carddavEnabled;
-      this.carddavUsername = setting.carddavUsername || '';
-      this.showAddressBookCredentials = !!setting.carddavUsername;
     },
     /**
-     * Stores the address-book binding on its own endpoint, not with the mail
-     * preferences: it carries a credential, and the two have no reason to travel
-     * together.
+     * Stores whether the address book should sync. That is the whole setting: the
+     * sync signs in with the mailbox's own credentials, so there is nothing else
+     * to ask for.
      *
      * @returns {void}
      */
     saveAddressBook() {
       this.savingAddressBook = true;
-      this.$emailConnectorCommonService.updateAddressBookBinding({
-        carddavEnabled: this.carddavEnabled,
-        carddavUsername: this.carddavUsername,
-        carddavPassword: this.carddavPassword,
-      })
-        .then(() => {
-          // Dropped as soon as it is stored: there is no reason for a password to
-          // sit in a component's state for the rest of the session.
-          this.carddavPassword = '';
-          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success');
-        })
+      this.$emailConnectorCommonService.updateAddressBookBinding({carddavEnabled: this.carddavEnabled})
+        .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
         .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
         .finally(() => this.savingAddressBook = false);
     },

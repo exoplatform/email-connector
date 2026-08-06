@@ -32,11 +32,10 @@ export function getUserEmailSetting() {
 }
 
 /**
- * Turns the CardDAV address-book sync on or off for the caller, and stores the
- * account it should use. Separate from the mail preferences because it carries a
- * credential.
+ * Turns the CardDAV address-book sync on or off for the caller. It signs in with
+ * the mailbox's own credentials, so that is the whole setting.
  *
- * @param {object} binding - {carddavEnabled, carddavUsername, carddavPassword}
+ * @param {object} binding - {carddavEnabled}
  * @returns {Promise} resolves once stored
  */
 export function updateAddressBookBinding(binding) {

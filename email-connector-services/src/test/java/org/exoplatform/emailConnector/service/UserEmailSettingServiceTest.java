@@ -144,40 +144,13 @@ public class UserEmailSettingServiceTest {
 
   @Test
   @SneakyThrows
-  void theAddressBookPasswordIsEncodedLikeTheMailOne() {
-    // It is a password in a settings store: whatever protects the mail one has to
-    // protect this one, by the same codec, or the weaker of the two sets the bar.
-    AbstractCodec codec = mock(AbstractCodec.class);
-    when(codecInitializer.getCodec()).thenReturn(codec);
-    // The mail password goes through the same codec on this path, so the stub has to
-    // answer for both rather than only the one under test.
-    when(codec.encode(anyString())).thenAnswer(invocation -> "carddav-secret".equals(invocation.getArgument(0)) ? "ENCODED"
-                                                                                                               : "OTHER");
-    UserEmailSetting userEmailSetting = userEmailSetting();
-    userEmailSetting.setCarddavEnabled(true);
-    userEmailSetting.setCarddavPassword("carddav-secret");
-
-    userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
-
-    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
-    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
-    String json = stored.getValue().getValue().toString();
-    assertTrue("the encoded form is what reaches the store", json.contains("ENCODED"));
-    assertFalse("and the clear one never does", json.contains("carddav-secret"));
-  }
-
-  @Test
-  @SneakyThrows
-  void aUserWithNoAddressBookPasswordIsNotAnError() {
-    // The regression this exists for: reading the settings of any user who never
-    // bound an address book handed a null to the codec and failed the whole read.
-    // Mocked codecs hid it -- only a real one throws on null.
-    // The codec is deliberately NOT stubbed: if this path still reached it, the
-    // unstubbed mock would answer null and the call would fail exactly as it did in
-    // production. Passing means the codec was never asked.
+  void aPasswordThatIsNotSetNeverReachesTheCodec() {
+    // A password that is not set must not reach the codec: it answered a null and
+    // the whole settings read failed. The codec is deliberately NOT stubbed here,
+    // so a path that still reaches it fails on the null mock exactly as production
+    // did.
     UserEmailSetting userEmailSetting = userEmailSetting();
     userEmailSetting.setEmailPassword(null);
-    userEmailSetting.setCarddavPassword(null);
 
     userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
 
