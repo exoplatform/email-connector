@@ -86,27 +86,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @change="save" />
           </v-list-item-action>
         </v-list-item>
-        <!-- Only shown when the bound provider actually has an address book: a
-             switch for something that can never work is worse than no switch.
-             Off by default -- a provider offering CardDAV does not mean this user
-             wants their contacts pulled in, and each enabled user costs the server
-             a request per sync period. -->
-        <v-list-item v-if="carddavAvailable">
-          <v-list-item-content>
-            <v-list-item-title class="text-color">
-              {{ $t('UserSettings.emailConnector.addressBook.title') }}
-            </v-list-item-title>
-            <v-list-item-subtitle>
-              {{ $t('UserSettings.emailConnector.addressBook.description') }}
-            </v-list-item-subtitle>
-          </v-list-item-content>
-          <v-list-item-action>
-            <v-switch
-              v-model="carddavEnabled"
-              :loading="savingAddressBook"
-              @change="saveAddressBook" />
-          </v-list-item-action>
-        </v-list-item>
         <v-list-item v-if="!notifyAll">
           <v-list-item-content>
             <v-list-item-subtitle>
@@ -130,6 +109,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 {{ category.name }}
               </v-chip>
             </v-chip-group>
+          </v-list-item-action>
+        </v-list-item>
+        <!-- Last, and after the notification categories: those chips belong to the
+             Notifications switch above them, and a block inserted between the two
+             separated a setting from its own detail. Shown only when the bound
+             provider actually has an address book, because a switch for something
+             that can never work is worse than no switch, and off by default since
+             each enabled user costs the server a request per sync period. -->
+        <v-list-item v-if="carddavAvailable">
+          <v-list-item-content>
+            <v-list-item-title class="text-color">
+              {{ $t('UserSettings.emailConnector.addressBook.title') }}
+            </v-list-item-title>
+            <v-list-item-subtitle>
+              {{ $t('UserSettings.emailConnector.addressBook.description') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+          <v-list-item-action>
+            <v-switch
+              v-model="carddavEnabled"
+              :loading="savingAddressBook"
+              @change="saveAddressBook" />
           </v-list-item-action>
         </v-list-item>
         <v-divider class="mx-4" />
