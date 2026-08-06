@@ -107,30 +107,51 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @change="saveAddressBook" />
           </v-list-item-action>
         </v-list-item>
+        <!-- No second sign-in by default. On every provider that serves mail and
+             contacts from one account -- which is all of them, in practice -- the
+             mailbox credentials already work, and the server falls back to them
+             when these are empty. Showing two empty boxes said the opposite, so
+             they are now behind a link that only the rare split-account case
+             needs to click.
+
+             Stacked explicitly: v-list-item-content lays its children out in a
+             row, which put the two fields side by side and overlapping. -->
         <v-list-item v-if="carddavAvailable && carddavEnabled">
-          <v-list-item-content>
-            <v-list-item-subtitle class="mb-2">
-              {{ $t('UserSettings.emailConnector.addressBook.credentials') }}
-            </v-list-item-subtitle>
-            <v-text-field
-              v-model="carddavUsername"
-              :placeholder="$t('UserSettings.emailConnector.addressBook.username.placeholder')"
-              class="pt-0"
-              type="text"
-              outlined
-              dense
-              hide-details
-              @blur="saveAddressBook" />
-            <v-text-field
-              v-model="carddavPassword"
-              :placeholder="$t('UserSettings.emailConnector.addressBook.password.placeholder')"
-              class="pt-3"
-              type="password"
-              autocomplete="new-password"
-              outlined
-              dense
-              hide-details
-              @blur="saveAddressBook" />
+          <v-list-item-content class="py-0">
+            <div class="d-flex flex-column full-width">
+              <v-btn
+                v-if="!showAddressBookCredentials"
+                text
+                small
+                class="primary--text align-self-start ps-0"
+                @click="showAddressBookCredentials = true">
+                {{ $t('UserSettings.emailConnector.addressBook.useOtherAccount') }}
+              </v-btn>
+              <template v-else>
+                <div class="text-sub-title mb-2">
+                  {{ $t('UserSettings.emailConnector.addressBook.credentials') }}
+                </div>
+                <v-text-field
+                  v-model="carddavUsername"
+                  :placeholder="$t('UserSettings.emailConnector.addressBook.username.placeholder')"
+                  class="pt-0 mb-3 full-width"
+                  type="text"
+                  outlined
+                  dense
+                  hide-details
+                  @blur="saveAddressBook" />
+                <v-text-field
+                  v-model="carddavPassword"
+                  :placeholder="$t('UserSettings.emailConnector.addressBook.password.placeholder')"
+                  class="pt-0 full-width"
+                  type="password"
+                  autocomplete="new-password"
+                  outlined
+                  dense
+                  hide-details
+                  @blur="saveAddressBook" />
+              </template>
+            </div>
           </v-list-item-content>
         </v-list-item>
         <v-list-item v-if="!notifyAll">
@@ -211,6 +232,8 @@ export default {
     // empty box means "leave it alone" rather than "clear it".
     carddavPassword: '',
     savingAddressBook: false,
+    // Revealed only on request, or when a split account is already stored.
+    showAddressBookCredentials: false,
     notifyCategoryIds: [],
     saving: false,
     resetting: false,
@@ -259,6 +282,7 @@ export default {
       this.carddavAvailable = !!setting.carddavAvailable;
       this.carddavEnabled = !!setting.carddavEnabled;
       this.carddavUsername = setting.carddavUsername || '';
+      this.showAddressBookCredentials = !!setting.carddavUsername;
     },
     /**
      * Stores the address-book binding on its own endpoint, not with the mail
