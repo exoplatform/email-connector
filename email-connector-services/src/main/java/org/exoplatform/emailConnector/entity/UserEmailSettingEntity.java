@@ -52,6 +52,26 @@ public class UserEmailSettingEntity {
   // Default Inbox category the mailbox drawer opens positioned to; null => None (show all).
   private Long         defaultCategoryView;
 
+  /**
+   * Whether this user wants their address book synced. Opt-in: a connector
+   * offering CardDAV does not mean every user of it wants their contacts pulled
+   * in, and the sync costs a request per user per period.
+   */
+  private Boolean      carddavEnabled;
+
+  /**
+   * The CardDAV account, when it differs from the mail one. Null means "the same
+   * account as the mailbox", which is the truth on every provider that serves
+   * both from one login.
+   */
+  private String       carddavUsername;
+
+  /**
+   * That account's password, encoded exactly like the mail one and by the same
+   * codec. Null means reuse the mail password.
+   */
+  private String       carddavPassword;
+
   public UserEmailSettingEntity(String emailConnectorId,
                                 String emailAddress,
                                 String emailPassword,

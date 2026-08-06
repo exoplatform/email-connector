@@ -386,4 +386,25 @@
       <column name="PLATFORM_USERNAME" type="VARCHAR(250)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-30">
+    <!-- Where this provider's address book lives, so contacts can be read over
+         CardDAV. It sits on the connector beside the IMAP and SMTP endpoints
+         because it IS the same provider's third endpoint, not a different server:
+         one preset per provider stays one thing for an administrator to maintain.
+         Null means this provider offers no address book, which is the honest state
+         for Microsoft 365 and Proton, and the default for everyone else. -->
+    <addColumn tableName="EMAIL_CONNECTOR">
+      <column name="CARDDAV_URL" type="NVARCHAR(500)"/>
+    </addColumn>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-31">
+    <!-- Who owns a contact's picture: USER when somebody set it by hand here,
+         VCARD when the address-book sync wrote it. Without this the two are
+         indistinguishable, and the sync would either overwrite a picture the user
+         chose or never be able to refresh its own. Existing rows are all USER by
+         definition, the sync not existing yet, and a null reads as USER. -->
+    <addColumn tableName="EMAIL_CONTACT">
+      <column name="PHOTO_ORIGIN" type="VARCHAR(10)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>

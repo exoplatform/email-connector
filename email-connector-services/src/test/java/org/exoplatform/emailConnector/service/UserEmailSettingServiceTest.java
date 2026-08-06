@@ -20,6 +20,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -40,6 +43,7 @@ import javax.mail.Store;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.MockedStatic;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -52,6 +56,8 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.ContactSyncState;
+import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.web.security.codec.AbstractCodec;
@@ -133,6 +139,57 @@ public class UserEmailSettingServiceTest {
     userEmailSettingService.getUserEmailSetting(TEST_USER);
     verify(settingService).get(any(Context.class), any(Scope.class), anyString());
     verify(emailConnectorService).getEmailConnector(1L);
+  }
+
+  @Test
+  @SneakyThrows
+  void theAddressBookPasswordIsEncodedLikeTheMailOne() {
+    // It is a password in a settings store: whatever protects the mail one has to
+    // protect this one, by the same codec, or the weaker of the two sets the bar.
+    AbstractCodec codec = mock(AbstractCodec.class);
+    when(codecInitializer.getCodec()).thenReturn(codec);
+    // The mail password goes through the same codec on this path, so the stub has to
+    // answer for both rather than only the one under test.
+    when(codec.encode(anyString())).thenAnswer(invocation -> "carddav-secret".equals(invocation.getArgument(0)) ? "ENCODED"
+                                                                                                               : "OTHER");
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    userEmailSetting.setCarddavEnabled(true);
+    userEmailSetting.setCarddavPassword("carddav-secret");
+
+    userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
+    String json = stored.getValue().getValue().toString();
+    assertTrue("the encoded form is what reaches the store", json.contains("ENCODED"));
+    assertFalse("and the clear one never does", json.contains("carddav-secret"));
+  }
+
+  @Test
+  void theSyncStateLivesUnderItsOwnKey() {
+    // Not inside userEmailSetting: the mailbox sync rewrites that whole document on
+    // every status update, so sharing the key would have the two syncs overwriting
+    // each other's fields.
+    ContactSyncState state = new ContactSyncState();
+    state.setCtag("ctag-1");
+    state.setStatus(SyncStatus.SUCCESS);
+
+    userEmailSettingService.setContactSyncState(state, TEST_USER);
+
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.CONTACT_SYNC_STATE_KEY),
+                               any(SettingValue.class));
+  }
+
+  @Test
+  void anAbsentSyncStateReadsAsNeverHavingRun() {
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONTACT_SYNC_STATE_KEY))).thenReturn(null);
+
+    ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
+
+    assertNotNull(state);
+    assertNull(state.getCtag());
   }
 
   @Test
@@ -242,7 +299,7 @@ public class UserEmailSettingServiceTest {
                               false,
                               true,
                               "testUploadId",
-                              "");
+                              "", null);
   }
 
   private UserEmailSetting userEmailSetting() {

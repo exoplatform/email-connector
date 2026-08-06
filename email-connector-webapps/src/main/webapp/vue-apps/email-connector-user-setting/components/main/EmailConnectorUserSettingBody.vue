@@ -86,6 +86,53 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @change="save" />
           </v-list-item-action>
         </v-list-item>
+        <!-- Only shown when the bound provider actually has an address book: a
+             switch for something that can never work is worse than no switch.
+             Off by default -- a provider offering CardDAV does not mean this user
+             wants their contacts pulled in, and each enabled user costs the server
+             a request per sync period. -->
+        <v-list-item v-if="carddavAvailable">
+          <v-list-item-content>
+            <v-list-item-title class="text-color">
+              {{ $t('UserSettings.emailConnector.addressBook.title') }}
+            </v-list-item-title>
+            <v-list-item-subtitle>
+              {{ $t('UserSettings.emailConnector.addressBook.description') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+          <v-list-item-action>
+            <v-switch
+              v-model="carddavEnabled"
+              :loading="savingAddressBook"
+              @change="saveAddressBook" />
+          </v-list-item-action>
+        </v-list-item>
+        <v-list-item v-if="carddavAvailable && carddavEnabled">
+          <v-list-item-content>
+            <v-list-item-subtitle class="mb-2">
+              {{ $t('UserSettings.emailConnector.addressBook.credentials') }}
+            </v-list-item-subtitle>
+            <v-text-field
+              v-model="carddavUsername"
+              :placeholder="$t('UserSettings.emailConnector.addressBook.username.placeholder')"
+              class="pt-0"
+              type="text"
+              outlined
+              dense
+              hide-details
+              @blur="saveAddressBook" />
+            <v-text-field
+              v-model="carddavPassword"
+              :placeholder="$t('UserSettings.emailConnector.addressBook.password.placeholder')"
+              class="pt-3"
+              type="password"
+              autocomplete="new-password"
+              outlined
+              dense
+              hide-details
+              @blur="saveAddressBook" />
+          </v-list-item-content>
+        </v-list-item>
         <v-list-item v-if="!notifyAll">
           <v-list-item-content>
             <v-list-item-subtitle>
@@ -157,6 +204,13 @@ export default {
     categories: [],
     defaultCategoryView: null,
     notifyAll: true,
+    carddavAvailable: false,
+    carddavEnabled: false,
+    carddavUsername: '',
+    // Never filled from the server: the stored password is not sent back, and an
+    // empty box means "leave it alone" rather than "clear it".
+    carddavPassword: '',
+    savingAddressBook: false,
     notifyCategoryIds: [],
     saving: false,
     resetting: false,
@@ -202,6 +256,32 @@ export default {
       // notifyAllCategories unset (not a boolean) resolves to "All".
       this.notifyAll = typeof setting.notifyAllCategories !== 'boolean' ? true : setting.notifyAllCategories;
       this.notifyCategoryIds = setting.notifyCategories || [];
+      this.carddavAvailable = !!setting.carddavAvailable;
+      this.carddavEnabled = !!setting.carddavEnabled;
+      this.carddavUsername = setting.carddavUsername || '';
+    },
+    /**
+     * Stores the address-book binding on its own endpoint, not with the mail
+     * preferences: it carries a credential, and the two have no reason to travel
+     * together.
+     *
+     * @returns {void}
+     */
+    saveAddressBook() {
+      this.savingAddressBook = true;
+      this.$emailConnectorCommonService.updateAddressBookBinding({
+        carddavEnabled: this.carddavEnabled,
+        carddavUsername: this.carddavUsername,
+        carddavPassword: this.carddavPassword,
+      })
+        .then(() => {
+          // Dropped as soon as it is stored: there is no reason for a password to
+          // sit in a component's state for the rest of the session.
+          this.carddavPassword = '';
+          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success');
+        })
+        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
+        .finally(() => this.savingAddressBook = false);
     },
     save() {
       this.saving = true;

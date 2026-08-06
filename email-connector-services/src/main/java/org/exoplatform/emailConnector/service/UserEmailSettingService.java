@@ -40,6 +40,7 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
+import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
@@ -64,6 +65,14 @@ public class UserEmailSettingService {
                                                           Scope.APPLICATION.id(EMAIL_CONNECTOR_SCOPE_ID);
 
   public static final String        USER_EMAIL_SETTING_KEY                             = "userEmailSetting";
+
+  /**
+   * The address-book sync's own key, deliberately NOT a field of
+   * {@link #USER_EMAIL_SETTING_KEY}: the mailbox sync rewrites that whole document
+   * on every status update, so sharing it would let the two syncs overwrite each
+   * other's fields.
+   */
+  public static final String        CONTACT_SYNC_STATE_KEY                             = "emailContactSyncState";
 
   private static final String       USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
                                                                                        "User %s is not allowed to connect email setting";
@@ -142,6 +151,13 @@ public class UserEmailSettingService {
     userEmailSettingEntity.setNotifyAllCategories(userEmailSetting.getNotifyAllCategories());
     userEmailSettingEntity.setNotifyCategories(userEmailSetting.getNotifyCategories());
     userEmailSettingEntity.setDefaultCategoryView(userEmailSetting.getDefaultCategoryView());
+    // The address-book binding travels with the mailbox one because it IS the same
+    // account on every provider that serves both. Its password is encoded by the
+    // same codec as the mail password, and for the same reason: it must never sit
+    // in the settings store in the clear.
+    userEmailSettingEntity.setCarddavEnabled(userEmailSetting.getCarddavEnabled());
+    userEmailSettingEntity.setCarddavUsername(StringUtils.trimToNull(userEmailSetting.getCarddavUsername()));
+    userEmailSettingEntity.setCarddavPassword(encodePassword(userEmailSetting.getCarddavPassword()));
     settingService.set(Context.USER.id(username),
                        EMAIL_CONNECTOR_SCOPE,
                        USER_EMAIL_SETTING_KEY,
@@ -177,6 +193,33 @@ public class UserEmailSettingService {
   }
 
   /**
+   * Turns the address-book sync on or off for one user, and stores the account it
+   * should use.
+   * <p>
+   * A blank password means "leave the stored one alone", so the settings screen
+   * never has to send a secret back to the server just to toggle a switch — and a
+   * blank username means "the same account as the mailbox", which is the truth on
+   * every provider that serves mail and contacts from one login.
+   *
+   * @param username the mailbox owner
+   * @param enabled whether the address book should sync
+   * @param carddavUsername the CardDAV account, or null/blank to reuse the mailbox's
+   * @param carddavPassword the CardDAV password, or null/blank to leave it unchanged
+   */
+  public void updateAddressBookBinding(String username, Boolean enabled, String carddavUsername, String carddavPassword) {
+    UserEmailSetting userEmailSetting = getUserEmailSetting(username);
+    if (StringUtils.isBlank(userEmailSetting.getEmailConnectorId())) {
+      return;
+    }
+    userEmailSetting.setCarddavEnabled(enabled);
+    userEmailSetting.setCarddavUsername(StringUtils.trimToNull(carddavUsername));
+    if (StringUtils.isNotBlank(carddavPassword)) {
+      userEmailSetting.setCarddavPassword(carddavPassword);
+    }
+    setUserEmailSetting(userEmailSetting, username, false);
+  }
+
+  /**
    * Get user email setting by email connector id
    *
    * @param username user getting user email setting
@@ -193,9 +236,11 @@ public class UserEmailSettingService {
       if (storedUserEmailSetting.getEmailConnectorId() != null) {
         userEmailSetting = storedUserEmailSetting;
         userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword()));
+        userEmailSetting.setCarddavPassword(decodePassword(userEmailSetting.getCarddavPassword()));
         EmailConnector emailConnector =
                                       emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
         if (emailConnector != null) {
+          userEmailSetting.setCarddavAvailable(StringUtils.isNotBlank(emailConnector.getCarddavUrl()));
           userEmailSetting.setEmailConnectorImageUrl(emailConnector.getImageUrl());
           userEmailSetting.setEmailConnectorIcon(emailConnector.getIcon());
           userEmailSetting.setEmailConnectorName(emailConnector.getName());
@@ -334,6 +379,52 @@ public class UserEmailSettingService {
 
   private boolean isEmailConnectorUserConnected(long emailConnectorId, UserEmailSetting userEmailSetting) {
     return String.valueOf(emailConnectorId).equals(userEmailSetting.getEmailConnectorId());
+  }
+
+  /**
+   * Where this user's address-book sync got to, or a blank state when it has never
+   * run. Never null, so callers do not branch on absence.
+   *
+   * @param username the mailbox owner
+   * @return the stored state, or a fresh empty one
+   */
+  public ContactSyncState getContactSyncState(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
+    if (value == null || value.getValue() == null) {
+      return new ContactSyncState();
+    }
+    try {
+      return JsonUtils.fromJsonString(value.getValue().toString(), ContactSyncState.class);
+    } catch (Exception e) {
+      // Unreadable state is not worth failing over: the sync treats it as never
+      // having run, which costs one full pass and fixes itself.
+      LOG.warn("The stored contact sync state of user {} could not be read, starting from scratch", username, e);
+      return new ContactSyncState();
+    }
+  }
+
+  /**
+   * Stores where the address-book sync got to.
+   *
+   * @param state the state to store
+   * @param username the mailbox owner
+   */
+  public void setContactSyncState(ContactSyncState state, String username) {
+    settingService.set(Context.USER.id(username),
+                       EMAIL_CONNECTOR_SCOPE,
+                       CONTACT_SYNC_STATE_KEY,
+                       SettingValue.create(JsonUtils.toJsonString(state)));
+  }
+
+  /**
+   * Forgets everything the address-book sync knew about this user, so the next run
+   * discovers and reads the whole address book again. What "reset the address
+   * book" means, and what disconnecting a mailbox implies.
+   *
+   * @param username the mailbox owner
+   */
+  public void clearContactSyncState(String username) {
+    settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
   }
 
   private String decodePassword(String password) {

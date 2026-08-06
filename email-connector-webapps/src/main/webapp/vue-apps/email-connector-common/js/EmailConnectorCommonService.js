@@ -31,6 +31,29 @@ export function getUserEmailSetting() {
   });
 }
 
+/**
+ * Turns the CardDAV address-book sync on or off for the caller, and stores the
+ * account it should use. Separate from the mail preferences because it carries a
+ * credential.
+ *
+ * @param {object} binding - {carddavEnabled, carddavUsername, carddavPassword}
+ * @returns {Promise} resolves once stored
+ */
+export function updateAddressBookBinding(binding) {
+  return fetch('/email-connector/rest/user-email-setting/address-book', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify(binding)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the address book binding');
+    }
+  });
+}
+
 export function updateEmailPreferences(preferences) {
   return fetch('/email-connector/rest/user-email-setting/preferences', {
     headers: {
