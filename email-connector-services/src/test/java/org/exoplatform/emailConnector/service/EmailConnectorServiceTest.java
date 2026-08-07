@@ -247,6 +247,6 @@ public class EmailConnectorServiceTest {
                               false,
                               true,
                               "testUploadId",
-                              "");
+                              "", null);
   }
 }
