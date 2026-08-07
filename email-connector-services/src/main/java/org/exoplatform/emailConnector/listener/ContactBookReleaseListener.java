@@ -35,6 +35,12 @@ import org.exoplatform.emailConnector.service.EmailContactCardDavSyncService;
 @Component
 public class ContactBookReleaseListener {
 
+  // Both handlers fall back to running outside a transaction. A transactional
+  // listener with no transaction in progress does not run and does not complain,
+  // and the binding is saved through a settings write that carries none -- so the
+  // release was dropped in silence, which is the one failure mode this class
+  // exists to prevent.
+
   @Autowired
   private EmailContactCardDavSyncService emailContactCardDavSyncService;
 
@@ -43,7 +49,7 @@ public class ContactBookReleaseListener {
    *
    * @param event the raised event
    */
-  @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
+  @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT, fallbackExecution = true)
   public void handleEmailBoxCleanup(EmailBoxCleanupEvent event) {
     emailContactCardDavSyncService.releaseUnboundBooks(event.getUsername());
   }
@@ -53,7 +59,7 @@ public class ContactBookReleaseListener {
    *
    * @param event the raised event
    */
-  @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
+  @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT, fallbackExecution = true)
   public void handleContactBookRelease(ContactBookReleaseEvent event) {
     emailContactCardDavSyncService.releaseUnboundBooks(event.getUsername());
   }

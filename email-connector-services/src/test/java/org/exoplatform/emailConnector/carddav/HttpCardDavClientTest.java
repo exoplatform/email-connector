@@ -326,6 +326,104 @@ public class HttpCardDavClientTest {
    * @param ctag its version
    * @return the XML
    */
+  @Test
+  void theBookWithTheMostEntriesIsTheOneSynced() throws Exception {
+    // A server publishing several books lists them in an order that means nothing.
+    // Taking the first produced a sync of one contact next to a book of hundreds.
+    givenAnswers(notACollection(),
+                 principalResponse("/dav/principals/alice/"),
+                 homeSetResponse("/dav/addressbooks/alice/"),
+                 twoBookListResponse("/dav/addressbooks/alice/collected/", "Collected", "/dav/addressbooks/alice/default/", "Contacts"),
+                 entriesResponse(1),
+                 entriesResponse(400));
+
+    AddressBook book = client.discoverAddressBook(BASE, "alice", "secret");
+
+    assertEquals(BOOK_URL, book.url());
+    assertEquals("Contacts", book.displayName());
+  }
+
+  @Test
+  void theStaffDirectoryIsNotSomebodysContacts() throws Exception {
+    // The biggest book on a company server is everyone who works there. Importing
+    // it would file every colleague as a personal contact.
+    givenAnswers(notACollection(),
+                 principalResponse("/dav/principals/alice/"),
+                 homeSetResponse("/dav/addressbooks/alice/"),
+                 twoBookListResponse("/dav/addressbooks/alice/addressbook:Directory_acme/", "Company directory",
+                                     "/dav/addressbooks/alice/default/", "Contacts"),
+                 entriesResponse(12));
+
+    AddressBook book = client.discoverAddressBook(BASE, "alice", "secret");
+
+    assertEquals(BOOK_URL, book.url(), "the directory is set aside before sizes are even compared");
+  }
+
+  @Test
+  void aDirectoryIsUsedWhenItIsAllTheServerHas() throws Exception {
+    givenAnswers(notACollection(),
+                 principalResponse("/dav/principals/alice/"),
+                 homeSetResponse("/dav/addressbooks/alice/"),
+                 collectionListResponse("/dav/addressbooks/alice/addressbook:Directory_acme/", "Company directory", "ctag-9"),
+                 entriesResponse(3));
+
+    AddressBook book = client.discoverAddressBook(BASE, "alice", "secret");
+
+    assertEquals("Company directory", book.displayName(), "setting it aside must not leave the user with nothing");
+  }
+
+  /**
+   * A home set publishing two address books.
+   *
+   * @param firstHref the first book
+   * @param firstName its name
+   * @param secondHref the second book
+   * @param secondName its name
+   * @return the multistatus body
+   */
+  private String twoBookListResponse(String firstHref, String firstName, String secondHref, String secondName) {
+    return String.format("""
+        <?xml version="1.0" encoding="utf-8"?>
+        <d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav" xmlns:cs="http://calendarserver.org/ns/">
+          <d:response>
+            <d:href>%s</d:href>
+            <d:propstat><d:prop>
+              <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+              <d:displayname>%s</d:displayname>
+              <cs:getctag>ctag-a</cs:getctag>
+            </d:prop></d:propstat>
+          </d:response>
+          <d:response>
+            <d:href>%s</d:href>
+            <d:propstat><d:prop>
+              <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+              <d:displayname>%s</d:displayname>
+              <cs:getctag>ctag-b</cs:getctag>
+            </d:prop></d:propstat>
+          </d:response>
+        </d:multistatus>""", firstHref, firstName, secondHref, secondName);
+  }
+
+  /**
+   * A listing of a given number of entries, as the count uses.
+   *
+   * @param count how many entries the book holds
+   * @return the multistatus body
+   */
+  private String entriesResponse(int count) {
+    StringBuilder body = new StringBuilder("""
+        <?xml version="1.0" encoding="utf-8"?>
+        <d:multistatus xmlns:d="DAV:">""");
+    for (int i = 0; i < count; i++) {
+      body.append(String.format("""
+          <d:response>
+            <d:href>/dav/addressbooks/alice/default/%s.vcf</d:href>
+            <d:propstat><d:prop><d:getetag>"e%s"</d:getetag></d:prop></d:propstat>
+          </d:response>""", i, i));
+    }
+    return body.append("</d:multistatus>").toString();
+  }
+
   private String collectionListResponse(String href, String displayName, String ctag) {
     return String.format("""
         <?xml version="1.0" encoding="utf-8"?>

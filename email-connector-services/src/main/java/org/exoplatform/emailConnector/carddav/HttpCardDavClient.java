@@ -135,11 +135,11 @@ public class HttpCardDavClient implements CardDavClient {
     String base = StringUtils.removeEnd(configured, "/");
     String principal = discoverPrincipal(base, username, password);
     String home = discoverHomeSet(resolve(base, principal), username, password);
-    AddressBook found = findFirstAddressBook(resolve(base, home), username, password);
-    if (found == null) {
+    List<AddressBook> books = findAddressBooks(resolve(base, home), username, password);
+    if (books.isEmpty()) {
       throw new CardDavException("The server exposes no address book under " + home);
     }
-    return found;
+    return chooseAddressBook(books, username, password);
   }
 
   @Override
@@ -266,17 +266,90 @@ public class HttpCardDavClient implements CardDavClient {
    * @param password that account's password
    * @return the address book, or null when the home holds none
    */
-  private AddressBook findFirstAddressBook(String homeUrl, String username, String password) {
+  private List<AddressBook> findAddressBooks(String homeUrl, String username, String password) {
     Element multistatus = propfind(homeUrl, PROPFIND_COLLECTION, "1", username, password);
+    List<AddressBook> books = new ArrayList<>();
     for (Element response : childElements(multistatus, DAV_NS, "response")) {
       if (isAddressBook(response)) {
         String href = textOf(response, DAV_NS, "href");
-        return new AddressBook(resolve(homeUrl, href),
-                               textOf(response, DAV_NS, "displayname"),
-                               textOf(response, CALENDARSERVER_NS, "getctag"));
+        books.add(new AddressBook(resolve(homeUrl, href),
+                                  textOf(response, DAV_NS, "displayname"),
+                                  textOf(response, CALENDARSERVER_NS, "getctag")));
       }
     }
-    return null;
+    return books;
+  }
+
+  /**
+   * Picks which of several published address books to sync.
+   * <p>
+   * Taking the first one the server happened to list is what a spec-shaped client
+   * does and what a user experiences as broken: providers publish a personal book
+   * alongside collected addresses and, on a company server, the whole staff
+   * directory — and the first of those is rarely the one somebody means by "my
+   * contacts". So the choice is made on the only fact that distinguishes them
+   * cheaply: how many entries each holds, biggest wins.
+   * <p>
+   * The staff directory is set aside first, unless it is all there is. It is
+   * usually the biggest book on the server and importing it would file every
+   * colleague as a personal contact — colleagues are already people the platform
+   * knows.
+   *
+   * @param books the published books, never empty
+   * @param username the account
+   * @param password its password
+   * @return the book to sync
+   */
+  private AddressBook chooseAddressBook(List<AddressBook> books, String username, String password) {
+    List<AddressBook> candidates = books.stream().filter(book -> !isDirectory(book)).toList();
+    if (candidates.isEmpty()) {
+      candidates = books;
+    }
+    AddressBook chosen = null;
+    int chosenSize = -1;
+    for (AddressBook book : candidates) {
+      // Counted rather than guessed from the name, which is localised and differs
+      // per provider. One listing per book, and only while discovering.
+      int size = countEntries(book, username, password);
+      LOG.info("Address book published by the server: '{}' ({} entries) at {}", book.displayName(), size, book.url());
+      if (size > chosenSize) {
+        chosen = book;
+        chosenSize = size;
+      }
+    }
+    LOG.info("Address book chosen: '{}' with {} entries", chosen.displayName(), chosenSize);
+    return chosen;
+  }
+
+  /**
+   * How many entries a book holds, or 0 when it cannot be listed.
+   *
+   * @param book the book
+   * @param username the account
+   * @param password its password
+   * @return the entry count
+   */
+  private int countEntries(AddressBook book, String username, String password) {
+    try {
+      return listResourceEtags(book, username, password).size();
+    } catch (CardDavException e) {
+      // A book that will not be listed cannot be synced either, so it loses the
+      // comparison rather than failing the discovery of the others.
+      LOG.debug("Address book {} could not be listed while choosing", book.url(), e);
+      return 0;
+    }
+  }
+
+  /**
+   * Whether a book is the server's staff directory rather than the user's own.
+   *
+   * @param book the book
+   * @return true when it looks like a directory
+   */
+  private boolean isDirectory(AddressBook book) {
+    // Named by the server in the collection's own path. Matched there rather than
+    // on the display name, which is translated.
+    return StringUtils.containsIgnoreCase(book.url(), "Directory");
   }
 
   /**
