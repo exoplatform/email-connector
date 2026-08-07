@@ -45,6 +45,8 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
+import org.exoplatform.emailConnector.model.ContactSyncState;
+import org.exoplatform.emailConnector.service.EmailContactCardDavSyncService;
 import org.exoplatform.emailConnector.service.EmailContactService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -72,7 +74,10 @@ public class EmailContactRest {
   private static final long   PHOTO_CACHE_DAYS = 365;
 
   @Autowired
-  private EmailContactService emailContactService;
+  private EmailContactService            emailContactService;
+
+  @Autowired
+  private EmailContactCardDavSyncService emailContactCardDavSyncService;
 
   @GetMapping
   @Secured("users")
@@ -226,6 +231,34 @@ public class EmailContactRest {
     response.put("id", result.getId());
     response.put("suppressed", result.isSuppressed());
     return response;
+  }
+
+  @PostMapping("/carddav/sync")
+  @Secured("users")
+  @Operation(summary = "Pulls the caller's CardDAV address book into their contacts",
+             method = "POST",
+             description = "Runs the address-book sync for the caller. Most runs cost one request: an unchanged collection version means nothing changed. Pass full=true to forget the last version and re-read everything.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public void syncAddressBook(HttpServletRequest request,
+                              @Parameter(description = "Re-read the whole address book rather than only what changed")
+                              @RequestParam(value = "full", required = false, defaultValue = "false")
+                              boolean full) {
+    String username = request.getRemoteUser();
+    if (full) {
+      emailContactCardDavSyncService.resetAddressBookSync(username);
+    }
+    emailContactCardDavSyncService.syncAddressBook(username, true);
+  }
+
+  @GetMapping("/carddav/status")
+  @Secured("users")
+  @Operation(summary = "How the caller's last address-book sync went", method = "GET",
+             description = "Answers the stored sync state: status, consecutive failures and when the last run started. Holds no secret.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public ContactSyncState getAddressBookSyncStatus(HttpServletRequest request) {
+    return emailContactCardDavSyncService.getSyncState(request.getRemoteUser());
   }
 
   @PostMapping("/{id}/restore")
