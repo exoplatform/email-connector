@@ -3364,6 +3364,6 @@ public class EmailBoxServiceTest {
                               false,
                               true,
                               "testUploadId",
-                              "");
+                              "", null);
   }
 }

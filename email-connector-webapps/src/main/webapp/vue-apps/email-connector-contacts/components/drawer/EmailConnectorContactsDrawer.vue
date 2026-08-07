@@ -32,8 +32,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @closed="close"
     class="no-box-shadow">
     <template #title>
+      <!-- The count follows whatever is filtered, so it doubles as the answer to
+           "did my search find anything". It is also the cheapest possible alarm:
+           an address book sync that quietly removed everything shows up here the
+           moment the drawer opens, instead of in a log line nobody reads. -->
       <span v-if="!hasFullAppLeft">
         {{ $t('emailConnector.contacts.drawer.title') }}
+        <span
+          v-if="size"
+          class="text-sub-title ms-1">· {{ size }}</span>
       </span>
       <span v-else></span>
     </template>

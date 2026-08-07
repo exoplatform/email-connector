@@ -31,6 +31,28 @@ export function getUserEmailSetting() {
   });
 }
 
+/**
+ * Turns the CardDAV address-book sync on or off for the caller. It signs in with
+ * the mailbox's own credentials, so that is the whole setting.
+ *
+ * @param {object} binding - {carddavEnabled}
+ * @returns {Promise} resolves once stored
+ */
+export function updateAddressBookBinding(binding) {
+  return fetch('/email-connector/rest/user-email-setting/address-book', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify(binding)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the address book binding');
+    }
+  });
+}
+
 export function updateEmailPreferences(preferences) {
   return fetch('/email-connector/rest/user-email-setting/preferences', {
     headers: {
@@ -78,4 +100,39 @@ export function openEmailBox() {
       emailExtension.click();
     }
   }
+}
+
+/**
+ * Pulls the caller's address book into their contacts now, rather than waiting
+ * for the next scheduled run.
+ *
+ * @param {boolean} full - re-read everything rather than only what changed
+ * @returns {Promise} resolves once the run finished
+ */
+export function syncAddressBook(full) {
+  return fetch(`/email-connector/rest/contacts/carddav/sync?full=${!!full}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when syncing the address book');
+    }
+  });
+}
+
+/**
+ * How the caller's last address-book sync went.
+ *
+ * @returns {Promise<object>} the sync state
+ */
+export function getAddressBookSyncStatus() {
+  return fetch('/email-connector/rest/contacts/carddav/status', {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when reading the address book sync status');
+    }
+    return resp.json();
+  });
 }
