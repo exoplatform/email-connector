@@ -226,7 +226,12 @@ public class HttpCardDavClient implements CardDavClient {
    * @return the principal's path
    */
   private String discoverPrincipal(String base, String username, String password) {
-    Element response = firstResponse(propfind(base + "/.well-known/carddav", PROPFIND_PRINCIPAL, "0", username, password));
+    // Resolved from the server ROOT, not appended to what was configured. A
+    // configured collection URL already carries a path, and gluing the well-known
+    // path onto the end of it asks for something no server has -- which is what a
+    // 404 on ".../lists/default/.well-known/carddav" looks like in the log.
+    String wellKnown = uri(base).resolve("/.well-known/carddav").toString();
+    Element response = firstResponse(propfind(wellKnown, PROPFIND_PRINCIPAL, "0", username, password));
     String principal = response == null ? null : hrefWithin(response, DAV_NS, "current-user-principal");
     if (StringUtils.isBlank(principal)) {
       throw new CardDavException("The server did not say who the current user is");

@@ -248,7 +248,7 @@ public class EmailContactRest {
     if (full) {
       emailContactCardDavSyncService.resetAddressBookSync(username);
     }
-    emailContactCardDavSyncService.syncAddressBook(username);
+    emailContactCardDavSyncService.syncAddressBook(username, true);
   }
 
   @GetMapping("/carddav/status")

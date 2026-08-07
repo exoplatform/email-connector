@@ -295,9 +295,17 @@ export default {
     syncAddressBook() {
       this.syncingAddressBook = true;
       this.$emailConnectorContactsService.syncAddressBook()
-        .then(() => {
-          this.readAddressBookStatus();
-          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.addressBook.synced'), 'success');
+        // What the run DID is in the state it leaves behind, not in whether the
+        // request came back. Reporting success because the call returned told
+        // people their address book had synced when it had in fact failed --
+        // which is worse than any error message.
+        .then(() => this.$emailConnectorContactsService.getAddressBookSyncStatus())
+        .then(state => {
+          this.addressBookSyncState = state;
+          const failed = state?.status === 'FAILURE' || state?.status === 'BLOCKED';
+          const message = failed && this.$t('UserSettings.emailConnector.addressBook.syncError')
+            || this.$t('UserSettings.emailConnector.addressBook.synced');
+          this.$root.$emit('alert-message', message, failed && 'error' || 'success');
         })
         .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.addressBook.syncError'), 'error'))
         .finally(() => this.syncingAddressBook = false);

@@ -107,6 +107,21 @@ public class EmailContactCardDavSyncService {
    * @param username the mailbox owner
    */
   public void syncAddressBook(String username) {
+    syncAddressBook(username, false);
+  }
+
+  /**
+   * Pulls one user's address book, saying whether a person asked for it.
+   * <p>
+   * A run the user asked for ignores the pause: the pause exists to stop a
+   * scheduled job hammering a server that keeps refusing, not to tell somebody who
+   * just fixed their password to wait half an hour. Clicking the button and having
+   * nothing happen is worse than an error.
+   *
+   * @param username the mailbox owner
+   * @param requested whether a person asked for this run
+   */
+  public void syncAddressBook(String username, boolean requested) {
     if (StringUtils.isBlank(username) || !syncingUsers.add(username)) {
       return;
     }
@@ -121,7 +136,7 @@ public class EmailContactCardDavSyncService {
         return;
       }
       ContactSyncState state = userEmailSettingService.getContactSyncState(username);
-      if (isBlocked(state)) {
+      if (!requested && isBlocked(state)) {
         LOG.debug("Address book sync for user {} is paused after repeated failures", username);
         return;
       }
