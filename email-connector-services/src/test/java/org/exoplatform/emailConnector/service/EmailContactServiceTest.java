@@ -790,15 +790,15 @@ public class EmailContactServiceTest {
     emailContactService.getContacts(USERNAME, null, null, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, null, null, 0, 100);
 
-    // A contact typed by hand belongs with the collected ones: both are the
-    // platform's own and both are editable. Filed under the address book, as it
-    // used to be, it read as coming from a book no address book had heard of.
+    // One filter per stored source. A contact typed by hand is neither collected
+    // from mail nor owned by a provider's book, and it used to be filed with the
+    // address book -- which read as "from my address book" for a contact no
+    // address book had heard of.
     emailContactService.getContacts(USERNAME, "collected", null, 0, 100);
-    verify(emailContactStorage).getContacts(USERNAME,
-                                            List.of(EmailContactSource.COLLECTED, EmailContactSource.MANUAL),
-                                            null,
-                                            0,
-                                            100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.COLLECTED), null, 0, 100);
+
+    emailContactService.getContacts(USERNAME, "manual", null, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.MANUAL), null, 0, 100);
 
     emailContactService.getContacts(USERNAME, "addressBook", null, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.CARDDAV), null, 0, 100);

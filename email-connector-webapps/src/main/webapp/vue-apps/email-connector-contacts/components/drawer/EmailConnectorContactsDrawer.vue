@@ -74,7 +74,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <email-connector-contacts-source-filter
         v-model="sources"
-        :address-book-available="addressBookAvailable" />
+        :counts="sourceCounts" />
       <email-connector-contacts-list
         :contacts="contacts"
         :letter-index="letterIndex"
@@ -87,7 +87,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <template v-if="!expanded">
         <email-connector-contacts-source-filter
           v-model="sources"
-          :address-book-available="addressBookAvailable" />
+          :counts="sourceCounts" />
         <email-connector-contacts-list
           :contacts="contacts"
           :letter-index="letterIndex"
@@ -118,6 +118,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 const PAGE_SIZE = 200;
+const SOURCES = ['collected', 'manual', 'addressBook'];
 const MAX_ROWS = 5000;
 const RAIL_MIN_CONTACTS = 100;
 
@@ -129,7 +130,7 @@ export default {
       loading: false,
       term: null,
       sources: [],
-      addressBookAvailable: false,
+      sourceCounts: {},
       contacts: [],
       letterIndex: {},
       size: 0,
@@ -146,7 +147,7 @@ export default {
   },
   created() {
     this.$root.$on('open-email-contacts-drawer', this.open);
-    this.$root.$on('email-contacts-refresh', this.reload);
+    this.$root.$on('email-contacts-refresh', this.refresh);
   },
   beforeDestroy() {
     this.$root.$off('open-email-contacts-drawer', this.open);
@@ -200,23 +201,26 @@ export default {
     open() {
       this.contactsDrawer = true;
       this.$refs.emailContactsDrawer.open();
-      this.readAddressBookPresence();
+      this.readSourceCounts();
       this.reload();
     },
     /**
-     * Asks whether an address book holds anything for this user, which is what
-     * decides whether the filter bar is worth showing at all.
+     * Counts what each source holds, which is what decides which chips are worth
+     * offering and whether the bar is worth showing at all.
      * <p>
-     * One row is enough to answer it, so this costs a page of size one rather
-     * than a count endpoint that exists for nothing else. A failure leaves the
-     * bar hidden: a filter nobody can explain is worse than no filter.
+     * One row per source answers it, so this costs three pages of size one
+     * rather than a count endpoint that would exist for nothing else. A failure
+     * leaves that source out: a filter nobody can explain is worse than none.
      *
      * @returns {void}
      */
-    readAddressBookPresence() {
-      this.$emailConnectorContactsService.getContacts(null, 0, 1, 'addressBook')
-        .then(page => this.addressBookAvailable = (page?.size || 0) > 0)
-        .catch(() => this.addressBookAvailable = false);
+    readSourceCounts() {
+      const counts = {};
+      Promise.all(SOURCES.map(source =>
+        this.$emailConnectorContactsService.getContacts(null, 0, 1, source)
+          .then(page => counts[source] = page?.size || 0)
+          .catch(() => counts[source] = 0)))
+        .then(() => this.sourceCounts = counts);
     },
     /**
      * Resets the drawer's transient state on close.
@@ -336,6 +340,18 @@ export default {
      */
     onContactRemoved() {
       this.selectedContact = null;
+      this.refresh();
+    },
+    /**
+     * Reloads the list AND re-counts the sources, for the changes that can move
+     * a source in or out of existence -- the first contact created by hand, the
+     * last one deleted. A plain reload would leave a chip promising rows that
+     * are gone, or hide one the user just created something for.
+     *
+     * @returns {void}
+     */
+    refresh() {
+      this.readSourceCounts();
       this.reload();
     },
   }
