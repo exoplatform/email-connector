@@ -112,6 +112,7 @@ import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
+import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
@@ -632,6 +633,11 @@ public class EmailBoxService {
       userEmailSetting.setEmailSyncFailedAttemps(0);
       userEmailSetting.setEmailSyncStatus(SyncStatus.SUCCESS);
       userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
+      // A reset rebuilds the collected contacts too, through a listener rather than a
+      // call: they were collected from the cache being thrown away, and the incremental
+      // pass cannot rebuild them -- it judges each inbox sender against cached sent mail,
+      // which the resync has not read yet.
+      eventPublisher.publishEvent(new MailboxResetEvent(username));
       // Full re-download of the inbox; the scheduled sync keeps the other folders current.
       // Straight to doSynchronize: the guard is already held here, and the access check plus
       // the backoff reset above are exactly what synchronize() would have re-verified.
