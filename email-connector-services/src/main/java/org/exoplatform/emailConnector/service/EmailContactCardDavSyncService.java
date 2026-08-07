@@ -79,6 +79,9 @@ public class EmailContactCardDavSyncService {
   private EmailContactStorage      emailContactStorage;
 
   @Autowired
+  private EmailContactFavoriteService emailContactFavoriteService;
+
+  @Autowired
   private UserEmailSettingService  userEmailSettingService;
 
   @Autowired
@@ -324,7 +327,7 @@ public class EmailContactCardDavSyncService {
         LOG.warn("A batch of address book entries could not be read for user {}", username, e);
       }
     }
-    int removed = removeVanished(serverEtags.keySet(), storedRows, bookChanged);
+    int removed = removeVanished(username, serverEtags.keySet(), storedRows, bookChanged);
     // The skipped count matters as much as the written one: an address book full of
     // phone-only entries produces far fewer contacts than it has entries, and
     // without this number that gap looks like a bug rather than the store being
@@ -475,6 +478,7 @@ public class EmailContactCardDavSyncService {
         demoted++;
       } else {
         emailContactStorage.deleteContact(row.id());
+        dropFavorite(row.id(), username);
         deleted++;
       }
     }
@@ -511,11 +515,12 @@ public class EmailContactCardDavSyncService {
    * One with none is deleted outright — it only ever existed because the address
    * book said so.
    *
+   * @param username the mailbox owner
    * @param serverHrefs every entry the server still has
    * @param storedRows the rows this address book wrote
    * @return how many rows were demoted or deleted
    */
-  private int removeVanished(Set<String> serverHrefs, List<CardDavRow> storedRows, boolean bookChanged) {
+  private int removeVanished(String username, Set<String> serverHrefs, List<CardDavRow> storedRows, boolean bookChanged) {
     int removed = 0;
     for (CardDavRow row : storedRows) {
       if (row.href() == null || serverHrefs.contains(row.href())) {
@@ -531,10 +536,27 @@ public class EmailContactCardDavSyncService {
         emailContactStorage.demoteCardDavRow(row.id(), fromVCard);
       } else {
         emailContactStorage.deleteContact(row.id());
+        dropFavorite(row.id(), username);
       }
       removed++;
     }
     return removed;
+  }
+
+  /**
+   * Drops the favorite of a row this sync just hard-deleted, fenced so a
+   * favorites store having a bad day can never fail the reconciliation — a
+   * demoted row keeps its favorite on purpose, the person is still there.
+   *
+   * @param contactId the deleted row's id
+   * @param username the store owner
+   */
+  private void dropFavorite(long contactId, String username) {
+    try {
+      emailContactFavoriteService.removeFavorite(contactId, username);
+    } catch (Exception e) {
+      LOG.debug("The favorite of contact {} could not be dropped for user {}", contactId, username, e);
+    }
   }
 
   /**

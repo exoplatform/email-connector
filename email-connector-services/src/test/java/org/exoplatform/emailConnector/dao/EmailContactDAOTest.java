@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -137,6 +138,63 @@ public class EmailContactDAOTest {
   }
 
   @Test
+  void idRestrictedTwinsNarrowTheSameQueriesOnARealDatabase() {
+    // The Favorites filter's queries, run for real: same visibility, same order,
+    // same term matching as the unrestricted ones, narrowed to the starred ids.
+    long bob = persistContact("bob@example.org", "Bob Smith", "SMITH BOB", 18, false, null);
+    long ann = persistContact("ann@example.org", "Ann Ax", "AX ANN", 0, false, null);
+    long gone = persistContact("gone@example.org", "Gone", "GONE", 6, true, null);
+    persistContact("zed@example.org", "Zed Zz", "ZZ ZED", 25, false, null);
+
+    Set<Long> starred = Set.of(bob, ann, gone);
+
+    // A suppressed row stays invisible even when its id is in the set: an old
+    // favorite must never resurrect a contact the user deleted.
+    Page<EmailContactEntity> page = emailContactDAO.findContactsByIds(USERNAME,
+                                                                      starred,
+                                                                      null,
+                                                                      PageRequest.of(0, 10, CONTACT_SORT));
+    assertEquals(List.of("ann@example.org", "bob@example.org"),
+                 page.getContent().stream().map(EmailContactEntity::getPrimaryEmail).toList());
+
+    // The term still applies on top of the restriction.
+    Page<EmailContactEntity> hits = emailContactDAO.findContactsByIds(USERNAME,
+                                                                      starred,
+                                                                      "smith",
+                                                                      PageRequest.of(0, 10, CONTACT_SORT));
+    assertEquals(1, hits.getTotalElements());
+
+    // Combined with sources = their intersection.
+    assertEquals(2,
+                 emailContactDAO.findContactsBySourcesAndIds(USERNAME,
+                                                             List.of(EmailContactSource.COLLECTED),
+                                                             starred,
+                                                             null,
+                                                             PageRequest.of(0, 10, CONTACT_SORT))
+                                .getTotalElements());
+    assertEquals(0,
+                 emailContactDAO.findContactsBySourcesAndIds(USERNAME,
+                                                             List.of(EmailContactSource.MANUAL),
+                                                             starred,
+                                                             null,
+                                                             PageRequest.of(0, 10, CONTACT_SORT))
+                                .getTotalElements());
+
+    // The rail's counts follow the very same filters, so it cannot disagree with
+    // the list it navigates.
+    List<Object[]> buckets = emailContactDAO.countBySortBucketAndIds(USERNAME, starred, null);
+    assertEquals(2, buckets.size());
+    assertEquals(0, ((Number) buckets.get(0)[0]).intValue());
+    assertEquals(18, ((Number) buckets.get(1)[0]).intValue());
+
+    assertEquals(2, emailContactDAO.countBySortBucketAndSourcesAndIds(USERNAME,
+                                                                      List.of(EmailContactSource.COLLECTED),
+                                                                      starred,
+                                                                      null)
+                                   .size());
+  }
+
+  @Test
   void suggestionsRankByUsefulnessOnARealDatabase() {
     // The ranking rule of the compose type-ahead, stated as data: written-to often
     // beats written-to once, recency breaks a frequency tie, and a row nobody has
@@ -232,8 +290,9 @@ public class EmailContactDAOTest {
    * @param sortBucket the derived bucket
    * @param suppressed whether the row is a tombstone
    * @param emails the encoded secondary addresses (type,value pairs), may be null
+   * @return the persisted row's id, for the id-restricted queries
    */
-  private void persistContact(String address, String displayName, String sortName, int sortBucket, boolean suppressed,
+  private long persistContact(String address, String displayName, String sortName, int sortBucket, boolean suppressed,
                               List<String> emails) {
     EmailContactEntity entity = new EmailContactEntity();
     entity.setUserId(USERNAME);
@@ -246,5 +305,6 @@ public class EmailContactDAOTest {
     entity.setEmails(emails);
     entityManager.persist(entity);
     entityManager.flush();
+    return entity.getId();
   }
 }
