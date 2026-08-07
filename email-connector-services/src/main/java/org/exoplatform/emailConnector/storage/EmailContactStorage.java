@@ -207,6 +207,12 @@ public class EmailContactStorage {
       return;
     }
     emailContactAddressDAO.deleteByContactId(contactId);
+    // Sent to the database before a single row is written back. Both statements sit
+    // in one transaction now, and Hibernate orders its own queue -- inserts before
+    // deletes -- so re-saving a contact re-inserted addresses it had not deleted
+    // yet and collided with itself on the unique key. Every collected contact
+    // failed that way, on its own addresses.
+    emailContactAddressDAO.flush();
     if (addresses == null || addresses.isEmpty()) {
       return;
     }
