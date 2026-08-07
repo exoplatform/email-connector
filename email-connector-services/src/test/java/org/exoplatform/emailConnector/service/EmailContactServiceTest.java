@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -41,6 +42,7 @@ import static org.mockito.Mockito.when;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,6 +98,9 @@ public class EmailContactServiceTest {
 
   @MockBean
   private IdentityManager         identityManager;
+
+  @MockBean
+  private EmailContactFavoriteService emailContactFavoriteService;
 
   @Autowired
   private EmailContactService     emailContactService;
@@ -487,6 +492,44 @@ public class EmailContactServiceTest {
   }
 
   @Test
+  void deleteDropsTheFavoriteOfAHardDeletedContact() {
+    EmailContact manual = collectedContact(5L, "bob@example.org", "Bob");
+    manual.setSource(EmailContactSource.MANUAL);
+    when(emailContactStorage.getContactById(5L)).thenReturn(manual);
+
+    emailContactService.deleteOrSuppressContact(5L, USERNAME);
+
+    verify(emailContactFavoriteService).removeFavorite(5L, USERNAME);
+  }
+
+  @Test
+  void suppressionDropsTheFavoriteToo() {
+    // A suppressed contact answers 404 everywhere, so its favorite would only be
+    // a dead drawer row: the star must die with the row's visibility, not just
+    // with the row itself.
+    when(emailContactStorage.getContactById(5L)).thenReturn(collectedContact(5L, "bob@example.org", "Bob"));
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    emailContactService.deleteOrSuppressContact(5L, USERNAME);
+
+    verify(emailContactFavoriteService).removeFavorite(5L, USERNAME);
+  }
+
+  @Test
+  void aFailingFavoriteCleanupNeverFailsTheDelete() {
+    doThrow(new RuntimeException("favorites unavailable")).when(emailContactFavoriteService)
+                                                          .removeFavorite(anyLong(), anyString());
+    EmailContact manual = collectedContact(5L, "bob@example.org", "Bob");
+    manual.setSource(EmailContactSource.MANUAL);
+    when(emailContactStorage.getContactById(5L)).thenReturn(manual);
+
+    EmailContact result = assertDoesNotThrow(() -> emailContactService.deleteOrSuppressContact(5L, USERNAME));
+
+    verify(emailContactStorage).deleteContact(5L);
+    assertFalse(result.isSuppressed());
+  }
+
+  @Test
   void deleteOfSomebodyElsesContactSaysNotFound() {
     EmailContact other = collectedContact(5L, "bob@example.org", "Bob");
     other.setUserId("mallory");
@@ -724,7 +767,7 @@ public class EmailContactServiceTest {
   @Test
   void listPagesResolveDirectoryRowsLive() {
     EmailContact linked = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
-    when(emailContactStorage.getContacts(USERNAME, null, null, 0, 100))
+    when(emailContactStorage.getContacts(USERNAME, null, null, null, 0, 100))
                                                                        .thenReturn(new org.exoplatform.emailConnector.model.EmailContactPage(List.of(linked),
                                                                                                                                              java.util.Map.of(),
                                                                                                                                              1,
@@ -732,7 +775,7 @@ public class EmailContactServiceTest {
                                                                                                                                              100));
     givenDirectoryProfile("jdoe", "Jane Renamed", "jane.doe@example.com", "avatar", null);
 
-    List<EmailContact> contacts = emailContactService.getContacts(USERNAME, null, null, 0, 100).getContacts();
+    List<EmailContact> contacts = emailContactService.getContacts(USERNAME, null, null, false, 0, 100).getContacts();
 
     assertEquals("Jane Renamed", contacts.get(0).getDisplayName());
     assertEquals("avatar", contacts.get(0).getAvatarUrl());
@@ -804,27 +847,127 @@ public class EmailContactServiceTest {
   @Test
   void unknownSourceFilterIsRejected() {
     IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailContactService.getContacts(USERNAME, "bogus", null, 0, 100));
+                                                    () -> emailContactService.getContacts(USERNAME, List.of("bogus"), null, false, 0, 100));
     assertEquals(EmailContactService.CONTACT_INVALID_SOURCE, invalid.getMessage());
   }
 
   @Test
   void sourceFiltersMapToTheStoredDiscriminators() {
-    emailContactService.getContacts(USERNAME, null, null, 0, 100);
-    verify(emailContactStorage).getContacts(USERNAME, null, null, 0, 100);
+    emailContactService.getContacts(USERNAME, null, null, false, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME, null, null, null, 0, 100);
 
     // One filter per stored source. A contact typed by hand is neither collected
     // from mail nor owned by a provider's book, and it used to be filed with the
     // address book -- which read as "from my address book" for a contact no
     // address book had heard of.
-    emailContactService.getContacts(USERNAME, "collected", null, 0, 100);
-    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.COLLECTED), null, 0, 100);
+    emailContactService.getContacts(USERNAME, List.of("collected"), null, false, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.COLLECTED), null, null, 0, 100);
 
-    emailContactService.getContacts(USERNAME, "manual", null, 0, 100);
-    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.MANUAL), null, 0, 100);
+    emailContactService.getContacts(USERNAME, List.of("manual"), null, false, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.MANUAL), null, null, 0, 100);
 
-    emailContactService.getContacts(USERNAME, "addressBook", null, 0, 100);
-    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.CARDDAV), null, 0, 100);
+    emailContactService.getContacts(USERNAME, List.of("addressBook"), null, false, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.CARDDAV), null, null, 0, 100);
+
+    // Several chips mean their union. Answering only the first -- or, as this did,
+    // answering "everything" the moment more than one was selected -- put back the
+    // rows the user had just excluded.
+    emailContactService.getContacts(USERNAME, List.of("collected", "manual"), null, false, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME,
+                                            List.of(EmailContactSource.COLLECTED, EmailContactSource.MANUAL),
+                                            null,
+                                            null,
+                                            0,
+                                            100);
+  }
+
+  @Test
+  void favoritesFilterRestrictsTheListToTheStarredIds() {
+    when(emailContactFavoriteService.getFavoriteContactIds(USERNAME)).thenReturn(Set.of(5L, 6L));
+
+    emailContactService.getContacts(USERNAME, null, null, true, 0, 100);
+
+    verify(emailContactStorage).getContacts(USERNAME, null, null, Set.of(5L, 6L), 0, 100);
+  }
+
+  @Test
+  void favoritesFilterIntersectsWithTheSourceFilter() {
+    // The Favorites chip narrows whatever the source chips selected; it never
+    // replaces them, or toggling it would silently widen the list.
+    when(emailContactFavoriteService.getFavoriteContactIds(USERNAME)).thenReturn(Set.of(5L));
+
+    emailContactService.getContacts(USERNAME, List.of("collected"), null, true, 0, 100);
+
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.COLLECTED), null, Set.of(5L), 0, 100);
+  }
+
+  @Test
+  void anEmptyFavoriteSetShortCircuitsToAnEmptyPage() {
+    // Nothing starred filters to nothing, answered without a query: "id IN ()" is
+    // not SQL every database accepts, and there is nothing to find anyway.
+    when(emailContactFavoriteService.getFavoriteContactIds(USERNAME)).thenReturn(new java.util.HashSet<>());
+
+    org.exoplatform.emailConnector.model.EmailContactPage page =
+                                                               emailContactService.getContacts(USERNAME, null, null, true, 0, 100);
+
+    assertTrue(page.getContacts().isEmpty());
+    assertEquals(0, page.getSize());
+    verify(emailContactStorage, never()).getContacts(anyString(), anyList(), anyString(), any(), anyInt(), anyInt());
+  }
+
+  @Test
+  void answeredPagesAreMarkedFromOneFavoriteRead() {
+    // The set is read once per call and every row checked against it, never one
+    // isFavorite per row — the drawer streams pages of 200 up to thousands of rows.
+    when(emailContactFavoriteService.getFavoriteContactIds(USERNAME)).thenReturn(Set.of(5L));
+    EmailContact starred = collectedContact(5L, "bob@example.org", "Bob");
+    EmailContact plain = collectedContact(6L, "ann@example.org", "Ann");
+    when(emailContactStorage.getContacts(USERNAME, null, null, null, 0, 100))
+                                                                             .thenReturn(new org.exoplatform.emailConnector.model.EmailContactPage(List.of(starred,
+                                                                                                                                                           plain),
+                                                                                                                                                   java.util.Map.of(),
+                                                                                                                                                   2,
+                                                                                                                                                   0,
+                                                                                                                                                   100));
+
+    List<EmailContact> contacts = emailContactService.getContacts(USERNAME, null, null, false, 0, 100).getContacts();
+
+    assertTrue(contacts.get(0).isFavorite());
+    assertFalse(contacts.get(1).isFavorite());
+    verify(emailContactFavoriteService, times(1)).getFavoriteContactIds(USERNAME);
+    verify(emailContactFavoriteService, never()).isFavorite(anyLong(), anyString());
+  }
+
+  @Test
+  void singleContactReadsCarryTheFavoriteFlag() {
+    when(emailContactStorage.getContactById(5L)).thenReturn(collectedContact(5L, "bob@example.org", "Bob"));
+    when(emailContactFavoriteService.isFavorite(5L, USERNAME)).thenReturn(true);
+
+    assertTrue(emailContactService.getContact(5L, USERNAME).isFavorite());
+  }
+
+  @Test
+  void aMailboxThatChangedLetsCollectionStartOverAgain() {
+    // The backfill is what bootstraps collection, because it reads sent mail before
+    // the inbox. Incremental collection cannot: a sync caches the inbox first, so
+    // every sender of a fresh mailbox is judged against no sent mail at all. Left
+    // marked done from the previous mailbox, a rebound account collects nobody.
+    emailContactService.resetCollectionBackfill(USERNAME);
+
+    verify(settingService).remove(Context.USER.id(USERNAME),
+                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                  "emailContactsBackfillDone");
+  }
+
+  @Test
+  void oneUnusableContactDoesNotCostTheRestOfTheRun() {
+    // A run walks hundreds of messages. An exception on one of them used to abandon
+    // every message after it, so a single bad row emptied a whole collection pass.
+    when(emailContactStorage.getContactByAddress(eq(USERNAME), anyString())).thenThrow(new IllegalStateException("bad row"));
+
+    assertDoesNotThrow(() -> emailContactService.collectFromSentRecipients(USERNAME,
+                                                                           List.of(new EmailRecipient("Jane", "jane@example.com", null, false),
+                                                                                   new EmailRecipient("Bob", "bob@example.com", null, false))));
   }
 
   @Test

@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.rest;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -122,9 +123,30 @@ public class EmailContactRestTest {
 
   @Test
   void getContactsWithABogusSourceAnswersBadRequest() throws Exception {
-    when(emailContactService.getContacts(anyString(), eq("bogus"), any(), anyInt(), anyInt()))
+    when(emailContactService.getContacts(anyString(), eq(List.of("bogus")), any(), anyBoolean(), anyInt(), anyInt()))
                                                                                               .thenThrow(new IllegalArgumentException(EmailContactService.CONTACT_INVALID_SOURCE));
     mockMvc.perform(get(CONTACTS_PATH + "?source=bogus").with(testSimpleUser())).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void severalSourcesReachTheServiceTogether() throws Exception {
+    // Repeated parameters, because the chips they come from are multi-select. Bound
+    // to a single value, two selected chips reached the service as one -- and the
+    // service, given more than it could express, answered with the whole store.
+    mockMvc.perform(get(CONTACTS_PATH + "?source=collected&source=manual").with(testSimpleUser())).andExpect(status().isOk());
+
+    verify(emailContactService).getContacts(anyString(), eq(List.of("collected", "manual")), any(), anyBoolean(), anyInt(), anyInt());
+  }
+
+  @Test
+  void theFavoritesFlagTravelsToTheService() throws Exception {
+    // The Favorites chip's query parameter, and its default: absent means false,
+    // so every existing caller keeps its unfiltered list.
+    mockMvc.perform(get(CONTACTS_PATH + "?favorites=true").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailContactService).getContacts(anyString(), any(), any(), eq(true), anyInt(), anyInt());
+
+    mockMvc.perform(get(CONTACTS_PATH).with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailContactService).getContacts(anyString(), any(), any(), eq(false), anyInt(), anyInt());
   }
 
   @Test

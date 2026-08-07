@@ -73,7 +73,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <email-connector-contacts-source-filter
-        v-model="sources"
+        v-model="filterChips"
         :counts="sourceCounts" />
       <email-connector-contacts-list
         :contacts="contacts"
@@ -86,7 +86,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
         <email-connector-contacts-source-filter
-          v-model="sources"
+          v-model="filterChips"
           :counts="sourceCounts" />
         <email-connector-contacts-list
           :contacts="contacts"
@@ -129,7 +129,10 @@ export default {
       expanded: false,
       loading: false,
       term: null,
-      sources: [],
+      // The chip bar's raw value: the selected source values plus, possibly,
+      // 'favorites' — which is a restriction, not a source, so the computeds
+      // below split it back out before anything reaches the REST.
+      filterChips: [],
       sourceCounts: {},
       contacts: [],
       letterIndex: {},
@@ -141,30 +144,59 @@ export default {
     };
   },
   watch: {
-    sources() {
+    filterChips() {
       this.reload();
     },
   },
   created() {
     this.$root.$on('open-email-contacts-drawer', this.open);
     this.$root.$on('email-contacts-refresh', this.refresh);
+    // The shared favorite button announces toggles on the document. Re-counting
+    // is what makes the Favorites chip appear at the first star and disappear at
+    // the last; reloading is what repaints the list's stars and, when the chip is
+    // on, drops the row that just lost its own.
+    document.addEventListener('favorite-added', this.onFavoriteToggled);
+    document.addEventListener('favorite-removed', this.onFavoriteToggled);
   },
   beforeDestroy() {
     this.$root.$off('open-email-contacts-drawer', this.open);
     this.$root.$off('email-contacts-refresh', this.reload);
+    document.removeEventListener('favorite-added', this.onFavoriteToggled);
+    document.removeEventListener('favorite-removed', this.onFavoriteToggled);
   },
   computed: {
     /**
-     * The source to ask the REST for, or null for every source.
-     * <p>
-     * Both chips selected means the same thing as neither: the union of the two
-     * is the whole store. Sending nothing then costs the server one filter it
-     * would apply for no reason.
+     * Whether the Favorites chip is on — the restriction half of the chip bar,
+     * split from the sources so each travels as its own REST parameter.
      *
-     * @returns {string} the filter value, or null
+     * @returns {boolean} true when only starred contacts should show
+     */
+    favoritesOnly() {
+      return this.filterChips.includes('favorites');
+    },
+    /**
+     * The selected SOURCE chips, the Favorites one excluded: it is not a place
+     * a contact came from, and sending it as one would 400.
+     *
+     * @returns {Array} the selected source values
+     */
+    sources() {
+      return this.filterChips.filter(value => value !== 'favorites');
+    },
+    /**
+     * The sources to ask the REST for, or null for every source.
+     * <p>
+     * Every chip selected means the same thing as none: the union is the whole
+     * store. Sending nothing then costs the server one filter it would apply for
+     * no reason.
+     *
+     * @returns {Array} the selected filter values, or null
      */
     sourceFilter() {
-      return this.sources.length === 1 ? this.sources[0] : null;
+      // Every selected chip, not just a lone one. Written when there were two chips,
+      // this answered null for any selection but a single one -- so with three chips
+      // "Collected + Added manually" quietly showed the address book as well.
+      return this.sources.length && this.sources.length < SOURCES.length ? this.sources : null;
     },
     /**
      * Whether the wide two-pane layout is on (list left, detail right).
@@ -194,23 +226,32 @@ export default {
   },
   methods: {
     /**
-     * Opens the drawer and loads the store on the way in.
+     * Opens the drawer and loads the store on the way in. A caller may name a
+     * contact to land on — the global Favorites drawer does — and it opens in
+     * the detail view once read.
      *
+     * @param {object} opening - optionally {contactId} to open the drawer on
      * @returns {void}
      */
-    open() {
+    open(opening) {
       this.contactsDrawer = true;
       this.$refs.emailContactsDrawer.open();
       this.readSourceCounts();
       this.reload();
+      if (opening?.contactId) {
+        this.$emailConnectorContactsService.getContact(opening.contactId)
+          .then(contact => this.selectContact(contact))
+          .catch(() => null);
+      }
     },
     /**
-     * Counts what each source holds, which is what decides which chips are worth
-     * offering and whether the bar is worth showing at all.
+     * Counts what each chip selects, which is what decides which chips are worth
+     * offering and whether the bar is worth showing at all — the three sources,
+     * plus the starred set behind the Favorites chip.
      * <p>
-     * One row per source answers it, so this costs three pages of size one
+     * One row per chip answers it, so this costs four pages of size one
      * rather than a count endpoint that would exist for nothing else. A failure
-     * leaves that source out: a filter nobody can explain is worse than none.
+     * leaves that chip out: a filter nobody can explain is worse than none.
      *
      * @returns {void}
      */
@@ -219,8 +260,19 @@ export default {
       Promise.all(SOURCES.map(source =>
         this.$emailConnectorContactsService.getContacts(null, 0, 1, source)
           .then(page => counts[source] = page?.size || 0)
-          .catch(() => counts[source] = 0)))
-        .then(() => this.sourceCounts = counts);
+          .catch(() => counts[source] = 0))
+        .concat(this.$emailConnectorContactsService.getContacts(null, 0, 1, null, true)
+          .then(page => counts.favorites = page?.size || 0)
+          .catch(() => counts.favorites = 0)))
+        .then(() => {
+          this.sourceCounts = counts;
+          if (!counts.favorites && this.favoritesOnly) {
+            // The last star just went out while its chip was on. Left selected,
+            // an invisible chip would keep filtering the list to nothing with no
+            // way to see why, so the selection dies with the chip.
+            this.filterChips = this.filterChips.filter(value => value !== 'favorites');
+          }
+        });
     },
     /**
      * Resets the drawer's transient state on close.
@@ -230,8 +282,21 @@ export default {
     close() {
       this.selectedContact = null;
       this.term = null;
-      this.sources = [];
+      this.filterChips = [];
       this.contactsDrawer = false;
+    },
+    /**
+     * A favorite was toggled somewhere on the page. Only contact favorites are
+     * this drawer's business, and only while it is open — the next open re-reads
+     * everything anyway.
+     *
+     * @param {CustomEvent} event - the shared favorite button's announcement
+     * @returns {void}
+     */
+    onFavoriteToggled(event) {
+      if (event?.detail?.type === 'contact' && this.contactsDrawer) {
+        this.refresh();
+      }
     },
     /**
      * The drawer's built-in filter: debounced, then queried server-side so the
@@ -260,7 +325,11 @@ export default {
       const token = this.loadToken;
       this.loading = true;
       try {
-        const firstPage = await this.$emailConnectorContactsService.getContacts(this.term, 0, PAGE_SIZE, this.sourceFilter);
+        const firstPage = await this.$emailConnectorContactsService.getContacts(this.term,
+          0,
+          PAGE_SIZE,
+          this.sourceFilter,
+          this.favoritesOnly);
         if (token !== this.loadToken) {
           return;
         }
@@ -287,7 +356,7 @@ export default {
       if (offset >= total || token !== this.loadToken) {
         return Promise.resolve();
       }
-      return this.$emailConnectorContactsService.getContacts(this.term, offset, PAGE_SIZE, this.sourceFilter)
+      return this.$emailConnectorContactsService.getContacts(this.term, offset, PAGE_SIZE, this.sourceFilter, this.favoritesOnly)
         .then(page => {
           if (token !== this.loadToken) {
             return;
