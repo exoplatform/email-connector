@@ -72,6 +72,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
+      <email-connector-contacts-source-filter
+        v-model="sources"
+        :counts="sourceCounts" />
       <email-connector-contacts-list
         :contacts="contacts"
         :letter-index="letterIndex"
@@ -82,6 +85,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
+        <email-connector-contacts-source-filter
+          v-model="sources"
+          :counts="sourceCounts" />
         <email-connector-contacts-list
           :contacts="contacts"
           :letter-index="letterIndex"
@@ -112,6 +118,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 const PAGE_SIZE = 200;
+const SOURCES = ['collected', 'manual', 'addressBook'];
 const MAX_ROWS = 5000;
 const RAIL_MIN_CONTACTS = 100;
 
@@ -122,6 +129,8 @@ export default {
       expanded: false,
       loading: false,
       term: null,
+      sources: [],
+      sourceCounts: {},
       contacts: [],
       letterIndex: {},
       size: 0,
@@ -131,15 +140,32 @@ export default {
       loadToken: 0,
     };
   },
+  watch: {
+    sources() {
+      this.reload();
+    },
+  },
   created() {
     this.$root.$on('open-email-contacts-drawer', this.open);
-    this.$root.$on('email-contacts-refresh', this.reload);
+    this.$root.$on('email-contacts-refresh', this.refresh);
   },
   beforeDestroy() {
     this.$root.$off('open-email-contacts-drawer', this.open);
     this.$root.$off('email-contacts-refresh', this.reload);
   },
   computed: {
+    /**
+     * The source to ask the REST for, or null for every source.
+     * <p>
+     * Both chips selected means the same thing as neither: the union of the two
+     * is the whole store. Sending nothing then costs the server one filter it
+     * would apply for no reason.
+     *
+     * @returns {string} the filter value, or null
+     */
+    sourceFilter() {
+      return this.sources.length === 1 ? this.sources[0] : null;
+    },
     /**
      * Whether the wide two-pane layout is on (list left, detail right).
      *
@@ -175,7 +201,26 @@ export default {
     open() {
       this.contactsDrawer = true;
       this.$refs.emailContactsDrawer.open();
+      this.readSourceCounts();
       this.reload();
+    },
+    /**
+     * Counts what each source holds, which is what decides which chips are worth
+     * offering and whether the bar is worth showing at all.
+     * <p>
+     * One row per source answers it, so this costs three pages of size one
+     * rather than a count endpoint that would exist for nothing else. A failure
+     * leaves that source out: a filter nobody can explain is worse than none.
+     *
+     * @returns {void}
+     */
+    readSourceCounts() {
+      const counts = {};
+      Promise.all(SOURCES.map(source =>
+        this.$emailConnectorContactsService.getContacts(null, 0, 1, source)
+          .then(page => counts[source] = page?.size || 0)
+          .catch(() => counts[source] = 0)))
+        .then(() => this.sourceCounts = counts);
     },
     /**
      * Resets the drawer's transient state on close.
@@ -185,6 +230,7 @@ export default {
     close() {
       this.selectedContact = null;
       this.term = null;
+      this.sources = [];
       this.contactsDrawer = false;
     },
     /**
@@ -214,7 +260,7 @@ export default {
       const token = this.loadToken;
       this.loading = true;
       try {
-        const firstPage = await this.$emailConnectorContactsService.getContacts(this.term, 0, PAGE_SIZE);
+        const firstPage = await this.$emailConnectorContactsService.getContacts(this.term, 0, PAGE_SIZE, this.sourceFilter);
         if (token !== this.loadToken) {
           return;
         }
@@ -241,7 +287,7 @@ export default {
       if (offset >= total || token !== this.loadToken) {
         return Promise.resolve();
       }
-      return this.$emailConnectorContactsService.getContacts(this.term, offset, PAGE_SIZE)
+      return this.$emailConnectorContactsService.getContacts(this.term, offset, PAGE_SIZE, this.sourceFilter)
         .then(page => {
           if (token !== this.loadToken) {
             return;
@@ -294,6 +340,18 @@ export default {
      */
     onContactRemoved() {
       this.selectedContact = null;
+      this.refresh();
+    },
+    /**
+     * Reloads the list AND re-counts the sources, for the changes that can move
+     * a source in or out of existence -- the first contact created by hand, the
+     * last one deleted. A plain reload would leave a chip promising rows that
+     * are gone, or hide one the user just created something for.
+     *
+     * @returns {void}
+     */
+    refresh() {
+      this.readSourceCounts();
       this.reload();
     },
   }
