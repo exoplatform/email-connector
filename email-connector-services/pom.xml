@@ -12,6 +12,12 @@
     <exo.test.coverage.ratio>0.5</exo.test.coverage.ratio>
   </properties>
   <dependencies>
+    <!-- Compile scope, unlike the platform artifacts around it: this one is not
+         provided by the server, so it ships in the add-on's own zip. -->
+    <dependency>
+      <groupId>com.googlecode.ez-vcard</groupId>
+      <artifactId>ez-vcard</artifactId>
+    </dependency>
     <dependency>
       <groupId>io.meeds.social</groupId>
       <artifactId>social-component-service</artifactId>

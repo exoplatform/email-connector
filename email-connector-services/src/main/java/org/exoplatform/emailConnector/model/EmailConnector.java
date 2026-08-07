@@ -55,6 +55,15 @@ public class EmailConnector {
   
   private String  webmailUrl;
 
+  /**
+   * The provider's CardDAV endpoint, or null when it has no address book.
+   * <p>
+   * Declared LAST on purpose. This class is @AllArgsConstructor and is built
+   * positionally in the storage, so a field declared anywhere else would silently
+   * shift every argument after it onto the wrong field.
+   */
+  private String  carddavUrl;
+
   public EmailConnector(Long id,
                         String name,
                         Long imageFileId,

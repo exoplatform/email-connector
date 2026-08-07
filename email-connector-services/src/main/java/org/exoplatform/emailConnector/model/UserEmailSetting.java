@@ -37,6 +37,13 @@ public class UserEmailSetting extends UserEmailSettingEntity {
 
   private boolean connected;
 
+  /** Whether this user wants their address book synced over CardDAV. */
+  private Boolean carddavEnabled;
+
+
+  /** Whether the bound connector offers an address book at all, filled at read time. */
+  private boolean carddavAvailable;
+
   public UserEmailSetting(String emailConnectorId,
                           String emailAddress,
                           String emailPassword,
