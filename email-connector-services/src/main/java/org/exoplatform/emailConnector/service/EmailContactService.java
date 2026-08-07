@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -116,6 +117,9 @@ public class EmailContactService {
   private EmailContactStorage     emailContactStorage;
 
   @Autowired
+  private EmailContactFavoriteService emailContactFavoriteService;
+
+  @Autowired
   private EmailBoxStorage         emailBoxStorage;
 
   @Autowired
@@ -140,23 +144,38 @@ public class EmailContactService {
    * fallback for a profile that is gone.
    *
    * @param username the store owner
-   * @param source null/"all" for the whole store, "collected", or "addressBook"
+   * @param source the sources to show, empty or null for the whole store
    * @param query free text matched against names and addresses, or null
+   * @param favorites when true, only the contacts the user starred are shown —
+   *          intersected with the source filter, not replacing it
    * @param offset row offset, a multiple of limit
    * @param limit page size
    * @return the page, never null
    */
-  public EmailContactPage getContacts(String username, String source, String query, int offset, int limit) {
+  public EmailContactPage getContacts(String username, List<String> source, String query, boolean favorites, int offset,
+                                      int limit) {
+    // Read ONCE per call and used twice: as the id restriction when the Favorites
+    // filter is on, and to mark every answered row either way. The drawer streams
+    // pages of 200 up to thousands of rows, so a per-row isFavorite would multiply
+    // this one read by the page size.
+    Set<Long> favoriteIds = emailContactFavoriteService.getFavoriteContactIds(username);
+    if (favorites && favoriteIds.isEmpty()) {
+      // Nothing starred filters to nothing; answered here rather than asking the
+      // database for "id IN ()", which is not a query every database accepts.
+      return new EmailContactPage(List.of(), Map.of(), 0, Math.max(offset, 0), sanitizeLimit(limit));
+    }
     EmailContactPage page =
                           emailContactStorage.getContacts(username,
                                                           resolveSources(source),
                                                           query,
+                                                          favorites ? favoriteIds : null,
                                                           Math.max(offset, 0),
                                                           sanitizeLimit(limit));
     if (page != null && page.getContacts() != null) {
       page.getContacts().forEach(contact -> {
         resolveDirectoryContact(contact);
         applyStoredPhoto(contact);
+        contact.setFavorite(favoriteIds.contains(contact.getId()));
       });
     }
     return page;
@@ -179,6 +198,7 @@ public class EmailContactService {
       return null;
     }
     enrichForDisplay(contact);
+    contact.setFavorite(emailContactFavoriteService.isFavorite(id, username));
     return contact;
   }
 
@@ -524,6 +544,9 @@ public class EmailContactService {
           throw new IllegalStateException(CONTACT_ALREADY_EXISTS);
         }
         deleteContactRow(other);
+        // The tombstone's favorite was already dropped at suppression; this only
+        // covers a row suppressed before favorites existed.
+        dropFavorite(other.getId(), username);
       }
       existing.setPrimaryEmail(address);
     }
@@ -555,11 +578,17 @@ public class EmailContactService {
     }
     if (EmailContactSource.MANUAL.equals(existing.getSource()) || EmailContactSource.DIRECTORY.equals(existing.getSource())) {
       deleteContactRow(existing);
+      dropFavorite(existing.getId(), username);
       existing.setSuppressed(false);
       return existing;
     }
     existing.setSuppressed(true);
-    return emailContactStorage.updateContact(existing);
+    EmailContact suppressed = emailContactStorage.updateContact(existing);
+    // A suppressed contact answers 404 everywhere, so its favorite would only be a
+    // dead drawer row: the star dies with the row's visibility, not just with the
+    // row itself.
+    dropFavorite(existing.getId(), username);
+    return suppressed;
   }
 
   /**
@@ -953,6 +982,24 @@ public class EmailContactService {
   }
 
   /**
+   * Drops the favorite of a contact that just stopped being visible, fenced so
+   * the deletion that called this can never fail over its own cleanup — a
+   * favorite left behind is a stale drawer entry the drawer knows how to shed,
+   * while a delete that errors out leaves the user with a contact they asked to
+   * remove.
+   *
+   * @param contactId the dying contact's row id
+   * @param username the store owner
+   */
+  private void dropFavorite(long contactId, String username) {
+    try {
+      emailContactFavoriteService.removeFavorite(contactId, username);
+    } catch (Exception e) {
+      LOG.debug("The favorite of contact {} could not be dropped for user {}", contactId, username, e);
+    }
+  }
+
+  /**
    * Copies the user-authored fields of a request body onto a stored contact —
    * and only those: sources, counters and suppression are this service's to
    * manage, never the caller's.
@@ -1094,10 +1141,32 @@ public class EmailContactService {
    * @throws IllegalArgumentException with {@link #CONTACT_INVALID_SOURCE} for
    *           anything else
    */
-  private List<String> resolveSources(String source) {
-    if (StringUtils.isBlank(source) || "all".equalsIgnoreCase(source)) {
+  private List<String> resolveSources(List<String> sources) {
+    if (sources == null || sources.isEmpty()) {
       return null;
     }
+    // Several filters mean their union, because the chips they come from are
+    // multi-select. Answering one of them -- or, as this did, answering nothing at
+    // all beyond a single selection -- showed rows the user had just excluded.
+    List<String> resolved = new ArrayList<>();
+    for (String source : sources) {
+      if (StringUtils.isBlank(source) || "all".equalsIgnoreCase(source)) {
+        return null;
+      }
+      resolved.addAll(resolveSource(source));
+    }
+    return resolved;
+  }
+
+  /**
+   * The stored sources one filter value names.
+   *
+   * @param source a single filter value
+   * @return the sources it selects, never null
+   * @throws IllegalArgumentException with {@link #CONTACT_INVALID_SOURCE} for
+   *           anything else
+   */
+  private List<String> resolveSource(String source) {
     if (SOURCE_FILTER_COLLECTED.equalsIgnoreCase(source)) {
       return List.of(EmailContactSource.COLLECTED);
     }
