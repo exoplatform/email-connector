@@ -327,6 +327,16 @@ public class EmailContactStorage {
   }
 
   /**
+   * Every address-book row this user holds, whichever connector wrote it.
+   *
+   * @param userId the store owner
+   * @return the rows, never null
+   */
+  public List<CardDavRow> getAllCardDavRows(String userId) {
+    return emailContactDAO.findByUserIdAndSource(userId, EmailContactSource.CARDDAV).stream().map(this::toCardDavRow).toList();
+  }
+
+  /**
    * The row at this address, whatever its source, in the same shape — what the
    * sync consults before deciding whether it may claim an existing contact.
    *

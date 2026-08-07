@@ -502,6 +502,70 @@ public class EmailContactCardDavSyncServiceTest {
     when(vCardParser.parse(resource.vcard())).thenReturn(card);
   }
 
+  @Test
+  void rebindingToAnotherProviderLetsGoOfTheBookLeftBehind() {
+    // The rows the old provider wrote answer to a connector this user no longer has.
+    // Nothing else would ever look at them again: a sync only reads the rows of its
+    // own connector, so without this they stay in the store for good.
+    CardDavRow written = row(1L, "someone@old.example", EmailContactSource.CARDDAV, false, 0, "/old/1.vcf", "e1", null, PhotoOrigin.VCARD);
+    CardDavRow corresponded = row(2L, "colleague@old.example", EmailContactSource.CARDDAV, false, 12, "/old/2.vcf", "e2", null, PhotoOrigin.VCARD);
+    when(emailContactStorage.getAllCardDavRows(USERNAME)).thenReturn(List.of(written, corresponded));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
+
+    syncService.releaseUnboundBooks(USERNAME);
+
+    // Only the old book ever vouched for the first one, so leaving the provider takes
+    // it along. The second is someone the user actually writes to.
+    verify(emailContactStorage).deleteContact(1L);
+    verify(emailContactStorage).demoteCardDavRow(2L, true);
+    verify(emailContactStorage, never()).deleteContact(2L);
+  }
+
+  @Test
+  void theBookStillBoundIsLeftAlone() {
+    CardDavRow mine = row(1L, "someone@example.com", EmailContactSource.CARDDAV, false, 0, "/1.vcf", "e1", null, PhotoOrigin.VCARD);
+    when(emailContactStorage.getAllCardDavRows(USERNAME)).thenReturn(List.of(mine));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(mine));
+
+    syncService.releaseUnboundBooks(USERNAME);
+
+    // Saving settings raises this too. It must cost nothing when the binding has not
+    // actually changed, or every save would throw away a book and re-download it.
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean());
+    verify(userEmailSettingService, never()).setContactSyncState(any(), anyString());
+  }
+
+  @Test
+  void switchingTheBookOffReleasesEvenTheBoundConnectorsRows() {
+    UserEmailSetting off = new UserEmailSetting();
+    off.setEmailConnectorId(String.valueOf(CONNECTOR_ID));
+    off.setCarddavEnabled(false);
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(off);
+    CardDavRow mine = row(1L, "someone@example.com", EmailContactSource.CARDDAV, false, 0, "/1.vcf", "e1", null, PhotoOrigin.VCARD);
+    when(emailContactStorage.getAllCardDavRows(USERNAME)).thenReturn(List.of(mine));
+
+    syncService.releaseUnboundBooks(USERNAME);
+
+    verify(emailContactStorage).deleteContact(1L);
+  }
+
+  @Test
+  void releasingForgetsWhereTheBookWas() {
+    CardDavRow written = row(1L, "someone@old.example", EmailContactSource.CARDDAV, false, 0, "/old/1.vcf", "e1", null, PhotoOrigin.VCARD);
+    when(emailContactStorage.getAllCardDavRows(USERNAME)).thenReturn(List.of(written));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
+
+    syncService.releaseUnboundBooks(USERNAME);
+
+    // The discovered URL and version belonged to the binding that has gone. Kept, the
+    // next sync would ask the new provider for the old provider's book.
+    ArgumentCaptor<ContactSyncState> captor = ArgumentCaptor.forClass(ContactSyncState.class);
+    verify(userEmailSettingService).setContactSyncState(captor.capture(), eq(USERNAME));
+    assertNull(captor.getValue().getAddressBookHref());
+    assertNull(captor.getValue().getCtag());
+  }
+
   /**
    * A stored row.
    *

@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -415,6 +416,77 @@ public class EmailContactCardDavSyncService {
    */
   private boolean claimable(CardDavRow row) {
     return EmailContactSource.COLLECTED.equals(row.source()) || EmailContactSource.CARDDAV.equals(row.source());
+  }
+
+  /**
+   * Lets go of every address-book row this user's current binding does not account
+   * for, and forgets where the book was.
+   * <p>
+   * Called when a mailbox is rebound, disconnected, or the address book is switched
+   * off. Without it those rows are orphans: a sync only ever looks at the rows its
+   * OWN connector wrote, so contacts from the provider the user has just left would
+   * stay in the store for good, with nothing able to reach them again.
+   * <p>
+   * What happens to a row depends on what else vouches for it. A person the user has
+   * actually exchanged mail with is kept and demoted to collected — the mailbox
+   * earned that, and the address book was only ever one of the reasons to know them.
+   * A row nothing but the old book vouches for is deleted, because leaving a provider
+   * should take its address book with it rather than leave hundreds of entries behind
+   * as though they had been collected.
+   *
+   * @param username the mailbox owner
+   */
+  public void releaseUnboundBooks(String username) {
+    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
+    Long boundConnectorId = boundConnectorId(setting);
+
+    List<CardDavRow> rows = emailContactStorage.getAllCardDavRows(username);
+    if (boundConnectorId != null) {
+      // Read by connector rather than compared per row: the rows the current binding
+      // accounts for are exactly the ones its own sync will keep maintaining.
+      Set<Long> keptIds = emailContactStorage.getCardDavRows(username, boundConnectorId)
+                                             .stream()
+                                             .map(CardDavRow::id)
+                                             .collect(Collectors.toSet());
+      rows = rows.stream().filter(row -> !keptIds.contains(row.id())).toList();
+    }
+    if (rows.isEmpty()) {
+      return;
+    }
+
+    int demoted = 0;
+    int deleted = 0;
+    for (CardDavRow row : rows) {
+      if (row.seenCount() > 0) {
+        emailContactStorage.demoteCardDavRow(row.id(), row.photoOrigin() == PhotoOrigin.VCARD);
+        demoted++;
+      } else {
+        emailContactStorage.deleteContact(row.id());
+        deleted++;
+      }
+    }
+    // The discovered book belonged to the binding that has just gone, so a later sync
+    // must discover again rather than ask the new provider for the old book's URL.
+    userEmailSettingService.setContactSyncState(new ContactSyncState(), username);
+    LOG.info("Address book released for user {}: {} kept as collected, {} removed", username, demoted, deleted);
+  }
+
+  /**
+   * The connector whose address book the user is currently bound to.
+   *
+   * @param setting the user's mail setting, possibly null
+   * @return the connector id, or null when no address book is bound at all
+   */
+  private Long boundConnectorId(UserEmailSetting setting) {
+    if (setting == null || !Boolean.TRUE.equals(setting.getCarddavEnabled())
+        || StringUtils.isBlank(setting.getEmailConnectorId())) {
+      return null;
+    }
+    try {
+      return Long.parseLong(setting.getEmailConnectorId());
+    } catch (NumberFormatException e) {
+      return null;
+    }
   }
 
   /**

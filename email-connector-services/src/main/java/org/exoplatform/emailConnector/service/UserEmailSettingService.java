@@ -38,6 +38,7 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
+import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.model.ContactSyncState;
@@ -206,6 +207,10 @@ public class UserEmailSettingService {
     }
     userEmailSetting.setCarddavEnabled(enabled);
     setUserEmailSetting(userEmailSetting, username, false);
+    // Raised whichever way the switch moved: turning the book off releases its
+    // contacts, and turning it on releases whatever an earlier binding left behind
+    // before the first sync of the new one runs.
+    eventPublisher.publishEvent(new ContactBookReleaseEvent(username));
   }
 
   /**

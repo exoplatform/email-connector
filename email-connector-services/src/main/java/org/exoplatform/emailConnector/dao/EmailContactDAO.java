@@ -52,6 +52,19 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
   List<EmailContactEntity> findByUserIdAndConnectorId(String userId, Long connectorId);
 
   /**
+   * Every row this user holds from an address book, whichever connector wrote it.
+   * <p>
+   * Needed when a mailbox is rebound to another provider: those rows belong to a
+   * book this user no longer has, and the sync of the NEW book would never look
+   * at them.
+   *
+   * @param userId the store owner
+   * @param source the source discriminator
+   * @return the rows, never null
+   */
+  List<EmailContactEntity> findByUserIdAndSource(String userId, String source);
+
+  /**
    * Contacts one of whose SECONDARY addresses is the given one, so a message
    * from a person's alternate address still lands on their one row. The EMAILS
    * column encodes {@code type,value;type,value}, hence the two LIKE shapes: the
