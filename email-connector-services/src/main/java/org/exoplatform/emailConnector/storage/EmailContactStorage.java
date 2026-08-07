@@ -271,6 +271,12 @@ public class EmailContactStorage {
    * @param contact the contact to persist, with its id set
    * @return the persisted contact
    */
+  // A contact and its addresses are saved together, and the addresses are replaced
+  // rather than merged -- a delete that JPA refuses outright without a transaction.
+  // Callers on a request thread had one; contact collection runs on the event bus's
+  // own thread and had none, so collecting from a synced mailbox threw where saving
+  // the same contact by hand succeeded.
+  @Transactional
   public EmailContact updateContact(EmailContact contact) {
     // Written ONTO the stored row, never rebuilt from the DTO. The DTO does not
     // carry every column -- the CardDAV ones (href, etag, vCard uid, connector)
