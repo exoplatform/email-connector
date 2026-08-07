@@ -81,9 +81,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             fas fa-phone
           </v-icon>
         </v-list-item-icon>
+        <!-- The number reads as the platform's own does: v-autolinker with the
+             call argument is the very directive the profile's contact information
+             uses, so a future fix there arrives here for free. It sets innerHTML,
+             which is why it sits on a leaf with nothing inside it. -->
         <v-list-item-content>
-          <v-list-item-title>{{ phone }}</v-list-item-title>
+          <v-list-item-title v-autolinker:call="phone"></v-list-item-title>
         </v-list-item-content>
+        <!-- And the action button, as the user card renders it. It is not
+             decoration: a profile phone is validated to digits, so the platform's
+             linker never meets a bad one, while a vCard number can carry spaces,
+             parentheses or an extension -- which that linker splits in two or clips.
+             This button always dials one number, and dials the right one. -->
+        <v-list-item-action class="my-auto">
+          <v-btn
+            :href="`tel:${dialable(phone)}`"
+            :aria-label="$t('emailConnector.contacts.detail.launchCall')"
+            :title="$t('emailConnector.contacts.detail.launchCall')"
+            icon>
+            <v-icon size="18">
+              fas fa-phone
+            </v-icon>
+          </v-btn>
+        </v-list-item-action>
       </v-list-item>
     </v-list>
   </div>
@@ -150,6 +170,23 @@ export default {
     },
   },
   methods: {
+    /**
+     * The number as a phone can dial it: everything a tel: URI has no use for is
+     * dropped, digits and the few meaningful symbols kept.
+     *
+     * The platform does not do this, and is right not to — it validates profile
+     * numbers to digits, so it never meets anything else. Contacts have no such
+     * luxury: a vCard carries whatever somebody typed, and "(01) 23 45 67" run
+     * through the platform's linker dials "01) 23 45 67". The number is still
+     * DISPLAYED exactly as it was written, because that is how its owner wrote it;
+     * only what gets dialled is cleaned.
+     *
+     * @param {string} phone - the number as the contact holds it
+     * @returns {string} the number a dialler can use
+     */
+    dialable(phone) {
+      return (phone || '').replace(/[^\d+*#]/g, '');
+    },
     /**
      * Hands one address to the mail app's composer (mounted on demand).
      *
