@@ -22,16 +22,21 @@
  * @param {string} query - free text matched against names and addresses
  * @param {number} offset - row offset, a multiple of limit
  * @param {number} limit - page size
- * @param {string} source - where the contacts came from: collected, addressBook, or nothing for every source
+ * @param {Array} source - where the contacts came from: any of collected, manual, addressBook; empty for every source
+ * @param {boolean} favorites - keep only the starred contacts, intersected with the source filter
  * @returns {Promise<object>} the page {contacts, letterIndex, size, offset, limit}
  */
-export function getContacts(query, offset, limit, source) {
+export function getContacts(query, offset, limit, source, favorites) {
   const params = new URLSearchParams();
   if (query) {
     params.append('q', query);
   }
-  if (source) {
-    params.append('source', source);
+  // Repeated rather than joined: the chips are multi-select, and one value could
+  // only ever carry one of them.
+  const sources = Array.isArray(source) && source || source && [source] || [];
+  sources.forEach(value => params.append('source', value));
+  if (favorites) {
+    params.append('favorites', 'true');
   }
   params.append('offset', offset || 0);
   params.append('limit', limit || 100);

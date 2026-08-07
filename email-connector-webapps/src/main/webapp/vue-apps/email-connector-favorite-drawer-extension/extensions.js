@@ -16,18 +16,20 @@
  */
 
 /*
- * Adds an "Emails" section to the platform's global Favorites drawer, holding the
- * mails the user favorited in the mailbox.
+ * Adds an "Emails" and a "Contacts" section to the platform's global Favorites
+ * drawer, holding the mails the user favorited in the mailbox and the contacts
+ * they starred in the Contacts drawer.
  *
- * The rank places the section among the other content types of the drawer; 55 sits
- * between the gamification rules (50) and the AI prompts (60), both of which are
- * already taken, as are space (10), activity (20), notes (30), news (40), file (45),
- * chat rooms and projects (70) and tasks (71).
+ * The ranks place the sections among the other content types of the drawer; 55
+ * and 56 sit between the gamification rules (50) and the AI prompts (60), which
+ * are already taken, as are space (10), activity (20), notes (30), news (40),
+ * file (45), chat rooms and projects (70) and tasks (71) — and the adjacency is
+ * deliberate: this add-on's two types stay grouped.
  *
- * The section header reads from `UITopBarFavoritesPortlet.types.email`, which this
- * add-on ships in its own Portlets bundle — the platform merges the same-named
- * bundles across webapps, so the drawer finds our label without social knowing that
- * emails exist.
+ * The section headers read from `UITopBarFavoritesPortlet.types.email` and
+ * `.types.contact`, which this add-on ships in its own Portlets bundle — the
+ * platform merges the same-named bundles across webapps, so the drawer finds our
+ * labels without social knowing these types exist.
  */
 export function initEmailFavoriteExtensions() {
   extensionRegistry.registerExtension('favorite', 'favorite-type', {
@@ -39,5 +41,15 @@ export function initEmailFavoriteExtensions() {
   extensionRegistry.registerComponent('favorite-email', 'favorite-drawer-item', {
     id: 'email',
     vueComponent: Vue.options.components['email-connector-favorite-item'],
+  });
+  extensionRegistry.registerExtension('favorite', 'favorite-type', {
+    rank: 56,
+    id: 'contact',
+    name: 'Contacts',
+    icon: 'fa-address-book',
+  });
+  extensionRegistry.registerComponent('favorite-contact', 'favorite-drawer-item', {
+    id: 'contact',
+    vueComponent: Vue.options.components['email-connector-contact-favorite-item'],
   });
 }
