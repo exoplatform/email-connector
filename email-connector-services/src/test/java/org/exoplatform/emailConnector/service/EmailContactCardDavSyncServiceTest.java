@@ -125,6 +125,24 @@ public class EmailContactCardDavSyncServiceTest {
   }
 
   @Test
+  void aRunSomebodyAskedForIgnoresTheUnchangedVersion() {
+    // The scheduled job stops at an unchanged collection version, which is what
+    // makes it cheap. A person pressing the button has decided that answer is
+    // wrong, and the sync should not out-argue them.
+    ContactSyncState state = new ContactSyncState();
+    state.setAddressBookHref(BOOK_URL);
+    state.setConfiguredUrl("https://mail.example.com");
+    state.setCtag("ctag-1");
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
+    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-1");
+    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+
+    syncService.syncAddressBook(USERNAME, true);
+
+    verify(cardDavClient).listResourceEtags(any(), anyString(), anyString());
+  }
+
+  @Test
   void anEntryAlreadyStoredAtItsCurrentVersionIsNotReRead() {
     givenServerHas(Map.of("/dav/jane.vcf", "\"v1\""));
     when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(row(3L,

@@ -140,7 +140,7 @@ public class EmailContactCardDavSyncService {
         LOG.debug("Address book sync for user {} is paused after repeated failures", username);
         return;
       }
-      run(username, setting, connector, state);
+      run(username, setting, connector, state, requested);
     } catch (Exception e) {
       LOG.warn("Address book sync failed for user {}", username, e);
     } finally {
@@ -177,7 +177,11 @@ public class EmailContactCardDavSyncService {
    * @param connector the provider preset carrying the CardDAV URL
    * @param state where the last run got to
    */
-  private void run(String username, UserEmailSetting setting, EmailConnector connector, ContactSyncState state) {
+  private void run(String username,
+                   UserEmailSetting setting,
+                   EmailConnector connector,
+                   ContactSyncState state,
+                   boolean requested) {
     state.setStatus(SyncStatus.IN_PROGRESS);
     state.setLastSyncStartDate(new Date().getTime());
     userEmailSettingService.setContactSyncState(state, username);
@@ -188,7 +192,12 @@ public class EmailContactCardDavSyncService {
       // and must not be treated as one.
       boolean bookChanged = previousBook != null && !previousBook.equals(addressBook.url());
       String currentCtag = cardDavClient.getCtag(addressBook, setting.getEmailAddress(), setting.getEmailPassword());
-      if (currentCtag != null && currentCtag.equals(state.getCtag())) {
+      // The cheap check is skipped for a run somebody asked for. It makes the
+      // scheduled job nearly free, but it also means an address book that has not
+      // changed is never looked at again -- so after the rules for reading it
+      // change, or when a user presses the button because something looks wrong,
+      // it is precisely the wrong answer. They clicked to have it redone.
+      if (!requested && currentCtag != null && currentCtag.equals(state.getCtag())) {
         // Nothing in the address book moved. This is the common case, and it is
         // why the job can run often without costing anything.
         succeed(username, state, state.getCtag());
