@@ -170,16 +170,26 @@ public class EmailContactStorage {
    * @param normalizedAddress the normalized address
    * @return the contact, or null when no row carries the address
    */
+  @Transactional
   public EmailContact getContactByAddress(String userId, String normalizedAddress) {
     // One indexed read, against the table that now owns address uniqueness. It
     // finds a contact by ANY of its addresses, where this used to try the primary
     // one and then fall back to a LIKE over a joined string -- which meant the
     // answer depended on which address a contact happened to be filed under.
-    return emailContactAddressDAO.findByUserIdAndAddress(userId, normalizedAddress)
-                                 .map(EmailContactAddressEntity::getContactId)
-                                 .flatMap(emailContactDAO::findById)
-                                 .map(this::fromEntity)
-                                 .orElse(null);
+    EmailContactAddressEntity row = emailContactAddressDAO.findByUserIdAndAddress(userId, normalizedAddress).orElse(null);
+    if (row == null) {
+      return null;
+    }
+    EmailContactEntity contact = emailContactDAO.findById(row.getContactId()).orElse(null);
+    if (contact == null) {
+      // Points at a contact that is gone. Left in place such a row is worse than
+      // useless: it hides the address from every lookup while still holding the
+      // unique key, so nothing can be found there and nothing can be written there
+      // either -- which is how one stale row stopped an entire collection run.
+      emailContactAddressDAO.delete(row);
+      return null;
+    }
+    return fromEntity(contact);
   }
 
   /**
@@ -274,6 +284,12 @@ public class EmailContactStorage {
    * @param contact the contact to persist, with its id set
    * @return the persisted contact
    */
+  // A contact and its addresses are saved together, and the addresses are replaced
+  // rather than merged -- a delete that JPA refuses outright without a transaction.
+  // Callers on a request thread had one; contact collection runs on the event bus's
+  // own thread and had none, so collecting from a synced mailbox threw where saving
+  // the same contact by hand succeeded.
+  @Transactional
   public EmailContact updateContact(EmailContact contact) {
     // Written ONTO the stored row, never rebuilt from the DTO. The DTO does not
     // carry every column -- the CardDAV ones (href, etag, vCard uid, connector)
