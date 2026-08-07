@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
@@ -23,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
@@ -87,6 +89,9 @@ public class EmailContactCardDavSyncServiceTest {
 
   @MockBean
   private VCardParser                        vCardParser;
+
+  @MockBean
+  private EmailContactFavoriteService        emailContactFavoriteService;
 
   @Autowired
   private EmailContactCardDavSyncService      syncService;
@@ -366,6 +371,29 @@ public class EmailContactCardDavSyncServiceTest {
 
     verify(emailContactStorage).deleteContact(4L);
     verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean());
+    // The row is gone for real, so its favorite goes with it; a demoted row keeps
+    // its favorite on purpose, the person being still there.
+    verify(emailContactFavoriteService).removeFavorite(4L, USERNAME);
+  }
+
+  @Test
+  void aVanishedEntrysFavoriteCleanupNeverFailsTheSync() {
+    doThrow(new RuntimeException("favorites unavailable")).when(emailContactFavoriteService)
+                                                          .removeFavorite(anyLong(), anyString());
+    givenServerHas(Map.of());
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(row(4L,
+                                                                                            "ghost@example.com",
+                                                                                            EmailContactSource.CARDDAV,
+                                                                                            false,
+                                                                                            0,
+                                                                                            "/dav/ghost.vcf",
+                                                                                            "\"v1\"",
+                                                                                            null,
+                                                                                            PhotoOrigin.VCARD)));
+
+    assertDoesNotThrow(() -> syncService.syncAddressBook(USERNAME));
+
+    verify(emailContactStorage).deleteContact(4L);
   }
 
   @Test
@@ -520,6 +548,10 @@ public class EmailContactCardDavSyncServiceTest {
     verify(emailContactStorage).deleteContact(1L);
     verify(emailContactStorage).demoteCardDavRow(2L, true);
     verify(emailContactStorage, never()).deleteContact(2L);
+    // And the favorite follows its row: dropped with the deleted one, kept with
+    // the demoted one.
+    verify(emailContactFavoriteService).removeFavorite(1L, USERNAME);
+    verify(emailContactFavoriteService, never()).removeFavorite(2L, USERNAME);
   }
 
   @Test

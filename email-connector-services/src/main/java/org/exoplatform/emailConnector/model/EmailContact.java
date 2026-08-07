@@ -118,6 +118,14 @@ public class EmailContact {
    */
   private String       photoUploadId;
 
+  /**
+   * Whether the store owner has starred this contact. Read-time enrichment
+   * only, never stored on the row: the favorite lives in the platform's
+   * favorites store, keyed by this row's id, and is resolved per viewer when
+   * the contact is answered.
+   */
+  private boolean      favorite;
+
   /** Platform profile avatar when the address is a platform user's, resolved at read time. */
   private String       avatarUrl;
 
