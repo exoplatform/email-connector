@@ -18,8 +18,11 @@ package org.exoplatform.emailConnector.storage;
 
 import java.io.ByteArrayInputStream;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -31,11 +34,14 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.utils.IOUtil;
+import org.exoplatform.emailConnector.dao.EmailContactAddressDAO;
 import org.exoplatform.emailConnector.dao.EmailContactDAO;
+import org.exoplatform.emailConnector.entity.EmailContactAddressEntity;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -76,6 +82,9 @@ public class EmailContactStorage {
   // one namespace per add-on is what the FileService expects, the name below is what
   // tells the two apart.
   private static final String PHOTO_FILE_NAME = "emailContactPhoto";
+
+  @Autowired
+  private EmailContactAddressDAO emailContactAddressDAO;
 
   @Autowired
   private EmailContactDAO   emailContactDAO;
@@ -155,13 +164,68 @@ public class EmailContactStorage {
    * @return the contact, or null when no row carries the address
    */
   public EmailContact getContactByAddress(String userId, String normalizedAddress) {
-    return emailContactDAO.findByUserIdAndPrimaryEmail(userId, normalizedAddress)
-                          .map(this::fromEntity)
-                          .orElseGet(() -> emailContactDAO.findBySecondaryEmail(userId, normalizedAddress)
-                                                          .stream()
-                                                          .findFirst()
-                                                          .map(this::fromEntity)
-                                                          .orElse(null));
+    // One indexed read, against the table that now owns address uniqueness. It
+    // finds a contact by ANY of its addresses, where this used to try the primary
+    // one and then fall back to a LIKE over a joined string -- which meant the
+    // answer depended on which address a contact happened to be filed under.
+    return emailContactAddressDAO.findByUserIdAndAddress(userId, normalizedAddress)
+                                 .map(EmailContactAddressEntity::getContactId)
+                                 .flatMap(emailContactDAO::findById)
+                                 .map(this::fromEntity)
+                                 .orElse(null);
+  }
+
+  /**
+   * Writes the addresses a contact can be reached at, replacing whatever was
+   * stored.
+   * <p>
+   * Called on every save so the lookup table cannot drift from the contact. The
+   * set may be empty: a contact with a phone number and no mail address is
+   * ordinary in an address book, and is exactly what the old model could not
+   * hold.
+   *
+   * @param contactId the contact
+   * @param userId the store owner
+   * @param addresses every address, already normalized, in preference order
+   */
+  private void saveAddresses(Long contactId, String userId, List<String> addresses) {
+    if (contactId == null) {
+      return;
+    }
+    emailContactAddressDAO.deleteByContactId(contactId);
+    if (addresses == null || addresses.isEmpty()) {
+      return;
+    }
+    Set<String> written = new LinkedHashSet<>();
+    for (String address : addresses) {
+      String normalized = EmailContactUtils.normalizeAddress(address);
+      if (normalized == null || !written.add(normalized)) {
+        continue;
+      }
+      EmailContactAddressEntity entity = new EmailContactAddressEntity();
+      entity.setContactId(contactId);
+      entity.setUserId(userId);
+      entity.setAddress(normalized);
+      emailContactAddressDAO.save(entity);
+    }
+  }
+
+  /**
+   * Every address of a contact, the preferred one first: the one the contact is
+   * displayed and written to by, then the rest.
+   *
+   * @param contact the contact being saved
+   * @return the addresses in preference order
+   */
+  private List<String> addressesOf(EmailContact contact) {
+    List<String> addresses = new ArrayList<>();
+    if (StringUtils.isNotBlank(contact.getPrimaryEmail())) {
+      addresses.add(contact.getPrimaryEmail());
+    }
+    if (contact.getSecondaryEmails() != null) {
+      addresses.addAll(contact.getSecondaryEmails());
+    }
+    return addresses;
   }
 
   /**
@@ -184,12 +248,15 @@ public class EmailContactStorage {
    * @param contact the contact to persist
    * @return the persisted contact with its id
    */
+  @Transactional
   public EmailContact createContact(EmailContact contact) {
     EmailContactEntity entity = toEntity(contact);
     entity.setId(null);
     entity.setCreatedDate(new Date());
     entity.setUpdatedDate(entity.getCreatedDate());
-    return fromEntity(emailContactDAO.save(entity));
+    EmailContactEntity saved = emailContactDAO.save(entity);
+    saveAddresses(saved.getId(), saved.getUserId(), addressesOf(contact));
+    return fromEntity(saved);
   }
 
   /**
@@ -214,7 +281,9 @@ public class EmailContactStorage {
       applyAuthoredColumns(contact, entity);
     }
     entity.setUpdatedDate(new Date());
-    return fromEntity(emailContactDAO.save(entity));
+    EmailContactEntity saved = emailContactDAO.save(entity);
+    saveAddresses(saved.getId(), saved.getUserId(), addressesOf(contact));
+    return fromEntity(saved);
   }
 
   /**

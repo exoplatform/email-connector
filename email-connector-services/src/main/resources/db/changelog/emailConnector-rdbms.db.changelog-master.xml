@@ -407,4 +407,65 @@
       <column name="PHOTO_ORIGIN" type="VARCHAR(10)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-32" dbms="oracle,postgresql,hsqldb">
+    <createSequence sequenceName="SEQ_EMAIL_CONTACT_ADDRESS_ID" startValue="1"/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-33">
+    <!-- A contact's addresses, one row each.
+         Until now the address WAS the contact: EMAIL_CONTACT was unique on
+         (USER_ID, PRIMARY_EMAIL), which made a person without an address
+         unrepresentable. Mail always brought one, so it held; an address book does
+         not. A Google address book of 496 entries produced 132 contacts because
+         the rest carry a phone and no mail address, and those people are exactly
+         the ones somebody wants to find in a contact list.
+         So identity moves to the row, and addresses become what they are: zero or
+         more attributes of a person. The unique index lives here now, which keeps
+         de-duplication a database fact rather than a service promise, and keeps
+         the lookup collection performs on every synced message a single indexed
+         read. -->
+    <createTable tableName="EMAIL_CONTACT_ADDRESS">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_CONTACT_ADDRESS"/>
+      </column>
+      <column name="CONTACT_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <!-- Denormalised from the contact so uniqueness and lookup are one index on
+           this table, without a join back on the hot path. -->
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ADDRESS" type="VARCHAR(320)">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <createIndex tableName="EMAIL_CONTACT_ADDRESS" indexName="UQ_EMAIL_CONTACT_ADDRESS" unique="true">
+      <column name="USER_ID"/>
+      <column name="ADDRESS"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_CONTACT_ADDRESS" indexName="IDX_EMAIL_CONTACT_ADDRESS_CONTACT">
+      <column name="CONTACT_ID"/>
+    </createIndex>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-34">
+    <!-- Every address already stored becomes a row of its own. The secondary ones
+         live inside the EMAILS string and cannot be split in SQL; an upgrade plugin
+         does those, and this handles the primary address, which is the one every
+         lookup uses today. -->
+    <sql>INSERT INTO EMAIL_CONTACT_ADDRESS (ID, CONTACT_ID, USER_ID, ADDRESS)
+         SELECT ID, ID, USER_ID, PRIMARY_EMAIL FROM EMAIL_CONTACT WHERE PRIMARY_EMAIL IS NOT NULL</sql>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-35">
+    <!-- The address is no longer the identity, so the contact stops being unique on
+         it and stops requiring one at all. PRIMARY_EMAIL stays as the preferred
+         address a contact is shown and written to by, which every list and the
+         compose hand-off already read; it is now a display choice rather than a key,
+         and it is null for a contact who has only a phone number. -->
+    <dropIndex tableName="EMAIL_CONTACT" indexName="UQ_EMAIL_CONTACT_USER_EMAIL"/>
+    <dropNotNullConstraint tableName="EMAIL_CONTACT" columnName="PRIMARY_EMAIL" columnDataType="VARCHAR(320)"/>
+    <createIndex tableName="EMAIL_CONTACT" indexName="IDX_EMAIL_CONTACT_USER_EMAIL">
+      <column name="USER_ID"/>
+      <column name="PRIMARY_EMAIL"/>
+    </createIndex>
+  </changeSet>
 </databaseChangeLog>
