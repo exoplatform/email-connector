@@ -146,21 +146,36 @@ public class EmailContactService {
    * @param username the store owner
    * @param source the sources to show, empty or null for the whole store
    * @param query free text matched against names and addresses, or null
+   * @param favorites when true, only the contacts the user starred are shown —
+   *          intersected with the source filter, not replacing it
    * @param offset row offset, a multiple of limit
    * @param limit page size
    * @return the page, never null
    */
-  public EmailContactPage getContacts(String username, List<String> source, String query, int offset, int limit) {
+  public EmailContactPage getContacts(String username, List<String> source, String query, boolean favorites, int offset,
+                                      int limit) {
+    // Read ONCE per call and used twice: as the id restriction when the Favorites
+    // filter is on, and to mark every answered row either way. The drawer streams
+    // pages of 200 up to thousands of rows, so a per-row isFavorite would multiply
+    // this one read by the page size.
+    Set<Long> favoriteIds = emailContactFavoriteService.getFavoriteContactIds(username);
+    if (favorites && favoriteIds.isEmpty()) {
+      // Nothing starred filters to nothing; answered here rather than asking the
+      // database for "id IN ()", which is not a query every database accepts.
+      return new EmailContactPage(List.of(), Map.of(), 0, Math.max(offset, 0), sanitizeLimit(limit));
+    }
     EmailContactPage page =
                           emailContactStorage.getContacts(username,
                                                           resolveSources(source),
                                                           query,
+                                                          favorites ? favoriteIds : null,
                                                           Math.max(offset, 0),
                                                           sanitizeLimit(limit));
     if (page != null && page.getContacts() != null) {
       page.getContacts().forEach(contact -> {
         resolveDirectoryContact(contact);
         applyStoredPhoto(contact);
+        contact.setFavorite(favoriteIds.contains(contact.getId()));
       });
     }
     return page;
@@ -183,6 +198,7 @@ public class EmailContactService {
       return null;
     }
     enrichForDisplay(contact);
+    contact.setFavorite(emailContactFavoriteService.isFavorite(id, username));
     return contact;
   }
 

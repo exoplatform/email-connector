@@ -113,16 +113,42 @@ public class EmailContactStorage {
    * @return the page, its ordered letter index and the filtered total
    */
   public EmailContactPage getContacts(String userId, List<String> sources, String query, int offset, int limit) {
+    return getContacts(userId, sources, query, null, offset, limit);
+  }
+
+  /**
+   * The same page restricted to a set of row ids — the Favorites filter, where
+   * the ids come from the platform's favorites store. A null id set means no
+   * restriction; an EMPTY one is the caller's to short-circuit (the service
+   * answers an empty page without coming here), because {@code IN ()} is not a
+   * query every database accepts.
+   *
+   * @param userId the store owner
+   * @param sources the source discriminators to keep, or null/empty for all
+   * @param query the raw filter text, or null
+   * @param ids the row ids to keep, or null for no id restriction
+   * @param offset the row offset, expected to be a multiple of limit
+   * @param limit the page size
+   * @return the page, its ordered letter index and the filtered total
+   */
+  public EmailContactPage getContacts(String userId, List<String> sources, String query, Set<Long> ids, int offset, int limit) {
     String term = StringUtils.isBlank(query) ? null : query.trim().toLowerCase(Locale.ROOT);
     PageRequest pageRequest = PageRequest.of(limit > 0 ? offset / limit : 0, limit, CONTACT_SORT);
+    boolean bySources = sources != null && !sources.isEmpty();
     Page<EmailContactEntity> page;
     List<Object[]> bucketCounts;
-    if (sources == null || sources.isEmpty()) {
-      page = emailContactDAO.findContacts(userId, term, pageRequest);
-      bucketCounts = emailContactDAO.countBySortBucket(userId, term);
-    } else {
+    if (ids != null && bySources) {
+      page = emailContactDAO.findContactsBySourcesAndIds(userId, sources, ids, term, pageRequest);
+      bucketCounts = emailContactDAO.countBySortBucketAndSourcesAndIds(userId, sources, ids, term);
+    } else if (ids != null) {
+      page = emailContactDAO.findContactsByIds(userId, ids, term, pageRequest);
+      bucketCounts = emailContactDAO.countBySortBucketAndIds(userId, ids, term);
+    } else if (bySources) {
       page = emailContactDAO.findContactsBySources(userId, sources, term, pageRequest);
       bucketCounts = emailContactDAO.countBySortBucketAndSources(userId, sources, term);
+    } else {
+      page = emailContactDAO.findContacts(userId, term, pageRequest);
+      bucketCounts = emailContactDAO.countBySortBucket(userId, term);
     }
     List<EmailContact> contacts = page.getContent().stream().map(this::fromEntity).toList();
     return new EmailContactPage(contacts, toLetterIndex(bucketCounts), page.getTotalElements(), offset, limit);
