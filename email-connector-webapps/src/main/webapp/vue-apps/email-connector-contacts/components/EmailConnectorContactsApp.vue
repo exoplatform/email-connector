@@ -62,12 +62,15 @@ export default {
   },
   methods: {
     /**
-     * Opens the contacts drawer — the quick action's landing point.
+     * Opens the contacts drawer — the quick action's landing point. The event
+     * may name a contact to land on (the global Favorites drawer sends its
+     * {contactId} this way), and the drawer opens on its card.
      *
+     * @param {CustomEvent} event - optionally carrying {contactId} in its detail
      * @returns {void}
      */
-    openDrawer() {
-      this.$root.$emit('open-email-contacts-drawer');
+    openDrawer(event) {
+      this.$root.$emit('open-email-contacts-drawer', event?.detail || {});
     },
     /**
      * Shows the undo toast for the contact that was just suppressed.
