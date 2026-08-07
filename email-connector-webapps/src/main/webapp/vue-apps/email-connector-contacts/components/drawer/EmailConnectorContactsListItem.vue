@@ -40,6 +40,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ secondLine }}
       </v-list-item-subtitle>
     </v-list-item-content>
+    <!-- A static star, deliberately not a button: the list streams up to
+         thousands of rows, and one listener per row is a real cost for an
+         action the detail card already offers. Toggling lives there. -->
+    <v-list-item-icon
+      v-if="contact.favorite"
+      class="my-auto ms-2">
+      <v-icon
+        size="12"
+        class="yellow--text text--darken-2">
+        fas fa-star
+      </v-icon>
+    </v-list-item-icon>
     <v-list-item-icon
       v-if="sourceIcon"
       class="my-auto ms-2">
