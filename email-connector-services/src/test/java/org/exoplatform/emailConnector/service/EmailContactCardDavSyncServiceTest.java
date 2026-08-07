@@ -631,6 +631,44 @@ public class EmailContactCardDavSyncServiceTest {
     assertEquals(SyncStatus.FAILURE, captor.getValue().getStatus());
   }
 
+  @Test
+  void aScheduledRunWaitsOutTheSyncPeriod() {
+    // The mailbox syncs every few minutes. Reading the address book each time
+    // would be hundreds of provider requests a day for a book most people change
+    // monthly, and providers rate-limit.
+    ContactSyncState recent = new ContactSyncState();
+    recent.setLastSyncStartDate(System.currentTimeMillis() - 60_000L);
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(recent);
+
+    syncService.syncAddressBookIfDue(USERNAME);
+
+    verify(cardDavClient, never()).discoverAddressBook(anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void aScheduledRunGoesAheadOnceThePeriodHasPassed() {
+    ContactSyncState old = new ContactSyncState();
+    old.setLastSyncStartDate(System.currentTimeMillis() - 7L * 3600_000L);
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(old);
+    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
+
+    syncService.syncAddressBookIfDue(USERNAME);
+
+    verify(cardDavClient).discoverAddressBook(anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void anAddressBookThatHasNeverSyncedRunsAtTheFirstOpportunity() {
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(new ContactSyncState());
+    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
+
+    syncService.syncAddressBookIfDue(USERNAME);
+
+    verify(cardDavClient).discoverAddressBook(anyString(), anyString(), anyString());
+  }
+
   /**
    * A stored row.
    *
