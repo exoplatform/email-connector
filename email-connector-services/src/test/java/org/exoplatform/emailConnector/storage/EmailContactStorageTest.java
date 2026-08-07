@@ -23,6 +23,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -45,7 +47,9 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 
 import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.emailConnector.dao.EmailContactAddressDAO;
 import org.exoplatform.emailConnector.dao.EmailContactDAO;
+import org.exoplatform.emailConnector.entity.EmailContactAddressEntity;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -60,6 +64,9 @@ public class EmailContactStorageTest {
 
   @MockBean
   private EmailContactDAO     emailContactDAO;
+
+  @MockBean
+  private EmailContactAddressDAO emailContactAddressDAO;
 
   @MockBean
   private UploadService       uploadService;
@@ -148,14 +155,62 @@ public class EmailContactStorageTest {
   }
 
   @Test
-  void addressLookupFallsBackToTheSecondaryAddresses() {
+  void aContactIsFoundByAnyOfItsAddresses() {
+    // Not only by the one it happens to be filed under. The address table owns
+    // uniqueness now, so this is one indexed read rather than a primary-column
+    // hit followed by a LIKE over a joined string.
     EmailContactEntity entity = entity(7L, "jane@example.com", "Jane", 9);
-    when(emailContactDAO.findByUserIdAndPrimaryEmail(USERNAME, "jane@other.org")).thenReturn(Optional.empty());
-    when(emailContactDAO.findBySecondaryEmail(USERNAME, "jane@other.org")).thenReturn(List.of(entity));
+    EmailContactAddressEntity address = new EmailContactAddressEntity();
+    address.setContactId(7L);
+    address.setUserId(USERNAME);
+    address.setAddress("jane@other.org");
+    when(emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "jane@other.org")).thenReturn(Optional.of(address));
+    when(emailContactDAO.findById(7L)).thenReturn(Optional.of(entity));
 
     EmailContact contact = emailContactStorage.getContactByAddress(USERNAME, "jane@other.org");
 
     assertEquals(7L, contact.getId());
+  }
+
+  @Test
+  void everyAddressOfAContactIsFiledWhenItIsSaved() {
+    when(emailContactDAO.save(any(EmailContactEntity.class))).thenAnswer(invocation -> {
+      EmailContactEntity saved = invocation.getArgument(0);
+      saved.setId(11L);
+      return saved;
+    });
+    EmailContact contact = new EmailContact();
+    contact.setUserId(USERNAME);
+    contact.setSource(EmailContactSource.MANUAL);
+    contact.setPrimaryEmail("jane@example.com");
+    contact.setSecondaryEmails(List.of("jane@other.org"));
+
+    emailContactStorage.createContact(contact);
+
+    ArgumentCaptor<EmailContactAddressEntity> filed = ArgumentCaptor.forClass(EmailContactAddressEntity.class);
+    verify(emailContactAddressDAO, times(2)).save(filed.capture());
+    assertEquals(List.of("jane@example.com", "jane@other.org"),
+                 filed.getAllValues().stream().map(EmailContactAddressEntity::getAddress).toList());
+  }
+
+  @Test
+  void aContactWithNoAddressCanBeStored() {
+    // The point of the whole change: an address book entry with a phone number and
+    // no mail address is an ordinary contact, and the old model could not hold one.
+    when(emailContactDAO.save(any(EmailContactEntity.class))).thenAnswer(invocation -> {
+      EmailContactEntity saved = invocation.getArgument(0);
+      saved.setId(12L);
+      return saved;
+    });
+    EmailContact contact = new EmailContact();
+    contact.setUserId(USERNAME);
+    contact.setSource(EmailContactSource.CARDDAV);
+    contact.setDisplayName("Somebody With A Phone");
+
+    EmailContact stored = emailContactStorage.createContact(contact);
+
+    assertEquals(12L, stored.getId());
+    verify(emailContactAddressDAO, never()).save(any(EmailContactAddressEntity.class));
   }
 
   @Test

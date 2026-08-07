@@ -28,6 +28,8 @@
     <!-- 3rd party libraries versions -->
     <org.exoplatform.commons-exo.version>7.3.x-ai-contribution-SNAPSHOT</org.exoplatform.commons-exo.version>
     <io.meeds.mcp-server.version>7.3.x-SNAPSHOT</io.meeds.mcp-server.version>
+    <!-- vCard parsing for the CardDAV address book sync -->
+    <ez-vcard.version>0.12.1</ez-vcard.version>
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
   </properties>
@@ -47,6 +49,36 @@
         <version>${io.meeds.mcp-server.version}</version>
         <type>pom</type>
         <scope>import</scope>
+      </dependency>
+      <!-- TEMPORARY: the version belongs in maven-exo-depmgt-pom, where it is
+           declared by https://github.com/exoplatform/maven-exo-depmgt-pom/pull/30.
+           This block goes away once that lands and a snapshot is published, leaving
+           the module to reference the artifact versionless. It is here only so this
+           branch builds while that PR is in review.
+
+           vCard parsing for the CardDAV address book sync. The three excluded
+           dependencies serve vCard's HTML (hCard, needs jsoup + freemarker) and JSON
+           (jCard, needs jackson) representations, which an address book never uses:
+           CardDAV carries plain vCard. commons-codec and vinnie are kept: the first
+           decodes base64 photos, the second is the parser's own reader/writer core. -->
+      <dependency>
+        <groupId>com.googlecode.ez-vcard</groupId>
+        <artifactId>ez-vcard</artifactId>
+        <version>${ez-vcard.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.freemarker</groupId>
+            <artifactId>freemarker</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <!-- Current project artifacts -->
       <dependency>

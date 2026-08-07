@@ -69,4 +69,13 @@ public class EmailConnectorEntity {
 
   @Column(name = "WEB_MAIL_URL")
   private String  webmailUrl;
+
+  /**
+   * Where this provider's address book lives, so contacts can be read over
+   * CardDAV. Null when the provider offers none, which is the honest state for
+   * Microsoft 365 and Proton and the default for every connector until an
+   * administrator fills it in.
+   */
+  @Column(name = "CARDDAV_URL")
+  private String  carddavUrl;
 }

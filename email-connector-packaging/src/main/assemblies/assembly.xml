@@ -25,6 +25,13 @@
         <include>backport-util-concurrent:backport-util-concurrent:jar</include>
         <include>org.mnode.ical4j:ical4j:jar</include>
         <include>javax.cache:cache-api:jar</include>
+        <!-- The vCard parser and vinnie, its reader/writer core. Its third runtime
+             dependency, commons-codec, is already shipped by the platform, so it is
+             deliberately not duplicated here. The include list is exhaustive, so a
+             jar left out of it produces a NoClassDefFoundError at runtime rather
+             than a build failure: check the zip, do not assume. -->
+        <include>com.googlecode.ez-vcard:ez-vcard:jar</include>
+        <include>com.github.mangstadt:vinnie:jar</include>
       </includes>
       <scope>provided</scope>
       <outputFileNameMapping>${artifact.artifactId}.${artifact.extension}</outputFileNameMapping>
