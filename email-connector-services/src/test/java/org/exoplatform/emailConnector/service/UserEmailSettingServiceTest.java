@@ -20,11 +20,15 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -40,6 +44,7 @@ import javax.mail.Store;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.MockedStatic;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -52,6 +57,8 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.ContactSyncState;
+import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.web.security.codec.AbstractCodec;
@@ -133,6 +140,48 @@ public class UserEmailSettingServiceTest {
     userEmailSettingService.getUserEmailSetting(TEST_USER);
     verify(settingService).get(any(Context.class), any(Scope.class), anyString());
     verify(emailConnectorService).getEmailConnector(1L);
+  }
+
+  @Test
+  @SneakyThrows
+  void aPasswordThatIsNotSetNeverReachesTheCodec() {
+    // A password that is not set must not reach the codec: it answered a null and
+    // the whole settings read failed. The codec is deliberately NOT stubbed here,
+    // so a path that still reaches it fails on the null mock exactly as production
+    // did.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    userEmailSetting.setEmailPassword(null);
+
+    userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
+
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  @Test
+  void theSyncStateLivesUnderItsOwnKey() {
+    // Not inside userEmailSetting: the mailbox sync rewrites that whole document on
+    // every status update, so sharing the key would have the two syncs overwriting
+    // each other's fields.
+    ContactSyncState state = new ContactSyncState();
+    state.setCtag("ctag-1");
+    state.setStatus(SyncStatus.SUCCESS);
+
+    userEmailSettingService.setContactSyncState(state, TEST_USER);
+
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.CONTACT_SYNC_STATE_KEY),
+                               any(SettingValue.class));
+  }
+
+  @Test
+  void anAbsentSyncStateReadsAsNeverHavingRun() {
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONTACT_SYNC_STATE_KEY))).thenReturn(null);
+
+    ContactSyncState state = userEmailSettingService.getContactSyncState(TEST_USER);
+
+    assertNotNull(state);
+    assertNull(state.getCtag());
   }
 
   @Test
@@ -242,7 +291,7 @@ public class UserEmailSettingServiceTest {
                               false,
                               true,
                               "testUploadId",
-                              "");
+                              "", null);
   }
 
   private UserEmailSetting userEmailSetting() {
