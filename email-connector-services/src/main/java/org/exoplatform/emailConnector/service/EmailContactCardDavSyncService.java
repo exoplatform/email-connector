@@ -75,6 +75,12 @@ public class EmailContactCardDavSyncService {
   /** How long a BLOCKED user waits before the next attempt is allowed. */
   private static final long        BLOCKED_COOLDOWN_MS     = 30L * 60 * 1000;
 
+  /** How long a scheduled run waits, in hours, overridable per deployment. */
+  private static final String      SYNC_PERIOD_PROPERTY    = "email.connector.contacts.sync.hour.period";
+
+  /** Six hours: a quarter of a day stale at worst, with Sync now for the rest. */
+  private static final int         DEFAULT_SYNC_PERIOD_HOURS = 6;
+
   @Autowired
   private EmailContactStorage      emailContactStorage;
 
@@ -112,6 +118,69 @@ public class EmailContactCardDavSyncService {
    */
   public void syncAddressBook(String username) {
     syncAddressBook(username, false);
+  }
+
+  /**
+   * Syncs this user's address book if enough time has passed since the last run.
+   * <p>
+   * Called when a mailbox sync completes, which is what gives the address book a
+   * schedule without a scheduler of its own: the mailbox job already runs per
+   * user, already staggers them, already re-registers at startup and unschedules
+   * on disconnect. A second Quartz job would mean writing those three things
+   * again, and they are precisely the ones that break.
+   * <p>
+   * Throttled because an address book is not mail. At a ten-minute mailbox period,
+   * syncing on every completion would be some 140 requests a day per user for a
+   * book most people change monthly, and providers rate-limit. The period only
+   * bounds how stale the book can get: pressing Sync now still reads it at once,
+   * and a run that finds an unchanged collection version costs a single request.
+   *
+   * @param username the mailbox owner
+   */
+  public void syncAddressBookIfDue(String username) {
+    if (StringUtils.isBlank(username)) {
+      return;
+    }
+    ContactSyncState state = userEmailSettingService.getContactSyncState(username);
+    if (state != null && !isDue(state)) {
+      return;
+    }
+    // Not "requested": a scheduled run keeps the collection-version short-circuit
+    // and the pause a blocked book is serving, both of which only a person asking
+    // for a run may bypass.
+    syncAddressBook(username, false);
+  }
+
+  /**
+   * Whether the address book has gone long enough without a run.
+   *
+   * @param state where the last run got to
+   * @return true when a run is due
+   */
+  private boolean isDue(ContactSyncState state) {
+    Long last = state.getLastSyncStartDate();
+    return last == null || new Date().getTime() - last >= syncPeriodMs();
+  }
+
+  /**
+   * How long the address book may go between scheduled runs.
+   * <p>
+   * Read from a JVM property each time rather than cached, matching the mailbox
+   * period, so an administrator chasing a rate limit can change it without a
+   * restart.
+   *
+   * @return the period in milliseconds
+   */
+  private long syncPeriodMs() {
+    int hours;
+    try {
+      hours = Integer.parseInt(System.getProperty(SYNC_PERIOD_PROPERTY, String.valueOf(DEFAULT_SYNC_PERIOD_HOURS)));
+    } catch (NumberFormatException e) {
+      // A typo in a property must not stop the address book syncing altogether.
+      LOG.warn("Unreadable {}, falling back to {} hours", SYNC_PERIOD_PROPERTY, DEFAULT_SYNC_PERIOD_HOURS);
+      hours = DEFAULT_SYNC_PERIOD_HOURS;
+    }
+    return Math.max(hours, 1) * 3600_000L;
   }
 
   /**
