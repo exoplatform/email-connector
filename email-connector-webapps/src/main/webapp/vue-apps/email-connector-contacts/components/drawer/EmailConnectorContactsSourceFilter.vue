@@ -15,8 +15,10 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- Where a contact came from, as toggles, one chip per stored source. There
-       is deliberately no "All" chip: nothing selected is what shows everything,
+  <!-- Where a contact came from, as toggles, one chip per stored source — plus
+       the Favorites chip, which is not a source but a restriction: it narrows
+       whatever the source chips selected to the starred rows. There is
+       deliberately no "All" chip: nothing selected is what shows everything,
        the way the mailbox's category filter already behaves, and a chip selected
        by default teaches people the list is filtered when it is not. -->
   <div v-if="visible" class="d-flex px-4 pt-2">
@@ -26,13 +28,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       column
       @change="$emit('input', $event)">
       <v-chip
-        v-for="source in shownSources"
-        :key="source"
-        :value="source"
+        v-for="chip in chips"
+        :key="chip.value"
+        :value="chip.value"
         filter
         small
         outlined>
-        {{ $t(`emailConnector.contacts.source.${source}`) }}
+        {{ chip.label }}
       </v-chip>
     </v-chip-group>
   </div>
@@ -40,15 +42,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 const SOURCES = ['collected', 'manual', 'addressBook'];
+const FAVORITES = 'favorites';
 
 export default {
   props: {
-    /** The selected sources, as REST filter values. */
+    /** The selected chips, as REST filter values ('favorites' included). */
     value: {
       type: Array,
       default: () => [],
     },
-    /** How many contacts each source holds, keyed by REST filter value. */
+    /** How many contacts each chip selects, keyed by REST filter value. */
     counts: {
       type: Object,
       default: () => ({}),
@@ -56,8 +59,8 @@ export default {
   },
   computed: {
     /**
-     * The chips worth offering: a source with no contact filters to an empty
-     * list, which is a promise the bar should not make.
+     * The source chips worth offering: a source with no contact filters to an
+     * empty list, which is a promise the bar should not make.
      *
      * @returns {Array} the source keys to render
      */
@@ -65,13 +68,42 @@ export default {
       return SOURCES.filter(source => (this.counts[source] || 0) > 0);
     },
     /**
-     * Whether the bar earns its place. Below two sources it cannot: the single
-     * chip would only ever select every row already on screen.
+     * How many contacts the user has starred.
      *
-     * @returns {boolean} true when at least two sources hold contacts
+     * @returns {number} the favorite count
+     */
+    favoriteCount() {
+      return this.counts[FAVORITES] || 0;
+    },
+    /**
+     * Every chip to render, the Favorites one leading when it exists. Its label
+     * lives under its own key rather than contacts.source.*, because a favorite
+     * is not a place a contact came from.
+     *
+     * @returns {Array} the chips as {value, label}
+     */
+    chips() {
+      const chips = this.shownSources.map(source => ({
+        value: source,
+        label: this.$t(`emailConnector.contacts.source.${source}`),
+      }));
+      if (this.favoriteCount > 0) {
+        chips.unshift({
+          value: FAVORITES,
+          label: this.$t('emailConnector.contacts.filter.favorites'),
+        });
+      }
+      return chips;
+    },
+    /**
+     * Whether the bar earns its place. A single source chip cannot — it would
+     * only ever select every row already on screen — but a lone Favorites chip
+     * CAN: it genuinely filters, whatever the sources look like.
+     *
+     * @returns {boolean} true when the bar renders
      */
     visible() {
-      return this.shownSources.length > 1;
+      return this.shownSources.length > 1 || this.favoriteCount > 0;
     },
   },
 };
