@@ -23,6 +23,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.event.EmailSentEvent;
+import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.service.EmailContactService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.Asynchronous;
@@ -88,6 +89,25 @@ public class ContactCollectListener extends Listener<String, List<Long>> {
       }
     } catch (Exception e) {
       LOG.warn("Contact collection failed for user {} on event {}", username, event.getEventName(), e);
+    }
+  }
+
+  /**
+   * Lets collection start over when the mailbox it collects from was reset.
+   * <p>
+   * The cache the contacts were collected from has just been thrown away, and the
+   * incremental pass cannot rebuild them: it judges an inbox sender against the
+   * organisations the user has written to, read from cached sent mail, which the
+   * resync reads after the inbox.
+   *
+   * @param event the reset event
+   */
+  @EventListener
+  public void onMailboxReset(MailboxResetEvent event) {
+    try {
+      emailContactService.resetCollectionBackfill(event.getUsername());
+    } catch (Exception e) {
+      LOG.warn("Re-arming contact collection failed for user {}", event.getUsername(), e);
     }
   }
 
