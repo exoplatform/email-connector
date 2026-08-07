@@ -30,8 +30,8 @@ extensionRegistry.registerExtension('QuickAction', 'Extension', {
 /*
  * Opens the Contacts drawer from anywhere in the platform, without the caller
  * knowing how this app is mounted — the same cross-app pattern as
- * 'open-email-box-mail'. detail is currently unused; it travels anyway so a
- * future caller can open the drawer on something.
+ * 'open-email-box-mail'. The detail may carry {contactId}: the global Favorites
+ * drawer sends it so a starred contact opens straight onto its card.
  */
 document.addEventListener('open-contacts-drawer', event => {
   const opening = event?.detail || {};
