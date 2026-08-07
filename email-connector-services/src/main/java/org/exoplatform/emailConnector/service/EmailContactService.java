@@ -90,6 +90,9 @@ public class EmailContactService {
   /** The chips' "collected" filter value. */
   public static final String      SOURCE_FILTER_COLLECTED     = "collected";
 
+  /** Contacts the user typed in themselves. */
+  public static final String      SOURCE_FILTER_MANUAL        = "manual";
+
   /** The chips' "address book" filter value: the curated rows (manual + CardDAV). */
   public static final String      SOURCE_FILTER_ADDRESS_BOOK  = "addressBook";
 
@@ -104,7 +107,10 @@ public class EmailContactService {
   // groups are skipped until the whole-cache pass ran, so nothing is counted twice.
   private static final String     CONTACTS_BACKFILL_DONE_KEY  = "emailContactsBackfillDone";
 
-  private static final List<String> ADDRESS_BOOK_SOURCES      = List.of(EmailContactSource.MANUAL, EmailContactSource.CARDDAV);
+  // Each filter names exactly one stored source, so the grouping carries no
+  // editorial judgement: a contact typed by hand is neither collected from mail
+  // nor owned by a provider's book, and either grouping mislabelled it.
+  private static final List<String> ADDRESS_BOOK_SOURCES      = List.of(EmailContactSource.CARDDAV);
 
   @Autowired
   private EmailContactStorage     emailContactStorage;
@@ -980,6 +986,9 @@ public class EmailContactService {
     }
     if (SOURCE_FILTER_COLLECTED.equalsIgnoreCase(source)) {
       return List.of(EmailContactSource.COLLECTED);
+    }
+    if (SOURCE_FILTER_MANUAL.equalsIgnoreCase(source)) {
+      return List.of(EmailContactSource.MANUAL);
     }
     if (SOURCE_FILTER_ADDRESS_BOOK.equalsIgnoreCase(source)) {
       return ADDRESS_BOOK_SOURCES;
