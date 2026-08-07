@@ -182,7 +182,11 @@ public class EmailContactCardDavSyncService {
     state.setLastSyncStartDate(new Date().getTime());
     userEmailSettingService.setContactSyncState(state, username);
     try {
+      String previousBook = state.getAddressBookHref();
       AddressBook addressBook = resolveAddressBook(setting, connector, state);
+      // An administrator repointing the connector is not 500 people being deleted,
+      // and must not be treated as one.
+      boolean bookChanged = previousBook != null && !previousBook.equals(addressBook.url());
       String currentCtag = cardDavClient.getCtag(addressBook, setting.getEmailAddress(), setting.getEmailPassword());
       if (currentCtag != null && currentCtag.equals(state.getCtag())) {
         // Nothing in the address book moved. This is the common case, and it is
@@ -190,7 +194,7 @@ public class EmailContactCardDavSyncService {
         succeed(username, state, state.getCtag());
         return;
       }
-      boolean complete = reconcile(username, setting, connector, addressBook);
+      boolean complete = reconcile(username, setting, connector, addressBook, bookChanged);
       // The version is only recorded when the run saw everything. Recording it
       // after a partial run would make the next run's cheap check skip exactly
       // the entries this one missed, permanently and without a trace.
@@ -209,14 +213,41 @@ public class EmailContactCardDavSyncService {
    * @return the address book
    */
   private AddressBook resolveAddressBook(UserEmailSetting setting, EmailConnector connector, ContactSyncState state) {
-    if (StringUtils.isNotBlank(state.getAddressBookHref())) {
+    String configured = resolveConfiguredUrl(connector.getCarddavUrl(), setting.getEmailAddress());
+    if (StringUtils.isNotBlank(state.getAddressBookHref()) && StringUtils.equals(configured, state.getConfiguredUrl())) {
       return new AddressBook(state.getAddressBookHref(), null, state.getCtag());
     }
-    AddressBook discovered = cardDavClient.discoverAddressBook(connector.getCarddavUrl(),
+    // Either nothing was discovered yet, or an administrator repointed the
+    // connector somewhere else. The second case must not reuse the old book.
+    AddressBook discovered = cardDavClient.discoverAddressBook(configured,
                                                                setting.getEmailAddress(),
                                                                setting.getEmailPassword());
     state.setAddressBookHref(discovered.url());
+    state.setConfiguredUrl(configured);
     return discovered;
+  }
+
+  /**
+   * Fills the per-user placeholders an administrator may have written into the
+   * connector's CardDAV URL.
+   * <p>
+   * Some providers put the account inside the collection path — Google's is
+   * {@code /carddav/v1/principals/somebody@gmail.com/lists/default/} — which a
+   * single preset shared by every user of that provider cannot hold literally.
+   * Discovery would normally spare us this, but Google does not serve
+   * {@code /.well-known/carddav} at all. So the preset carries the shape and each
+   * run fills in whose account it is.
+   *
+   * @param configuredUrl the URL as the administrator wrote it
+   * @param emailAddress the user's own mailbox address
+   * @return the URL for this user
+   */
+  private String resolveConfiguredUrl(String configuredUrl, String emailAddress) {
+    if (StringUtils.isBlank(configuredUrl) || StringUtils.isBlank(emailAddress)) {
+      return configuredUrl;
+    }
+    String localPart = StringUtils.substringBefore(emailAddress, "@");
+    return configuredUrl.replace("{email}", emailAddress).replace("{localpart}", localPart);
   }
 
   /**
@@ -228,7 +259,11 @@ public class EmailContactCardDavSyncService {
    * @param addressBook the collection to read
    * @return true when every entry that needed reading was read
    */
-  private boolean reconcile(String username, UserEmailSetting setting, EmailConnector connector, AddressBook addressBook) {
+  private boolean reconcile(String username,
+                            UserEmailSetting setting,
+                            EmailConnector connector,
+                            AddressBook addressBook,
+                            boolean bookChanged) {
     Map<String, String> serverEtags = cardDavClient.listResourceEtags(addressBook,
                                                                       setting.getEmailAddress(),
                                                                       setting.getEmailPassword());
@@ -246,6 +281,7 @@ public class EmailContactCardDavSyncService {
 
     boolean complete = true;
     int written = 0;
+    int skipped = 0;
     for (int start = 0; start < toFetch.size(); start += FETCH_BATCH_SIZE) {
       List<String> batch = toFetch.subList(start, Math.min(start + FETCH_BATCH_SIZE, toFetch.size()));
       try {
@@ -253,7 +289,9 @@ public class EmailContactCardDavSyncService {
                                                                batch,
                                                                setting.getEmailAddress(),
                                                                setting.getEmailPassword())) {
-          written += apply(username, connector, resource, storedByHref.get(resource.href())) ? 1 : 0;
+          boolean stored = apply(username, connector, resource, storedByHref.get(resource.href()));
+          written += stored ? 1 : 0;
+          skipped += stored ? 0 : 1;
         }
       } catch (CardDavException e) {
         // One batch failing costs those entries this run, not the whole sync: the
@@ -263,11 +301,16 @@ public class EmailContactCardDavSyncService {
         LOG.warn("A batch of address book entries could not be read for user {}", username, e);
       }
     }
-    int removed = removeVanished(serverEtags.keySet(), storedRows);
-    LOG.info("Address book sync for user {}: {} entries on the server, {} written, {} no longer there",
+    int removed = removeVanished(serverEtags.keySet(), storedRows, bookChanged);
+    // The skipped count matters as much as the written one: an address book full of
+    // phone-only entries produces far fewer contacts than it has entries, and
+    // without this number that gap looks like a bug rather than the store being
+    // keyed on an address.
+    LOG.info("Address book sync for user {}: {} entries on the server, {} written, {} skipped (no address, or not ours to claim), {} no longer there",
              username,
              serverEtags.size(),
              written,
+             skipped,
              removed);
     return complete;
   }
@@ -343,14 +386,19 @@ public class EmailContactCardDavSyncService {
    * @param storedRows the rows this address book wrote
    * @return how many rows were demoted or deleted
    */
-  private int removeVanished(Set<String> serverHrefs, List<CardDavRow> storedRows) {
+  private int removeVanished(Set<String> serverHrefs, List<CardDavRow> storedRows, boolean bookChanged) {
     int removed = 0;
     for (CardDavRow row : storedRows) {
       if (row.href() == null || serverHrefs.contains(row.href())) {
         continue;
       }
       boolean fromVCard = row.photoOrigin() == PhotoOrigin.VCARD;
-      if (row.seenCount() > 0) {
+      // A row missing from a DIFFERENT address book proves nothing: the entry was
+      // never in this book to begin with. Those rows are demoted rather than
+      // deleted, whatever their history, so repointing a connector costs the
+      // bookkeeping and never the people. Only a row missing from the book it
+      // actually came from is a real deletion.
+      if (bookChanged || row.seenCount() > 0) {
         emailContactStorage.demoteCardDavRow(row.id(), fromVCard);
       } else {
         emailContactStorage.deleteContact(row.id());

@@ -337,6 +337,66 @@ public class EmailContactCardDavSyncServiceTest {
     verify(cardDavClient, never()).getCtag(any(), anyString(), anyString());
   }
 
+  @Test
+  void repointingTheConnectorDemotesTheOldRowsRatherThanDeletingThem() {
+    // What actually happened on the bench: a connector was pointed at a second
+    // server, every entry from the first was absent from the second, and rows with
+    // no correspondence were deleted. A row missing from a DIFFERENT book proves
+    // nothing about the person.
+    ContactSyncState state = new ContactSyncState();
+    state.setAddressBookHref("https://old.example.com/dav/alice/default/");
+    state.setConfiguredUrl("https://old.example.com");
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
+    givenServerHas(Map.of());
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(row(4L,
+                                                                                            "jane@example.com",
+                                                                                            EmailContactSource.CARDDAV,
+                                                                                            false,
+                                                                                            0,
+                                                                                            "/dav/jane.vcf",
+                                                                                            "\"v1\"",
+                                                                                            null,
+                                                                                            PhotoOrigin.VCARD)));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(emailContactStorage).demoteCardDavRow(4L, true);
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+  }
+
+  @Test
+  void theConfiguredUrlCarriesThePersonItIsFor() {
+    // Google puts the account inside the collection path, so one preset shared by
+    // every user of a provider cannot hold it literally.
+    EmailConnector connector = new EmailConnector();
+    connector.setId(CONNECTOR_ID);
+    connector.setCarddavUrl("https://www.googleapis.com/carddav/v1/principals/{email}/lists/default/");
+    when(emailConnectorService.getEmailConnector(CONNECTOR_ID)).thenReturn(connector);
+    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-2");
+    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient).discoverAddressBook(eq("https://www.googleapis.com/carddav/v1/principals/alice@example.com/lists/default/"),
+                                              anyString(),
+                                              anyString());
+  }
+
+  @Test
+  void repointingTheConnectorDiscoversAgainRatherThanReusingTheOldBook() {
+    ContactSyncState state = new ContactSyncState();
+    state.setAddressBookHref("https://old.example.com/dav/alice/default/");
+    state.setConfiguredUrl("https://old.example.com");
+    state.setCtag("ctag-old");
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
+    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-2");
+    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient).discoverAddressBook(eq("https://mail.example.com"), anyString(), anyString());
+  }
+
   /**
    * Stubs what the server holds, with discovery already done.
    *

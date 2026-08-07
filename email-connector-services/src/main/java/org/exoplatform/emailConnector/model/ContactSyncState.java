@@ -60,4 +60,12 @@ public class ContactSyncState {
 
   /** When the last run started, both for display and to spot a run that hung. */
   private Long       lastSyncStartDate;
+
+  /**
+   * The configured URL this state belongs to, after per-user placeholders were
+   * filled in. When an administrator repoints the connector, this stops matching
+   * and the sync discovers again instead of talking to the previous server with
+   * the previous book's memory.
+   */
+  private String     configuredUrl;
 }
