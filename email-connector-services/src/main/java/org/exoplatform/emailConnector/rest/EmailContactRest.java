@@ -87,12 +87,15 @@ public class EmailContactRest {
       @ApiResponse(responseCode = "400", description = "Unknown source filter"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
   public EmailContactPage getContacts(HttpServletRequest request,
-                                      @Parameter(description = "Source filter: omitted/all, collected, or addressBook")
+                                      @Parameter(description = "Source filter, repeatable: collected, manual, addressBook; omitted for every source")
                                       @RequestParam(value = "source", required = false)
-                                      String source,
+                                      List<String> source,
                                       @Parameter(description = "Free text matched against names and addresses")
                                       @RequestParam(value = "q", required = false)
                                       String query,
+                                      @Parameter(description = "When true, only the contacts the caller starred are returned - intersected with the source filter, not replacing it")
+                                      @RequestParam(value = "favorites", required = false, defaultValue = "false")
+                                      boolean favorites,
                                       @Parameter(description = "Row offset, a multiple of limit")
                                       @RequestParam(value = "offset", required = false, defaultValue = "0")
                                       int offset,
@@ -100,7 +103,7 @@ public class EmailContactRest {
                                       @RequestParam(value = "limit", required = false, defaultValue = "100")
                                       int limit) {
     try {
-      return emailContactService.getContacts(request.getRemoteUser(), source, query, offset, limit);
+      return emailContactService.getContacts(request.getRemoteUser(), source, query, favorites, offset, limit);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
