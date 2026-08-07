@@ -166,6 +166,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               dense />
           </v-list-item-content>
         </v-list-item>
+        <!-- The address book, beside IMAP and SMTP because it is the same
+             provider's third endpoint, not a second server to define elsewhere.
+             Optional, and empty is the honest answer for the providers that have
+             no CardDAV at all: the hint says which those are, so nobody fills it
+             in hopefully and waits for a sync that can never work. -->
+        <v-list-item class="pa-0 height-auto" dense>
+          <v-list-item-content class="py-0">
+            <v-list-item-title class="my-0">
+              {{ $t('emailConnector.admin.connectors.drawer.connector.carddavUrl') }}
+            </v-list-item-title>
+            <v-text-field
+              v-model="emailConnector.carddavUrl"
+              :aria-label="$t('emailConnector.admin.connectors.drawer.connector.carddavUrl')"
+              :placeholder="$t('emailConnector.admin.connectors.drawer.connector.placeHolder.carddavUrl')"
+              class="pt-3"
+              type="text"
+              outlined
+              dense />
+            <div class="text-caption text-sub-title mb-2">
+              {{ $t('emailConnector.admin.connectors.drawer.connector.carddavUrl.hint') }}
+            </div>
+          </v-list-item-content>
+        </v-list-item>
       </form>
     </template>
     <template #footer>
@@ -207,7 +230,8 @@ export default {
       imageUploadId: null,
       imageFileId: null,
       imageUrl: null,
-      webmailUrl: ''
+      webmailUrl: '',
+      carddavUrl: ''
     }   
   }),
   computed: {

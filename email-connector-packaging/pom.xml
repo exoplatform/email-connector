@@ -22,6 +22,14 @@
       <scope>provided</scope>
       <type>war</type>
     </dependency>
+    <!-- Listed here so the assembly can see it: a provided-scope dependency does not
+         carry its transitives, so the vCard parser the services module compiles
+         against would otherwise be missing from the add-on zip. -->
+    <dependency>
+      <groupId>com.googlecode.ez-vcard</groupId>
+      <artifactId>ez-vcard</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
   <build>
     <finalName>email-connector-addon</finalName>

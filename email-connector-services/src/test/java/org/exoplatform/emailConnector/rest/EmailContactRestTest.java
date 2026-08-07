@@ -65,6 +65,7 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
+import org.exoplatform.emailConnector.service.EmailContactCardDavSyncService;
 import org.exoplatform.emailConnector.service.EmailContactService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -97,6 +98,9 @@ public class EmailContactRestTest {
 
   @MockBean
   private EmailContactService   emailContactService;
+
+  @MockBean
+  private EmailContactCardDavSyncService emailContactCardDavSyncService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
