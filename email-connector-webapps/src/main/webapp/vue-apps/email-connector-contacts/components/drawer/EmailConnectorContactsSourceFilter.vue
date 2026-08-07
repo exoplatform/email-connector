@@ -22,10 +22,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        the way the mailbox's category filter already behaves, and a chip selected
        by default teaches people the list is filtered when it is not. -->
   <div v-if="visible" class="d-flex px-4 pt-2">
+    <!-- One line, scrolled sideways, rather than wrapped. A fourth chip pushed the
+         bar onto two rows in the drawer's width, which costs a row of the list on
+         every screen to show a filter most people leave alone. Dropping "column"
+         is what does it: a chip group is a slide group until that prop turns it
+         into a wrapping block. -->
     <v-chip-group
       :value="value"
       multiple
-      column
+      show-arrows
       @change="$emit('input', $event)">
       <v-chip
         v-for="chip in chips"

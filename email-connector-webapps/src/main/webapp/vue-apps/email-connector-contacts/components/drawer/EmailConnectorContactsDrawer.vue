@@ -86,7 +86,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
         <email-connector-contacts-source-filter
-          v-model="sources"
+          v-model="filterChips"
           :counts="sourceCounts" />
         <email-connector-contacts-list
           :contacts="contacts"
