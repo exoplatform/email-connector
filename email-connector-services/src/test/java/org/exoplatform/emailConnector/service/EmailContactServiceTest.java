@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -837,6 +838,17 @@ public class EmailContactServiceTest {
     verify(settingService).remove(Context.USER.id(USERNAME),
                                   EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
                                   "emailContactsBackfillDone");
+  }
+
+  @Test
+  void oneUnusableContactDoesNotCostTheRestOfTheRun() {
+    // A run walks hundreds of messages. An exception on one of them used to abandon
+    // every message after it, so a single bad row emptied a whole collection pass.
+    when(emailContactStorage.getContactByAddress(eq(USERNAME), anyString())).thenThrow(new IllegalStateException("bad row"));
+
+    assertDoesNotThrow(() -> emailContactService.collectFromSentRecipients(USERNAME,
+                                                                           List.of(new EmailRecipient("Jane", "jane@example.com", null, false),
+                                                                                   new EmailRecipient("Bob", "bob@example.com", null, false))));
   }
 
   // ---------------------------------------------------------------- recipient suggestions

@@ -167,16 +167,26 @@ public class EmailContactStorage {
    * @param normalizedAddress the normalized address
    * @return the contact, or null when no row carries the address
    */
+  @Transactional
   public EmailContact getContactByAddress(String userId, String normalizedAddress) {
     // One indexed read, against the table that now owns address uniqueness. It
     // finds a contact by ANY of its addresses, where this used to try the primary
     // one and then fall back to a LIKE over a joined string -- which meant the
     // answer depended on which address a contact happened to be filed under.
-    return emailContactAddressDAO.findByUserIdAndAddress(userId, normalizedAddress)
-                                 .map(EmailContactAddressEntity::getContactId)
-                                 .flatMap(emailContactDAO::findById)
-                                 .map(this::fromEntity)
-                                 .orElse(null);
+    EmailContactAddressEntity row = emailContactAddressDAO.findByUserIdAndAddress(userId, normalizedAddress).orElse(null);
+    if (row == null) {
+      return null;
+    }
+    EmailContactEntity contact = emailContactDAO.findById(row.getContactId()).orElse(null);
+    if (contact == null) {
+      // Points at a contact that is gone. Left in place such a row is worse than
+      // useless: it hides the address from every lookup while still holding the
+      // unique key, so nothing can be found there and nothing can be written there
+      // either -- which is how one stale row stopped an entire collection run.
+      emailContactAddressDAO.delete(row);
+      return null;
+    }
+    return fromEntity(contact);
   }
 
   /**

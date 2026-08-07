@@ -723,6 +723,29 @@ public class EmailContactService {
    * @return true when a row was created or updated
    */
   private boolean collect(String username, String name, String address, Date seenDate, String ownAddress) {
+    // Fenced per address. Collection walks hundreds of messages in one pass, and an
+    // exception on any one of them used to abandon the rest -- so a single unusable
+    // row cost the user every contact the run had not reached yet, and said so only
+    // in a log line.
+    try {
+      return collectOne(username, name, address, seenDate, ownAddress);
+    } catch (Exception e) {
+      LOG.warn("Collecting the contact at {} failed for user {}", address, username, e);
+      return false;
+    }
+  }
+
+  /**
+   * Collects one address, as {@link #collect} calls it.
+   *
+   * @param username the mailbox owner
+   * @param name the display name seen alongside the address, possibly null
+   * @param address the address
+   * @param seenDate when it was seen
+   * @param ownAddress the user's own address, never collected
+   * @return true when a contact was written
+   */
+  private boolean collectOne(String username, String name, String address, Date seenDate, String ownAddress) {
     String normalized = EmailContactUtils.normalizeAddress(address);
     if (normalized == null || normalized.equals(ownAddress) || EmailContactUtils.isNoReplyAddress(normalized)) {
       return false;
