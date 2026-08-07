@@ -43,7 +43,11 @@ import org.exoplatform.emailConnector.dao.EmailContactAddressDAO;
 import org.exoplatform.emailConnector.dao.EmailContactDAO;
 import org.exoplatform.emailConnector.entity.EmailContactAddressEntity;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
+import org.exoplatform.emailConnector.model.CardDavContactData;
+import org.exoplatform.emailConnector.model.CardDavRow;
+import org.exoplatform.emailConnector.model.PhotoOrigin;
 import org.exoplatform.emailConnector.model.EmailContact;
+import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.services.log.ExoLogger;
@@ -307,6 +311,196 @@ public class EmailContactStorage {
    */
   public boolean hasContacts(String userId, List<String> sources) {
     return emailContactDAO.countByUserIdAndSourceIn(userId, sources) > 0;
+  }
+
+  /**
+   * Every row this user holds from one address book, in the shape the sync
+   * reasons about. Hidden rows are included: the sync must refresh one, not
+   * mistake it for an entry the server dropped.
+   *
+   * @param userId the store owner
+   * @param connectorId the address book's connector
+   * @return the rows, never null
+   */
+  public List<CardDavRow> getCardDavRows(String userId, Long connectorId) {
+    return emailContactDAO.findByUserIdAndConnectorId(userId, connectorId).stream().map(this::toCardDavRow).toList();
+  }
+
+  /**
+   * Every address-book row this user holds, whichever connector wrote it.
+   *
+   * @param userId the store owner
+   * @return the rows, never null
+   */
+  public List<CardDavRow> getAllCardDavRows(String userId) {
+    return emailContactDAO.findByUserIdAndSource(userId, EmailContactSource.CARDDAV).stream().map(this::toCardDavRow).toList();
+  }
+
+  /**
+   * The row at this address, whatever its source, in the same shape — what the
+   * sync consults before deciding whether it may claim an existing contact.
+   *
+   * @param userId the store owner
+   * @param normalizedAddress the lower-cased address
+   * @return the row, or null when the user has none at that address
+   */
+  public CardDavRow getCardDavRowByAddress(String userId, String normalizedAddress) {
+    return emailContactDAO.findByUserIdAndPrimaryEmail(userId, normalizedAddress).map(this::toCardDavRow).orElse(null);
+  }
+
+  /**
+   * Writes an address-book entry onto a row, creating it when there is none.
+   * <p>
+   * This exists because {@code updateContact} structurally cannot do it: that
+   * path copies only the columns the DTO owns, deliberately, so the bookkeeping
+   * the sync depends on — which server entry this is, at which version — never
+   * travels through the REST model at all.
+   * <p>
+   * Counters are never touched here. A contact claimed from the collected pile
+   * keeps the correspondence history that made it worth having, which is what
+   * keeps the compose autocomplete's ranking intact across a sync.
+   *
+   * @param userId the store owner
+   * @param existingId the row to write onto, or null to create one
+   * @param connectorId the address book's connector
+   * @param href the entry's path on the server
+   * @param etag the entry's version
+   * @param data the entry's fields
+   * @param photoFileId the picture to replace, or null to write a new one
+   * @param writePhoto whether the entry's picture may be stored at all
+   * @return the row id
+   */
+  @SneakyThrows
+  @Transactional
+  public long saveCardDavContact(String userId,
+                                 Long existingId,
+                                 Long connectorId,
+                                 String href,
+                                 String etag,
+                                 CardDavContactData data,
+                                 Long photoFileId,
+                                 boolean writePhoto) {
+    EmailContactEntity entity = existingId == null ? new EmailContactEntity()
+                                                   : emailContactDAO.findById(existingId).orElse(new EmailContactEntity());
+    if (entity.getId() == null) {
+      entity.setUserId(userId);
+      entity.setCreatedDate(new Date());
+      entity.setSeenCount(0);
+    }
+    entity.setSource(EmailContactSource.CARDDAV);
+    entity.setPrimaryEmail(data.primaryEmail());
+    entity.setEmails(toEmailsString(data.secondaryEmails()));
+    entity.setDisplayName(data.displayName());
+    entity.setGivenName(data.givenName());
+    entity.setFamilyName(data.familyName());
+    String sortName = EmailContactUtils.computeSortName(data.givenName(),
+                                                        data.familyName(),
+                                                        data.displayName(),
+                                                        data.primaryEmail());
+    entity.setSortName(sortName);
+    entity.setSortBucket(EmailContactUtils.sortBucketOf(sortName));
+    entity.setPhones(joinValues(data.phones()));
+    entity.setOrganization(data.organization());
+    entity.setTitle(data.title());
+    entity.setHref(href);
+    entity.setEtag(etag);
+    entity.setVcardUid(data.vcardUid());
+    entity.setConnectorId(connectorId);
+    entity.setUpdatedDate(new Date());
+    if (writePhoto) {
+      if (data.photo() != null && data.photo().length > 0) {
+        entity.setPhotoFileId(savePhotoBytes(photoFileId, data.photo(), data.photoMimeType()));
+        entity.setPhotoOrigin(PhotoOrigin.VCARD);
+      } else if (photoFileId != null) {
+        // The entry lost its picture: so does the row, and so does the file.
+        deletePhotoFile(photoFileId);
+        entity.setPhotoFileId(null);
+        entity.setPhotoOrigin(null);
+      }
+    }
+    return emailContactDAO.save(entity).getId();
+  }
+
+  /**
+   * Turns a row the address book no longer has back into a collected contact:
+   * the server bookkeeping goes, the person stays.
+   * <p>
+   * For a contact with correspondence behind it, deleting would throw away
+   * history the mailbox earned; the address book losing an entry says nothing
+   * about whether the user still writes to them.
+   *
+   * @param id the row id
+   * @param deletePhoto whether the stored picture came from the address book and
+   *          should go with it
+   */
+  @SneakyThrows
+  @Transactional
+  public void demoteCardDavRow(long id, boolean deletePhoto) {
+    EmailContactEntity entity = emailContactDAO.findById(id).orElse(null);
+    if (entity == null) {
+      return;
+    }
+    if (deletePhoto && entity.getPhotoFileId() != null) {
+      deletePhotoFile(entity.getPhotoFileId());
+      entity.setPhotoFileId(null);
+      entity.setPhotoOrigin(null);
+    }
+    entity.setSource(EmailContactSource.COLLECTED);
+    entity.setHref(null);
+    entity.setEtag(null);
+    entity.setVcardUid(null);
+    entity.setConnectorId(null);
+    entity.setUpdatedDate(new Date());
+    emailContactDAO.save(entity);
+  }
+
+  /**
+   * Stores picture bytes that came from an address book rather than an upload.
+   *
+   * @param photoFileId the file to replace, or null to write a new one
+   * @param bytes the picture
+   * @param mimeType its type
+   * @return the stored file id, or null when it could not be written
+   */
+  @SneakyThrows
+  private Long savePhotoBytes(Long photoFileId, byte[] bytes, String mimeType) {
+    FileItem fileItem = new FileItem(photoFileId,
+                                     PHOTO_FILE_NAME,
+                                     StringUtils.defaultIfBlank(mimeType, "image/jpeg"),
+                                     EmailConnectorStorage.NAME_SPACE,
+                                     bytes.length,
+                                     new Date(),
+                                     null,
+                                     false,
+                                     new ByteArrayInputStream(bytes));
+    try {
+      FileItem stored = photoFileId != null && photoFileId > 0 ? fileService.updateFile(fileItem) : fileService.writeFile(fileItem);
+      return stored == null || stored.getFileInfo() == null ? null : stored.getFileInfo().getId();
+    } catch (Exception e) {
+      // A picture that cannot be stored costs a picture, not a contact.
+      LOG.warn("The picture of an address book entry could not be stored", e);
+      return photoFileId;
+    }
+  }
+
+  /**
+   * The sync's view of a stored row.
+   *
+   * @param entity the stored row
+   * @return the view
+   */
+  private CardDavRow toCardDavRow(EmailContactEntity entity) {
+    return new CardDavRow(entity.getId(),
+                          entity.getPrimaryEmail(),
+                          entity.getSource(),
+                          entity.isSuppressed(),
+                          entity.getSeenCount(),
+                          entity.getHref(),
+                          entity.getEtag(),
+                          entity.getPhotoFileId(),
+                          // Null means USER: everything stored before the sync existed
+                          // was set by hand.
+                          entity.getPhotoOrigin() == null ? PhotoOrigin.USER : entity.getPhotoOrigin());
   }
 
   /**

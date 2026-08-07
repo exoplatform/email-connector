@@ -20,11 +20,15 @@ import java.util.Date;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
+
+import org.exoplatform.emailConnector.model.PhotoOrigin;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -103,6 +107,14 @@ public class EmailContactEntity {
   // href/etag/uid on the server, and the email connector carrying the address book.
   @Column(name = "PHOTO_FILE_ID")
   private Long    photoFileId;
+
+  /**
+   * Who the stored picture belongs to. Null means USER: every picture stored
+   * before the address-book sync existed was set by hand.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "PHOTO_ORIGIN")
+  private PhotoOrigin photoOrigin;
 
   @Column(name = "HREF")
   private String  href;

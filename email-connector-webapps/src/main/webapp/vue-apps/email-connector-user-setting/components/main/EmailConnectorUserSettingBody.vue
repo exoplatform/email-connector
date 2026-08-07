@@ -125,11 +125,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-list-item-subtitle>
               {{ $t('UserSettings.emailConnector.addressBook.description') }}
             </v-list-item-subtitle>
+            <v-list-item-subtitle
+              v-if="carddavEnabled && addressBookStatus"
+              class="mt-1">
+              {{ addressBookStatus }}
+            </v-list-item-subtitle>
           </v-list-item-content>
-          <v-list-item-action>
+          <v-list-item-action class="d-flex flex-row align-center">
+            <v-btn
+              v-if="carddavEnabled"
+              :loading="syncingAddressBook"
+              :title="$t('UserSettings.emailConnector.addressBook.syncNow')"
+              icon
+              @click="syncAddressBook">
+              <v-icon size="18">
+                fas fa-sync
+              </v-icon>
+            </v-btn>
             <v-switch
               v-model="carddavEnabled"
               :loading="savingAddressBook"
+              class="ms-2"
               @change="saveAddressBook" />
           </v-list-item-action>
         </v-list-item>
@@ -182,11 +198,31 @@ export default {
     carddavAvailable: false,
     carddavEnabled: false,
     savingAddressBook: false,
+    syncingAddressBook: false,
+    addressBookSyncState: null,
     notifyCategoryIds: [],
     saving: false,
     resetting: false,
   }),
   computed: {
+    /**
+     * The one-line account of the last sync, or nothing when it has never run.
+     *
+     * @returns {string} the localized status
+     */
+    addressBookStatus() {
+      const status = this.addressBookSyncState?.status;
+      if (!status) {
+        return '';
+      }
+      if (status === 'BLOCKED') {
+        return this.$t('UserSettings.emailConnector.addressBook.status.blocked');
+      }
+      if (status === 'FAILURE') {
+        return this.$t('UserSettings.emailConnector.addressBook.status.failed');
+      }
+      return this.$t('UserSettings.emailConnector.addressBook.status.ok');
+    },
     syncInProgress() {
       return this.userEmailSetting?.emailSyncStatus === 'IN_PROGRESS';
     },
@@ -229,6 +265,9 @@ export default {
       this.notifyCategoryIds = setting.notifyCategories || [];
       this.carddavAvailable = !!setting.carddavAvailable;
       this.carddavEnabled = !!setting.carddavEnabled;
+      if (this.carddavEnabled) {
+        this.readAddressBookStatus();
+      }
     },
     /**
      * Stores whether the address book should sync. That is the whole setting: the
@@ -237,6 +276,40 @@ export default {
      *
      * @returns {void}
      */
+    /**
+     * Reads how the last address-book sync went, for the line under the switch.
+     * Failing is silent: a status we cannot read is not worth an error banner.
+     *
+     * @returns {void}
+     */
+    readAddressBookStatus() {
+      this.$emailConnectorCommonService.getAddressBookSyncStatus()
+        .then(state => this.addressBookSyncState = state)
+        .catch(() => this.addressBookSyncState = null);
+    },
+    /**
+     * Pulls the address book now, rather than waiting for the next scheduled run.
+     *
+     * @returns {void}
+     */
+    syncAddressBook() {
+      this.syncingAddressBook = true;
+      this.$emailConnectorCommonService.syncAddressBook()
+        // What the run DID is in the state it leaves behind, not in whether the
+        // request came back. Reporting success because the call returned told
+        // people their address book had synced when it had in fact failed --
+        // which is worse than any error message.
+        .then(() => this.$emailConnectorCommonService.getAddressBookSyncStatus())
+        .then(state => {
+          this.addressBookSyncState = state;
+          const failed = state?.status === 'FAILURE' || state?.status === 'BLOCKED';
+          const message = failed && this.$t('UserSettings.emailConnector.addressBook.syncError')
+            || this.$t('UserSettings.emailConnector.addressBook.synced');
+          this.$root.$emit('alert-message', message, failed && 'error' || 'success');
+        })
+        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.addressBook.syncError'), 'error'))
+        .finally(() => this.syncingAddressBook = false);
+    },
     saveAddressBook() {
       this.savingAddressBook = true;
       this.$emailConnectorCommonService.updateAddressBookBinding({carddavEnabled: this.carddavEnabled})
