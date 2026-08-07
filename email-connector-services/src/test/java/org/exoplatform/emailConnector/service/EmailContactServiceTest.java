@@ -812,15 +812,18 @@ public class EmailContactServiceTest {
     emailContactService.getContacts(USERNAME, null, null, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, null, null, 0, 100);
 
+    // One filter per stored source. A contact typed by hand is neither collected
+    // from mail nor owned by a provider's book, and it used to be filed with the
+    // address book -- which read as "from my address book" for a contact no
+    // address book had heard of.
     emailContactService.getContacts(USERNAME, "collected", null, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.COLLECTED), null, 0, 100);
 
+    emailContactService.getContacts(USERNAME, "manual", null, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.MANUAL), null, 0, 100);
+
     emailContactService.getContacts(USERNAME, "addressBook", null, 0, 100);
-    verify(emailContactStorage).getContacts(USERNAME,
-                                            List.of(EmailContactSource.MANUAL, EmailContactSource.CARDDAV),
-                                            null,
-                                            0,
-                                            100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.CARDDAV), null, 0, 100);
   }
 
   // ---------------------------------------------------------------- recipient suggestions
