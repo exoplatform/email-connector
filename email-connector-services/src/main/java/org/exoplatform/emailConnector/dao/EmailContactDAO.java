@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.dao;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -161,6 +162,95 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
   List<Object[]> countBySortBucketAndSources(@Param("userId")
   String userId, @Param("sources")
   List<String> sources, @Param("term")
+  String term);
+
+  /**
+   * The id-restricted twin of {@link #findContacts} — the Favorites chip's
+   * browse, where the ids are the contacts the user has starred. Everything
+   * else (filter text, ordering, suppression) behaves identically, so toggling
+   * the chip only ever narrows the very same list.
+   *
+   * @param userId the store owner
+   * @param ids the row ids to keep, never null nor empty — the caller
+   *          short-circuits an empty set rather than emitting {@code IN ()}
+   * @param term the lowercased filter text, or null for a plain browse
+   * @param pageable page window plus the (sortBucket, sortName, id) sort
+   * @return the page with its total count
+   */
+  @Query("SELECT c FROM EmailContactEntity c WHERE c.userId = :userId AND c.suppressed = false AND c.id IN :ids"
+      + " AND (:term IS NULL OR LOWER(c.sortName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.displayName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.primaryEmail) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.emails) LIKE CONCAT('%', :term, '%'))")
+  Page<EmailContactEntity> findContactsByIds(@Param("userId")
+  String userId, @Param("ids")
+  Set<Long> ids, @Param("term")
+  String term, Pageable pageable);
+
+  /**
+   * The id-restricted twin of {@link #findContactsBySources} — the Favorites
+   * chip combined with source chips, which means their intersection: a starred
+   * contact that is also in the selected sources.
+   *
+   * @param userId the store owner
+   * @param sources the source discriminators to keep, never empty
+   * @param ids the row ids to keep, never null nor empty
+   * @param term the lowercased filter text, or null for a plain browse
+   * @param pageable page window plus the (sortBucket, sortName, id) sort
+   * @return the page with its total count
+   */
+  @Query("SELECT c FROM EmailContactEntity c WHERE c.userId = :userId AND c.suppressed = false AND c.source IN :sources AND c.id IN :ids"
+      + " AND (:term IS NULL OR LOWER(c.sortName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.displayName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.primaryEmail) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.emails) LIKE CONCAT('%', :term, '%'))")
+  Page<EmailContactEntity> findContactsBySourcesAndIds(@Param("userId")
+  String userId, @Param("sources")
+  List<String> sources, @Param("ids")
+  Set<Long> ids, @Param("term")
+  String term, Pageable pageable);
+
+  /**
+   * The id-restricted twin of {@link #countBySortBucket}, matching
+   * {@link #findContactsByIds}'s filter — so the A–Z rail stays exact when the
+   * Favorites chip narrows the list.
+   *
+   * @param userId the store owner
+   * @param ids the row ids to keep, never null nor empty
+   * @param term the lowercased filter text, or null for a plain browse
+   * @return rows of {@code [sortBucket, count]}, in bucket order
+   */
+  @Query("SELECT c.sortBucket, COUNT(c.id) FROM EmailContactEntity c WHERE c.userId = :userId AND c.suppressed = false AND c.id IN :ids"
+      + " AND (:term IS NULL OR LOWER(c.sortName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.displayName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.primaryEmail) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.emails) LIKE CONCAT('%', :term, '%'))"
+      + " GROUP BY c.sortBucket ORDER BY c.sortBucket ASC")
+  List<Object[]> countBySortBucketAndIds(@Param("userId")
+  String userId, @Param("ids")
+  Set<Long> ids, @Param("term")
+  String term);
+
+  /**
+   * The id-restricted twin of {@link #countBySortBucketAndSources}, matching
+   * {@link #findContactsBySourcesAndIds}'s filter.
+   *
+   * @param userId the store owner
+   * @param sources the source discriminators to keep, never empty
+   * @param ids the row ids to keep, never null nor empty
+   * @param term the lowercased filter text, or null for a plain browse
+   * @return rows of {@code [sortBucket, count]}, in bucket order
+   */
+  @Query("SELECT c.sortBucket, COUNT(c.id) FROM EmailContactEntity c WHERE c.userId = :userId AND c.suppressed = false AND c.source IN :sources AND c.id IN :ids"
+      + " AND (:term IS NULL OR LOWER(c.sortName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.displayName) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.primaryEmail) LIKE CONCAT('%', :term, '%')"
+      + " OR LOWER(c.emails) LIKE CONCAT('%', :term, '%'))"
+      + " GROUP BY c.sortBucket ORDER BY c.sortBucket ASC")
+  List<Object[]> countBySortBucketAndSourcesAndIds(@Param("userId")
+  String userId, @Param("sources")
+  List<String> sources, @Param("ids")
+  Set<Long> ids, @Param("term")
   String term);
 
   /**

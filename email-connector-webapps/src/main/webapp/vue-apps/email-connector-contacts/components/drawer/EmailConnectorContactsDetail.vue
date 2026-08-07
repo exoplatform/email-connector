@@ -32,8 +32,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-else
           class="white--text text-h6">{{ initials }}</span>
       </v-avatar>
-      <div class="text-h6 text-color text-center">
-        {{ contact.displayName || contact.primaryEmail }}
+      <div class="d-flex align-center">
+        <div class="text-h6 text-color text-center">
+          {{ contact.displayName || contact.primaryEmail }}
+        </div>
+        <!-- The platform's shared star, so a contact is favorited exactly the way
+             a document or a task is. A read-only CardDAV or directory row CAN be
+             starred: the favorite writes nothing to the row, it lives in the
+             platform's favorites store keyed by the row's id. -->
+        <favorite-button
+          v-if="contact.id"
+          :id="String(contact.id)"
+          :favorite="contact.favorite"
+          :type-label="$t('emailConnector.contacts.detail.title')"
+          type="contact"
+          class="ms-1" />
       </div>
       <div
         v-if="subtitle"
