@@ -16,9 +16,11 @@
  */
 
 import EmailConnectorFavoriteItem from './components/EmailConnectorFavoriteItem.vue';
+import EmailConnectorContactFavoriteItem from './components/EmailConnectorContactFavoriteItem.vue';
 
 const components = {
   'email-connector-favorite-item': EmailConnectorFavoriteItem,
+  'email-connector-contact-favorite-item': EmailConnectorContactFavoriteItem,
 };
 
 for (const key in components) {
