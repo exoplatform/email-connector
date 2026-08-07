@@ -826,6 +826,19 @@ public class EmailContactServiceTest {
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.CARDDAV), null, 0, 100);
   }
 
+  @Test
+  void aMailboxThatChangedLetsCollectionStartOverAgain() {
+    // The backfill is what bootstraps collection, because it reads sent mail before
+    // the inbox. Incremental collection cannot: a sync caches the inbox first, so
+    // every sender of a fresh mailbox is judged against no sent mail at all. Left
+    // marked done from the previous mailbox, a rebound account collects nobody.
+    emailContactService.resetCollectionBackfill(USERNAME);
+
+    verify(settingService).remove(Context.USER.id(USERNAME),
+                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                  "emailContactsBackfillDone");
+  }
+
   // ---------------------------------------------------------------- recipient suggestions
 
   @Test

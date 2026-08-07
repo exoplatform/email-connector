@@ -1028,6 +1028,31 @@ public class EmailContactService {
   }
 
   /**
+   * Lets the whole-cache backfill run again for this user.
+   * <p>
+   * Called when the mailbox behind the collection changes: rebound to another
+   * account, disconnected, or reset. Incremental collection cannot bootstrap a
+   * fresh cache on its own -- it judges an inbox sender against the organisations
+   * the user has written to, read from cached sent mail, and a sync caches the
+   * inbox before the sent folder. So every sender of the first sync is judged
+   * against nothing and collected nobody, and without this the marker from the
+   * previous mailbox meant that never got a second chance.
+   * <p>
+   * The backfill reads sent mail first for precisely that reason, so re-running it
+   * is what makes a rebound mailbox collect at all. It upserts, so a needless run
+   * costs reads and changes nothing.
+   *
+   * @param username the mailbox owner
+   */
+  public void resetCollectionBackfill(String username) {
+    if (StringUtils.isBlank(username)) {
+      return;
+    }
+    settingService.remove(Context.USER.id(username), EmailConnectorService.EMAIL_CONNECTOR_SCOPE, CONTACTS_BACKFILL_DONE_KEY);
+    LOG.debug("Contact collection backfill re-armed for user {}", username);
+  }
+
+  /**
    * Whether the one-time backfill already ran for this user.
    *
    * @param username the mailbox owner
