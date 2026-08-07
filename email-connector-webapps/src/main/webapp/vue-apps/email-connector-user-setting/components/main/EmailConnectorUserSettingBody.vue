@@ -283,7 +283,7 @@ export default {
      * @returns {void}
      */
     readAddressBookStatus() {
-      this.$emailConnectorContactsService?.getAddressBookSyncStatus?.()
+      this.$emailConnectorCommonService.getAddressBookSyncStatus()
         .then(state => this.addressBookSyncState = state)
         .catch(() => this.addressBookSyncState = null);
     },
@@ -294,12 +294,12 @@ export default {
      */
     syncAddressBook() {
       this.syncingAddressBook = true;
-      this.$emailConnectorContactsService.syncAddressBook()
+      this.$emailConnectorCommonService.syncAddressBook()
         // What the run DID is in the state it leaves behind, not in whether the
         // request came back. Reporting success because the call returned told
         // people their address book had synced when it had in fact failed --
         // which is worse than any error message.
-        .then(() => this.$emailConnectorContactsService.getAddressBookSyncStatus())
+        .then(() => this.$emailConnectorCommonService.getAddressBookSyncStatus())
         .then(state => {
           this.addressBookSyncState = state;
           const failed = state?.status === 'FAILURE' || state?.status === 'BLOCKED';
