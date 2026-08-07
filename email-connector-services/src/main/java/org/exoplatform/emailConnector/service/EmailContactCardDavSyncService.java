@@ -126,6 +126,7 @@ public class EmailContactCardDavSyncService {
     if (StringUtils.isBlank(username) || !syncingUsers.add(username)) {
       return;
     }
+    ContactSyncState state = null;
     try {
       UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
       if (setting == null || !Boolean.TRUE.equals(setting.getCarddavEnabled())
@@ -136,14 +137,21 @@ public class EmailContactCardDavSyncService {
       if (connector == null || StringUtils.isBlank(connector.getCarddavUrl())) {
         return;
       }
-      ContactSyncState state = userEmailSettingService.getContactSyncState(username);
+      state = userEmailSettingService.getContactSyncState(username);
       if (!requested && isBlocked(state)) {
         LOG.debug("Address book sync for user {} is paused after repeated failures", username);
         return;
       }
       run(username, setting, connector, state, requested);
     } catch (Exception e) {
-      LOG.warn("Address book sync failed for user {}", username, e);
+      // Recorded, not merely logged. A failure the server did not cause -- a URL
+      // that is not a URL, a bug of ours -- used to leave the stored status at
+      // whatever the last good run wrote, so the page went on reporting a sync
+      // that had in fact never happened. Nobody reads the server log to find that
+      // out.
+      fail(username,
+           state == null ? new ContactSyncState() : state,
+           e instanceof CardDavException cause ? cause : new CardDavException(e.getMessage(), e));
     } finally {
       syncingUsers.remove(username);
     }
@@ -257,7 +265,12 @@ public class EmailContactCardDavSyncService {
       return configuredUrl;
     }
     String localPart = StringUtils.substringBefore(emailAddress, "@");
-    return configuredUrl.replace("{email}", emailAddress).replace("{localpart}", localPart);
+    String resolved = configuredUrl.replace("{email}", emailAddress).replace("{localpart}", localPart);
+    // Administrators type a host, not a URI. Left alone this reaches the client as
+    // a string with no scheme, which fails as "URI with undefined scheme" -- an
+    // error about our parser rather than about what was typed. Address books are
+    // served over TLS; assuming so beats refusing.
+    return StringUtils.startsWithAny(resolved, "http://", "https://") ? resolved : "https://" + resolved;
   }
 
   /**

@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -564,6 +565,38 @@ public class EmailContactCardDavSyncServiceTest {
     verify(userEmailSettingService).setContactSyncState(captor.capture(), eq(USERNAME));
     assertNull(captor.getValue().getAddressBookHref());
     assertNull(captor.getValue().getCtag());
+  }
+
+  @Test
+  void aHostTypedWithoutASchemeIsStillAHost() {
+    EmailConnector bare = new EmailConnector();
+    bare.setId(CONNECTOR_ID);
+    bare.setCarddavUrl("webmail.example.com/dav/");
+    when(emailConnectorService.getEmailConnector(CONNECTOR_ID)).thenReturn(bare);
+    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
+
+    syncService.syncAddressBook(USERNAME, true);
+
+    // What an administrator types is a host. Refusing it produced an error about
+    // our URI parser, which says nothing about what to fix.
+    verify(cardDavClient).discoverAddressBook(eq("https://webmail.example.com/dav/"), anyString(), anyString());
+  }
+
+  @Test
+  void aFailureThatIsNotTheServersIsStillRecorded() {
+    // An exception thrown before any request used to be logged and forgotten,
+    // leaving the stored status at whatever the last good run wrote -- so the page
+    // reported a sync that never ran.
+    when(cardDavClient.discoverAddressBook(anyString(), anyString(), anyString()))
+                                                                                  .thenThrow(new IllegalArgumentException("URI with undefined scheme"));
+
+    syncService.syncAddressBook(USERNAME, true);
+
+    // The last word on the run is what the page reads.
+    ArgumentCaptor<ContactSyncState> captor = ArgumentCaptor.forClass(ContactSyncState.class);
+    verify(userEmailSettingService, atLeastOnce()).setContactSyncState(captor.capture(), eq(USERNAME));
+    assertEquals(SyncStatus.FAILURE, captor.getValue().getStatus());
   }
 
   /**
