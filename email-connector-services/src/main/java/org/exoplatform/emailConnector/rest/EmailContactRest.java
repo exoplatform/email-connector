@@ -87,9 +87,9 @@ public class EmailContactRest {
       @ApiResponse(responseCode = "400", description = "Unknown source filter"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
   public EmailContactPage getContacts(HttpServletRequest request,
-                                      @Parameter(description = "Source filter: omitted/all, collected, or addressBook")
+                                      @Parameter(description = "Source filter, repeatable: collected, manual, addressBook; omitted for every source")
                                       @RequestParam(value = "source", required = false)
-                                      String source,
+                                      List<String> source,
                                       @Parameter(description = "Free text matched against names and addresses")
                                       @RequestParam(value = "q", required = false)
                                       String query,

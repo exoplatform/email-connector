@@ -155,16 +155,19 @@ export default {
   },
   computed: {
     /**
-     * The source to ask the REST for, or null for every source.
+     * The sources to ask the REST for, or null for every source.
      * <p>
-     * Both chips selected means the same thing as neither: the union of the two
-     * is the whole store. Sending nothing then costs the server one filter it
-     * would apply for no reason.
+     * Every chip selected means the same thing as none: the union is the whole
+     * store. Sending nothing then costs the server one filter it would apply for
+     * no reason.
      *
-     * @returns {string} the filter value, or null
+     * @returns {Array} the selected filter values, or null
      */
     sourceFilter() {
-      return this.sources.length === 1 ? this.sources[0] : null;
+      // Every selected chip, not just a lone one. Written when there were two chips,
+      // this answered null for any selection but a single one -- so with three chips
+      // "Collected + Added manually" quietly showed the address book as well.
+      return this.sources.length && this.sources.length < SOURCES.length ? this.sources : null;
     },
     /**
      * Whether the wide two-pane layout is on (list left, detail right).

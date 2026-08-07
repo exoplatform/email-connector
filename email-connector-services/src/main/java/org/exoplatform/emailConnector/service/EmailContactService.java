@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -140,13 +141,13 @@ public class EmailContactService {
    * fallback for a profile that is gone.
    *
    * @param username the store owner
-   * @param source null/"all" for the whole store, "collected", or "addressBook"
+   * @param source the sources to show, empty or null for the whole store
    * @param query free text matched against names and addresses, or null
    * @param offset row offset, a multiple of limit
    * @param limit page size
    * @return the page, never null
    */
-  public EmailContactPage getContacts(String username, String source, String query, int offset, int limit) {
+  public EmailContactPage getContacts(String username, List<String> source, String query, int offset, int limit) {
     EmailContactPage page =
                           emailContactStorage.getContacts(username,
                                                           resolveSources(source),
@@ -1010,10 +1011,32 @@ public class EmailContactService {
    * @throws IllegalArgumentException with {@link #CONTACT_INVALID_SOURCE} for
    *           anything else
    */
-  private List<String> resolveSources(String source) {
-    if (StringUtils.isBlank(source) || "all".equalsIgnoreCase(source)) {
+  private List<String> resolveSources(List<String> sources) {
+    if (sources == null || sources.isEmpty()) {
       return null;
     }
+    // Several filters mean their union, because the chips they come from are
+    // multi-select. Answering one of them -- or, as this did, answering nothing at
+    // all beyond a single selection -- showed rows the user had just excluded.
+    List<String> resolved = new ArrayList<>();
+    for (String source : sources) {
+      if (StringUtils.isBlank(source) || "all".equalsIgnoreCase(source)) {
+        return null;
+      }
+      resolved.addAll(resolveSource(source));
+    }
+    return resolved;
+  }
+
+  /**
+   * The stored sources one filter value names.
+   *
+   * @param source a single filter value
+   * @return the sources it selects, never null
+   * @throws IllegalArgumentException with {@link #CONTACT_INVALID_SOURCE} for
+   *           anything else
+   */
+  private List<String> resolveSource(String source) {
     if (SOURCE_FILTER_COLLECTED.equalsIgnoreCase(source)) {
       return List.of(EmailContactSource.COLLECTED);
     }

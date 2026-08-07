@@ -804,7 +804,7 @@ public class EmailContactServiceTest {
   @Test
   void unknownSourceFilterIsRejected() {
     IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
-                                                    () -> emailContactService.getContacts(USERNAME, "bogus", null, 0, 100));
+                                                    () -> emailContactService.getContacts(USERNAME, List.of("bogus"), null, 0, 100));
     assertEquals(EmailContactService.CONTACT_INVALID_SOURCE, invalid.getMessage());
   }
 
@@ -817,14 +817,24 @@ public class EmailContactServiceTest {
     // from mail nor owned by a provider's book, and it used to be filed with the
     // address book -- which read as "from my address book" for a contact no
     // address book had heard of.
-    emailContactService.getContacts(USERNAME, "collected", null, 0, 100);
+    emailContactService.getContacts(USERNAME, List.of("collected"), null, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.COLLECTED), null, 0, 100);
 
-    emailContactService.getContacts(USERNAME, "manual", null, 0, 100);
+    emailContactService.getContacts(USERNAME, List.of("manual"), null, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.MANUAL), null, 0, 100);
 
-    emailContactService.getContacts(USERNAME, "addressBook", null, 0, 100);
+    emailContactService.getContacts(USERNAME, List.of("addressBook"), null, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.CARDDAV), null, 0, 100);
+
+    // Several chips mean their union. Answering only the first -- or, as this did,
+    // answering "everything" the moment more than one was selected -- put back the
+    // rows the user had just excluded.
+    emailContactService.getContacts(USERNAME, List.of("collected", "manual"), null, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME,
+                                            List.of(EmailContactSource.COLLECTED, EmailContactSource.MANUAL),
+                                            null,
+                                            0,
+                                            100);
   }
 
   @Test
