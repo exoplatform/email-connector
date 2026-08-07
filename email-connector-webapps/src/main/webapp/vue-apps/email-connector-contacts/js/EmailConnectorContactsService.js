@@ -22,12 +22,16 @@
  * @param {string} query - free text matched against names and addresses
  * @param {number} offset - row offset, a multiple of limit
  * @param {number} limit - page size
+ * @param {string} source - where the contacts came from: collected, addressBook, or nothing for every source
  * @returns {Promise<object>} the page {contacts, letterIndex, size, offset, limit}
  */
-export function getContacts(query, offset, limit) {
+export function getContacts(query, offset, limit, source) {
   const params = new URLSearchParams();
   if (query) {
     params.append('q', query);
+  }
+  if (source) {
+    params.append('source', source);
   }
   params.append('offset', offset || 0);
   params.append('limit', limit || 100);
