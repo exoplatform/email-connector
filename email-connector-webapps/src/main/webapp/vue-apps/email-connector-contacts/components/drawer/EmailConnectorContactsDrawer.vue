@@ -72,6 +72,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
+      <email-connector-contacts-source-filter
+        v-model="sources"
+        :address-book-available="addressBookAvailable" />
       <email-connector-contacts-list
         :contacts="contacts"
         :letter-index="letterIndex"
@@ -82,6 +85,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
+        <email-connector-contacts-source-filter
+          v-model="sources"
+          :address-book-available="addressBookAvailable" />
         <email-connector-contacts-list
           :contacts="contacts"
           :letter-index="letterIndex"
@@ -122,6 +128,8 @@ export default {
       expanded: false,
       loading: false,
       term: null,
+      sources: [],
+      addressBookAvailable: false,
       contacts: [],
       letterIndex: {},
       size: 0,
@@ -130,6 +138,11 @@ export default {
       // Increments on every reload; late pages of an outdated load are dropped.
       loadToken: 0,
     };
+  },
+  watch: {
+    sources() {
+      this.reload();
+    },
   },
   created() {
     this.$root.$on('open-email-contacts-drawer', this.open);
@@ -140,6 +153,18 @@ export default {
     this.$root.$off('email-contacts-refresh', this.reload);
   },
   computed: {
+    /**
+     * The source to ask the REST for, or null for every source.
+     * <p>
+     * Both chips selected means the same thing as neither: the union of the two
+     * is the whole store. Sending nothing then costs the server one filter it
+     * would apply for no reason.
+     *
+     * @returns {string} the filter value, or null
+     */
+    sourceFilter() {
+      return this.sources.length === 1 ? this.sources[0] : null;
+    },
     /**
      * Whether the wide two-pane layout is on (list left, detail right).
      *
@@ -175,7 +200,23 @@ export default {
     open() {
       this.contactsDrawer = true;
       this.$refs.emailContactsDrawer.open();
+      this.readAddressBookPresence();
       this.reload();
+    },
+    /**
+     * Asks whether an address book holds anything for this user, which is what
+     * decides whether the filter bar is worth showing at all.
+     * <p>
+     * One row is enough to answer it, so this costs a page of size one rather
+     * than a count endpoint that exists for nothing else. A failure leaves the
+     * bar hidden: a filter nobody can explain is worse than no filter.
+     *
+     * @returns {void}
+     */
+    readAddressBookPresence() {
+      this.$emailConnectorContactsService.getContacts(null, 0, 1, 'addressBook')
+        .then(page => this.addressBookAvailable = (page?.size || 0) > 0)
+        .catch(() => this.addressBookAvailable = false);
     },
     /**
      * Resets the drawer's transient state on close.
@@ -185,6 +226,7 @@ export default {
     close() {
       this.selectedContact = null;
       this.term = null;
+      this.sources = [];
       this.contactsDrawer = false;
     },
     /**
@@ -214,7 +256,7 @@ export default {
       const token = this.loadToken;
       this.loading = true;
       try {
-        const firstPage = await this.$emailConnectorContactsService.getContacts(this.term, 0, PAGE_SIZE);
+        const firstPage = await this.$emailConnectorContactsService.getContacts(this.term, 0, PAGE_SIZE, this.sourceFilter);
         if (token !== this.loadToken) {
           return;
         }
@@ -241,7 +283,7 @@ export default {
       if (offset >= total || token !== this.loadToken) {
         return Promise.resolve();
       }
-      return this.$emailConnectorContactsService.getContacts(this.term, offset, PAGE_SIZE)
+      return this.$emailConnectorContactsService.getContacts(this.term, offset, PAGE_SIZE, this.sourceFilter)
         .then(page => {
           if (token !== this.loadToken) {
             return;

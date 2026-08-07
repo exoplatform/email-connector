@@ -104,7 +104,15 @@ public class EmailContactService {
   // groups are skipped until the whole-cache pass ran, so nothing is counted twice.
   private static final String     CONTACTS_BACKFILL_DONE_KEY  = "emailContactsBackfillDone";
 
-  private static final List<String> ADDRESS_BOOK_SOURCES      = List.of(EmailContactSource.MANUAL, EmailContactSource.CARDDAV);
+  // What the platform holds itself: collected from mail, plus the ones typed by
+  // hand. Grouped together because that is the line a user can see -- these are
+  // editable and ours, the address book's are neither.
+  private static final List<String> OWN_SOURCES               = List.of(EmailContactSource.COLLECTED, EmailContactSource.MANUAL);
+
+  // Only what a provider's book owns. A contact created by hand used to be filed
+  // here, which read as "from my address book" for a contact no address book had
+  // ever heard of.
+  private static final List<String> ADDRESS_BOOK_SOURCES      = List.of(EmailContactSource.CARDDAV);
 
   @Autowired
   private EmailContactStorage     emailContactStorage;
@@ -979,7 +987,7 @@ public class EmailContactService {
       return null;
     }
     if (SOURCE_FILTER_COLLECTED.equalsIgnoreCase(source)) {
-      return List.of(EmailContactSource.COLLECTED);
+      return OWN_SOURCES;
     }
     if (SOURCE_FILTER_ADDRESS_BOOK.equalsIgnoreCase(source)) {
       return ADDRESS_BOOK_SOURCES;
