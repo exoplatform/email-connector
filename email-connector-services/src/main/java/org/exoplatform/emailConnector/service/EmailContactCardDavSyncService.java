@@ -327,14 +327,25 @@ public class EmailContactCardDavSyncService {
    */
   private boolean apply(String username, EmailConnector connector, ContactResource resource, CardDavRow sameHref) {
     ParsedVCard card = vCardParser.parse(resource.vcard());
-    if (card == null || card.emails().isEmpty()) {
-      // The store is keyed on an address; an entry without one has no identity
-      // here. Counted in the log rather than treated as a failure.
-      LOG.debug("An address book entry of user {} carries no usable address and was skipped", username);
+    if (card == null) {
+      // Unreadable, which the parser has already logged. One entry skipped, never a
+      // failed run.
+      return false;
+    }
+    if (card.emails().isEmpty() && StringUtils.isBlank(card.formattedName()) && StringUtils.isBlank(card.familyName())) {
+      // Nothing to show and nothing to reach: not a person, whatever the server
+      // calls it. An entry with a NAME but no address is kept -- somebody with only
+      // a phone number is an ordinary contact, and refusing them is what made a
+      // 496-entry address book arrive as 132 contacts.
+      LOG.debug("An address book entry of user {} carries neither a name nor an address and was skipped", username);
       return false;
     }
     CardDavContactData data = toContactData(card);
-    CardDavRow target = sameHref != null ? sameHref : emailContactStorage.getCardDavRowByAddress(username, data.primaryEmail());
+    // Matched on ANY address the entry carries, not only the first: the same person
+    // may already be known here under their other address, and two rows for one
+    // person is the thing this is meant to prevent. An entry with no address at all
+    // matches nothing and simply becomes a new contact.
+    CardDavRow target = sameHref != null ? sameHref : findByAnyAddress(username, data);
     if (target != null && sameHref == null && !claimable(target)) {
       // A contact the user typed themselves, or a legacy link to a colleague's
       // profile. Claiming it would flip it read-only and overwrite what they
@@ -352,6 +363,30 @@ public class EmailContactCardDavSyncService {
                                            target == null ? null : target.photoFileId(),
                                            writePhoto);
     return true;
+  }
+
+  /**
+   * The contact this entry already is, found by any address it carries.
+   *
+   * @param username the store owner
+   * @param data the entry's fields
+   * @return the row, or null when this person is not known here yet
+   */
+  private CardDavRow findByAnyAddress(String username, CardDavContactData data) {
+    List<String> addresses = new ArrayList<>();
+    if (StringUtils.isNotBlank(data.primaryEmail())) {
+      addresses.add(data.primaryEmail());
+    }
+    if (data.secondaryEmails() != null) {
+      addresses.addAll(data.secondaryEmails());
+    }
+    for (String address : addresses) {
+      CardDavRow row = emailContactStorage.getCardDavRowByAddress(username, address);
+      if (row != null) {
+        return row;
+      }
+    }
+    return null;
   }
 
   /**
@@ -425,7 +460,8 @@ public class EmailContactCardDavSyncService {
       }
     });
     List<String> all = new ArrayList<>(addresses);
-    String primary = all.get(0);
+    // Null when the entry carries none, which the store now holds happily.
+    String primary = all.isEmpty() ? null : all.get(0);
     List<String> secondary = all.size() > 1 ? all.subList(1, all.size()) : List.of();
     String displayName = StringUtils.defaultIfBlank(card.formattedName(),
                                                     StringUtils.trimToNull(StringUtils.trimToEmpty(card.givenName()) + " "

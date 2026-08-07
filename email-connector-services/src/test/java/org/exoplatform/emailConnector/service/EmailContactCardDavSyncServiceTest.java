@@ -227,9 +227,34 @@ public class EmailContactCardDavSyncServiceTest {
   }
 
   @Test
-  void anEntryWithNoAddressIsSkippedRatherThanFailingTheRun() {
-    givenServerHas(Map.of("/dav/nobody.vcf", "\"v1\""));
-    givenServerReturns(resource("/dav/nobody.vcf", "\"v1\""), card("Nobody", null));
+  void anEntryWithAPhoneAndNoAddressIsStillAPerson() {
+    // This is the change: a contact is a person, not an address. Refusing these is
+    // what made a 496-entry Google address book arrive as 132 contacts, and the
+    // ones it dropped were people with a phone number.
+    givenServerHas(Map.of("/dav/phoneonly.vcf", "\"v1\""));
+    givenServerReturns(resource("/dav/phoneonly.vcf", "\"v1\""), card("Somebody With A Phone", null));
+
+    syncService.syncAddressBook(USERNAME);
+
+    ArgumentCaptor<CardDavContactData> stored = ArgumentCaptor.forClass(CardDavContactData.class);
+    verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
+                                                   any(),
+                                                   eq(CONNECTOR_ID),
+                                                   eq("/dav/phoneonly.vcf"),
+                                                   eq("\"v1\""),
+                                                   stored.capture(),
+                                                   any(),
+                                                   anyBoolean());
+    assertNull(stored.getValue().primaryEmail(), "no address, and that is allowed now");
+    assertEquals("Somebody With A Phone", stored.getValue().displayName());
+  }
+
+  @Test
+  void anEntryWithNeitherNameNorAddressIsSkipped() {
+    // The floor: nothing to show and nothing to reach is not a person, whatever the
+    // server calls it.
+    givenServerHas(Map.of("/dav/empty.vcf", "\"v1\""));
+    givenServerReturns(resource("/dav/empty.vcf", "\"v1\""), card(null, null));
 
     syncService.syncAddressBook(USERNAME);
 
@@ -241,7 +266,47 @@ public class EmailContactCardDavSyncServiceTest {
                                                             any(),
                                                             any(),
                                                             anyBoolean());
-    verify(userEmailSettingService, times(2)).setContactSyncState(any(), eq(USERNAME));
+  }
+
+  @Test
+  void anEntryIsMatchedByAnyAddressItCarries() {
+    // The person may already be known here under their other address; two rows for
+    // one person is exactly what this prevents.
+    givenServerHas(Map.of("/dav/jane.vcf", "\"v1\""));
+    ParsedVCard twoAddresses = new ParsedVCard("uid-1",
+                                               "Jane Doe",
+                                               null,
+                                               null,
+                                               List.of("jane@work.example", "jane@home.example"),
+                                               List.of(),
+                                               null,
+                                               null,
+                                               null,
+                                               null);
+    givenServerReturns(resource("/dav/jane.vcf", "\"v1\""), twoAddresses);
+    when(emailContactStorage.getCardDavRowByAddress(USERNAME, "jane@work.example")).thenReturn(null);
+    when(emailContactStorage.getCardDavRowByAddress(USERNAME, "jane@home.example")).thenReturn(row(9L,
+                                                                                                   "jane@home.example",
+                                                                                                   EmailContactSource.COLLECTED,
+                                                                                                   false,
+                                                                                                   5,
+                                                                                                   null,
+                                                                                                   null,
+                                                                                                   null,
+                                                                                                   PhotoOrigin.USER));
+
+    syncService.syncAddressBook(USERNAME);
+
+    ArgumentCaptor<Long> claimed = ArgumentCaptor.forClass(Long.class);
+    verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
+                                                   claimed.capture(),
+                                                   anyLong(),
+                                                   anyString(),
+                                                   anyString(),
+                                                   any(),
+                                                   any(),
+                                                   anyBoolean());
+    assertEquals(9L, claimed.getValue(), "found by the second address, and claimed in place");
   }
 
   @Test
