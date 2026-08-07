@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -96,6 +97,9 @@ public class EmailContactServiceTest {
 
   @MockBean
   private IdentityManager         identityManager;
+
+  @MockBean
+  private EmailContactFavoriteService emailContactFavoriteService;
 
   @Autowired
   private EmailContactService     emailContactService;
@@ -484,6 +488,44 @@ public class EmailContactServiceTest {
 
     verify(emailContactStorage, never()).deleteContact(anyLong());
     assertTrue(result.isSuppressed());
+  }
+
+  @Test
+  void deleteDropsTheFavoriteOfAHardDeletedContact() {
+    EmailContact manual = collectedContact(5L, "bob@example.org", "Bob");
+    manual.setSource(EmailContactSource.MANUAL);
+    when(emailContactStorage.getContactById(5L)).thenReturn(manual);
+
+    emailContactService.deleteOrSuppressContact(5L, USERNAME);
+
+    verify(emailContactFavoriteService).removeFavorite(5L, USERNAME);
+  }
+
+  @Test
+  void suppressionDropsTheFavoriteToo() {
+    // A suppressed contact answers 404 everywhere, so its favorite would only be
+    // a dead drawer row: the star must die with the row's visibility, not just
+    // with the row itself.
+    when(emailContactStorage.getContactById(5L)).thenReturn(collectedContact(5L, "bob@example.org", "Bob"));
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    emailContactService.deleteOrSuppressContact(5L, USERNAME);
+
+    verify(emailContactFavoriteService).removeFavorite(5L, USERNAME);
+  }
+
+  @Test
+  void aFailingFavoriteCleanupNeverFailsTheDelete() {
+    doThrow(new RuntimeException("favorites unavailable")).when(emailContactFavoriteService)
+                                                          .removeFavorite(anyLong(), anyString());
+    EmailContact manual = collectedContact(5L, "bob@example.org", "Bob");
+    manual.setSource(EmailContactSource.MANUAL);
+    when(emailContactStorage.getContactById(5L)).thenReturn(manual);
+
+    EmailContact result = assertDoesNotThrow(() -> emailContactService.deleteOrSuppressContact(5L, USERNAME));
+
+    verify(emailContactStorage).deleteContact(5L);
+    assertFalse(result.isSuppressed());
   }
 
   @Test

@@ -117,6 +117,9 @@ public class EmailContactService {
   private EmailContactStorage     emailContactStorage;
 
   @Autowired
+  private EmailContactFavoriteService emailContactFavoriteService;
+
+  @Autowired
   private EmailBoxStorage         emailBoxStorage;
 
   @Autowired
@@ -441,6 +444,9 @@ public class EmailContactService {
           throw new IllegalStateException(CONTACT_ALREADY_EXISTS);
         }
         deleteContactRow(other);
+        // The tombstone's favorite was already dropped at suppression; this only
+        // covers a row suppressed before favorites existed.
+        dropFavorite(other.getId(), username);
       }
       existing.setPrimaryEmail(address);
     }
@@ -472,11 +478,17 @@ public class EmailContactService {
     }
     if (EmailContactSource.MANUAL.equals(existing.getSource()) || EmailContactSource.DIRECTORY.equals(existing.getSource())) {
       deleteContactRow(existing);
+      dropFavorite(existing.getId(), username);
       existing.setSuppressed(false);
       return existing;
     }
     existing.setSuppressed(true);
-    return emailContactStorage.updateContact(existing);
+    EmailContact suppressed = emailContactStorage.updateContact(existing);
+    // A suppressed contact answers 404 everywhere, so its favorite would only be a
+    // dead drawer row: the star dies with the row's visibility, not just with the
+    // row itself.
+    dropFavorite(existing.getId(), username);
+    return suppressed;
   }
 
   /**
@@ -867,6 +879,24 @@ public class EmailContactService {
   private void deleteContactRow(EmailContact contact) {
     emailContactStorage.deletePhotoFile(contact.getPhotoFileId());
     emailContactStorage.deleteContact(contact.getId());
+  }
+
+  /**
+   * Drops the favorite of a contact that just stopped being visible, fenced so
+   * the deletion that called this can never fail over its own cleanup — a
+   * favorite left behind is a stale drawer entry the drawer knows how to shed,
+   * while a delete that errors out leaves the user with a contact they asked to
+   * remove.
+   *
+   * @param contactId the dying contact's row id
+   * @param username the store owner
+   */
+  private void dropFavorite(long contactId, String username) {
+    try {
+      emailContactFavoriteService.removeFavorite(contactId, username);
+    } catch (Exception e) {
+      LOG.debug("The favorite of contact {} could not be dropped for user {}", contactId, username, e);
+    }
   }
 
   /**
