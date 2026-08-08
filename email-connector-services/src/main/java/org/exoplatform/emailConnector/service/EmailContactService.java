@@ -103,6 +103,29 @@ public class EmailContactService {
   /** The hard cap on a suggestion window, whatever the caller asks for. */
   public static final int         SUGGEST_MAX_LIMIT           = 25;
 
+  /** The unified-search page size when the caller asks for none (limit &lt;= 0). */
+  public static final int         SEARCH_DEFAULT_LIMIT        = 10;
+
+  /** The hard cap on a unified-search answer, whatever the caller asks for. */
+  public static final int         SEARCH_MAX_LIMIT            = 50;
+
+  // How many storage slices one search will walk hunting for enough
+  // non-colleague rows. Each kept-or-dropped row costs one profile lookup, so
+  // this bounds the work a single keystroke on the search page can cause; a
+  // store whose first slices are all colleagues simply answers short.
+  private static final int        SEARCH_SCAN_SLICES          = 5;
+
+  // What the unified search scans: every local source except DIRECTORY. A
+  // directory row IS a platform user by construction, and the search's contract
+  // is to answer only the people the platform does not know — the People
+  // section already covers colleagues, live from their profile. Excluding them
+  // here, in SQL, spares their profile lookups entirely; the collected/manual
+  // rows that merely SHARE a colleague's address are caught after enrichment.
+  private static final List<String> SEARCHABLE_SOURCES        = List.of(EmailContactSource.COLLECTED,
+                                                                        EmailContactSource.MANUAL,
+                                                                        EmailContactSource.CARDDAV,
+                                                                        EmailContactSource.GRAPH);
+
   // The one-time backfill marker, per user, in the same settings scope as the rest
   // of the add-on. Its ABSENCE is what routes collection through the backfill: sync
   // groups are skipped until the whole-cache pass ran, so nothing is counted twice.
@@ -179,6 +202,81 @@ public class EmailContactService {
       });
     }
     return page;
+  }
+
+  /**
+   * The unified search's "My contacts" section: the caller's own contacts
+   * matching the term, EXCLUDING anyone who is also a platform user — the
+   * People section already answers colleagues, live from their profile, so
+   * what this list adds is exactly the people the directory does not know
+   * (clients, suppliers, an imported address book).
+   * <p>
+   * The exclusion is two-layered because "is a platform user" is known at two
+   * different times: DIRECTORY rows are platform users by construction and are
+   * excluded in SQL ({@link #SEARCHABLE_SOURCES}); a collected or imported row
+   * that merely shares a colleague's address only reveals it at read time, when
+   * {@link #enrichForDisplay(EmailContact)} resolves a profile onto it — those
+   * are dropped after enrichment, on the resolved profile link. Dropped rows
+   * shrink a page, so the method walks further slices until the answer is full,
+   * the store runs out, or the scan cap is hit ({@link #SEARCH_SCAN_SLICES}) —
+   * a short answer over an unbounded walk, since every scanned row costs a
+   * profile lookup and this runs on every search anyone types.
+   * <p>
+   * Privacy is the caller scoping every read: the answer is always the acting
+   * user's own store, which is why two users searching the same term see
+   * different results. Phone numbers are stripped from the answer — a search
+   * hit needs a name, a face and an address, not the whole card.
+   *
+   * @param username the store owner and acting user
+   * @param query what was typed in the search bar
+   * @param favorites when true, only the contacts the user starred
+   * @param limit how many hits to answer, clamped to a sane window
+   * @return the matching non-colleague contacts, never null
+   */
+  public List<EmailContact> searchContacts(String username, String query, boolean favorites, int limit) {
+    if (StringUtils.isBlank(username) || (StringUtils.isBlank(query) && !favorites)) {
+      return List.of();
+    }
+    int size = limit <= 0 ? SEARCH_DEFAULT_LIMIT : Math.min(limit, SEARCH_MAX_LIMIT);
+    // Read once and used twice, exactly as in getContacts: as the id
+    // restriction when the Favorites filter is on, and to mark answered rows.
+    Set<Long> favoriteIds = emailContactFavoriteService.getFavoriteContactIds(username);
+    if (favorites && favoriteIds.isEmpty()) {
+      // Nothing starred filters to nothing, answered before the database is
+      // asked for "id IN ()", which is not a query every database accepts.
+      return List.of();
+    }
+    List<EmailContact> answered = new ArrayList<>();
+    int offset = 0;
+    for (int slice = 0; slice < SEARCH_SCAN_SLICES && answered.size() < size; slice++) {
+      EmailContactPage page = emailContactStorage.getContacts(username,
+                                                              SEARCHABLE_SOURCES,
+                                                              query,
+                                                              favorites ? favoriteIds : null,
+                                                              offset,
+                                                              size);
+      List<EmailContact> rows = page == null || page.getContacts() == null ? List.of() : page.getContacts();
+      for (EmailContact contact : rows) {
+        if (answered.size() >= size) {
+          break;
+        }
+        enrichForDisplay(contact);
+        if (StringUtils.isNotBlank(contact.getProfileUrl())) {
+          // A platform profile resolved onto this row: the person is a
+          // colleague, and the People section is where colleagues answer.
+          continue;
+        }
+        contact.setFavorite(favoriteIds.contains(contact.getId()));
+        contact.setPhones(null);
+        answered.add(contact);
+      }
+      if (rows.size() < size) {
+        // A short slice is the store's way of saying there is nothing further.
+        break;
+      }
+      offset += size;
+    }
+    return answered;
   }
 
   /**

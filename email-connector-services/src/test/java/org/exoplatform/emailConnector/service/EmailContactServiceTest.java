@@ -61,6 +61,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContact;
+import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -947,6 +948,159 @@ public class EmailContactServiceTest {
     assertTrue(emailContactService.getContact(5L, USERNAME).isFavorite());
   }
 
+  // ---------------------------------------------------------------- unified search
+
+  @Test
+  void searchAnswersTheStoreWithoutColleaguesAndWithoutPhones() {
+    // Bob's address resolves to a platform profile: he is a colleague, and the
+    // People section is where colleagues answer — his row must not appear twice
+    // across the two sections. Ann is who this section exists for.
+    EmailContact colleague = collectedContact(5L, "bob@example.org", "Bob");
+    EmailContact outsider = collectedContact(6L, "ann@client.org", "Ann");
+    outsider.setPhones(List.of("+33 6 00 00 00 00"));
+    givenSearchSlice("bob", 0, 10, colleague, outsider);
+    Profile matched = mock(Profile.class);
+    lenient().when(matched.getUrl()).thenReturn("profile-url");
+
+    List<EmailContact> answered;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bob@example.org")).thenReturn(matched);
+      answered = emailContactService.searchContacts(USERNAME, "bob", false, 10);
+    }
+
+    assertEquals(1, answered.size());
+    assertEquals("Ann", answered.get(0).getDisplayName());
+    // A search hit needs a name, a face and an address — not the whole card.
+    assertNull(answered.get(0).getPhones());
+  }
+
+  @Test
+  void searchNeverScansDirectoryRows() {
+    // A directory row IS a platform user by construction, so it is excluded in
+    // SQL rather than paid for (one profile lookup per row) and then dropped.
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      emailContactService.searchContacts(USERNAME, "jane", false, 10);
+    }
+
+    verify(emailContactStorage).getContacts(USERNAME,
+                                            List.of(EmailContactSource.COLLECTED,
+                                                    EmailContactSource.MANUAL,
+                                                    EmailContactSource.CARDDAV,
+                                                    EmailContactSource.GRAPH),
+                                            "jane",
+                                            null,
+                                            0,
+                                            10);
+  }
+
+  @Test
+  void searchWalksFurtherSlicesWhenColleaguesFillThePage() {
+    // A first page made entirely of colleagues must not read as "no results":
+    // the walk continues into the next slice until the answer is full.
+    EmailContact colleagueA = collectedContact(5L, "bob@example.org", "Bob");
+    EmailContact colleagueB = collectedContact(6L, "jim@example.org", "Jim");
+    EmailContact outsider = collectedContact(7L, "ann@client.org", "Ann");
+    givenSearchSlice("o", 0, 2, colleagueA, colleagueB);
+    givenSearchSlice("o", 2, 2, outsider);
+    Profile matched = mock(Profile.class);
+    lenient().when(matched.getUrl()).thenReturn("profile-url");
+
+    List<EmailContact> answered;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bob@example.org")).thenReturn(matched);
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("jim@example.org")).thenReturn(matched);
+      answered = emailContactService.searchContacts(USERNAME, "o", false, 2);
+    }
+
+    assertEquals(1, answered.size());
+    assertEquals("Ann", answered.get(0).getDisplayName());
+  }
+
+  @Test
+  void searchStopsWalkingAtTheScanCap() {
+    // A store where every matching row is a colleague must answer short rather
+    // than walk the whole table: each scanned row costs a profile lookup, and
+    // this runs on every search anyone types.
+    EmailContact colleague = collectedContact(5L, "bob@example.org", "Bob");
+    when(emailContactStorage.getContacts(eq(USERNAME), anyList(), eq("bob"), any(), anyInt(), eq(1)))
+                                                                                                     .thenReturn(new EmailContactPage(List.of(colleague),
+                                                                                                                                      java.util.Map.of(),
+                                                                                                                                      100,
+                                                                                                                                      0,
+                                                                                                                                      1));
+    Profile matched = mock(Profile.class);
+    lenient().when(matched.getUrl()).thenReturn("profile-url");
+
+    List<EmailContact> answered;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(matched);
+      answered = emailContactService.searchContacts(USERNAME, "bob", false, 1);
+    }
+
+    assertTrue(answered.isEmpty());
+    verify(emailContactStorage, times(5)).getContacts(eq(USERNAME), anyList(), eq("bob"), any(), anyInt(), eq(1));
+  }
+
+  @Test
+  void searchWithoutATermAnswersNothing() {
+    // The search page only searches with a term or the Favorites filter; a bare
+    // call must not become "list the whole store".
+    assertTrue(emailContactService.searchContacts(USERNAME, "  ", false, 10).isEmpty());
+
+    verify(emailContactStorage, never()).getContacts(anyString(), anyList(), anyString(), any(), anyInt(), anyInt());
+  }
+
+  @Test
+  void searchFavoritesNarrowsToTheStarredIdsAndMarksTheRows() {
+    // Declaring favoritesEnabled is what makes the search page send
+    // favorites=true here; the browser then re-filters rows on their own
+    // `favorite` flag, so an unmarked row would be thrown away after arriving.
+    when(emailContactFavoriteService.getFavoriteContactIds(USERNAME)).thenReturn(Set.of(6L));
+    EmailContact starred = collectedContact(6L, "ann@client.org", "Ann");
+    when(emailContactStorage.getContacts(eq(USERNAME), anyList(), eq("ann"), eq(Set.of(6L)), eq(0), eq(10)))
+                                                                                                            .thenReturn(new EmailContactPage(List.of(starred),
+                                                                                                                                             java.util.Map.of(),
+                                                                                                                                             1,
+                                                                                                                                             0,
+                                                                                                                                             10));
+
+    List<EmailContact> answered;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      answered = emailContactService.searchContacts(USERNAME, "ann", true, 10);
+    }
+
+    assertEquals(1, answered.size());
+    assertTrue(answered.get(0).isFavorite());
+  }
+
+  @Test
+  void searchWithFavoritesAndNothingStarredShortCircuits() {
+    // The same "id IN ()" guard as the list: nothing starred filters to
+    // nothing, answered before the database is asked.
+    when(emailContactFavoriteService.getFavoriteContactIds(USERNAME)).thenReturn(new java.util.HashSet<>());
+
+    assertTrue(emailContactService.searchContacts(USERNAME, "ann", true, 10).isEmpty());
+
+    verify(emailContactStorage, never()).getContacts(anyString(), anyList(), anyString(), any(), anyInt(), anyInt());
+  }
+
+  @Test
+  void searchClampsTheLimitEitherWay() {
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      // Asking for nothing takes the server's default...
+      emailContactService.searchContacts(USERNAME, "ann", false, 0);
+      verify(emailContactStorage).getContacts(eq(USERNAME), anyList(), eq("ann"), any(), eq(0), eq(10));
+      // ...and asking for everything is capped, whatever the caller says.
+      emailContactService.searchContacts(USERNAME, "bob", false, 5000);
+      verify(emailContactStorage).getContacts(eq(USERNAME), anyList(), eq("bob"), any(), eq(0), eq(50));
+    }
+  }
+
   @Test
   void aMailboxThatChangedLetsCollectionStartOverAgain() {
     // The backfill is what bootstraps collection, because it reads sent mail before
@@ -1302,6 +1456,20 @@ public class EmailContactServiceTest {
     contact.setDisplayName(displayName);
     contact.setSeenCount(1);
     return contact;
+  }
+
+  /**
+   * One storage slice as the unified search walks them: the rows the store
+   * answers for this term at this offset, whatever the sources.
+   *
+   * @param term the searched term
+   * @param offset the slice's row offset
+   * @param limit the slice size
+   * @param contacts the rows the slice holds
+   */
+  private void givenSearchSlice(String term, int offset, int limit, EmailContact... contacts) {
+    lenient().when(emailContactStorage.getContacts(eq(USERNAME), anyList(), eq(term), any(), eq(offset), eq(limit)))
+             .thenReturn(new EmailContactPage(List.of(contacts), java.util.Map.of(), contacts.length, offset, limit));
   }
 
   /**
