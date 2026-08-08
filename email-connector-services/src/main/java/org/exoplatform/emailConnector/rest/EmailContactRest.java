@@ -143,6 +143,24 @@ public class EmailContactRest {
     return contact;
   }
 
+  @GetMapping("/by-address")
+  @Secured("users")
+  @Operation(summary = "Gets the contact reachable at an address", method = "GET",
+             description = "The caller's own contact for this address, matched on any of its addresses rather than only the one it is filed under. Answers 404 when the caller has nobody there, which is also how the mailbox knows to offer creating them.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public EmailContact getContactByAddress(HttpServletRequest request,
+                                          @Parameter(description = "The address to look up", required = true)
+                                          @RequestParam("email")
+                                          String email) {
+    EmailContact contact = emailContactService.getContactByAddress(email, request.getRemoteUser());
+    if (contact == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+    return contact;
+  }
+
   @GetMapping("/{id}/photo")
   @Secured("users")
   @Operation(summary = "Gets a contact photo", method = "GET",

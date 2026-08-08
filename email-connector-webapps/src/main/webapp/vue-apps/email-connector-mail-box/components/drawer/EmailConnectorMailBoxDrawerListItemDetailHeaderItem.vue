@@ -27,7 +27,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-for="(value, index) in values"
         :key="value.address"
         :class="{'mb-2': index !== values.length - 1}"
-        v-html="parsedValue(value)" />
+        class="d-flex align-center">
+        <!-- Truncated rather than wrapped or overflowing: a long address must not
+             push the card button out of the row, which is exactly what a button
+             placed after free-flowing text does. -->
+        <span
+          class="text-truncate"
+          style="min-width: 0"
+          v-html="parsedValue(value)"></span>
+        <!-- The way from a mail to the person who sent it. Added beside the
+             existing name rather than replacing it: a colleague's name already
+             links to their profile, and taking that away to gain a contact card
+             would cost more than it gives.
+             An icon, not a button: a button's padding makes the line taller than
+             the label beside it, and the two stop lining up.
+             Offered only where there is no platform profile behind the address:
+             for a colleague the profile IS the card, their name already links to
+             it, and inviting the user to file a person the platform already
+             knows would duplicate them for nothing. -->
+        <v-icon
+          v-if="!value.profileUrl"
+          :title="$t('emailConnector.mailBox.list.drawer.detail.openContact')"
+          size="14"
+          class="ms-2 flex-shrink-0"
+          @click="openContact(value)">
+          fas fa-address-card
+        </v-icon>
+      </v-list-item-subtitle>
     </v-list-item-content>
   </v-list-item>
 </template>
@@ -49,6 +75,26 @@ export default {
     },
   },
   methods: {
+    /**
+     * Opens the contact card for one of the addresses on this mail, or the
+     * create form when nobody is stored there yet.
+     * <p>
+     * Dispatched rather than called: the contacts app mounts itself on demand
+     * and may not exist on the page yet, which is what this document event is
+     * for. Whether the address is known is the contacts app's question to
+     * answer, not the mailbox's.
+     *
+     * @param {object} value - the address entry, carrying address and name
+     * @returns {void}
+     */
+    openContact(value) {
+      document.dispatchEvent(new CustomEvent('open-contacts-drawer', {
+        detail: {
+          address: value.address,
+          name: value.name,
+        },
+      }));
+    },
     parsedValue(value) {
       return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${value.name}</a> ${value.address}` || `<span class="text-color">${value.name}</span> ${value.address}`;
     },
