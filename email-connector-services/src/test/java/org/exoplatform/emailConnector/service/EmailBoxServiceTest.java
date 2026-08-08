@@ -90,6 +90,7 @@ import javax.mail.search.FromStringTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
 import javax.mail.search.SearchException;
+import javax.mail.search.RecipientStringTerm;
 import javax.mail.search.SearchTerm;
 import javax.mail.search.SubjectTerm;
 
@@ -2118,6 +2119,23 @@ public class EmailBoxServiceTest {
     SearchTerm combined = EmailBoxService.buildEmailSearchTerm("weekly", "alice@", true, since);
     assertTrue(combined instanceof AndTerm);
     assertEquals(4, ((AndTerm) combined).getTerms().length);
+
+    // Recipient alone: To OR Cc, the SENT-folder way to pin a person (every
+    // sender in there is the user). Bcc stays out on purpose: a recipient the
+    // user deliberately hid must not surface as visible correspondence.
+    SearchTerm toTerm = EmailBoxService.buildEmailSearchTerm(null, null, " alice@example.com ", false, false, null);
+    assertTrue(toTerm instanceof OrTerm);
+    SearchTerm[] recipients = ((OrTerm) toTerm).getTerms();
+    assertEquals(2, recipients.length);
+    assertEquals(Message.RecipientType.TO, ((RecipientStringTerm) recipients[0]).getRecipientType());
+    assertEquals("alice@example.com", ((RecipientStringTerm) recipients[0]).getPattern());
+    assertEquals(Message.RecipientType.CC, ((RecipientStringTerm) recipients[1]).getRecipientType());
+    assertEquals("alice@example.com", ((RecipientStringTerm) recipients[1]).getPattern());
+
+    // And it joins the AND as one more criterion, like the others.
+    SearchTerm withTo = EmailBoxService.buildEmailSearchTerm("weekly", "alice@", "bob@", true, false, since);
+    assertTrue(withTo instanceof AndTerm);
+    assertEquals(5, ((AndTerm) withTo).getTerms().length);
   }
 
   /**
@@ -2178,6 +2196,41 @@ public class EmailBoxServiceTest {
     // The search connection is its own and short-lived: closed before returning.
     verify(inbox).close(false);
     verify(store).close();
+  }
+
+  /**
+   * The recipient criterion travels through to the IMAP SEARCH: {@code to} alone
+   * is a sufficient criterion (the contact card's correspondence sends nothing
+   * else), and what reaches the server is the To-or-Cc term — never a sender
+   * term, which in the SENT folder would match everything or nothing.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsCanPinARecipient() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    MimeMessage hit = searchHit("about the budget", "me@example.com", new Date(), true);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { hit });
+    when(((UIDFolder) inbox).getUID(hit)).thenReturn(21L);
+    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(21L))).thenReturn(List.of());
+
+    EmailSearchResultPage page =
+                               emailBoxService.searchEmails(TEST_USER, null, null, "alice@example.com", false, false, null, "INBOX", 10);
+
+    assertEquals(1, page.getTotalMatches());
+    ArgumentCaptor<SearchTerm> searched = ArgumentCaptor.forClass(SearchTerm.class);
+    verify(inbox).search(searched.capture());
+    assertTrue(searched.getValue() instanceof OrTerm);
+    SearchTerm[] recipientTerms = ((OrTerm) searched.getValue()).getTerms();
+    assertEquals(Message.RecipientType.TO, ((RecipientStringTerm) recipientTerms[0]).getRecipientType());
+    assertEquals(Message.RecipientType.CC, ((RecipientStringTerm) recipientTerms[1]).getRecipientType());
   }
 
   /**
