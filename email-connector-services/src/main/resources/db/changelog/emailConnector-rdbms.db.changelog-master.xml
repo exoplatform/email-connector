@@ -493,4 +493,14 @@
       <column name="WEBSITE" type="NVARCHAR(500)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-37">
+    <comment>
+      A note is written in the platform's rich editor now, so what is stored is
+      markup rather than bare text and the same paragraph costs several times
+      the characters. Still bounded rather than a CLOB, for the reason the
+      original column gives.
+    </comment>
+    <modifyDataType tableName="EMAIL_CONTACT" columnName="NOTE_TEXT" newDataType="NVARCHAR(8000)"/>
+  </changeSet>
+
 </databaseChangeLog>

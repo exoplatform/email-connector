@@ -308,4 +308,34 @@ public final class EmailContactUtils {
     String trimmed = StringUtils.trimToNull(note);
     return trimmed == null ? null : StringUtils.left(trimmed, MAX_NOTE_LENGTH);
   }
+
+  /**
+   * A note as a vCard can carry it: text, with the paragraphs kept.
+   * <p>
+   * The note is written in the platform's rich editor and stored as markup, but
+   * NOTE has no notion of markup -- writing tags into a card would hand another
+   * address book a paragraph of angle brackets. Block ends become line breaks so
+   * the shape of what was written survives, and the rest is unwrapped.
+   *
+   * @param note the stored note, possibly markup, possibly null
+   * @return the note as plain text, or null
+   */
+  public static String noteAsText(String note) {
+    if (StringUtils.isBlank(note)) {
+      return null;
+    }
+    String text = note.replaceAll("(?i)<br\\s*/?>", "\n")
+                      .replaceAll("(?i)</(p|div|li|h[1-6])>", "\n")
+                      .replaceAll("<[^>]+>", "");
+    // The entities an editor actually emits. A general HTML unescaper would mean
+    // another dependency for six replacements.
+    text = text.replace("&nbsp;", " ")
+               .replace("&lt;", "<")
+               .replace("&gt;", ">")
+               .replace("&quot;", "\"")
+               .replace("&#39;", "'")
+               .replace("&amp;", "&")
+               .replaceAll("\n{3,}", "\n\n");
+    return StringUtils.trimToNull(text);
+  }
 }

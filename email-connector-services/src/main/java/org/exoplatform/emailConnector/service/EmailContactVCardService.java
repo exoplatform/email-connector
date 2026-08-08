@@ -299,7 +299,7 @@ public class EmailContactVCardService {
                            contact.getTitle(),
                            contact.getBirthday(),
                            contact.getPostalAddress(),
-                           contact.getNote(),
+                           EmailContactUtils.noteAsText(contact.getNote()),
                            contact.getWebsite(),
                            photo == null ? null : photo.getAsByte(),
                            photo == null || photo.getFileInfo() == null ? null : photo.getFileInfo().getMimetype());

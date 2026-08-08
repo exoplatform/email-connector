@@ -117,7 +117,16 @@ export default {
         this.message = this.$t('emailConnector.contacts.qr.tooLarge');
         return;
       }
-      window.require(['SHARED/qrcode'], QRCode => {
+      window.require(['SHARED/qrcode'], loaded => {
+        // The platform ships easy.qrcode as a plain script with no AMD alias, so
+        // requiring it runs the file but hands back nothing: the library
+        // publishes itself on the window. Taking whichever of the two is there
+        // costs a line and survives the module being aliased properly one day.
+        const QRCode = loaded || window.QRCode;
+        if (!QRCode) {
+          this.message = this.$t('emailConnector.contacts.qr.unavailable');
+          return;
+        }
         // $nextTick so the target div exists once the spinner is gone.
         this.$nextTick(() => {
           if (this.$refs.qrCanvas) {
