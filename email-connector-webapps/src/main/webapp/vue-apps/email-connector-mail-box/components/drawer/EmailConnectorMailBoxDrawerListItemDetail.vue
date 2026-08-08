@@ -408,10 +408,6 @@ export default {
       this.email = null;
       this.$root.isDetailDrawerActive = false;
       this.$root.$emit('email-detail-drawer-closed');
-      // Said on the document too, not only inside this app: whoever opened this
-      // mail may live in another Vue app with its own root -- the contact card
-      // does -- and it wants to come back when the mail is done with.
-      document.dispatchEvent(new CustomEvent('email-box-mail-closed'));
       this.selectedCategoryId = null;
       this.selectedCategoryIds = [];
     },

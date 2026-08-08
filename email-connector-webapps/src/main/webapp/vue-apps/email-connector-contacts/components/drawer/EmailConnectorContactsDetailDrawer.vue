@@ -101,11 +101,9 @@ export default {
   },
   created() {
     this.$root.$on('open-email-contact-detail', this.open);
-    this.$root.$on('close-email-contact-detail', this.close);
   },
   beforeDestroy() {
     this.$root.$off('open-email-contact-detail', this.open);
-    this.$root.$off('close-email-contact-detail', this.close);
   },
   methods: {
     /**
