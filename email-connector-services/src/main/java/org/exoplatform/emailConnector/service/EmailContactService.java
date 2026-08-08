@@ -203,6 +203,32 @@ public class EmailContactService {
   }
 
   /**
+   * The contact reachable at an address, as the mailbox asks for it.
+   * <p>
+   * Answers on ANY of a contact's addresses, not only the one it is filed under:
+   * a mail from someone's second address must still find the person, which is the
+   * whole point of addresses living in their own table.
+   *
+   * @param address the address as the mail carries it, in any case
+   * @param username the store owner
+   * @return the contact, enriched for display, or null when nobody is stored
+   *           there
+   */
+  public EmailContact getContactByAddress(String address, String username) {
+    String normalized = EmailContactUtils.normalizeAddress(address);
+    if (normalized == null || StringUtils.isBlank(username)) {
+      return null;
+    }
+    EmailContact contact = emailContactStorage.getContactByAddress(username, normalized);
+    if (contact == null || contact.isSuppressed()) {
+      return null;
+    }
+    enrichForDisplay(contact);
+    contact.setFavorite(emailContactFavoriteService.isFavorite(contact.getId(), username));
+    return contact;
+  }
+
+  /**
    * The compose field's type-ahead: one ranked, de-duplicated recipient list
    * merging the caller's own contact store with the platform's people
    * directory, so the field is useful on the very first mail a user writes —
