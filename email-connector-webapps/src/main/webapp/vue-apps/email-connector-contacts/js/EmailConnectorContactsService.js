@@ -79,6 +79,33 @@ export function getContact(id) {
 }
 
 /**
+ * The contact reachable at an address, or null when nobody is stored there.
+ * <p>
+ * A 404 is the ordinary answer here, not a failure: it is how the mailbox knows
+ * to offer creating the person instead of opening them.
+ *
+ * @param {string} address - the address as the mail carries it
+ * @returns {Promise<object>} the contact, or null
+ */
+export function getContactByAddress(address) {
+  return fetch(`/email-connector/rest/contacts/by-address?email=${encodeURIComponent(address)}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else if (resp?.status === 404) {
+      return null;
+    } else {
+      throw new Error('Error when getting the contact at this address');
+    }
+  });
+}
+
+/**
  * Creates a manual contact. A previously removed collected contact with the
  * same address is revived server-side, so the caller always sees a create.
  *
