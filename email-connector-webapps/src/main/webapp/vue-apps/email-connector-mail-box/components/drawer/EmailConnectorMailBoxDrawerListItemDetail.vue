@@ -366,18 +366,28 @@ export default {
       }
     },
     /**
-     * Whether something on the page is already dimming it.
+     * Whether a scrim is already covering the page.
      * <p>
-     * "Standalone" is decided from whether the mailbox LIST is a drawer, which is
-     * not the same question: on the mail page the list is not a drawer, and from
-     * the Favorites drawer or a contact card the page is dimmed by whoever opened
-     * us. Painting a second backdrop over the first is what made the mask visibly
-     * darker than every other drawer in the platform.
+     * Narrow on purpose: this is not the drawer taking over the platform's
+     * dimming, it is the backdrop we paint ourselves refusing to be a second one.
+     * "Standalone" is judged from whether the mailbox LIST is a drawer, which is
+     * a different question -- opened from the platform search, the page is
+     * already dimmed by the search overlay, and ours landed on top of it.
+     * <p>
+     * Present is not the same as covering: an overlay on its way out keeps its
+     * class while its scrim fades, so this asks what is displayed, opaque and
+     * sized.
      *
-     * @returns {boolean} true when a scrim is already covering the page
+     * @returns {boolean} true when something else is dimming the page
      */
     pageAlreadyDimmed() {
-      return !!document.querySelector('.v-overlay--active');
+      return Array.from(document.querySelectorAll('.v-overlay--active')).some(overlay => {
+        const style = window.getComputedStyle(overlay);
+        const scrim = overlay.querySelector('.v-overlay__scrim');
+        const opacity = parseFloat((scrim && window.getComputedStyle(scrim).opacity) || style.opacity || '1');
+        return style.display !== 'none' && style.visibility !== 'hidden' && opacity > 0.05
+            && overlay.getBoundingClientRect().height > 0;
+      });
     },
     /**
      * Dims the page behind a drawer that opened with nothing behind it.
