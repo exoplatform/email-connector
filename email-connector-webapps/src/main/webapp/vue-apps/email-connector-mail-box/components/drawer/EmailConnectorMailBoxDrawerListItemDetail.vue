@@ -361,9 +361,23 @@ export default {
      * @returns {void}
      */
     onDrawerOpened() {
-      if (this.standalone) {
+      if (this.standalone && !this.pageAlreadyDimmed()) {
         this.showStandaloneBackdrop();
       }
+    },
+    /**
+     * Whether something on the page is already dimming it.
+     * <p>
+     * "Standalone" is decided from whether the mailbox LIST is a drawer, which is
+     * not the same question: on the mail page the list is not a drawer, and from
+     * the Favorites drawer or a contact card the page is dimmed by whoever opened
+     * us. Painting a second backdrop over the first is what made the mask visibly
+     * darker than every other drawer in the platform.
+     *
+     * @returns {boolean} true when a scrim is already covering the page
+     */
+    pageAlreadyDimmed() {
+      return !!document.querySelector('.v-overlay--active');
     },
     /**
      * Dims the page behind a drawer that opened with nothing behind it.
