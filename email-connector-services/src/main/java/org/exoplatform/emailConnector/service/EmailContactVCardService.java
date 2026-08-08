@@ -1,0 +1,545 @@
+/**
+ * Copyright (C) 2025 eXo Platform SAS
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <gnu.org/licenses>.
+ */
+package org.exoplatform.emailConnector.service;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import org.exoplatform.commons.file.model.FileItem;
+import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.container.component.RequestLifeCycle;
+import org.exoplatform.emailConnector.carddav.ParsedVCard;
+import org.exoplatform.emailConnector.carddav.VCardParser;
+import org.exoplatform.emailConnector.carddav.VCardSink;
+import org.exoplatform.emailConnector.model.ContactImportState;
+import org.exoplatform.emailConnector.model.EmailContact;
+import org.exoplatform.emailConnector.model.EmailContactPage;
+import org.exoplatform.emailConnector.model.EmailContactSource;
+import org.exoplatform.emailConnector.model.SyncStatus;
+import org.exoplatform.emailConnector.storage.EmailContactStorage;
+import org.exoplatform.emailConnector.utils.EmailContactUtils;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+import org.exoplatform.upload.UploadResource;
+import org.exoplatform.upload.UploadService;
+
+/**
+ * Moves the contact store through .vcf files: exports the whole store as one
+ * vCard 3.0 file, and imports the file another product exported — Gmail,
+ * Outlook or iCloud shaped, which is what the parser's corpus pins.
+ * <p>
+ * The import's one rule, applied whole-card: it skips and reports, it never
+ * merges and never revives. A card whose ANY address already resolves to a
+ * contact here — a visible row or a suppressed tombstone alike — is counted
+ * as already known and left alone: a bulk import must not resurrect what the
+ * user deliberately removed, and must be a visible no-op when run twice.
+ * Everything it does create is a plain MANUAL row, editable and deletable like
+ * anything the user typed; the CardDAV bookkeeping columns stay empty.
+ * <p>
+ * Kept apart from {@link EmailContactService} the way the CardDAV sync is:
+ * that class owns the store's rules, this one owns a file format and the
+ * asynchronous run around it.
+ */
+@Service
+public class EmailContactVCardService {
+
+  private static final Log        LOG                       = ExoLogger.getLogger(EmailContactVCardService.class);
+
+  /** Message code answered as a 409 while this user's previous import still runs. */
+  public static final String      IMPORT_ALREADY_RUNNING    = "emailConnector.contacts.import.alreadyRunning";
+
+  /** Message code answered as a 400 for an upload that expired or never existed. */
+  public static final String      IMPORT_UPLOAD_MISSING     = "emailConnector.contacts.import.uploadMissing";
+
+  /** Message code answered as a 400 for a file over the size cap. */
+  public static final String      IMPORT_FILE_TOO_LARGE     = "emailConnector.contacts.import.fileTooLarge";
+
+  /** Message code reported on the state when the card cap cut the run short. */
+  public static final String      IMPORT_TOO_MANY_CARDS     = "emailConnector.contacts.import.tooManyCards";
+
+  /** Message code reported on the state when the run itself broke. */
+  public static final String      IMPORT_FAILED             = "emailConnector.contacts.import.failed";
+
+  /**
+   * The most an uploaded .vcf may weigh, checked BEFORE a byte of it is parsed.
+   * Twenty megabytes holds a photo-heavy export of thousands of contacts; a
+   * bigger file is either not a contact export or an attempt at this server's
+   * memory.
+   */
+  public static final long        MAX_IMPORT_FILE_BYTES     = 20L * 1024 * 1024;
+
+  /**
+   * The most cards one file may deliver. The run stops AT the cap with a
+   * partial report that says so — what landed stays landed, each card being its
+   * own transaction.
+   */
+  public static final int         MAX_IMPORT_CARDS          = 5000;
+
+  /**
+   * The most a decoded photo may weigh. Over it, the photo is dropped and the
+   * contact kept — a picture too large costs the picture, which is how the
+   * storage layer already reasons about pictures it cannot write.
+   */
+  public static final int         MAX_PHOTO_BYTES           = 1024 * 1024;
+
+  /** How many rows one export page reads — the file streams out page by page. */
+  private static final int        EXPORT_PAGE_SIZE          = 200;
+
+  /**
+   * How many cards between two persisted progress states. Every card would be
+   * a settings write per card times five thousand; none would leave the poll
+   * staring at zeros for the whole run.
+   */
+  private static final int        STATE_WRITE_EVERY         = 25;
+
+  /**
+   * Who is importing right now, in this JVM — the same guard the syncs use,
+   * because the stored status alone leaves a window between reading it and
+   * writing it that a double-click walks straight through.
+   */
+  private final Set<String>       importingUsers            = ConcurrentHashMap.newKeySet();
+
+  @Autowired
+  private EmailContactService     emailContactService;
+
+  @Autowired
+  private EmailContactStorage     emailContactStorage;
+
+  @Autowired
+  private UserEmailSettingService userEmailSettingService;
+
+  @Autowired
+  private UploadService           uploadService;
+
+  @Autowired
+  private VCardParser             vCardParser;
+
+  /**
+   * Starts importing an uploaded .vcf into the caller's store and answers
+   * immediately — the run happens off the request thread, and the drawer polls
+   * {@link #getImportState} until it ends.
+   * <p>
+   * The upload is validated here, on the request, so the user hears about a
+   * missing or oversized file as the answer to their click rather than as a
+   * report they must poll for.
+   *
+   * @param username the store owner
+   * @param uploadId the upload the drawer pushed the file under
+   * @return the initial state, already IN_PROGRESS
+   * @throws IllegalStateException with {@link #IMPORT_ALREADY_RUNNING} while a
+   *           previous import of this user still runs
+   * @throws IllegalArgumentException with {@link #IMPORT_UPLOAD_MISSING} or
+   *           {@link #IMPORT_FILE_TOO_LARGE}
+   */
+  public ContactImportState startImport(String username, String uploadId) {
+    if (StringUtils.isBlank(username) || StringUtils.isBlank(uploadId)) {
+      throw new IllegalArgumentException(IMPORT_UPLOAD_MISSING);
+    }
+    if (!importingUsers.add(username)) {
+      throw new IllegalStateException(IMPORT_ALREADY_RUNNING);
+    }
+    try {
+      UploadResource upload = uploadService.getUploadResource(uploadId);
+      if (upload == null || StringUtils.isBlank(upload.getStoreLocation())) {
+        throw new IllegalArgumentException(IMPORT_UPLOAD_MISSING);
+      }
+      // The size gate, before parsing starts: the whole point is that no code
+      // below ever runs against a file bigger than this.
+      if (new File(upload.getStoreLocation()).length() > MAX_IMPORT_FILE_BYTES) {
+        removeUpload(uploadId);
+        throw new IllegalArgumentException(IMPORT_FILE_TOO_LARGE);
+      }
+      ContactImportState state = new ContactImportState();
+      state.setStatus(SyncStatus.IN_PROGRESS);
+      state.setStartedDate(new Date().getTime());
+      userEmailSettingService.setContactImportState(state, username);
+      scheduleRun(() -> runImport(username, uploadId, state));
+      return state;
+    } catch (Exception e) {
+      // The guard belongs to the run this method failed to start.
+      importingUsers.remove(username);
+      throw e;
+    }
+  }
+
+  /**
+   * The state the drawer polls: progress while the run goes, the four-number
+   * report once it ended.
+   *
+   * @param username the store owner
+   * @return the stored state, never null; a null status says no import ever ran
+   */
+  public ContactImportState getImportState(String username) {
+    return userEmailSettingService.getContactImportState(username);
+  }
+
+  /**
+   * Writes the caller's WHOLE visible store — suppressed rows excluded, every
+   * source included — as vCard 3.0 text, one card at a time onto the given
+   * writer, so a five-thousand-row store never exists in memory as a file.
+   * <p>
+   * Rows are read through {@link EmailContactService#getContacts} on purpose:
+   * that is the read that resolves a directory-linked colleague's LIVE name,
+   * so the export says who the person is today, not who they were when linked.
+   * A CardDAV row leaves with the UID its server gave it; nothing else gets
+   * one — a UID this store invented would collide with nothing and mean less.
+   *
+   * @param username the store owner
+   * @param out where the file goes, typically the HTTP response; flushed per
+   *          page, closed by the caller
+   * @throws IOException when the writer fails — the download was abandoned
+   */
+  public void exportContacts(String username, Writer out) throws IOException {
+    Map<Long, String> vcardUids = emailContactStorage.getVcardUids(username);
+    int offset = 0;
+    long total;
+    do {
+      EmailContactPage page = emailContactService.getContacts(username, null, null, false, offset, EXPORT_PAGE_SIZE);
+      List<EmailContact> rows = page == null || page.getContacts() == null ? List.of() : page.getContacts();
+      total = page == null ? 0 : page.getSize();
+      for (EmailContact contact : rows) {
+        out.write(vCardParser.format(toCard(contact, vcardUids.get(contact.getId()))));
+      }
+      out.flush();
+      offset += EXPORT_PAGE_SIZE;
+    } while (offset < total);
+  }
+
+  /**
+   * One stored contact as the fields a vCard carries, photo included when the
+   * user's store owns one.
+   *
+   * @param contact the enriched store row
+   * @param vcardUid the CardDAV uid to carry over, null for every other source
+   * @return the card to format
+   */
+  private ParsedVCard toCard(EmailContact contact, String vcardUid) {
+    List<String> emails = new ArrayList<>();
+    if (StringUtils.isNotBlank(contact.getPrimaryEmail())) {
+      emails.add(contact.getPrimaryEmail());
+    }
+    if (contact.getSecondaryEmails() != null) {
+      emails.addAll(contact.getSecondaryEmails());
+    }
+    FileItem photo = readPhoto(contact);
+    return new ParsedVCard(vcardUid,
+                           contact.getDisplayName(),
+                           contact.getGivenName(),
+                           contact.getFamilyName(),
+                           emails,
+                           contact.getPhones() == null ? List.of() : contact.getPhones(),
+                           contact.getOrganization(),
+                           contact.getTitle(),
+                           photo == null ? null : photo.getAsByte(),
+                           photo == null || photo.getFileInfo() == null ? null : photo.getFileInfo().getMimetype());
+  }
+
+  /**
+   * The picture stored for a contact, when there is one to export. A directory
+   * row's avatar is the platform profile's, not this store's to hand out, and
+   * such rows hold no file anyway; a photo that cannot be read costs the
+   * photo, never the export.
+   *
+   * @param contact the row being exported
+   * @return the stored file, or null
+   */
+  private FileItem readPhoto(EmailContact contact) {
+    if (contact.getPhotoFileId() == null || contact.getPhotoFileId() <= 0
+        || EmailContactSource.DIRECTORY.equals(contact.getSource())) {
+      return null;
+    }
+    try {
+      return emailContactStorage.getPhotoFileItem(contact.getPhotoFileId());
+    } catch (Exception e) {
+      LOG.debug("The photo of contact {} could not be read for export", contact.getId(), e);
+      return null;
+    }
+  }
+
+  /**
+   * Hands the import run to a thread of its own — behind a method so a test
+   * can run it synchronously instead of racing a pool it does not own.
+   *
+   * @param task the run
+   */
+  protected void scheduleRun(Runnable task) {
+    CompletableFuture.runAsync(task);
+  }
+
+  /**
+   * The import run itself, off the request thread: walks the uploaded file one
+   * card at a time, files each card under exactly one of the four counters,
+   * and persists the state along the way for the poll. However it ends, the
+   * upload is deleted, the guard released, and a final state written — a run
+   * that vanished without a report is the one outcome this method may not
+   * have.
+   *
+   * @param username the store owner
+   * @param uploadId the upload holding the file
+   * @param state the state started by {@link #startImport}, mutated and
+   *          persisted as the run advances
+   */
+  protected void runImport(String username, String uploadId, ContactImportState state) {
+    // Bound by hand, exactly as the startup backfills do: this thread has no
+    // request, so nothing bound a persistence context to it, and every storage
+    // call below would fail without one.
+    RequestLifeCycle.begin(ExoContainerContext.getCurrentContainer());
+    try {
+      UploadResource upload = uploadService.getUploadResource(uploadId);
+      if (upload == null || StringUtils.isBlank(upload.getStoreLocation())) {
+        // Consumed or expired between the request and this thread: nothing to
+        // read, and the report must say the run went nowhere.
+        state.setMessageCode(IMPORT_FAILED);
+        state.setStatus(SyncStatus.FAILURE);
+        return;
+      }
+      try (Reader reader = new InputStreamReader(new FileInputStream(upload.getStoreLocation()), StandardCharsets.UTF_8)) {
+        vCardParser.parseAll(reader, new ImportSink(username, state));
+      }
+      state.setStatus(SyncStatus.SUCCESS);
+    } catch (Exception e) {
+      state.setStatus(SyncStatus.FAILURE);
+      state.setMessageCode(IMPORT_FAILED);
+      LOG.warn("The vCard import of user {} failed", username, e);
+    } finally {
+      state.setFinishedDate(new Date().getTime());
+      persistQuietly(username, state);
+      removeUpload(uploadId);
+      RequestLifeCycle.end();
+      importingUsers.remove(username);
+    }
+    LOG.info("vCard import for user {}: {} imported, {} already known, {} without address, {} unreadable",
+             username,
+             state.getImported(),
+             state.getAlreadyKnown(),
+             state.getNoAddress(),
+             state.getUnreadable());
+  }
+
+  /**
+   * Where the streaming reader delivers each card of the uploaded file: counts
+   * it, imports it when it earns a row, and pulls the brake at the card cap.
+   */
+  private class ImportSink implements VCardSink {
+
+    private final String             username;
+
+    private final ContactImportState state;
+
+    private int                      cards;
+
+    /**
+     * Builds the sink for one run.
+     *
+     * @param username the store owner
+     * @param state the run's state, mutated as cards land
+     */
+    private ImportSink(String username, ContactImportState state) {
+      this.username = username;
+      this.state = state;
+    }
+
+    @Override
+    public boolean accept(ParsedVCard card) {
+      if (atCap()) {
+        return false;
+      }
+      importCard(username, card, state);
+      return advance();
+    }
+
+    @Override
+    public boolean acceptUnreadable() {
+      if (atCap()) {
+        return false;
+      }
+      state.setUnreadable(state.getUnreadable() + 1);
+      return advance();
+    }
+
+    /**
+     * Whether the card cap just cut the run short. Checked as the card AFTER
+     * the cap arrives, so a file of exactly the cap's size is not reported
+     * truncated — everything before the cap has already landed, each card in
+     * its own transaction, which is what makes stopping here a partial report
+     * rather than a failed run.
+     *
+     * @return true when this card is one past the cap
+     */
+    private boolean atCap() {
+      if (cards >= MAX_IMPORT_CARDS) {
+        state.setMessageCode(IMPORT_TOO_MANY_CARDS);
+        return true;
+      }
+      return false;
+    }
+
+    /**
+     * The per-card bookkeeping both outcomes share: the periodic persistence
+     * the poll's progress numbers come from.
+     *
+     * @return true, to keep reading
+     */
+    private boolean advance() {
+      cards++;
+      if (cards % STATE_WRITE_EVERY == 0) {
+        persistQuietly(username, state);
+      }
+      return true;
+    }
+  }
+
+  /**
+   * Files one card under exactly one of the four counters, creating the MANUAL
+   * row when it earns one. Fenced per card: whatever one card's import throws,
+   * it costs that card an "unreadable" tick and the next card its turn —
+   * never the run.
+   *
+   * @param username the store owner
+   * @param card the parsed card
+   * @param state the run's counters, mutated in place
+   */
+  private void importCard(String username, ParsedVCard card, ContactImportState state) {
+    try {
+      List<String> addresses = normalizedAddressesOf(card);
+      if (addresses.isEmpty()) {
+        // Nothing to key the row on: importing it anyway would duplicate it on
+        // every re-import, which is why this is its own number in the report.
+        state.setNoAddress(state.getNoAddress() + 1);
+        return;
+      }
+      for (String address : addresses) {
+        if (emailContactStorage.getContactByAddress(username, address) != null) {
+          // ANY address resolving — to a visible row or a suppressed tombstone —
+          // skips the whole card: no merge, no revive, and a re-import of the
+          // same file is a visible no-op.
+          state.setAlreadyKnown(state.getAlreadyKnown() + 1);
+          return;
+        }
+      }
+      emailContactStorage.createContact(toContact(username, card, addresses));
+      state.setImported(state.getImported() + 1);
+    } catch (Exception e) {
+      LOG.debug("A vCard of the import of user {} could not be filed", username, e);
+      state.setUnreadable(state.getUnreadable() + 1);
+    }
+  }
+
+  /**
+   * The MANUAL row one card becomes. MANUAL and nothing else: editable,
+   * hard-deletable, shown under "Added", untouched by the address-book
+   * release — exactly what a contact the user chose to bring in should be.
+   * The vCard's own UID is deliberately NOT written: that column is CardDAV
+   * bookkeeping, and a file import has no server entry to keep books on.
+   *
+   * @param username the store owner
+   * @param card the parsed card
+   * @param addresses the normalized addresses, preferred first
+   * @return the row to create
+   */
+  private EmailContact toContact(String username, ParsedVCard card, List<String> addresses) {
+    EmailContact contact = new EmailContact();
+    contact.setUserId(username);
+    contact.setSource(EmailContactSource.MANUAL);
+    contact.setPrimaryEmail(addresses.get(0));
+    contact.setSecondaryEmails(addresses.size() > 1 ? addresses.subList(1, addresses.size()) : null);
+    contact.setDisplayName(StringUtils.defaultIfBlank(card.formattedName(),
+                                                      StringUtils.trimToNull(StringUtils.trimToEmpty(card.givenName()) + " "
+                                                          + StringUtils.trimToEmpty(card.familyName()))));
+    contact.setGivenName(card.givenName());
+    contact.setFamilyName(card.familyName());
+    contact.setPhones(card.phones() == null || card.phones().isEmpty() ? null : card.phones());
+    contact.setOrganization(card.organization());
+    contact.setTitle(card.title());
+    contact.setSeenCount(0);
+    if (card.photo() != null && card.photo().length > 0 && card.photo().length <= MAX_PHOTO_BYTES) {
+      // Over the cap the photo is simply not stored: the contact is kept, per
+      // the cap's contract. Under it, a photo that fails to write costs the
+      // photo too — savePhotoBytes already answers null rather than throwing.
+      contact.setPhotoFileId(emailContactStorage.savePhotoBytes(null, card.photo(), card.photoMimeType()));
+    }
+    return contact;
+  }
+
+  /**
+   * Every address of a card, normalized the way the whole store normalizes,
+   * order kept (preferred first), duplicates dropped.
+   *
+   * @param card the parsed card
+   * @return the addresses, never null
+   */
+  private List<String> normalizedAddressesOf(ParsedVCard card) {
+    Set<String> addresses = new LinkedHashSet<>();
+    if (card.emails() != null) {
+      for (String email : card.emails()) {
+        String normalized = EmailContactUtils.normalizeAddress(email);
+        if (normalized != null) {
+          addresses.add(normalized);
+        }
+      }
+    }
+    return new ArrayList<>(addresses);
+  }
+
+  /**
+   * Persists the state without letting a settings store having a bad moment
+   * fail the run — a progress write the poll misses is a stale number for two
+   * seconds, while an exception here would cost the rest of the file.
+   *
+   * @param username the store owner
+   * @param state the state to persist
+   */
+  private void persistQuietly(String username, ContactImportState state) {
+    try {
+      userEmailSettingService.setContactImportState(state, username);
+    } catch (Exception e) {
+      LOG.debug("The import state of user {} could not be persisted", username, e);
+    }
+  }
+
+  /**
+   * Deletes the upload once the run is done with it, however the run went — an
+   * uploaded address book left lying in the upload store is somebody's
+   * contacts on disk for nothing.
+   *
+   * @param uploadId the upload to drop
+   */
+  private void removeUpload(String uploadId) {
+    try {
+      uploadService.removeUploadResource(uploadId);
+    } catch (Exception e) {
+      LOG.debug("Upload {} could not be removed after the vCard import", uploadId, e);
+    }
+  }
+}

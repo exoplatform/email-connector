@@ -20,6 +20,7 @@ import java.io.ByteArrayInputStream;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -503,7 +504,29 @@ public class EmailContactStorage {
   }
 
   /**
-   * Stores picture bytes that came from an address book rather than an upload.
+   * The vCard uid of every address-book row this user holds, keyed by row id.
+   * <p>
+   * What the export consults so a CardDAV contact leaves the store carrying the
+   * identity its server gave it — one query for the whole export rather than
+   * putting a bookkeeping column on the DTO every other read would then carry
+   * for nothing.
+   *
+   * @param userId the store owner
+   * @return row id → vCard uid, rows without one absent; never null
+   */
+  public Map<Long, String> getVcardUids(String userId) {
+    Map<Long, String> uids = new HashMap<>();
+    for (EmailContactEntity entity : emailContactDAO.findByUserIdAndSource(userId, EmailContactSource.CARDDAV)) {
+      if (StringUtils.isNotBlank(entity.getVcardUid())) {
+        uids.put(entity.getId(), entity.getVcardUid());
+      }
+    }
+    return uids;
+  }
+
+  /**
+   * Stores picture bytes that came from a vCard rather than an upload — the
+   * address-book sync's path, and the file import's.
    *
    * @param photoFileId the file to replace, or null to write a new one
    * @param bytes the picture
@@ -511,7 +534,7 @@ public class EmailContactStorage {
    * @return the stored file id, or null when it could not be written
    */
   @SneakyThrows
-  private Long savePhotoBytes(Long photoFileId, byte[] bytes, String mimeType) {
+  public Long savePhotoBytes(Long photoFileId, byte[] bytes, String mimeType) {
     FileItem fileItem = new FileItem(photoFileId,
                                      PHOTO_FILE_NAME,
                                      StringUtils.defaultIfBlank(mimeType, "image/jpeg"),

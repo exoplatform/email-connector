@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.rest;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +27,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -42,12 +44,14 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.commons.file.model.FileItem;
+import org.exoplatform.emailConnector.model.ContactImportState;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
 import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.service.EmailContactCardDavSyncService;
 import org.exoplatform.emailConnector.service.EmailContactService;
+import org.exoplatform.emailConnector.service.EmailContactVCardService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -55,6 +59,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 /**
  * The contact store's REST surface, at {@code /email-connector/rest/contacts}.
@@ -78,6 +83,9 @@ public class EmailContactRest {
 
   @Autowired
   private EmailContactCardDavSyncService emailContactCardDavSyncService;
+
+  @Autowired
+  private EmailContactVCardService       emailContactVCardService;
 
   @GetMapping
   @Secured("users")
@@ -299,6 +307,52 @@ public class EmailContactRest {
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
   public ContactSyncState getAddressBookSyncStatus(HttpServletRequest request) {
     return emailContactCardDavSyncService.getSyncState(request.getRemoteUser());
+  }
+
+  @GetMapping(value = "/export", produces = "text/vcard")
+  @Secured("users")
+  @Operation(summary = "Exports the caller's whole contact store as a .vcf file", method = "GET",
+             description = "Streams every visible contact of the caller's own store - all sources, suppressed rows excluded - as one vCard 3.0 file, the dialect Gmail, Outlook and iCloud all accept. Always the whole store, never a filtered view. Directory-linked colleagues leave with their live-resolved name; CardDAV rows keep their server UID.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public void exportContacts(HttpServletRequest request, HttpServletResponse response) throws IOException {
+    response.setContentType("text/vcard");
+    response.setCharacterEncoding("UTF-8");
+    // The filename needs no RFC 5987 encoding dance: it is a constant, and a
+    // constant with nothing to escape.
+    response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"contacts.vcf\"");
+    emailContactVCardService.exportContacts(request.getRemoteUser(), response.getWriter());
+  }
+
+  @PostMapping("/import")
+  @Secured("users")
+  @Operation(summary = "Imports an uploaded .vcf file into the caller's contacts", method = "POST",
+             description = "Starts importing a vCard file previously pushed to the upload service, and answers immediately - the run happens in the background and /import/status is where it reports. Import skips and reports, never merges and never revives: a card whose any address is already known (including a removed contact's tombstone) is left alone, so re-importing the same file is a no-op. Imported contacts are manual rows.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Missing upload, or a file over the size cap"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "409", description = "An import of this user is already running"), })
+  public ContactImportState importContacts(HttpServletRequest request,
+                                           @Parameter(description = "The upload id the file was pushed under", required = true)
+                                           @RequestParam("uploadId")
+                                           String uploadId) {
+    try {
+      return emailContactVCardService.startImport(request.getRemoteUser(), uploadId);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    }
+  }
+
+  @GetMapping("/import/status")
+  @Secured("users")
+  @Operation(summary = "How the caller's vCard import is going, or went", method = "GET",
+             description = "Answers the stored import state: status, the four counters (imported, already known, no address, unreadable) and, when something cut the run short, its message code. A null status says no import ever ran. Holds no secret.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public ContactImportState getImportStatus(HttpServletRequest request) {
+    return emailContactVCardService.getImportState(request.getRemoteUser());
   }
 
   @PostMapping("/{id}/restore")
