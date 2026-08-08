@@ -229,6 +229,23 @@ public class EmailContactStorage {
    * @param userId the store owner
    * @param addresses every address, already normalized, in preference order
    */
+  /**
+   * Every address a synced card can be reached at, preferred one first.
+   *
+   * @param data the card as the sync read it
+   * @return the addresses, never null
+   */
+  private List<String> addressesOfCardDav(CardDavContactData data) {
+    List<String> addresses = new ArrayList<>();
+    if (StringUtils.isNotBlank(data.primaryEmail())) {
+      addresses.add(data.primaryEmail());
+    }
+    if (data.secondaryEmails() != null) {
+      addresses.addAll(data.secondaryEmails());
+    }
+    return addresses;
+  }
+
   private void saveAddresses(Long contactId, String userId, List<String> addresses) {
     if (contactId == null) {
       return;
@@ -467,7 +484,13 @@ public class EmailContactStorage {
         entity.setPhotoOrigin(null);
       }
     }
-    return emailContactDAO.save(entity).getId();
+    EmailContactEntity saved = emailContactDAO.save(entity);
+    // The address table, which every lookup by address reads. Missing here, a
+    // synced contact could not be found by their own address: mail from them
+    // was collected as somebody new, clicking their name in a header offered to
+    // create them, and an import of the same address book duplicated the lot.
+    saveAddresses(saved.getId(), saved.getUserId(), addressesOfCardDav(data));
+    return saved.getId();
   }
 
   /**
