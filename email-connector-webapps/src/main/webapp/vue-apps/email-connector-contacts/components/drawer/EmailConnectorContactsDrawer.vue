@@ -47,7 +47,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="hasFullAppLeft" #fullAppLeftTitle>
       <div class="d-flex align-center justify-space-between width-full">
         <span>{{ $t('emailConnector.contacts.drawer.title') }}</span>
-        <div>
+        <!-- A flex line, so the add button and the overflow menu are centred
+             against each other. Left to inline layout they align on baselines a
+             button and a menu compute differently, and the menu sat low. -->
+        <div class="d-flex align-center">
           <v-btn
             :title="$t('emailConnector.contacts.add')"
             icon
@@ -64,7 +67,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
     </template>
     <template #titleIcons>
-      <div v-if="!hasFullAppLeft">
+      <div v-if="!hasFullAppLeft" class="d-flex align-center">
         <v-btn
           :title="$t('emailConnector.contacts.add')"
           icon

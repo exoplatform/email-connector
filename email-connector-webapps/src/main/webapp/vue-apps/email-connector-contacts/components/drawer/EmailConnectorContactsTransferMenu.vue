@@ -20,11 +20,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        dumb — choosing a file and asking for the export are all it does; the
        drawer owns the upload, the poll and the report, so an import survives
        this menu unmounting when the drawer expands. -->
-  <!-- One flex row holding the menu and the hidden input it opens. The wrapper
-       cannot go -- Vue 2 allows one root and the input must live somewhere --
-       but aligning it centres the button on the same line as the add button
-       beside it, which a bare inline-flex box did not. -->
-  <div class="d-inline-flex align-center">
+  <!-- The wrapper cannot go: Vue 2 allows one root and the hidden input must
+       live somewhere. It stays out of the way of alignment instead -- the
+       header row is the flex line, and this is one of its items -- centred by
+       that row, so it needs no display class of its own. -->
+  <div>
       <v-menu
       content-class="no-min-width border-radius z-index-modal overflow-hidden"
       close-on-content-click
