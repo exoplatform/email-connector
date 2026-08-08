@@ -181,7 +181,7 @@ public class EmailBoxRest {
   @GetMapping("/search")
   @Secured("users")
   @Operation(summary = "Searches the mailbox on the server", method = "GET",
-             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, unread or sinceDays) is required.")
+             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, to, unread or sinceDays) is required.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request: unknown folder or no search criterion"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
@@ -193,6 +193,9 @@ public class EmailBoxRest {
                                             @Parameter(description = "Text matched against the sender only")
                                             @RequestParam(value = "from", required = false)
                                             String from,
+                                            @Parameter(description = "Text matched against the To or Cc recipients only — how a person is pinned in the SENT folder, where the sender is always the user")
+                                            @RequestParam(value = "to", required = false)
+                                            String to,
                                             @Parameter(description = "Restrict to unread messages")
                                             @RequestParam(value = "unread", required = false, defaultValue = "false")
                                             boolean unread,
@@ -209,7 +212,7 @@ public class EmailBoxRest {
                                             @RequestParam(value = "limit", required = false, defaultValue = "20")
                                             int limit) {
     try {
-      return emailBoxService.searchEmails(request.getRemoteUser(), query, from, unread, favorites, sinceDays, folder, limit);
+      return emailBoxService.searchEmails(request.getRemoteUser(), query, from, to, unread, favorites, sinceDays, folder, limit);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
