@@ -568,6 +568,63 @@ public class EmailContactVCardServiceTest {
   }
 
   @Test
+  void theCardFieldsLandOnTheImportedRow() throws Exception {
+    // Birthday, address, note and website used to be lost twice — dropped on
+    // read AND unwritable on export. This pins the read half of the fix.
+    givenUpload("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        EMAIL:jane@example.com
+        BDAY:1985-04-12
+        ADR:;;12 rue de la Paix;Paris;;75002;France
+        NOTE:Met at FOSDEM.\\nPrefers email.
+        URL:https://janedoe.example
+        END:VCARD""");
+    when(emailContactStorage.getContactByAddress(eq(USERNAME), anyString())).thenReturn(null);
+
+    service.startImport(USERNAME, UPLOAD_ID);
+
+    ArgumentCaptor<EmailContact> created = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).createContact(created.capture());
+    EmailContact row = created.getValue();
+    assertEquals("1985-04-12", row.getBirthday());
+    assertEquals("12 rue de la Paix", row.getPostalAddress().street());
+    assertEquals("Paris", row.getPostalAddress().city());
+    assertEquals("75002", row.getPostalAddress().postalCode());
+    assertEquals("France", row.getPostalAddress().country());
+    assertEquals("Met at FOSDEM.\nPrefers email.", row.getNote());
+    assertEquals("https://janedoe.example", row.getWebsite());
+  }
+
+  @Test
+  void theExportWritesTheCardFieldsBack() throws Exception {
+    // The write half: what the store holds must leave in the vCard's own slots
+    // — a structured ADR, not one long street line.
+    EmailContact contact = visibleContact(1L);
+    contact.setBirthday("--04-12");
+    contact.setPostalAddress(new org.exoplatform.emailConnector.model.PostalAddress("12 rue de la Paix",
+                                                                                    "Paris",
+                                                                                    null,
+                                                                                    "75002",
+                                                                                    "France"));
+    contact.setNote("Met at FOSDEM.");
+    contact.setWebsite("https://janedoe.example");
+    when(emailContactService.getContacts(USERNAME, null, null, false, 0, 200))
+        .thenReturn(new EmailContactPage(List.of(contact), Map.of(), 1, 0, 200));
+    when(emailContactStorage.getVcardUids(USERNAME)).thenReturn(Map.of());
+    StringWriter out = new StringWriter();
+
+    service.exportContacts(USERNAME, out);
+
+    String vcf = out.toString();
+    assertTrue(vcf.contains("BDAY:--04-12"));
+    assertTrue(vcf.contains("ADR:;;12 rue de la Paix;Paris;;75002;France"));
+    assertTrue(vcf.contains("NOTE:Met at FOSDEM."));
+    assertTrue(vcf.contains("URL:https://janedoe.example"));
+  }
+
+  @Test
   void aCardWithNeitherAddressNorIdentityIsStillSkipped() throws Exception {
     givenUpload("""
         BEGIN:VCARD

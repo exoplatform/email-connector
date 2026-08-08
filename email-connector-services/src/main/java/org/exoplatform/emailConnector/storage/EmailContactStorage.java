@@ -47,6 +47,7 @@ import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.CardDavContactData;
 import org.exoplatform.emailConnector.model.CardDavRow;
 import org.exoplatform.emailConnector.model.PhotoOrigin;
+import org.exoplatform.emailConnector.model.PostalAddress;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -468,6 +469,10 @@ public class EmailContactStorage {
     entity.setPhones(joinValues(data.phones()));
     entity.setOrganization(data.organization());
     entity.setTitle(data.title());
+    applyPostalAddress(data.address(), entity);
+    entity.setBirthday(data.birthday());
+    entity.setNote(EmailContactUtils.truncateNote(data.note()));
+    entity.setWebsite(data.website());
     entity.setHref(href);
     entity.setEtag(etag);
     entity.setVcardUid(data.vcardUid());
@@ -762,6 +767,10 @@ public class EmailContactStorage {
     entity.setPhones(joinValues(contact.getPhones()));
     entity.setOrganization(contact.getOrganization());
     entity.setTitle(contact.getTitle());
+    entity.setBirthday(contact.getBirthday());
+    applyPostalAddress(contact.getPostalAddress(), entity);
+    entity.setNote(EmailContactUtils.truncateNote(contact.getNote()));
+    entity.setWebsite(contact.getWebsite());
     entity.setPlatformUsername(contact.getPlatformUsername());
     entity.setPhotoFileId(contact.getPhotoFileId());
     entity.setSuppressed(contact.isSuppressed());
@@ -795,6 +804,14 @@ public class EmailContactStorage {
     contact.setPhones(splitValues(entity.getPhones()));
     contact.setOrganization(entity.getOrganization());
     contact.setTitle(entity.getTitle());
+    contact.setBirthday(entity.getBirthday());
+    contact.setPostalAddress(PostalAddress.orNull(entity.getAddressStreet(),
+                                                  entity.getAddressCity(),
+                                                  entity.getAddressRegion(),
+                                                  entity.getAddressPostalCode(),
+                                                  entity.getAddressCountry()));
+    contact.setNote(entity.getNote());
+    contact.setWebsite(entity.getWebsite());
     contact.setPlatformUsername(entity.getPlatformUsername());
     contact.setPhotoFileId(entity.getPhotoFileId());
     contact.setSuppressed(entity.isSuppressed());
@@ -839,6 +856,23 @@ public class EmailContactStorage {
                  .map(entry -> entry.contains(",") ? entry.substring(entry.indexOf(',') + 1) : entry)
                  .filter(StringUtils::isNotBlank)
                  .toList();
+  }
+
+  /**
+   * Writes a structured postal address onto its five columns — null clears all
+   * five, so a removed address does not leave a country behind. One writer for
+   * the authored path and the sync path alike, which is what keeps the two from
+   * drifting a component apart.
+   *
+   * @param address the address, or null for none
+   * @param entity the row being written, mutated in place
+   */
+  private void applyPostalAddress(PostalAddress address, EmailContactEntity entity) {
+    entity.setAddressStreet(address == null ? null : address.street());
+    entity.setAddressCity(address == null ? null : address.city());
+    entity.setAddressRegion(address == null ? null : address.region());
+    entity.setAddressPostalCode(address == null ? null : address.postalCode());
+    entity.setAddressCountry(address == null ? null : address.country());
   }
 
   /**

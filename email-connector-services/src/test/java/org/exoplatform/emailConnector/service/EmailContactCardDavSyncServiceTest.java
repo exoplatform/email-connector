@@ -306,6 +306,10 @@ public class EmailContactCardDavSyncServiceTest {
                                                null,
                                                null,
                                                null,
+                                               null,
+                                               null,
+                                               null,
+                                               null,
                                                null);
     givenServerReturns(resource("/dav/jane.vcf", "\"v1\""), twoAddresses);
     when(emailContactStorage.getCardDavRowByAddress(USERNAME, "jane@work.example")).thenReturn(null);
@@ -723,6 +727,10 @@ public class EmailContactCardDavSyncServiceTest {
                            null,
                            null,
                            null,
+                           null,
+                           null,
+                           null,
+                           null,
                            null);
   }
 
@@ -740,6 +748,10 @@ public class EmailContactCardDavSyncServiceTest {
                            null,
                            List.of(address),
                            List.of(),
+                           null,
+                           null,
+                           null,
+                           null,
                            null,
                            null,
                            new byte[] { 1, 2, 3 },

@@ -29,6 +29,8 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.emailConnector.model.PostalAddress;
+
 /**
  * The vCard corpus. Every case here is something a real address book emits —
  * these are the reasons the add-on takes a parsing library rather than reading
@@ -119,6 +121,77 @@ public class EzVCardParserTest {
     assertNotNull(parsed.photo());
     assertTrue(parsed.photo().length > 0);
     assertEquals("image/jpeg", parsed.photoMimeType());
+  }
+
+  @Test
+  void aBirthdayWithAYearReadsAsAFullDate() {
+    ParsedVCard parsed = parser.parse("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        BDAY:1985-04-12
+        END:VCARD""");
+
+    assertEquals("1985-04-12", parsed.birthday());
+  }
+
+  @Test
+  void aBirthdayWithoutAYearIsHeldWithoutInventingOne() {
+    // --MMDD is legal vCard and common: people know birthdays, not birth years.
+    // Storing this as a date would force a fake year onto it, which is exactly
+    // the corruption the canonical --MM-DD form exists to avoid.
+    ParsedVCard parsed = parser.parse("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        BDAY:--0412
+        END:VCARD""");
+
+    assertEquals("--04-12", parsed.birthday());
+  }
+
+  @Test
+  void aStructuredAddressKeepsItsComponentsApart() {
+    // The reason the store holds the address structured: these components must
+    // come back out as themselves, not as one long street line.
+    ParsedVCard parsed = parser.parse("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        ADR;TYPE=HOME:;;12 rue de la Paix;Paris;Île-de-France;75002;France
+        END:VCARD""");
+
+    assertEquals("12 rue de la Paix", parsed.address().street());
+    assertEquals("Paris", parsed.address().city());
+    assertEquals("Île-de-France", parsed.address().region());
+    assertEquals("75002", parsed.address().postalCode());
+    assertEquals("France", parsed.address().country());
+  }
+
+  @Test
+  void aMultiLineNoteKeepsItsLineBreaks() {
+    // vCard escapes newlines as \n inside the value; a note is prose and its
+    // paragraphs are part of what the user wrote.
+    ParsedVCard parsed = parser.parse("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        NOTE:Met at FOSDEM.\\nPrefers email over phone.
+        END:VCARD""");
+
+    assertEquals("Met at FOSDEM.\nPrefers email over phone.", parsed.note());
+  }
+
+  @Test
+  void aWebsiteReadsAsItsUrl() {
+    ParsedVCard parsed = parser.parse("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        URL:https://janedoe.example
+        END:VCARD""");
+
+    assertEquals("https://janedoe.example", parsed.website());
   }
 
   @Test
@@ -316,6 +389,10 @@ public class EzVCardParserTest {
                                            List.of("+33 6 12 34 56 78", "+33 1 23 45 67 89"),
                                            "Acme",
                                            "Head of Everything",
+                                           "1985-04-12",
+                                           new PostalAddress("12 rue de la Paix", "Paris", "Île-de-France", "75002", "France"),
+                                           "Met at FOSDEM.\nPrefers email over phone.",
+                                           "https://janedoe.example",
                                            new byte[] { (byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0 },
                                            "image/jpeg");
 
@@ -329,8 +406,36 @@ public class EzVCardParserTest {
     assertEquals(original.phones(), reparsed.phones());
     assertEquals(original.organization(), reparsed.organization());
     assertEquals(original.title(), reparsed.title());
+    assertEquals(original.birthday(), reparsed.birthday());
+    assertEquals(original.address(), reparsed.address());
+    assertEquals(original.note(), reparsed.note());
+    assertEquals(original.website(), reparsed.website());
     assertArrayEquals(original.photo(), reparsed.photo());
     assertEquals(original.photoMimeType(), reparsed.photoMimeType());
+  }
+
+  @Test
+  void aYearlessBirthdaySurvivesTheRoundTripWithoutInventingAYear() {
+    // The one corruption this field must never commit: a birthday given as
+    // "April 12th" leaving as April 12th of some year.
+    ParsedVCard original = new ParsedVCard(null,
+                                           "Jane Doe",
+                                           null,
+                                           null,
+                                           List.of("jane@example.com"),
+                                           List.of(),
+                                           null,
+                                           null,
+                                           "--04-12",
+                                           null,
+                                           null,
+                                           null,
+                                           null,
+                                           null);
+
+    ParsedVCard reparsed = parser.parse(parser.format(original));
+
+    assertEquals("--04-12", reparsed.birthday());
   }
 
   @Test
@@ -343,6 +448,10 @@ public class EzVCardParserTest {
                                                      null,
                                                      List.of("nameless@example.com"),
                                                      List.of(),
+                                                     null,
+                                                     null,
+                                                     null,
+                                                     null,
                                                      null,
                                                      null,
                                                      null,

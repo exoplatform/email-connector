@@ -261,6 +261,10 @@ public class EmailContactVCardService {
                            contact.getPhones() == null ? List.of() : contact.getPhones(),
                            contact.getOrganization(),
                            contact.getTitle(),
+                           contact.getBirthday(),
+                           contact.getPostalAddress(),
+                           contact.getNote(),
+                           contact.getWebsite(),
                            photo == null ? null : photo.getAsByte(),
                            photo == null || photo.getFileInfo() == null ? null : photo.getFileInfo().getMimetype());
   }
@@ -498,6 +502,12 @@ public class EmailContactVCardService {
     contact.setPhones(card.phones() == null || card.phones().isEmpty() ? null : card.phones());
     contact.setOrganization(card.organization());
     contact.setTitle(card.title());
+    // Already canonical (birthday) and capped (note) by the parser, so this path
+    // stores what the sync path stores for the very same card.
+    contact.setBirthday(card.birthday());
+    contact.setPostalAddress(card.address());
+    contact.setNote(card.note());
+    contact.setWebsite(card.website());
     contact.setSeenCount(0);
     if (card.photo() != null && card.photo().length > 0 && card.photo().length <= MAX_PHOTO_BYTES) {
       // Over the cap the photo is simply not stored: the contact is kept, per

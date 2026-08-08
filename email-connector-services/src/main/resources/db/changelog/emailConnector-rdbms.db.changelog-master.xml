@@ -468,4 +468,29 @@
       <column name="PRIMARY_EMAIL"/>
     </createIndex>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-36">
+    <!-- The rest of what a contact card should carry: birthday, postal address,
+         note and website. These were lost twice before this: the CardDAV sync
+         dropped them on read, and the export had nothing to write back.
+         BIRTHDAY is text, not a DATE: vCard allows a year-less birthday
+         (BDAY:- -0412) and a DATE column would force a fake year onto it. The
+         canonical forms are YYYY-MM-DD and - -MM-DD.
+         The address is STRUCTURED, one column per vCard ADR component, not one
+         formatted string: the joined PHONES column is what made phone matching
+         unreliable, and a flattened address could only ever be exported as one
+         long street line. Five nullable columns paid once beats a parser nobody
+         can write correctly later.
+         NOTE_TEXT is a bounded NVARCHAR rather than a CLOB so the column stays
+         cheap to read on every dialect; every write path caps it. -->
+    <addColumn tableName="EMAIL_CONTACT">
+      <column name="BIRTHDAY" type="VARCHAR(10)"/>
+      <column name="ADDRESS_STREET" type="NVARCHAR(500)"/>
+      <column name="ADDRESS_CITY" type="NVARCHAR(255)"/>
+      <column name="ADDRESS_REGION" type="NVARCHAR(255)"/>
+      <column name="ADDRESS_POSTAL_CODE" type="NVARCHAR(50)"/>
+      <column name="ADDRESS_COUNTRY" type="NVARCHAR(255)"/>
+      <column name="NOTE_TEXT" type="NVARCHAR(2000)"/>
+      <column name="WEBSITE" type="NVARCHAR(500)"/>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>
