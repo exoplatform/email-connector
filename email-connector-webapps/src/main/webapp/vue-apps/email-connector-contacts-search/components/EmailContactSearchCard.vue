@@ -43,7 +43,14 @@
               <span class="white--text text-subtitle-2">{{ initials }}</span>
             </v-avatar>
           </v-avatar>
-          <div class="d-flex flex-column overflow-hidden">
+          <!-- Start-aligned explicitly: the carousel's card styling centres text,
+               which left every card's block beginning at a different place and
+               made a three-line card look misaligned beside a two-line one.
+               Growing to fill the card is what lets the long addresses truncate
+               rather than decide the width. -->
+          <div
+            class="d-flex flex-column align-start text-start overflow-hidden flex-grow-1"
+            style="min-width: 0">
             <span class="text-truncate font-weight-bold text-color">
               {{ displayedName }}
             </span>
