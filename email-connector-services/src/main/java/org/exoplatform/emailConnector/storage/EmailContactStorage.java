@@ -527,6 +527,42 @@ public class EmailContactStorage {
   }
 
   /**
+   * Stamps a contact with the identity the card it came from carried.
+   * <p>
+   * Written here rather than through the DTO: the column is not something a
+   * caller of the REST may set, and the import is the only other writer -- it
+   * needs the identity so a second import of the same file recognises a person
+   * with no address, which nothing else can do.
+   *
+   * @param id the contact
+   * @param vcardUid the card's UID, ignored when blank
+   */
+  @Transactional
+  public void setVcardUid(long id, String vcardUid) {
+    if (StringUtils.isBlank(vcardUid)) {
+      return;
+    }
+    emailContactDAO.findById(id).ifPresent(entity -> {
+      entity.setVcardUid(vcardUid);
+      emailContactDAO.save(entity);
+    });
+  }
+
+  /**
+   * The contact carrying a vCard's identity, if this store already holds it.
+   *
+   * @param userId the store owner
+   * @param vcardUid the card's UID
+   * @return the contact, or null
+   */
+  public EmailContact getContactByVcardUid(String userId, String vcardUid) {
+    if (StringUtils.isBlank(vcardUid)) {
+      return null;
+    }
+    return emailContactDAO.findByUserIdAndVcardUid(userId, vcardUid).map(this::fromEntity).orElse(null);
+  }
+
+  /**
    * The vCard uid of every address-book row this user holds, keyed by row id.
    * <p>
    * What the export consults so a CardDAV contact leaves the store carrying the

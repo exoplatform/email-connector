@@ -433,10 +433,20 @@ public class EmailContactVCardService {
   private void importCard(String username, ParsedVCard card, ContactImportState state) {
     try {
       List<String> addresses = normalizedAddressesOf(card);
-      if (addresses.isEmpty()) {
-        // Nothing to key the row on: importing it anyway would duplicate it on
-        // every re-import, which is why this is its own number in the report.
+      String uid = StringUtils.trimToNull(card.uid());
+      if (addresses.isEmpty() && uid == null) {
+        // Neither an address nor the identity every provider stamps on a card:
+        // nothing to recognise this person by, so importing them would make
+        // another copy on every re-import. Its own number in the report.
         state.setNoAddress(state.getNoAddress() + 1);
+        return;
+      }
+      // The card's own identity is asked first, and it is what lets somebody
+      // with a phone and no email address be imported at all: the address table
+      // cannot speak for a person who has no address. The sync recognises the
+      // same people the same way, by what the server calls them.
+      if (uid != null && emailContactStorage.getContactByVcardUid(username, uid) != null) {
+        state.setAlreadyKnown(state.getAlreadyKnown() + 1);
         return;
       }
       for (String address : addresses) {
@@ -448,7 +458,13 @@ public class EmailContactVCardService {
           return;
         }
       }
-      emailContactStorage.createContact(toContact(username, card, addresses));
+      EmailContact created = emailContactStorage.createContact(toContact(username, card, addresses));
+      // Only when the card carried one, and only once the row has an id: a
+      // contact is imported whether or not its provider stamped an identity, and
+      // asking for one that is not there cost the whole card before this guard.
+      if (uid != null && created != null && created.getId() != null) {
+        emailContactStorage.setVcardUid(created.getId(), uid);
+      }
       state.setImported(state.getImported() + 1);
     } catch (Exception e) {
       LOG.debug("A vCard of the import of user {} could not be filed", username, e);
@@ -472,7 +488,7 @@ public class EmailContactVCardService {
     EmailContact contact = new EmailContact();
     contact.setUserId(username);
     contact.setSource(EmailContactSource.MANUAL);
-    contact.setPrimaryEmail(addresses.get(0));
+    contact.setPrimaryEmail(addresses.isEmpty() ? null : addresses.get(0));
     contact.setSecondaryEmails(addresses.size() > 1 ? addresses.subList(1, addresses.size()) : null);
     contact.setDisplayName(StringUtils.defaultIfBlank(card.formattedName(),
                                                       StringUtils.trimToNull(StringUtils.trimToEmpty(card.givenName()) + " "

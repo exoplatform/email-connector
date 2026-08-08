@@ -524,4 +524,63 @@ public class EmailContactVCardServiceTest {
     contact.setPrimaryEmail("someone" + id + "@example.com");
     return contact;
   }
+
+  @Test
+  void aPersonWithAPhoneAndNoAddressIsImportedOnTheirCardIdentity() throws Exception {
+    // The sync keeps such people -- a contact is a person, addresses are
+    // attributes -- and the import used to refuse them for want of anything to
+    // recognise them by. The card's own UID is that something.
+    givenUpload("""
+        BEGIN:VCARD
+        VERSION:3.0
+        UID:urn:uuid:phone-only
+        FN:Bruno Sanchez
+        TEL;TYPE=CELL:+33612340001
+        END:VCARD""");
+    EmailContact created = visibleContact(31L);
+    when(emailContactStorage.createContact(any())).thenReturn(created);
+
+    service.startImport(USERNAME, UPLOAD_ID);
+
+    ContactImportState state = lastPersistedState();
+    assertEquals(1, state.getImported());
+    assertEquals(0, state.getNoAddress());
+    verify(emailContactStorage).setVcardUid(31L, "urn:uuid:phone-only");
+  }
+
+  @Test
+  void reimportingThatPersonRecognisesThem() throws Exception {
+    givenUpload("""
+        BEGIN:VCARD
+        VERSION:3.0
+        UID:urn:uuid:phone-only
+        FN:Bruno Sanchez
+        TEL;TYPE=CELL:+33612340001
+        END:VCARD""");
+    when(emailContactStorage.getContactByVcardUid(USERNAME, "urn:uuid:phone-only")).thenReturn(visibleContact(31L));
+
+    service.startImport(USERNAME, UPLOAD_ID);
+
+    ContactImportState state = lastPersistedState();
+    assertEquals(0, state.getImported());
+    assertEquals(1, state.getAlreadyKnown());
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void aCardWithNeitherAddressNorIdentityIsStillSkipped() throws Exception {
+    givenUpload("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Nobody At All
+        TEL;TYPE=CELL:+33612340009
+        END:VCARD""");
+
+    service.startImport(USERNAME, UPLOAD_ID);
+
+    ContactImportState state = lastPersistedState();
+    assertEquals(0, state.getImported());
+    assertEquals(1, state.getNoAddress());
+  }
+
 }
