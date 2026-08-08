@@ -21,6 +21,7 @@ import EmailConnectorContactsListItem from './components/drawer/EmailConnectorCo
 import EmailConnectorContactsSourceFilter from './components/drawer/EmailConnectorContactsSourceFilter.vue';
 import EmailConnectorContactsAlphabetRail from './components/drawer/EmailConnectorContactsAlphabetRail.vue';
 import EmailConnectorContactsDetail from './components/drawer/EmailConnectorContactsDetail.vue';
+import EmailConnectorContactsCorrespondence from './components/drawer/EmailConnectorContactsCorrespondence.vue';
 import EmailConnectorContactsDetailDrawer from './components/drawer/EmailConnectorContactsDetailDrawer.vue';
 import EmailConnectorContactFormDrawer from './components/drawer/EmailConnectorContactFormDrawer.vue';
 
@@ -32,6 +33,7 @@ const components = {
   'email-connector-contacts-source-filter': EmailConnectorContactsSourceFilter,
   'email-connector-contacts-alphabet-rail': EmailConnectorContactsAlphabetRail,
   'email-connector-contacts-detail': EmailConnectorContactsDetail,
+  'email-connector-contacts-correspondence': EmailConnectorContactsCorrespondence,
   'email-connector-contacts-detail-drawer': EmailConnectorContactsDetailDrawer,
   'email-connector-contact-form-drawer': EmailConnectorContactFormDrawer
 };

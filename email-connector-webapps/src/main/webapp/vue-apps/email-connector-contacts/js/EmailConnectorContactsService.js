@@ -203,6 +203,139 @@ export function restoreContact(id) {
 
 
 
+// How many of the contact's addresses correspondence covers, and how many mails
+// each of the (two per address) searches may return. Three addresses is the
+// whole address list of practically every contact, and it bounds the worst case
+// at six IMAP searches — the section is opened by hand, never in a loop.
+const CORRESPONDENCE_ADDRESSES_MAX = 3;
+const CORRESPONDENCE_PAGE_SIZE = 10;
+
+/**
+ * The recent mail exchanged with a person, newest first: what they sent the user
+ * (INBOX, pinned by sender) and what the user sent them (SENT, pinned by To/Cc
+ * recipient — in that folder every sender is the user, so a sender criterion
+ * could never say "to this person").
+ *
+ * One request per direction per address, all in parallel, and one failed
+ * search does not lose the others — the section degrades to whatever could be
+ * read, because a card without correspondence is still a useful card. Only
+ * when EVERY search failed does this reject, so the card can stay quiet about
+ * it.
+ *
+ * @param {Array} addresses - the contact's addresses, primary first; only the
+ *          first few are searched (see the cap above)
+ * @returns {Promise<object>} {results, hasMore} — results carry a direction
+ *          ('sent' or 'received') on top of the search row fields, deduplicated
+ *          (one mail can match two addresses of the same person) and capped to
+ *          one page; hasMore says the mailbox holds more than what is shown
+ */
+export function getCorrespondence(addresses) {
+  const searched = (addresses || []).filter(address => address).slice(0, CORRESPONDENCE_ADDRESSES_MAX);
+  const searches = [];
+  searched.forEach(address => {
+    searches.push(searchMail({from: address, folder: 'INBOX'}));
+    searches.push(searchMail({to: address, folder: 'SENT'}));
+  });
+  return Promise.allSettled(searches).then(outcomes => {
+    const pages = outcomes.filter(outcome => outcome.status === 'fulfilled').map(outcome => outcome.value);
+    if (searches.length && !pages.length) {
+      throw new Error('No correspondence search could be run');
+    }
+    const seen = new Set();
+    const results = [];
+    let totalMatches = 0;
+    pages.forEach(page => {
+      totalMatches += page?.totalMatches || 0;
+      (page?.results || []).forEach(result => {
+        // UIDs are per-folder, so the folder is part of the identity; the dedup is
+        // for one mail matching two addresses of the same person, not for folders.
+        const key = `${result.folder}:${result.mailRemoteId}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          results.push({...result, direction: result.folder === 'SENT' ? 'sent' : 'received'});
+        }
+      });
+    });
+    results.sort((first, second) => new Date(second.receivedDate) - new Date(first.receivedDate));
+    return {
+      results: results.slice(0, CORRESPONDENCE_PAGE_SIZE),
+      hasMore: totalMatches > CORRESPONDENCE_PAGE_SIZE || results.length > CORRESPONDENCE_PAGE_SIZE,
+    };
+  });
+}
+
+/**
+ * One server-side mailbox search — the mailbox's own /search endpoint, an IMAP
+ * SEARCH over the named folder.
+ *
+ * @param {object} criteria - {from, to, folder}, each optional
+ * @returns {Promise<object>} the search page {results, totalMatches}
+ */
+function searchMail(criteria) {
+  const params = new URLSearchParams();
+  if (criteria.from) {
+    params.append('from', criteria.from);
+  }
+  if (criteria.to) {
+    params.append('to', criteria.to);
+  }
+  params.append('folder', criteria.folder || 'INBOX');
+  params.append('limit', CORRESPONDENCE_PAGE_SIZE);
+  return fetch(`/email-connector/rest/email-box/search?${params}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      // 401 is the ordinary answer for a user with no mailbox connected — still a
+      // failure here, and the caller decides how quietly to take it.
+      throw new Error('Error when searching the mailbox');
+    }
+  });
+}
+
+/**
+ * Opens one mail in the mailbox's own reader, from the contact card, through
+ * the same document-level door the favorites drawer and the unified search
+ * use. The whole identity travels: a UID alone is only unique within its
+ * folder, and a hit outside the local cache must first be pulled in — both of
+ * which the mailbox knows how to handle, and neither of which the card should.
+ *
+ * @param {object} result - a search row: {mailRemoteId, folder, cached}
+ * @returns {void}
+ */
+export function openMail(result) {
+  window.require(['SHARED/emailConnectorQuickActionExtension'], () =>
+    document.dispatchEvent(new CustomEvent('open-email-box-mail', {
+      detail: {
+        mailRemoteId: result?.mailRemoteId,
+        folder: result?.folder,
+        cached: result?.cached,
+      },
+    })));
+}
+
+/**
+ * Opens the mailbox on a search for an address — the existing "see all" path:
+ * the mailbox's own search field, which reaches the whole mailbox. Its free
+ * text matches subject or sender, so this surfaces the mail the person sent;
+ * the sent-to direction has no full-page home yet and the card says nothing
+ * that pretends otherwise.
+ *
+ * @param {string} term - the text to search for, typically the primary address
+ * @returns {void}
+ */
+export function openMailboxSearch(term) {
+  window.require(['SHARED/emailConnectorQuickActionExtension'], () =>
+    document.dispatchEvent(new CustomEvent('open-email-box-search', {
+      detail: {term},
+    })));
+}
+
 /**
  * Opens the email composer prefilled with a recipient, mounting the mailbox
  * app on demand exactly like the Documents send-by-email action does — the
