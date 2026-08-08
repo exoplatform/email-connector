@@ -56,6 +56,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               fas fa-user-plus
             </v-icon>
           </v-btn>
+          <email-connector-contacts-transfer-menu
+            :importing="importing"
+            @import="onImportFile"
+            @export="onExport" />
         </div>
       </div>
     </template>
@@ -69,9 +73,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             fas fa-user-plus
           </v-icon>
         </v-btn>
+        <email-connector-contacts-transfer-menu
+          :importing="importing"
+          @import="onImportFile"
+          @export="onExport" />
       </div>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
+      <email-connector-contacts-import-banner
+        :state="importState"
+        @dismiss="importState = null" />
       <email-connector-contacts-source-filter
         v-model="filterChips"
         :counts="sourceCounts" />
@@ -85,6 +96,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
+        <email-connector-contacts-import-banner
+          :state="importState"
+          @dismiss="importState = null" />
         <email-connector-contacts-source-filter
           v-model="filterChips"
           :counts="sourceCounts" />
@@ -121,6 +135,10 @@ const PAGE_SIZE = 200;
 const SOURCES = ['collected', 'manual', 'addressBook'];
 const MAX_ROWS = 5000;
 const RAIL_MIN_CONTACTS = 100;
+// The server refuses a bigger file anyway (its own pre-parse check); saying so
+// here spares the user uploading twenty megabytes to hear it.
+const IMPORT_MAX_FILE_BYTES = 20 * 1024 * 1024;
+const IMPORT_POLL_MS = 1500;
 
 export default {
   data() {
@@ -141,6 +159,14 @@ export default {
       searchTimeout: null,
       // Increments on every reload; late pages of an outdated load are dropped.
       loadToken: 0,
+      // The polled vCard import state; null shows no banner. Kept here rather
+      // than in the menu because the menu unmounts when the drawer expands,
+      // and an import must survive that.
+      importState: null,
+      importPollTimeout: null,
+      // True from the moment a file is chosen until the server's answer or the
+      // poll says the run ended — the window the menu greys Import out for.
+      importUploading: false,
     };
   },
   watch: {
@@ -163,6 +189,7 @@ export default {
     this.$root.$off('email-contacts-refresh', this.reload);
     document.removeEventListener('favorite-added', this.onFavoriteToggled);
     document.removeEventListener('favorite-removed', this.onFavoriteToggled);
+    window.clearTimeout(this.importPollTimeout);
   },
   computed: {
     /**
@@ -223,6 +250,14 @@ export default {
     emptyLabel() {
       return this.term ? this.$t('emailConnector.contacts.empty.filtered') : this.$t('emailConnector.contacts.empty');
     },
+    /**
+     * Whether a vCard import is under way — uploading, or running server-side.
+     *
+     * @returns {boolean} true while an import is going
+     */
+    importing() {
+      return this.importUploading || this.importState?.status === 'IN_PROGRESS';
+    },
   },
   methods: {
     /**
@@ -238,11 +273,103 @@ export default {
       this.$refs.emailContactsDrawer.open();
       this.readSourceCounts();
       this.reload();
+      this.resumeRunningImport();
       if (opening?.contactId) {
         this.$emailConnectorContactsService.getContact(opening.contactId)
           .then(contact => this.selectContact(contact))
           .catch(() => null);
       }
+    },
+    /**
+     * Picks a still-running import back up on open — an import started, the
+     * drawer closed, the drawer reopened. Only an IN_PROGRESS state is shown:
+     * the stored report of a run finished last week is history, not news.
+     *
+     * @returns {void}
+     */
+    resumeRunningImport() {
+      this.$emailConnectorContactsService.getImportStatus()
+        .then(state => {
+          if (state?.status === 'IN_PROGRESS') {
+            this.importState = state;
+            this.scheduleImportPoll();
+          }
+        })
+        .catch(() => null);
+    },
+    /**
+     * Imports a chosen .vcf: pushes it to the upload service, starts the
+     * server-side run, and polls its state until it ends. The size cap is
+     * checked here first so an oversized file costs an alert, not an upload.
+     *
+     * @param {File} file - the .vcf the user picked
+     * @returns {Promise<void>} resolves when the run is started (not finished)
+     */
+    async onImportFile(file) {
+      if (file.size > IMPORT_MAX_FILE_BYTES) {
+        this.$root.$emit('alert-message', this.$t('emailConnector.contacts.import.fileTooLarge'), 'error');
+        return;
+      }
+      this.importUploading = true;
+      try {
+        const uploadId = this.$uploadService.generateRandomId();
+        const resolvedId = await this.$uploadService.upload(file, uploadId);
+        if (!resolvedId) {
+          throw new Error('Upload failed');
+        }
+        this.importState = await this.$emailConnectorContactsService.importContacts(resolvedId);
+        this.scheduleImportPoll();
+      } catch (error) {
+        // The server's message codes are this bundle's keys, so a 400/409 body
+        // translates directly; anything else gets the generic sentence.
+        let code = 'emailConnector.contacts.import.error';
+        if (error?.status === 409) {
+          code = 'emailConnector.contacts.import.alreadyRunning';
+        } else if (error?.message === 'emailConnector.contacts.import.fileTooLarge') {
+          code = 'emailConnector.contacts.import.fileTooLarge';
+        }
+        this.$root.$emit('alert-message', this.$t(code), 'error');
+      } finally {
+        this.importUploading = false;
+      }
+    },
+    /**
+     * Schedules the next look at the running import.
+     *
+     * @returns {void}
+     */
+    scheduleImportPoll() {
+      window.clearTimeout(this.importPollTimeout);
+      this.importPollTimeout = window.setTimeout(() => this.pollImportStatus(), IMPORT_POLL_MS);
+    },
+    /**
+     * One look at the running import: progress feeds the banner, and the end
+     * of the run swaps it for the report and repaints the list the run just
+     * changed. A failed poll only tries again — the run does not need us
+     * watching to finish.
+     *
+     * @returns {void}
+     */
+    pollImportStatus() {
+      this.$emailConnectorContactsService.getImportStatus()
+        .then(state => {
+          this.importState = state;
+          if (state?.status === 'IN_PROGRESS') {
+            this.scheduleImportPoll();
+          } else {
+            this.$root.$emit('email-contacts-refresh');
+          }
+        })
+        .catch(() => this.scheduleImportPoll());
+    },
+    /**
+     * Downloads the whole store as one .vcf — always the whole store, which
+     * is what the menu entry's label promises.
+     *
+     * @returns {void}
+     */
+    onExport() {
+      this.$emailConnectorContactsService.downloadExport();
     },
     /**
      * Counts what each chip selects, which is what decides which chips are worth
@@ -284,6 +411,11 @@ export default {
       this.term = null;
       this.filterChips = [];
       this.contactsDrawer = false;
+      // The poll dies with the drawer; the run itself does not need it, and
+      // reopening resumes it. The banner state dies too — a stale report
+      // reappearing days later would read as a new import.
+      window.clearTimeout(this.importPollTimeout);
+      this.importState = null;
     },
     /**
      * A favorite was toggled somewhere on the page. Only contact favorites are
