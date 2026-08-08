@@ -242,8 +242,6 @@ export default {
         this.$emailConnectorContactsService.getContact(opening.contactId)
           .then(contact => this.selectContact(contact))
           .catch(() => null);
-      } else if (opening?.address) {
-        this.openOnAddress(opening.address, opening.name);
       }
     },
     /**
@@ -393,49 +391,6 @@ export default {
     enrich(contact) {
       return contact.id ? this.$emailConnectorContactsService.getContact(contact.id).catch(() => contact)
         : Promise.resolve(contact);
-    },
-    /**
-     * Opens whoever is reachable at an address — the mailbox's way in, where all
-     * it has is what the mail header said.
-     * <p>
-     * An address nobody is stored at opens the form instead, carrying the name
-     * and address the mail wrote, so adding a correspondent is a confirmation
-     * rather than retyping what is already on screen.
-     *
-     * @param {string} address - the address from the mail
-     * @param {string} name - the display name the mail carried, may be empty
-     * @returns {void}
-     */
-    openOnAddress(address, name) {
-      this.$emailConnectorContactsService.getContactByAddress(address)
-        .then(contact => {
-          if (contact) {
-            this.selectContact(contact);
-          } else {
-            this.openForm(this.prefillFrom(address, name));
-          }
-        })
-        .catch(() => this.openForm(this.prefillFrom(address, name)));
-    },
-
-    /**
-     * The form fields a mail header can fill in on its own.
-     * <p>
-     * Splitting a display name into given and family is a guess — plenty of
-     * senders write "DOE Jane" — which is exactly why an unknown address opens a
-     * form to confirm rather than creating the contact silently.
-     *
-     * @param {string} address - the address from the mail
-     * @param {string} name - the display name the mail carried, may be empty
-     * @returns {object} what to prefill
-     */
-    prefillFrom(address, name) {
-      const parts = (name || '').trim().split(/\s+/).filter(Boolean);
-      return {
-        primaryEmail: address,
-        givenName: parts[0] || '',
-        familyName: parts.slice(1).join(' '),
-      };
     },
     /**
      * Opens the add/edit form drawer.
