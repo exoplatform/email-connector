@@ -118,6 +118,76 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-btn>
         </v-list-item-action>
       </v-list-item>
+      <v-list-item
+        v-if="formattedBirthday"
+        class="px-0">
+        <v-list-item-icon class="me-3 my-auto">
+          <v-icon size="16">
+            fas fa-birthday-cake
+          </v-icon>
+        </v-list-item-icon>
+        <v-list-item-content>
+          <v-list-item-title>{{ formattedBirthday }}</v-list-item-title>
+          <v-list-item-subtitle class="text-sub-title">
+            {{ $t('emailConnector.contacts.detail.birthday') }}
+          </v-list-item-subtitle>
+        </v-list-item-content>
+      </v-list-item>
+      <v-list-item
+        v-if="addressLines.length"
+        class="px-0">
+        <v-list-item-icon class="me-3 my-auto">
+          <v-icon size="16">
+            fas fa-map-marker-alt
+          </v-icon>
+        </v-list-item-icon>
+        <!-- One div per line rather than a styled pre: the card may not carry
+             <style> blocks, and the lines are already structured data. -->
+        <v-list-item-content>
+          <div
+            v-for="line in addressLines"
+            :key="line"
+            class="text-color">
+            {{ line }}
+          </div>
+        </v-list-item-content>
+      </v-list-item>
+      <v-list-item
+        v-if="contact.website"
+        class="px-0"
+        :href="websiteHref"
+        target="_blank"
+        rel="noopener noreferrer">
+        <v-list-item-icon class="me-3 my-auto">
+          <v-icon size="16">
+            fas fa-globe
+          </v-icon>
+        </v-list-item-icon>
+        <v-list-item-content>
+          <v-list-item-title class="primary--text">
+            {{ contact.website }}
+          </v-list-item-title>
+        </v-list-item-content>
+      </v-list-item>
+      <v-list-item
+        v-if="noteLines.length"
+        class="px-0">
+        <v-list-item-icon class="me-3 my-auto">
+          <v-icon size="16">
+            fas fa-sticky-note
+          </v-icon>
+        </v-list-item-icon>
+        <!-- Line by line for the same reason as the address: a multi-line note
+             must keep its paragraphs without any custom CSS. -->
+        <v-list-item-content>
+          <div
+            v-for="(line, index) in noteLines"
+            :key="`note-${index}`"
+            class="text-color text-break">
+            {{ line }}
+          </div>
+        </v-list-item-content>
+      </v-list-item>
     </v-list>
     <!-- The recent mail exchanged with this person — the way back from the card
          to the mailbox, closing the loop the sender-click opened. Orthogonal to
@@ -169,6 +239,67 @@ export default {
      */
     addresses() {
       return [this.contact.primaryEmail].concat(this.contact.secondaryEmails || []).filter(address => address);
+    },
+    /**
+     * The birthday as the viewer's locale writes it. The store's canonical
+     * forms are YYYY-MM-DD and --MM-DD; a year-less one is shown as month and
+     * day only — never with a year the person did not give.
+     *
+     * @returns {string} the localized birthday, or empty when there is none
+     */
+    formattedBirthday() {
+      const birthday = this.contact.birthday || '';
+      const lang = eXo?.env?.portal?.language || 'en';
+      try {
+        if (birthday.startsWith('--')) {
+          const [month, day] = birthday.substring(2).split('-').map(Number);
+          // Any leap year does as the carrier of a year-less month+day.
+          return new Intl.DateTimeFormat(lang, {month: 'long', day: 'numeric'}).format(new Date(2000, month - 1, day));
+        }
+        if (birthday) {
+          const [year, month, day] = birthday.split('-').map(Number);
+          return new Intl.DateTimeFormat(lang, {year: 'numeric', month: 'long', day: 'numeric'})
+            .format(new Date(year, month - 1, day));
+        }
+      } catch (e) {
+        // A value the formatter chokes on is still worth showing as itself.
+        return birthday;
+      }
+      return '';
+    },
+    /**
+     * The postal address as postal mail writes it: street, then locality line,
+     * then country — built from the structured components, which is the whole
+     * point of storing them apart.
+     *
+     * @returns {Array} the non-empty lines
+     */
+    addressLines() {
+      const address = this.contact.postalAddress;
+      if (!address) {
+        return [];
+      }
+      const localityLine = [address.postalCode, address.city, address.region].filter(part => part).join(' ');
+      return [address.street, localityLine, address.country].filter(line => line);
+    },
+    /**
+     * The note, split on its line breaks so each paragraph renders as its own
+     * block without any custom CSS.
+     *
+     * @returns {Array} the note's lines, empty when there is no note
+     */
+    noteLines() {
+      return (this.contact.note || '').split('\n').map(line => line.trim()).filter(line => line);
+    },
+    /**
+     * The website as a clickable target: a bare "janedoe.example" is given a
+     * scheme, because href without one resolves inside the platform.
+     *
+     * @returns {string} the absolute URL
+     */
+    websiteHref() {
+      const website = this.contact.website || '';
+      return /^[a-z][a-z0-9+.-]*:/i.test(website) ? website : `https://${website}`;
     },
     /**
      * The localized source of this row.

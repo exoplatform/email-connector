@@ -128,6 +128,94 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             class="pt-0"
             outlined
             dense />
+          <div class="text-sub-title mb-1">
+            {{ $t('emailConnector.contacts.form.birthday') }}
+          </div>
+          <!-- A plain text field, NOT a date picker: vCard allows a birthday
+               without a year (12-31), which no date input can hold, and forcing
+               a year here is exactly the corruption the backend refuses to
+               store. The server validates and answers invalidBirthday. -->
+          <v-text-field
+            v-model="form.birthday"
+            :placeholder="$t('emailConnector.contacts.form.birthday.hint')"
+            class="pt-0"
+            outlined
+            dense />
+          <div class="text-sub-title mb-1">
+            {{ $t('emailConnector.contacts.form.website') }}
+          </div>
+          <v-text-field
+            v-model="form.website"
+            type="url"
+            class="pt-0"
+            outlined
+            dense />
+          <!-- The address stays structured all the way down - five fields, the
+               way the store and the vCard ADR keep it - so an export writes
+               each component back into its own slot. -->
+          <div class="text-sub-title mb-1">
+            {{ $t('emailConnector.contacts.form.street') }}
+          </div>
+          <v-text-field
+            v-model="form.street"
+            class="pt-0"
+            outlined
+            dense />
+          <div class="d-flex">
+            <div class="flex-grow-1 me-2">
+              <div class="text-sub-title mb-1">
+                {{ $t('emailConnector.contacts.form.postalCode') }}
+              </div>
+              <v-text-field
+                v-model="form.postalCode"
+                class="pt-0"
+                outlined
+                dense />
+            </div>
+            <div class="flex-grow-1">
+              <div class="text-sub-title mb-1">
+                {{ $t('emailConnector.contacts.form.city') }}
+              </div>
+              <v-text-field
+                v-model="form.city"
+                class="pt-0"
+                outlined
+                dense />
+            </div>
+          </div>
+          <div class="d-flex">
+            <div class="flex-grow-1 me-2">
+              <div class="text-sub-title mb-1">
+                {{ $t('emailConnector.contacts.form.region') }}
+              </div>
+              <v-text-field
+                v-model="form.region"
+                class="pt-0"
+                outlined
+                dense />
+            </div>
+            <div class="flex-grow-1">
+              <div class="text-sub-title mb-1">
+                {{ $t('emailConnector.contacts.form.country') }}
+              </div>
+              <v-text-field
+                v-model="form.country"
+                class="pt-0"
+                outlined
+                dense />
+            </div>
+          </div>
+          <div class="text-sub-title mb-1">
+            {{ $t('emailConnector.contacts.form.note') }}
+          </div>
+          <v-textarea
+            v-model="form.note"
+            :maxlength="2000"
+            rows="3"
+            auto-grow
+            class="pt-0"
+            outlined
+            dense />
           <div
             v-if="errorMessage"
             class="error--text mb-2">
@@ -249,6 +337,14 @@ export default {
         familyName: '',
         phone: '',
         organization: '',
+        birthday: '',
+        website: '',
+        street: '',
+        city: '',
+        region: '',
+        postalCode: '',
+        country: '',
+        note: '',
       };
     },
     /**
@@ -269,6 +365,14 @@ export default {
         familyName: contact.familyName || '',
         phone: contact.phones?.[0] || '',
         organization: contact.organization || '',
+        birthday: contact.birthday || '',
+        website: contact.website || '',
+        street: contact.postalAddress?.street || '',
+        city: contact.postalAddress?.city || '',
+        region: contact.postalAddress?.region || '',
+        postalCode: contact.postalAddress?.postalCode || '',
+        country: contact.postalAddress?.country || '',
+        note: contact.note || '',
       } : this.emptyForm();
       this.formDrawer = true;
       this.$refs.emailContactFormDrawer.open();
@@ -336,6 +440,8 @@ export default {
      * @returns {void}
      */
     save() {
+      const hasAddress = this.form.street || this.form.city || this.form.region
+        || this.form.postalCode || this.form.country;
       const contact = {
         id: this.editedId,
         primaryEmail: this.form.primaryEmail,
@@ -343,6 +449,18 @@ export default {
         familyName: this.form.familyName,
         phones: this.form.phone ? [this.form.phone] : null,
         organization: this.form.organization,
+        birthday: this.form.birthday || null,
+        website: this.form.website || null,
+        // Null when every component is blank, so emptying the five fields
+        // removes the stored address rather than saving a shell of blanks.
+        postalAddress: hasAddress ? {
+          street: this.form.street || null,
+          city: this.form.city || null,
+          region: this.form.region || null,
+          postalCode: this.form.postalCode || null,
+          country: this.form.country || null,
+        } : null,
+        note: this.form.note || null,
         photoUploadId: this.photoUploadId,
       };
       this.saving = true;
@@ -355,6 +473,10 @@ export default {
       }).catch(error => {
         if (error?.status === 409) {
           this.errorMessage = this.$t('emailConnector.contacts.form.alreadyExists');
+        } else if (error?.message?.includes('invalidBirthday')) {
+          // The server's message code travels as the response body, which is
+          // how a bad birthday is told apart from a bad address.
+          this.errorMessage = this.$t('emailConnector.contacts.form.invalidBirthday');
         } else {
           this.errorMessage = this.$t('emailConnector.contacts.form.invalidEmail');
         }
