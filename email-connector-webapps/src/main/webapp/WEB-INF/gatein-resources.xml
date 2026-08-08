@@ -264,4 +264,27 @@
       <module>commonVueComponents</module>
     </depends>
   </module>
+
+  <!-- The "My contacts" search connector's front-end half, on the same contract
+       as EmailSearch above: the connector descriptor names SHARED/EmailContactsSearch,
+       the search app requires it by that name to register the person card and map
+       our REST answer. No load-group: required by name, when a search runs. -->
+  <module>
+    <name>EmailContactsSearch</name>
+    <script>
+      <path>/js/emailContactsSearch.bundle.js</path>
+    </script>
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>vuetify</module>
+    </depends>
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+    <depends>
+      <module>commonVueComponents</module>
+    </depends>
+  </module>
 </gatein-resources>

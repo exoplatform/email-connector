@@ -109,6 +109,25 @@ public class EmailContactRest {
     }
   }
 
+  @GetMapping("/search")
+  @Secured("users")
+  @Operation(summary = "Searches the caller's contacts for the unified search", method = "GET",
+             description = "The 'My contacts' section of the platform's unified search: the caller's own contacts matching the term, excluding anyone who is also a platform user - colleagues are the People section's to answer. Fetched by the search page with the viewer's own session, so results are per-user by construction; phone numbers are not returned. The favorites parameter narrows to the contacts the caller starred, which is how the search page's Favorites filter reaches this connector.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public List<EmailContact> searchContacts(HttpServletRequest request,
+                                           @Parameter(description = "What was typed in the search bar")
+                                           @RequestParam(value = "q", required = false)
+                                           String query,
+                                           @Parameter(description = "When true, only the contacts the caller starred")
+                                           @RequestParam(value = "favorites", required = false, defaultValue = "false")
+                                           boolean favorites,
+                                           @Parameter(description = "How many hits to answer; 0 takes the server's default, and the server caps it either way")
+                                           @RequestParam(value = "limit", required = false, defaultValue = "0")
+                                           int limit) {
+    return emailContactService.searchContacts(request.getRemoteUser(), query, favorites, limit);
+  }
+
   @GetMapping("/suggest")
   @Secured("users")
   @Operation(summary = "Suggests recipients for the compose field", method = "GET",
