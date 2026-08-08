@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -968,6 +969,38 @@ public class EmailContactServiceTest {
     assertDoesNotThrow(() -> emailContactService.collectFromSentRecipients(USERNAME,
                                                                            List.of(new EmailRecipient("Jane", "jane@example.com", null, false),
                                                                                    new EmailRecipient("Bob", "bob@example.com", null, false))));
+  }
+
+  @Test
+  void aMailFindsItsSenderByAnyOfTheirAddresses() {
+    // What the mailbox asks: it has an address from a header and nothing else.
+    // Matching only the address a contact is filed under would miss the person
+    // every time they write from their second one.
+    EmailContact stored = collectedContact(4L, "jane@example.org", "Jane Doe");
+    when(emailContactStorage.getContactByAddress(USERNAME, "jane.doe@example.com")).thenReturn(stored);
+
+    EmailContact found = emailContactService.getContactByAddress("Jane.Doe@Example.COM", USERNAME);
+
+    assertNotNull(found);
+    assertEquals(4L, found.getId());
+  }
+
+  @Test
+  void anAddressNobodyIsStoredAtIsNotAnError() {
+    // The mailbox reads this answer as "offer to add them", so it must be a plain
+    // null rather than anything that looks like a failure.
+    when(emailContactStorage.getContactByAddress(eq(USERNAME), anyString())).thenReturn(null);
+
+    assertNull(emailContactService.getContactByAddress("stranger@example.com", USERNAME));
+  }
+
+  @Test
+  void aSuppressedContactStaysHiddenFromTheMailbox() {
+    EmailContact hidden = collectedContact(5L, "hidden@example.org", "Hidden");
+    hidden.setSuppressed(true);
+    when(emailContactStorage.getContactByAddress(eq(USERNAME), anyString())).thenReturn(hidden);
+
+    assertNull(emailContactService.getContactByAddress("hidden@example.org", USERNAME));
   }
 
   // ---------------------------------------------------------------- recipient suggestions
