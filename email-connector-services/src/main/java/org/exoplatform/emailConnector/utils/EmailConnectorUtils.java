@@ -280,19 +280,43 @@ public class EmailConnectorUtils {
     return Arrays.stream(messageRecipients).filter(a -> a instanceof InternetAddress).map(a -> {
       InternetAddress ia = (InternetAddress) a;
       String profileUrl = null;
+      String profileName = null;
       boolean isCurrentUser = false;
       if (username != null && withProfile) {
         Profile userProfile = getUserProfileByEmail(ia.getAddress());
         if (userProfile != null) {
           profileUrl = userProfile.getUrl();
+          profileName = userProfile.getFullName();
           isCurrentUser = userProfile.getIdentity().getRemoteId().equals(username);
         }
       }
-      return new EmailRecipient(ia.getPersonal() != null ? ia.getPersonal() : ia.getAddress(),
+      return new EmailRecipient(displayNameOf(ia.getPersonal(), ia.getAddress(), profileName),
                                 ia.getAddress(),
                                 profileUrl,
                                 isCurrentUser);
     }).collect(Collectors.toList());
+  }
+
+  /**
+   * What to call the person on this address.
+   * <p>
+   * The name the sender wrote wins, because it is what they chose to be called.
+   * When the header carries none, a mail client shows the raw address — and for
+   * somebody the platform knows that is doubly poor: the address then appears
+   * twice on the row, once as the link and once beside it, while their real name
+   * is a lookup away and already resolved here.
+   *
+   * @param headerName the personal part of the address, often null
+   * @param address the address itself
+   * @param profileName the platform profile's full name, or null when the
+   *          address belongs to nobody here
+   * @return the name to show
+   */
+  private static String displayNameOf(String headerName, String address, String profileName) {
+    if (StringUtils.isNotBlank(headerName)) {
+      return decodeHeader(headerName);
+    }
+    return StringUtils.isNotBlank(profileName) ? profileName : address;
   }
 
   public static EmailSender getEmailSender(Address messageSenderAddress, boolean withProfile) {
@@ -306,6 +330,7 @@ public class EmailConnectorUtils {
         if (userProfile != null) {
           avatarUrl = userProfile.getAvatarUrl();
           profileUrl = userProfile.getUrl();
+          senderName = displayNameOf(internetAddress.getPersonal(), internetAddress.getAddress(), userProfile.getFullName());
         } else {
           avatarUrl = getSenderDefaultAvatar(senderName);
         }
