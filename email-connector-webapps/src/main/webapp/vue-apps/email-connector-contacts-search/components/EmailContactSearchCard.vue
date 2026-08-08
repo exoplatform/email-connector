@@ -59,7 +59,9 @@
               class="text-truncate text-caption text-sub-title">
               {{ organizationLine }}
             </span>
-            <span class="text-truncate text-caption text-sub-title">
+            <span
+              v-if="showsAddressLine"
+              class="text-truncate text-caption text-sub-title">
               {{ contact.primaryEmail }}
             </span>
           </div>
@@ -117,6 +119,18 @@ export default {
      *
      * @returns {string} the organisation line
      */
+    /**
+     * Whether the address is worth a line of its own.
+     * <p>
+     * A contact collected from mail may have no name, and the card then falls
+     * back to the address for its title — printing it again underneath says the
+     * same thing twice and wastes the only other line the card has.
+     *
+     * @returns {boolean} true when the title is a name rather than the address
+     */
+    showsAddressLine() {
+      return this.displayedName !== this.contact.primaryEmail;
+    },
     organizationLine() {
       return [this.contact.organization, this.contact.title]
         .filter(part => part)
