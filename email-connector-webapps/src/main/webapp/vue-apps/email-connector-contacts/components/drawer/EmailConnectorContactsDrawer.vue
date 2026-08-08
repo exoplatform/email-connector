@@ -80,9 +80,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
-      <email-connector-contacts-import-banner
-        :state="importState"
-        @dismiss="importState = null" />
       <email-connector-contacts-source-filter
         v-model="filterChips"
         :counts="sourceCounts" />
@@ -96,9 +93,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
-        <email-connector-contacts-import-banner
-          :state="importState"
-          @dismiss="importState = null" />
         <email-connector-contacts-source-filter
           v-model="filterChips"
           :counts="sourceCounts" />
@@ -356,11 +350,39 @@ export default {
           this.importState = state;
           if (state?.status === 'IN_PROGRESS') {
             this.scheduleImportPoll();
-          } else {
-            this.$root.$emit('email-contacts-refresh');
+            return;
           }
+          this.reportImport(state);
+          this.$root.$emit('email-contacts-refresh');
         })
         .catch(() => this.scheduleImportPoll());
+    },
+    /**
+     * Says how the import went, in the toast every other outcome in this app
+     * uses. A banner of its own read as a stranger's UI here, and the numbers
+     * are one sentence -- worth reading once, not worth a surface to dismiss.
+     *
+     * @param {object} state - the finished import state
+     * @returns {void}
+     */
+    reportImport(state) {
+      this.importState = null;
+      if (!state || state.status === 'FAILED') {
+        const failure = this.$t(state?.messageCode || 'emailConnector.contacts.import.failed');
+        this.$root.$emit('alert-message', failure, 'error');
+        return;
+      }
+      const report = this.$t('emailConnector.contacts.import.report', {
+        0: state.imported || 0,
+        1: state.alreadyKnown || 0,
+        2: state.noAddress || 0,
+        3: state.unreadable || 0,
+      });
+      // A run that hit the card cap succeeded for everything it read, so it is
+      // still a success -- with the cap said in the same breath, or the numbers
+      // look like a file that lost contacts for no reason.
+      const capped = state.messageCode && this.$t(state.messageCode);
+      this.$root.$emit('alert-message', capped && `${report} ${capped}` || report, 'success');
     },
     /**
      * Downloads the whole store as one .vcf — always the whole store, which

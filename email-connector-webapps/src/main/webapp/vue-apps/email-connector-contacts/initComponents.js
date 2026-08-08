@@ -25,7 +25,6 @@ import EmailConnectorContactsCorrespondence from './components/drawer/EmailConne
 import EmailConnectorContactsDetailDrawer from './components/drawer/EmailConnectorContactsDetailDrawer.vue';
 import EmailConnectorContactFormDrawer from './components/drawer/EmailConnectorContactFormDrawer.vue';
 import EmailConnectorContactsTransferMenu from './components/drawer/EmailConnectorContactsTransferMenu.vue';
-import EmailConnectorContactsImportBanner from './components/drawer/EmailConnectorContactsImportBanner.vue';
 
 const components = {
   'email-connector-contacts-app': EmailConnectorContactsApp,
@@ -38,8 +37,7 @@ const components = {
   'email-connector-contacts-correspondence': EmailConnectorContactsCorrespondence,
   'email-connector-contacts-detail-drawer': EmailConnectorContactsDetailDrawer,
   'email-connector-contact-form-drawer': EmailConnectorContactFormDrawer,
-  'email-connector-contacts-transfer-menu': EmailConnectorContactsTransferMenu,
-  'email-connector-contacts-import-banner': EmailConnectorContactsImportBanner
+  'email-connector-contacts-transfer-menu': EmailConnectorContactsTransferMenu
 };
 
 for (const key in components) {
