@@ -526,6 +526,35 @@ public class EmailContactVCardServiceTest {
   }
 
   @Test
+  void theQrCardCarriesTheTextFieldsAndNeverThePhoto() {
+    // The photo's absence is the QR's whole engineering constraint: with an
+    // embedded picture the code is either ungenerable or unscannable.
+    EmailContact contact = visibleContact(1L);
+    contact.setDisplayName("Jane Doe");
+    contact.setPhotoFileId(42L);
+    contact.setPhones(List.of("+33612345678"));
+    when(emailContactService.getContact(1L, USERNAME)).thenReturn(contact);
+
+    String vcard = service.getContactVCard(USERNAME, 1L);
+
+    assertTrue(vcard.contains("FN:Jane Doe"));
+    assertTrue(vcard.contains("TEL"));
+    assertTrue(!vcard.contains("PHOTO"));
+    // The stored picture is not even read: the QR path must stay cheap and
+    // must not fail over a file it has no use for.
+    verify(emailContactStorage, never()).getPhotoFileItem(any());
+    // No UID either: a phone saving a scanned card has no server to reconcile with.
+    assertTrue(!vcard.contains("UID"));
+  }
+
+  @Test
+  void theQrCardOfSomebodyElsesContactIsNothing() {
+    when(emailContactService.getContact(9L, USERNAME)).thenReturn(null);
+
+    assertNull(service.getContactVCard(USERNAME, 9L));
+  }
+
+  @Test
   void aPersonWithAPhoneAndNoAddressIsImportedOnTheirCardIdentity() throws Exception {
     // The sync keeps such people -- a contact is a person, addresses are
     // attributes -- and the import used to refuse them for want of anything to

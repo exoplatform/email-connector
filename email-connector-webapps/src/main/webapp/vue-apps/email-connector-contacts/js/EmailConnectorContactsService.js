@@ -157,6 +157,26 @@ function saveContact(url, method, contact) {
 }
 
 /**
+ * One contact as text-only vCard — what the card's QR code encodes. The
+ * server strips the photo; a 404 covers a missing and a foreign contact alike.
+ *
+ * @param {number} id - the contact id
+ * @returns {Promise<string>} the vCard text
+ */
+export function getContactVCard(id) {
+  return fetch(`/email-connector/rest/contacts/${id}/vcard`, {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.text();
+    } else {
+      throw new Error('Error when reading the contact vCard');
+    }
+  });
+}
+
+/**
  * Deletes a contact. The server decides between a real delete (manual rows)
  * and a suppression (collected rows), and says which happened.
  *
