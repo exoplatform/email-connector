@@ -119,6 +119,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item-action>
       </v-list-item>
     </v-list>
+    <!-- The recent mail exchanged with this person — the way back from the card
+         to the mailbox, closing the loop the sender-click opened. Orthogonal to
+         where the contact came from: an address-book row corresponds like any
+         other. It loads only when unfolded, so the card itself stays as cheap
+         as it was. -->
+    <email-connector-contacts-correspondence :contact="contact" />
   </div>
 </template>
 
