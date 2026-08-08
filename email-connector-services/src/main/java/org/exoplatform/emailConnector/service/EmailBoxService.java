@@ -82,6 +82,7 @@ import javax.mail.search.MessageIDTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
 import javax.mail.search.SearchException;
+import javax.mail.search.RecipientStringTerm;
 import javax.mail.search.SearchTerm;
 import javax.mail.search.SubjectTerm;
 
@@ -3799,7 +3800,7 @@ public class EmailBoxService {
                                             Integer sinceDays,
                                             String folder,
                                             int limit) throws IllegalAccessException {
-    return searchEmails(username, query, from, unreadOnly, false, sinceDays, folder, limit);
+    return searchEmails(username, query, from, null, unreadOnly, false, sinceDays, folder, limit);
   }
 
   /**
@@ -3813,6 +3814,9 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param query free text matched against the subject or the sender
    * @param from text matched against the sender only, may be blank
+   * @param to text matched against the To or Cc recipients only, may be blank —
+   *          the way to pin a person in the SENT folder, where every sender is
+   *          the user themselves
    * @param unreadOnly when {@code true}, only unread messages match
    * @param favoritesOnly when {@code true}, only messages carrying \Flagged match
    * @param sinceDays only messages received in the last N days match, null for no limit
@@ -3824,6 +3828,7 @@ public class EmailBoxService {
   public EmailSearchResultPage searchEmails(String username,
                                             String query,
                                             String from,
+                                            String to,
                                             boolean unreadOnly,
                                             boolean favoritesOnly,
                                             Integer sinceDays,
@@ -3844,6 +3849,8 @@ public class EmailBoxService {
     }
     Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
     SearchTerm searchTerm = buildEmailSearchTerm(query, from, unreadOnly, favoritesOnly, since);
+    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - sinceDays * 86400000L);
+    SearchTerm searchTerm = buildEmailSearchTerm(query, from, to, unreadOnly, favoritesOnly, since);
     if (searchTerm == null) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
@@ -4105,14 +4112,20 @@ public class EmailBoxService {
    * @return the combined term, or null when no criterion at all was given
    */
   static SearchTerm buildEmailSearchTerm(String query, String from, boolean unreadOnly, Date since) {
-    return buildEmailSearchTerm(query, from, unreadOnly, false, since);
+    return buildEmailSearchTerm(query, from, null, unreadOnly, false, since);
   }
 
   /**
-   * The same term, with the favorites narrowing the unified search's filter asks for.
+   * The same term, with the favorites narrowing the unified search's filter asks
+   * for and the recipient criterion the contact card's correspondence needs: a
+   * SENT-folder search cannot pin a person by sender (the user wrote everything
+   * in there), so {@code to} matches the To or Cc recipients instead. Bcc is
+   * deliberately out: a person the user deliberately hid from the recipients
+   * must not surface as visible correspondence with them.
    *
    * @param query free text matched against the subject or the sender
    * @param from text matched against the sender only
+   * @param to text matched against the To or Cc recipients only
    * @param unreadOnly when {@code true}, only unread messages match
    * @param favoritesOnly when {@code true}, only messages carrying \Flagged match
    * @param since only messages received after this date match
@@ -4120,6 +4133,7 @@ public class EmailBoxService {
    */
   static SearchTerm buildEmailSearchTerm(String query,
                                          String from,
+                                         String to,
                                          boolean unreadOnly,
                                          boolean favoritesOnly,
                                          Date since) {
@@ -4129,6 +4143,10 @@ public class EmailBoxService {
     }
     if (StringUtils.isNotBlank(from)) {
       terms.add(new FromStringTerm(from.trim()));
+    }
+    if (StringUtils.isNotBlank(to)) {
+      terms.add(new OrTerm(new RecipientStringTerm(Message.RecipientType.TO, to.trim()),
+                           new RecipientStringTerm(Message.RecipientType.CC, to.trim())));
     }
     if (unreadOnly) {
       terms.add(new FlagTerm(new Flags(Flags.Flag.SEEN), false));
