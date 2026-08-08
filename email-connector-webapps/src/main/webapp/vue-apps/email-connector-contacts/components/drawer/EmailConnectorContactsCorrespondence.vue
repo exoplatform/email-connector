@@ -214,6 +214,11 @@ export default {
      * @returns {void}
      */
     open(mail) {
+      // The card closes first. Left open, its overlay stays under the mail
+      // drawer's own and the two scrims stack into a darker mask -- and behind
+      // it sits a card nobody asked to keep: clicking a mail means you want the
+      // mail, the same way clicking a name meant you wanted the person.
+      this.$root.$emit('close-email-contact-detail');
       this.$emailConnectorContactsService.openMail(mail);
     },
     /**
@@ -226,6 +231,7 @@ export default {
      * @returns {void}
      */
     seeAll() {
+      this.$root.$emit('close-email-contact-detail');
       this.$emailConnectorContactsService.openMailboxSearch(this.addresses[0]);
     },
   },
