@@ -26,27 +26,53 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-list-item-subtitle
         v-for="(value, index) in values"
         :key="value.address"
-        :class="{'mb-2': index !== values.length - 1}">
+        :class="{'mb-2': index !== values.length - 1}"
+        class="d-flex align-center">
         <!-- Name and address are interpolated, never built as an HTML string: both
              come straight from the mail's headers, so whoever sent the mail chooses
              them. Rendered as markup, a From name is script the reader runs on the
              portal page — and the drawer is not the sandboxed frame the body gets.
              The link around the name is ours, so it stays real markup; only the href
-             is bound, and only to a platform profile URL resolved on our side. -->
-        <a
-          v-if="value.profileUrl"
-          :href="value.profileUrl"
-          target="_blank"
-          rel="noopener noreferrer">{{ value.name }}</a>
+             is bound, and only to a platform profile URL resolved on our side.
+             Truncated rather than wrapped or overflowing: a long address must not
+             push the card button out of the row, which is exactly what a button
+             placed after free-flowing text does. -->
         <span
-          v-else
-          class="text-color">{{ value.name }}</span>
-        <!-- A real interpolated space, not a margin: margin is box geometry, not text
-             content, so selection/copy, find-in-page and screen readers would glue the
-             name to the address. A literal blank between elements is condensed away by
-             the template compiler; an interpolated one cannot be. -->
-        {{ ' ' }}
-        <span>{{ value.address }}</span>
+          class="text-truncate"
+          style="min-width: 0">
+          <a
+            v-if="value.profileUrl"
+            :href="value.profileUrl"
+            target="_blank"
+            rel="noopener noreferrer">{{ value.name }}</a>
+          <span
+            v-else
+            class="text-color">{{ value.name }}</span>
+          <!-- A real interpolated space, not a margin: margin is box geometry, not text
+               content, so selection/copy, find-in-page and screen readers would glue the
+               name to the address. A literal blank between elements is condensed away by
+               the template compiler; an interpolated one cannot be. -->
+          {{ ' ' }}
+          <span>{{ value.address }}</span>
+        </span>
+        <!-- The way from a mail to the person who sent it. Added beside the
+             existing name rather than replacing it: a colleague's name already
+             links to their profile, and taking that away to gain a contact card
+             would cost more than it gives.
+             An icon, not a button: a button's padding makes the line taller than
+             the label beside it, and the two stop lining up.
+             Offered only where there is no platform profile behind the address:
+             for a colleague the profile IS the card, their name already links to
+             it, and inviting the user to file a person the platform already
+             knows would duplicate them for nothing. -->
+        <v-icon
+          v-if="!value.profileUrl"
+          :title="$t('emailConnector.mailBox.list.drawer.detail.openContact')"
+          size="14"
+          class="ms-2 flex-shrink-0"
+          @click="openContact(value)">
+          fas fa-address-card
+        </v-icon>
       </v-list-item-subtitle>
     </v-list-item-content>
   </v-list-item>
@@ -66,6 +92,28 @@ export default {
     labelWidth: {
       type: Number,
       default: null,
+    },
+  },
+  methods: {
+    /**
+     * Opens the contact card for one of the addresses on this mail, or the
+     * create form when nobody is stored there yet.
+     * <p>
+     * Dispatched rather than called: the contacts app mounts itself on demand
+     * and may not exist on the page yet, which is what this document event is
+     * for. Whether the address is known is the contacts app's question to
+     * answer, not the mailbox's.
+     *
+     * @param {object} value - the address entry, carrying address and name
+     * @returns {void}
+     */
+    openContact(value) {
+      document.dispatchEvent(new CustomEvent('open-contacts-drawer', {
+        detail: {
+          address: value.address,
+          name: value.name,
+        },
+      }));
     },
   },
 };
