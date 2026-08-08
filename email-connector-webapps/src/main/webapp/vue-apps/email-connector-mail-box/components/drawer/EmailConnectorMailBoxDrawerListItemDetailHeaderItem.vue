@@ -28,21 +28,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :key="value.address"
         :class="{'mb-2': index !== values.length - 1}"
         class="d-flex align-center">
-        <span v-html="parsedValue(value)"></span>
+        <!-- Truncated rather than wrapped or overflowing: a long address must not
+             push the card button out of the row, which is exactly what a button
+             placed after free-flowing text does. -->
+        <span
+          class="text-truncate"
+          style="min-width: 0"
+          v-html="parsedValue(value)"></span>
         <!-- The way from a mail to the person who sent it. Added beside the
              existing name rather than replacing it: a colleague's name already
              links to their profile, and taking that away to gain a contact card
-             would cost more than it gives. -->
-        <v-btn
+             would cost more than it gives.
+             An icon, not a button: a button's padding makes the line taller than
+             the label beside it, and the two stop lining up. -->
+        <v-icon
           :title="$t('emailConnector.mailBox.list.drawer.detail.openContact')"
-          icon
-          x-small
-          class="ms-1"
+          size="14"
+          class="ms-2 flex-shrink-0"
           @click="openContact(value)">
-          <v-icon size="14">
-            fas fa-address-card
-          </v-icon>
-        </v-btn>
+          fas fa-address-card
+        </v-icon>
       </v-list-item-subtitle>
     </v-list-item-content>
   </v-list-item>
