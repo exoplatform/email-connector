@@ -40,8 +40,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
              links to their profile, and taking that away to gain a contact card
              would cost more than it gives.
              An icon, not a button: a button's padding makes the line taller than
-             the label beside it, and the two stop lining up. -->
+             the label beside it, and the two stop lining up.
+             Offered only where there is no platform profile behind the address:
+             for a colleague the profile IS the card, their name already links to
+             it, and inviting the user to file a person the platform already
+             knows would duplicate them for nothing. -->
         <v-icon
+          v-if="!value.profileUrl"
           :title="$t('emailConnector.mailBox.list.drawer.detail.openContact')"
           size="14"
           class="ms-2 flex-shrink-0"
