@@ -150,6 +150,12 @@ export default {
       this.loadedForId = null;
     },
   },
+  created() {
+    this.$root.$on('expand-contact-correspondence', this.expand);
+  },
+  beforeDestroy() {
+    this.$root.$off('expand-contact-correspondence', this.expand);
+  },
   methods: {
     /**
      * Unfolds or folds the section, loading on the first unfolding only —
@@ -157,6 +163,18 @@ export default {
      *
      * @returns {void}
      */
+    /**
+     * Unfolds the section without a click — used when a card is reopened after
+     * the mail it handed over to was closed, so the user comes back to what they
+     * were reading rather than to a folded row.
+     *
+     * @returns {void}
+     */
+    expand() {
+      if (!this.expanded) {
+        this.toggle();
+      }
+    },
     toggle() {
       this.expanded = !this.expanded;
       if (this.expanded && this.loadedForId !== this.contact.id) {
@@ -218,7 +236,11 @@ export default {
       // drawer's own and the two scrims stack into a darker mask -- and behind
       // it sits a card nobody asked to keep: clicking a mail means you want the
       // mail, the same way clicking a name meant you wanted the person.
+      // Remembered before standing aside, so closing the mail brings this card
+      // back rather than dropping the user somewhere they did not start.
+      this.$root.$emit('email-contact-hand-over', this.contact?.id);
       this.$root.$emit('close-email-contact-detail');
+      this.$root.$emit('close-email-contacts-drawer');
       this.$emailConnectorContactsService.openMail(mail);
     },
     /**
@@ -232,6 +254,7 @@ export default {
      */
     seeAll() {
       this.$root.$emit('close-email-contact-detail');
+      this.$root.$emit('close-email-contacts-drawer');
       this.$emailConnectorContactsService.openMailboxSearch(this.addresses[0]);
     },
   },

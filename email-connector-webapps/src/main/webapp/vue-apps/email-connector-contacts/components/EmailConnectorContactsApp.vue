@@ -46,6 +46,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data() {
     return {
+      // The card that handed over to a mail, waiting to be put back.
+      returnToContactId: null,
       undoSnackbar: false,
       suppressedContactId: null,
     };
@@ -55,12 +57,43 @@ export default {
   },
   mounted() {
     document.addEventListener('quick-action-contacts-drawer', this.openDrawer);
+    document.addEventListener('email-box-mail-closed', this.returnToContact);
+    this.$root.$on('email-contact-hand-over', this.onContactHandOver);
   },
   beforeDestroy() {
     document.removeEventListener('quick-action-contacts-drawer', this.openDrawer);
+    document.removeEventListener('email-box-mail-closed', this.returnToContact);
+    this.$root.$off('email-contact-hand-over', this.onContactHandOver);
     this.$root.$off('email-contact-suppressed', this.onContactSuppressed);
   },
   methods: {
+    /**
+     * Remembers the card that stood aside for a mail, so it can be put back.
+     *
+     * @param {number} contactId - the card's contact
+     * @returns {void}
+     */
+    onContactHandOver(contactId) {
+      this.returnToContactId = contactId || null;
+    },
+    /**
+     * Puts back the card whose correspondence opened the mail that has just been
+     * closed, unfolded where the user left it.
+     * <p>
+     * Only ever after a hand-over: a mail closed for any other reason must not
+     * conjure a contact card the user never opened.
+     *
+     * @returns {void}
+     */
+    returnToContact() {
+      if (!this.returnToContactId) {
+        return;
+      }
+      const contactId = this.returnToContactId;
+      this.returnToContactId = null;
+      this.$root.$emit('open-email-contact-detail', {id: contactId});
+      this.$nextTick(() => this.$root.$emit('expand-contact-correspondence'));
+    },
     /**
      * Opens the contacts drawer — the quick action's landing point. The event
      * may name a contact to land on (the global Favorites drawer sends its

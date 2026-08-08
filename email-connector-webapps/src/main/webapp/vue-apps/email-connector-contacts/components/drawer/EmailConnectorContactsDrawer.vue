@@ -150,6 +150,7 @@ export default {
   },
   created() {
     this.$root.$on('open-email-contacts-drawer', this.open);
+    this.$root.$on('close-email-contacts-drawer', this.closeDrawer);
     this.$root.$on('email-contacts-refresh', this.refresh);
     // The shared favorite button announces toggles on the document. Re-counting
     // is what makes the Favorites chip appear at the first star and disappear at
@@ -160,6 +161,7 @@ export default {
   },
   beforeDestroy() {
     this.$root.$off('open-email-contacts-drawer', this.open);
+    this.$root.$off('close-email-contacts-drawer', this.closeDrawer);
     this.$root.$off('email-contacts-refresh', this.reload);
     document.removeEventListener('favorite-added', this.onFavoriteToggled);
     document.removeEventListener('favorite-removed', this.onFavoriteToggled);
@@ -273,6 +275,20 @@ export default {
             this.filterChips = this.filterChips.filter(value => value !== 'favorites');
           }
         });
+    },
+    /**
+     * Resets the drawer's transient state on close.
+     *
+     * @returns {void}
+     */
+    closeDrawer() {
+      // Asked to go, rather than dismissed by the user: the list can sit under a
+      // card, and a card that hands over to the mailbox must not leave a scrim
+      // of its own behind. Going through the drawer's own close keeps the exit
+      // identical to clicking the cross.
+      if (this.contactsDrawer) {
+        this.$refs.emailContactsDrawer.close();
+      }
     },
     /**
      * Resets the drawer's transient state on close.
