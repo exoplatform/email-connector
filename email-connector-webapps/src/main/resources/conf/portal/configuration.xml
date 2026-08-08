@@ -294,4 +294,75 @@
     </component-plugin>
   </external-component-plugins>
 
+  <!-- The "My contacts" section of the unified search: the caller's OWN contact
+       store, which is why two users searching the same term see different results.
+       Federated like the email connector above, and privacy rides on that shape:
+       the search page fetches this uri with the viewer's own session, the REST
+       scopes every read by the acting user, and nothing is ever indexed into a
+       shared Elasticsearch index of people's addresses.
+
+       Contacts who are also platform users are excluded server-side: the People
+       section already answers colleagues, live from their profile. What this
+       section adds is everyone the directory does not know.
+
+       groupingEnabled renders the hits as one carousel of person cards under a
+       section header — the People/Spaces layout — instead of rows interleaved
+       with notes and tasks. The uri is a local database read, so no platform
+       search ever waits on a mail server through it. -->
+  <external-component-plugins>
+    <target-component>org.exoplatform.social.core.search.SearchService</target-component>
+    <component-plugin>
+      <name>EmailContactSearchConnector</name>
+      <set-method>addConnector</set-method>
+      <type>org.exoplatform.social.core.search.SearchConnectorPlugin</type>
+      <description>Search connector for the user's own email contacts</description>
+      <init-params>
+        <object-param>
+          <name>EmailContactSearchConnector</name>
+          <description>Search connector for the user's own email contacts</description>
+          <object type="org.exoplatform.social.core.search.SearchConnector">
+            <field name="name">
+              <string>contacts</string>
+            </field>
+            <field name="contentType">
+              <string>contact</string>
+            </field>
+            <field name="uri">
+              <string><![CDATA[/email-connector/rest/contacts/search?q={keyword}&limit={limit}]]></string>
+            </field>
+            <field name="enabled">
+              <boolean>${exo.search.contacts.enabled:true}</boolean>
+            </field>
+            <field name="jsModule">
+              <string>SHARED/EmailContactsSearch</string>
+            </field>
+            <field name="i18nBundle">
+              <string>locale.portlet.emailConnector.emailConnectorContacts</string>
+            </field>
+            <field name="uiComponent">
+              <string>email-contact-search-card</string>
+            </field>
+            <field name="icon">
+              <string>fas fa-address-book</string>
+            </field>
+            <!-- Contacts can be starred; declaring it is what makes the search
+                 page send "&favorites=true" here instead of dropping the whole
+                 connector when its Favorites filter is on. -->
+            <field name="favoritesEnabled">
+              <boolean>true</boolean>
+            </field>
+            <!-- A contact store is personal, not a space's: the space filter
+                 would only ever narrow it to nothing. -->
+            <field name="spaceFilterEnabled">
+              <boolean>false</boolean>
+            </field>
+            <field name="groupingEnabled">
+              <boolean>true</boolean>
+            </field>
+          </object>
+        </object-param>
+      </init-params>
+    </component-plugin>
+  </external-component-plugins>
+
 </configuration>
