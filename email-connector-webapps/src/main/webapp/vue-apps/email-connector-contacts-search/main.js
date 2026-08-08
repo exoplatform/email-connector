@@ -25,30 +25,12 @@ for (const key in components) {
   Vue.component(key, components[key]);
 }
 
-// How long this connector holds its answer back, at most. The search page
-// orders sections by which connector ANSWERS first (each arriving row takes the
-// next global index, and sections sort by their first row's index — there is no
-// configured rank), and this store answers from a local database while People
-// answers from Elasticsearch: left alone, "My contacts" would usually land
-// ABOVE People. The design wants it below — when both match, the colleague is
-// usually who was meant — so the fetch starts immediately but the answer is
-// held to this floor, long enough for People's round-trip in the common case.
-// Sections stream in independently, so nothing else waits on this.
-const RANK_BELOW_PEOPLE_FLOOR_MS = 600;
-
-/**
- * Fetches this connector's results for the search page, which prefers this
- * export over its own fetch. The request goes out right away; only the
- * resolution is floored, per the ranking note above.
- *
- * @param {string} uri the connector uri, placeholders already substituted
- * @param {Object} options the fetch options, including the page's abort signal
- * @returns {Promise<Response>} the REST response, no earlier than the floor
- */
-export function fetchSearchResult(uri, options) {
-  const floor = new Promise(resolve => window.setTimeout(resolve, RANK_BELOW_PEOPLE_FLOOR_MS));
-  return Promise.all([fetch(uri, options), floor]).then(([response]) => response);
-}
+// Section order is not ours to set: the search page has no configured rank and
+// orders sections by whichever connector answers first, so this one -- reading a
+// local database while People waits on Elasticsearch -- will often land above
+// People. Holding our own answer back to lose that race was tried and removed:
+// it made every search wait on a delay that bought nothing but a position, and a
+// slow search is worse than a section in an unexpected place.
 
 /**
  * Maps the /contacts/search answer into the rows the search page renders. The
