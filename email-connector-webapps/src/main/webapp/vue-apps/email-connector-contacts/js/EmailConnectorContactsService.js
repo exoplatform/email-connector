@@ -157,6 +157,26 @@ function saveContact(url, method, contact) {
 }
 
 /**
+ * One contact as text-only vCard — what the card's QR code encodes. The
+ * server strips the photo; a 404 covers a missing and a foreign contact alike.
+ *
+ * @param {number} id - the contact id
+ * @returns {Promise<string>} the vCard text
+ */
+export function getContactVCard(id) {
+  return fetch(`/email-connector/rest/contacts/${id}/vcard`, {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.text();
+    } else {
+      throw new Error('Error when reading the contact vCard');
+    }
+  });
+}
+
+/**
  * Deletes a contact. The server decides between a real delete (manual rows)
  * and a suppression (collected rows), and says which happened.
  *
@@ -202,6 +222,68 @@ export function restoreContact(id) {
 }
 
 
+
+/**
+ * Starts importing an uploaded .vcf into the caller's own store. The server
+ * answers immediately and runs the import in the background — poll
+ * {@link getImportStatus} until its status leaves IN_PROGRESS.
+ *
+ * @param {string} uploadId - the upload id the file was pushed under
+ * @returns {Promise<object>} the initial import state, or a rejection whose
+ *          message is the server's message code (409 = an import already runs)
+ */
+export function importContacts(uploadId) {
+  return fetch(`/email-connector/rest/contacts/import?uploadId=${encodeURIComponent(uploadId)}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.text().then(message => {
+      const error = new Error(message || 'Error when importing contacts');
+      error.status = resp.status;
+      throw error;
+    });
+  });
+}
+
+/**
+ * How the caller's vCard import is going, or went: the status, the four
+ * counters, and the message code of whatever cut a run short.
+ *
+ * @returns {Promise<object>} the stored import state; a null status says no
+ *          import ever ran
+ */
+export function getImportStatus() {
+  return fetch('/email-connector/rest/contacts/import/status', {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when reading the import status');
+    }
+  });
+}
+
+/**
+ * Downloads the caller's whole store as one .vcf file — always the whole
+ * store, never the filtered view, which is why this takes no parameters. The
+ * browser handles the download itself: the endpoint answers an attachment,
+ * and the session cookie is all the authentication it needs.
+ *
+ * @returns {void}
+ */
+export function downloadExport() {
+  const link = document.createElement('a');
+  link.href = '/email-connector/rest/contacts/export';
+  link.download = 'contacts.vcf';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
 
 // How many of the contact's addresses correspondence covers, and how many mails
 // each of the (two per address) searches may return. Three addresses is the
