@@ -188,6 +188,50 @@ public class EmailContactRest {
     return contact;
   }
 
+  @GetMapping("/by-user")
+  @Secured("users")
+  @Operation(summary = "Gets the caller's contact for a platform user", method = "GET",
+             description = "The caller's own contact row for this colleague, however it got there: by the directory link first, then by the profile's address (a collected or manual row holding the same person). Answers 404 when the caller has no row - which is also how the profile action knows to offer adding them.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public EmailContact getContactByUser(HttpServletRequest request,
+                                       @Parameter(description = "The platform username to look up", required = true)
+                                       @RequestParam("username")
+                                       String username) {
+    EmailContact contact = emailContactService.getContactByPlatformUser(request.getRemoteUser(), username);
+    if (contact == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+    return contact;
+  }
+
+  @PostMapping("/directory")
+  @Secured("users")
+  @Operation(summary = "Imports a platform colleague into the caller's contacts", method = "POST",
+             description = "The 'Add to my contacts' action on a people profile: creates a directory-linked contact whose name, avatar and address resolve live from the colleague's profile. A previously removed link is revived. A visible row already linking or carrying this person answers 409, unmutated - /by-user is where the client finds that row. An unknown or deleted identity answers 404; asking to import yourself answers 400.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Self-import, or a blank username"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Unknown or deleted platform user"),
+      @ApiResponse(responseCode = "409", description = "A visible contact already holds this person"), })
+  public EmailContact importDirectoryContact(HttpServletRequest request,
+                                             @Parameter(description = "The platform username to import", required = true)
+                                             @RequestParam("username")
+                                             String username) {
+    try {
+      EmailContact imported = emailContactService.importDirectoryContact(request.getRemoteUser(), username);
+      if (imported == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return imported;
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    }
+  }
+
   @GetMapping("/{id}/photo")
   @Secured("users")
   @Operation(summary = "Gets a contact photo", method = "GET",

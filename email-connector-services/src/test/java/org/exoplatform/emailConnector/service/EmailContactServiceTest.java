@@ -75,6 +75,8 @@ import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.social.core.profile.ProfileFilter;
+import org.exoplatform.social.core.profileproperty.ProfilePropertyService;
+import org.exoplatform.social.core.profileproperty.model.ProfilePropertySetting;
 
 import lombok.SneakyThrows;
 
@@ -103,6 +105,9 @@ public class EmailContactServiceTest {
 
   @MockBean
   private EmailContactFavoriteService emailContactFavoriteService;
+
+  @MockBean
+  private ProfilePropertyService  profilePropertyService;
 
   @Autowired
   private EmailContactService     emailContactService;
@@ -854,6 +859,258 @@ public class EmailContactServiceTest {
   }
 
   @Test
+  void importCreatesADirectoryLinkWithASnapshot() {
+    givenDirectoryProfile("jdoe", "Jane Doe", "Jane.Doe@Example.com", "avatar", "profile-url");
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact imported = emailContactService.importDirectoryContact(USERNAME, "jdoe");
+
+    ArgumentCaptor<EmailContact> created = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).createContact(created.capture());
+    assertEquals(EmailContactSource.DIRECTORY, created.getValue().getSource());
+    assertEquals("jdoe", created.getValue().getPlatformUsername());
+    assertEquals(USERNAME, created.getValue().getUserId());
+    // The snapshot is the fallback for a profile that later disappears: the
+    // name as-is, the address normalized like every stored address.
+    assertEquals("Jane Doe", created.getValue().getDisplayName());
+    assertEquals("jane.doe@example.com", created.getValue().getPrimaryEmail());
+    // The answer is resolved live, so the client renders the card straight away.
+    assertEquals("avatar", imported.getAvatarUrl());
+    assertEquals("profile-url", imported.getProfileUrl());
+  }
+
+  @Test
+  void importAnswersConflictForAnAlreadyLinkedColleague() {
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    when(emailContactStorage.getContactByPlatformUsername(USERNAME, "jdoe"))
+                                                                            .thenReturn(directoryContact(5L,
+                                                                                                         "jane.doe@example.com",
+                                                                                                         "Jane Doe",
+                                                                                                         "jdoe"));
+
+    IllegalStateException conflict = assertThrows(IllegalStateException.class,
+                                                  () -> emailContactService.importDirectoryContact(USERNAME, "jdoe"));
+
+    assertEquals(EmailContactService.CONTACT_ALREADY_EXISTS, conflict.getMessage());
+    verify(emailContactStorage, never()).createContact(any());
+    verify(emailContactStorage, never()).updateContact(any());
+  }
+
+  @Test
+  void importRevivesASuppressedDirectoryLink() {
+    // The user removed the link, then asked for this colleague again: the
+    // tombstone comes back as the same DIRECTORY row, never a conflict about a
+    // row the user cannot see.
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    EmailContact tombstone = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    tombstone.setSuppressed(true);
+    when(emailContactStorage.getContactByPlatformUsername(USERNAME, "jdoe")).thenReturn(tombstone);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact revived = emailContactService.importDirectoryContact(USERNAME, "jdoe");
+
+    assertFalse(revived.isSuppressed());
+    assertEquals(EmailContactSource.DIRECTORY, revived.getSource());
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void importAnswersConflictForAVisibleRowAtTheAddress() {
+    // A collected row already holds the colleague's address: it is answered as
+    // the conflict, UNMUTATED -- converting it to DIRECTORY would make it
+    // read-only and gain nothing, enrichment already paints the profile on it.
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    when(emailContactStorage.getContactByAddress(USERNAME, "jane.doe@example.com"))
+                                                                                   .thenReturn(collectedContact(9L,
+                                                                                                                "jane.doe@example.com",
+                                                                                                                "Jane"));
+
+    IllegalStateException conflict = assertThrows(IllegalStateException.class,
+                                                  () -> emailContactService.importDirectoryContact(USERNAME, "jdoe"));
+
+    assertEquals(EmailContactService.CONTACT_ALREADY_EXISTS, conflict.getMessage());
+    verify(emailContactStorage, never()).createContact(any());
+    verify(emailContactStorage, never()).updateContact(any());
+  }
+
+  @Test
+  void importMatchesASecondaryAddressToo() {
+    // The address lookup runs against the address table, so a manual contact
+    // filed under another primary address but carrying the profile email as a
+    // secondary one is the same person -- and the same conflict.
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    EmailContact manual = collectedContact(9L, "jane@personal.org", "Jane");
+    manual.setSource(EmailContactSource.MANUAL);
+    manual.setSecondaryEmails(List.of("jane.doe@example.com"));
+    when(emailContactStorage.getContactByAddress(USERNAME, "jane.doe@example.com")).thenReturn(manual);
+
+    IllegalStateException conflict = assertThrows(IllegalStateException.class,
+                                                  () -> emailContactService.importDirectoryContact(USERNAME, "jdoe"));
+
+    assertEquals(EmailContactService.CONTACT_ALREADY_EXISTS, conflict.getMessage());
+  }
+
+  @Test
+  void importRevivesASuppressedTombstoneAtTheAddress() {
+    // A collected contact the user deleted, whose person they now import from
+    // the directory: the tombstone comes back to life as the directory link --
+    // the same explicit-user-act rule as creating a manual contact over one.
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    EmailContact tombstone = collectedContact(9L, "jane.doe@example.com", "Jane");
+    tombstone.setSuppressed(true);
+    when(emailContactStorage.getContactByAddress(USERNAME, "jane.doe@example.com")).thenReturn(tombstone);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact revived = emailContactService.importDirectoryContact(USERNAME, "jdoe");
+
+    assertFalse(revived.isSuppressed());
+    assertEquals(EmailContactSource.DIRECTORY, revived.getSource());
+    assertEquals("jdoe", revived.getPlatformUsername());
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void importAnswersNullForAnUnknownIdentity() {
+    when(identityManager.getOrCreateUserIdentity("ghost")).thenReturn(null);
+
+    assertNull(emailContactService.importDirectoryContact(USERNAME, "ghost"));
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void importAnswersNullForADeletedIdentity() {
+    Identity deleted = mock(Identity.class);
+    when(deleted.isDeleted()).thenReturn(true);
+    when(identityManager.getOrCreateUserIdentity("gone")).thenReturn(deleted);
+
+    assertNull(emailContactService.importDirectoryContact(USERNAME, "gone"));
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void importRefusesTheCallerThemselves() {
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailContactService.importDirectoryContact(USERNAME, USERNAME));
+
+    assertEquals(EmailContactService.CONTACT_SELF_IMPORT, refused.getMessage());
+    verifyNoInteractions(emailContactStorage);
+  }
+
+  @Test
+  void importStoresNoAddressWhenTheProfileHasNone() {
+    // Address-less contacts are supported; a colleague without a profile email
+    // still imports, and later mail from them simply collects a second row.
+    givenDirectoryProfile("jdoe", "Jane Doe", null, null, null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact imported = emailContactService.importDirectoryContact(USERNAME, "jdoe");
+
+    assertNull(imported.getPrimaryEmail());
+    verify(emailContactStorage, never()).getContactByAddress(anyString(), anyString());
+  }
+
+  @Test
+  void importStoresNoAddressWhenTheOwnerHidIt() {
+    // The owner hid their email on their profile: the link is still worth
+    // having, but the snapshot must not hold what the owner chose to hide --
+    // stored today, it would resurface the day their profile is gone.
+    Identity identity = givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    givenEmailHiddenBy(identity);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact imported = emailContactService.importDirectoryContact(USERNAME, "jdoe");
+
+    ArgumentCaptor<EmailContact> created = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).createContact(created.capture());
+    assertNull(created.getValue().getPrimaryEmail());
+    assertEquals("Jane Doe", created.getValue().getDisplayName());
+    assertNull(imported.getPrimaryEmail());
+  }
+
+  @Test
+  void importStillDedupesOnAHiddenAddress() {
+    // Hidden governs what is SHOWN, not what is matched: a visible collected
+    // row at the hidden address is the same person, and answering it as the
+    // conflict reveals nothing -- that row's address came from the user's own
+    // mail.
+    Identity identity = givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    givenEmailHiddenBy(identity);
+    when(emailContactStorage.getContactByAddress(USERNAME, "jane.doe@example.com"))
+                                                                                   .thenReturn(collectedContact(9L,
+                                                                                                                "jane.doe@example.com",
+                                                                                                                "Jane"));
+
+    IllegalStateException conflict = assertThrows(IllegalStateException.class,
+                                                  () -> emailContactService.importDirectoryContact(USERNAME, "jdoe"));
+
+    assertEquals(EmailContactService.CONTACT_ALREADY_EXISTS, conflict.getMessage());
+  }
+
+  @Test
+  void directoryCardsBlankAHiddenAddress() {
+    // The owner hid their email AFTER the import stored it: the live resolution
+    // wins over the snapshot in both directions, so the card shows no address.
+    EmailContact linked = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContactById(5L)).thenReturn(linked);
+    Identity identity = givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", "avatar", null);
+    givenEmailHiddenBy(identity);
+
+    EmailContact shown = emailContactService.getContact(5L, USERNAME);
+
+    assertNull(shown.getPrimaryEmail());
+    assertEquals("Jane Doe", shown.getDisplayName());
+    assertEquals("avatar", shown.getAvatarUrl());
+  }
+
+  @Test
+  void unreadableEmailVisibilityFailsClosed() {
+    // A card briefly missing an address costs a click; a hidden address shown
+    // costs a trust. So a visibility read that errors hides the address.
+    EmailContact linked = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContactById(5L)).thenReturn(linked);
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    when(profilePropertyService.getProfileSettingByName("email")).thenThrow(new IllegalStateException("down"));
+
+    assertNull(emailContactService.getContact(5L, USERNAME).getPrimaryEmail());
+  }
+
+  @Test
+  void byPlatformUserAnswersTheDirectoryLinkFirst() {
+    EmailContact linked = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContactByPlatformUsername(USERNAME, "jdoe")).thenReturn(linked);
+    givenDirectoryProfile("jdoe", "Jane Renamed", "jane.doe@example.com", "avatar", null);
+
+    EmailContact found = emailContactService.getContactByPlatformUser(USERNAME, "jdoe");
+
+    assertEquals(5L, found.getId());
+    assertEquals("Jane Renamed", found.getDisplayName());
+  }
+
+  @Test
+  void byPlatformUserFallsBackToTheProfileAddress() {
+    // No directory link, but a collected row holds the colleague's address:
+    // the same row the import would answer 409 about, found the same way.
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+    EmailContact collected = collectedContact(9L, "jane.doe@example.com", "Jane");
+    when(emailContactStorage.getContactByAddress(USERNAME, "jane.doe@example.com")).thenReturn(collected);
+
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+
+      EmailContact found = emailContactService.getContactByPlatformUser(USERNAME, "jdoe");
+
+      assertEquals(9L, found.getId());
+    }
+  }
+
+  @Test
+  void byPlatformUserAnswersNullWhenNothingHoldsThePerson() {
+    givenDirectoryProfile("jdoe", "Jane Doe", "jane.doe@example.com", null, null);
+
+    assertNull(emailContactService.getContactByPlatformUser(USERNAME, "jdoe"));
+  }
+
+  @Test
   void savingTheFormDoesNotEraseACollectedName() {
     // The form has no display-name field, so a collected contact -- whose name came
     // from the mail header as one string -- saves both name halves empty. That must
@@ -890,15 +1147,19 @@ public class EmailContactServiceTest {
   }
 
   @Test
-  void editingADirectoryContactIsRefused() {
-    when(emailContactStorage.getContactById(5L)).thenReturn(directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe"));
+  void aDirectoryContactKeepsTheIdentityItsProfileOwns() {
+    // Editing used to be refused outright. It is not any more -- the fields the
+    // profile resolves are simply kept, so a stale client cannot write them,
+    // while everything the profile does not own is the user's to keep.
+    EmailContact stored = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    IllegalArgumentException readOnly =
-                                      assertThrows(IllegalArgumentException.class,
-                                                   () -> emailContactService.updateContact(5L,
-                                                                                           manualInput("J", "jane.doe@example.com"),
-                                                                                           USERNAME));
-    assertEquals(EmailContactService.CONTACT_DIRECTORY_READ_ONLY, readOnly.getMessage());
+    EmailContact saved = emailContactService.updateContact(5L, manualInput("J", "renamed@example.com"), USERNAME);
+
+    assertNotNull(saved);
+    assertEquals("jane.doe@example.com", saved.getPrimaryEmail());
+    assertEquals("Jane Doe", saved.getDisplayName());
   }
 
   // ---------------------------------------------------------------- listing
@@ -924,6 +1185,11 @@ public class EmailContactServiceTest {
 
     emailContactService.getContacts(USERNAME, List.of("manual"), null, false, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.MANUAL), null, null, 0, 100);
+
+    // The directory chip, which only had rows to select once a colleague could be
+    // added from their profile.
+    emailContactService.getContacts(USERNAME, List.of("directory"), null, false, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.DIRECTORY), null, null, 0, 100);
 
     emailContactService.getContacts(USERNAME, List.of("addressBook"), null, false, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.CARDDAV), null, null, 0, 100);
@@ -1212,6 +1478,33 @@ public class EmailContactServiceTest {
     when(emailContactStorage.getContactByAddress(eq(USERNAME), anyString())).thenReturn(hidden);
 
     assertNull(emailContactService.getContactByAddress("hidden@example.org", USERNAME));
+  }
+
+  @Test
+  void aColleagueKeepsTheirProfileIdentityButTakesYourAnnotations() {
+    // What the profile owns is resolved on every read, so an edit to it would be
+    // undone; what it does not own -- a birthday, a note about where you met --
+    // is the user's, and refusing the whole row denied them both.
+    EmailContact stored = collectedContact(12L, "colleague@exoplatform.com", "Jane Colleague");
+    stored.setSource(EmailContactSource.DIRECTORY);
+    stored.setPlatformUsername("jane");
+    when(emailContactStorage.getContactById(12L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact edit = new EmailContact();
+    edit.setPrimaryEmail("someone.else@example.com");
+    edit.setDisplayName("Renamed By Hand");
+    edit.setNote("Met at the Grenoble offsite");
+    edit.setBirthday("--12-31");
+
+    EmailContact saved = emailContactService.updateContact(12L, edit, USERNAME);
+
+    assertNotNull(saved);
+    assertEquals("Met at the Grenoble offsite", saved.getNote());
+    assertEquals("--12-31", saved.getBirthday());
+    // Ignored rather than refused: a stale client must not be able to write them.
+    assertEquals("colleague@exoplatform.com", saved.getPrimaryEmail());
+    assertEquals("Jane Colleague", saved.getDisplayName());
   }
 
   // ---------------------------------------------------------------- recipient suggestions
@@ -1643,16 +1936,34 @@ public class EmailContactServiceTest {
    * @param avatarUrl the profile's avatar, may be null
    * @param profileUrl the profile's page link, may be null
    */
-  private void givenDirectoryProfile(String username, String fullName, String email, String avatarUrl, String profileUrl) {
+  private Identity givenDirectoryProfile(String username, String fullName, String email, String avatarUrl, String profileUrl) {
     Identity identity = mock(Identity.class);
     Profile profile = mock(Profile.class);
     lenient().when(identity.isDeleted()).thenReturn(false);
     lenient().when(identity.getProfile()).thenReturn(profile);
+    lenient().when(identity.getId()).thenReturn("77");
+    lenient().when(identity.getRemoteId()).thenReturn(username);
     lenient().when(profile.getFullName()).thenReturn(fullName);
     lenient().when(profile.getEmail()).thenReturn(email);
     lenient().when(profile.getAvatarUrl()).thenReturn(avatarUrl);
     lenient().when(profile.getUrl()).thenReturn(profileUrl);
     when(identityManager.getOrCreateUserIdentity(username)).thenReturn(identity);
+    return identity;
+  }
+
+  /**
+   * Marks the email profile property as hidden by its owner: the platform knows
+   * an "email" property setting, and the given identity's hidden ids hold it.
+   *
+   * @param identity the profile owner whose email is hidden
+   */
+  private void givenEmailHiddenBy(Identity identity) {
+    ProfilePropertySetting emailSetting = new ProfilePropertySetting();
+    emailSetting.setId(42L);
+    emailSetting.setPropertyName("email");
+    lenient().when(profilePropertyService.getProfileSettingByName("email")).thenReturn(emailSetting);
+    lenient().when(profilePropertyService.getHiddenProfilePropertyIds(Long.parseLong(identity.getId())))
+             .thenReturn(List.of(42L));
   }
 
   /**
