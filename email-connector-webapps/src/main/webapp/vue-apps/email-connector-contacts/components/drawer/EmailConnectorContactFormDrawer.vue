@@ -232,11 +232,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :tag-enabled="false"
             disable-suggester
             hide-chars-count />
-          <div
-            v-if="errorMessage"
-            class="error--text mb-2">
-            {{ errorMessage }}
-          </div>
         </v-form>
       </template>
       <template #footer>
@@ -282,7 +277,6 @@ export default {
       // The edited row's source: it is what says whether the picture is ours to
       // own. A brand-new contact is MANUAL, so it always is.
       editedSource: 'MANUAL',
-      errorMessage: null,
       // null = the request says nothing about the photo, '' = remove it, an upload
       // id = set it. The same three states the server documents, held here until
       // the form is saved.
@@ -386,7 +380,6 @@ export default {
     open(contact) {
       this.editedId = contact?.id || null;
       this.editedSource = contact?.source || 'MANUAL';
-      this.errorMessage = null;
       this.resetPhoto(contact);
       this.form = contact ? {
         primaryEmail: contact.primaryEmail || '',
@@ -493,22 +486,26 @@ export default {
         photoUploadId: this.photoUploadId,
       };
       this.saving = true;
-      this.errorMessage = null;
       const call = this.editedId ? this.$emailConnectorContactsService.updateContact(contact)
         : this.$emailConnectorContactsService.createContact(contact);
       call.then(() => {
         this.$root.$emit('email-contacts-refresh');
         this.close();
       }).catch(error => {
+        let message;
         if (error?.status === 409) {
-          this.errorMessage = this.$t('emailConnector.contacts.form.alreadyExists');
+          message = this.$t('emailConnector.contacts.form.alreadyExists');
         } else if (error?.message?.includes('invalidBirthday')) {
           // The server's message code travels as the response body, which is
           // how a bad birthday is told apart from a bad address.
-          this.errorMessage = this.$t('emailConnector.contacts.form.invalidBirthday');
+          message = this.$t('emailConnector.contacts.form.invalidBirthday');
         } else {
-          this.errorMessage = this.$t('emailConnector.contacts.form.invalidEmail');
+          message = this.$t('emailConnector.contacts.form.invalidEmail');
         }
+        // A toast, not a line under the last field: the form is taller than the
+        // drawer, so a refusal printed at the bottom lands off-screen and the
+        // save just looks like it did nothing.
+        this.$root.$emit('alert-message', message, 'error');
       }).finally(() => this.saving = false);
     },
     /**
@@ -520,7 +517,6 @@ export default {
       this.formDrawer = false;
       this.editedId = null;
       this.editedSource = 'MANUAL';
-      this.errorMessage = null;
       this.resetPhoto(null);
       this.form = this.emptyForm();
       this.$refs.emailContactFormDrawer.close();
