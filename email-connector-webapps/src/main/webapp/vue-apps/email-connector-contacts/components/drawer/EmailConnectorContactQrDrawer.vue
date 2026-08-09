@@ -20,63 +20,66 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        camera saves the person. The server strips the photo (a picture is far
        past what a scannable code holds); this side owns the other half of the
        honesty: a card too big even as text says so instead of rendering an
-       unscannable code. -->
-  <!-- Shaped like the platform's confirmation popup -- a titled bar, a body, one
-       action on the right -- because that is the dialog people already know here.
-       It cannot BE that component: exo-confirm-dialog carries a title and a text
-       message, with no slot to put a picture in. -->
-  <v-dialog
-    v-model="dialog"
-    max-width="400"
-    @input="onToggle">
-    <v-card>
-      <v-card-title class="text-h6 text-color pb-2">
-        {{ contactName }}
-      </v-card-title>
-      <v-card-subtitle class="pb-0">
-        {{ $t('emailConnector.contacts.qr.hint') }}
-      </v-card-subtitle>
-      <v-card-text class="d-flex flex-column align-center pt-4">
-      <v-progress-circular
-        v-if="loading"
-        indeterminate
-        color="primary"
-        class="my-8" />
-      <div
-        v-else-if="message"
-        class="text-sub-title text-center my-6">
-        {{ message }}
+       unscannable code.
+       In the platform's own drawer rather than a dialog of our making: it is the
+       one shared surface that takes content. exo-confirm-dialog carries a title
+       and a text message, exo-modal asks for text, and the attachment preview
+       wants a file the platform already stores - none of them can hold a picture
+       we drew here. -->
+  <exo-drawer
+    id="emailContactQrDrawer"
+    ref="emailContactQrDrawer"
+    v-model="drawer"
+    right
+    @closed="close">
+    <template #title>
+      {{ contactName }}
+    </template>
+    <template #content>
+      <div class="d-flex flex-column align-center pa-4">
+        <div class="text-sub-title text-center mb-4">
+          {{ $t('emailConnector.contacts.qr.hint') }}
+        </div>
+        <v-progress-circular
+          v-if="loading"
+          indeterminate
+          color="primary"
+          class="my-8" />
+        <div
+          v-else-if="message"
+          class="text-sub-title text-center my-6">
+          {{ message }}
+        </div>
+        <!-- The library draws into this element; keyed on the contact so a
+             reopened drawer never shows the previous person's code. -->
+        <div
+          v-show="!loading && !message"
+          ref="qrCanvas"
+          :key="contactId"></div>
       </div>
-      <!-- The library draws into this element; keyed on the contact so a
-           reopened dialog never shows the previous person's code. -->
-      <div
-        v-show="!loading && !message"
-        ref="qrCanvas"
-        :key="contactId"></div>
-      </v-card-text>
-      <v-card-actions class="pb-4 pe-4">
+    </template>
+    <template #footer>
+      <div class="d-flex">
         <v-spacer />
-        <v-btn
-          class="btn"
-          @click="close">
+        <v-btn class="btn" @click="close">
           {{ $t('emailConnector.contacts.qr.close') }}
         </v-btn>
-      </v-card-actions>
-    </v-card>
-  </v-dialog>
+      </div>
+    </template>
+  </exo-drawer>
 </template>
 
 <script>
 // The hard ceiling of a QR code in byte mode at version 40 with correction
 // level M: 2331 bytes. A vCard past it cannot be encoded at that level at all,
 // and even approaching it makes a screen-to-phone scan flaky - so past the
-// ceiling the dialog says "too large" instead of trying.
+// ceiling the drawer says "too large" instead of trying.
 const QR_MAX_BYTES = 2331;
 
 export default {
   data() {
     return {
-      dialog: false,
+      drawer: false,
       loading: false,
       contactId: null,
       contactName: '',
@@ -91,7 +94,7 @@ export default {
   },
   methods: {
     /**
-     * Opens the dialog on a contact and builds its code: the text-only vCard
+     * Opens the drawer on a contact and builds its code: the text-only vCard
      * from the server, measured against the QR ceiling, then drawn by the
      * platform's own qrcode module - loaded on demand, so pages that never
      * show a QR never pay for the library.
@@ -107,7 +110,8 @@ export default {
       this.contactName = contact.displayName || contact.primaryEmail || '';
       this.message = null;
       this.loading = true;
-      this.dialog = true;
+      this.drawer = true;
+      this.$refs.emailContactQrDrawer.open();
       this.$emailConnectorContactsService.getContactVCard(contact.id)
         .then(vcard => this.render(vcard))
         .catch(() => this.message = this.$t('emailConnector.contacts.qr.error'))
@@ -154,23 +158,13 @@ export default {
       });
     },
     /**
-     * Clears the dialog when it is toggled off by a click outside.
-     *
-     * @param {boolean} opened - the dialog's new state
-     * @returns {void}
-     */
-    onToggle(opened) {
-      if (!opened) {
-        this.close();
-      }
-    },
     /**
-     * Closes and resets the dialog.
+     * Closes and resets the drawer.
      *
      * @returns {void}
      */
     close() {
-      this.dialog = false;
+      this.drawer = false;
       this.contactId = null;
       this.contactName = '';
       this.message = null;
