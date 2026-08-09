@@ -43,6 +43,7 @@ import org.exoplatform.emailConnector.carddav.ParsedVCard;
 import org.exoplatform.emailConnector.carddav.VCardParser;
 import org.exoplatform.emailConnector.carddav.VCardSink;
 import org.exoplatform.emailConnector.model.ContactImportState;
+import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSource;
@@ -91,6 +92,12 @@ public class EmailContactVCardService {
   /** Message code reported on the state when the run itself broke. */
   public static final String      IMPORT_FAILED             = "emailConnector.contacts.import.failed";
 
+  /** Message code answered as a 400 for a mail attachment holding no readable vCard. */
+  public static final String      ATTACHMENT_NOT_VCARD      = "emailConnector.contacts.attachment.notVCard";
+
+  /** Message code answered as a 400 for a vCard attachment over the size cap. */
+  public static final String      ATTACHMENT_TOO_LARGE      = "emailConnector.contacts.attachment.tooLarge";
+
   /**
    * The most an uploaded .vcf may weigh, checked BEFORE a byte of it is parsed.
    * Twenty megabytes holds a photo-heavy export of thousands of contacts; a
@@ -112,6 +119,15 @@ public class EmailContactVCardService {
    * storage layer already reasons about pictures it cannot write.
    */
   public static final int         MAX_PHOTO_BYTES           = 1024 * 1024;
+
+  /**
+   * The most a received .vcf attachment may weigh before a byte of it is
+   * parsed — the same gate the import runs, sized for its actual cargo: one
+   * person, photo included, is comfortably under a megabyte, so five holds
+   * every real card and refuses a file that is something else wearing a .vcf
+   * name.
+   */
+  public static final long        MAX_ATTACHMENT_CARD_BYTES = 5L * 1024 * 1024;
 
   /** How many rows one export page reads — the file streams out page by page. */
   private static final int        EXPORT_PAGE_SIZE          = 200;
@@ -138,6 +154,9 @@ public class EmailContactVCardService {
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
+
+  @Autowired
+  private EmailBoxService         emailBoxService;
 
   @Autowired
   private UploadService           uploadService;
@@ -252,11 +271,73 @@ public class EmailContactVCardService {
    * @return the vCard text, or null when this user has no such visible contact
    */
   public String getContactVCard(String username, long contactId) {
+    return getContactVCard(username, contactId, false);
+  }
+
+  /**
+   * One contact of the caller's store as vCard 3.0 text, with the photo
+   * optional — the shape a contact travels in as a mail attachment.
+   * <p>
+   * An attachment has none of the QR's byte budget, so the stored picture may
+   * come along: a card somebody keeps should look like the person. It is still
+   * only the picture this store OWNS — {@link #readPhoto} refuses to hand out a
+   * directory colleague's platform avatar — and the vCard UID stays absent on
+   * both paths: it is CardDAV bookkeeping, and whoever imports the mailed card
+   * has no entry of ours to reconcile against.
+   *
+   * @param username the store owner
+   * @param contactId the contact to encode
+   * @param includePhoto whether the stored picture travels; the QR path says no
+   * @return the vCard text, or null when this user has no such visible contact
+   */
+  public String getContactVCard(String username, long contactId, boolean includePhoto) {
     EmailContact contact = emailContactService.getContact(contactId, username);
     if (contact == null) {
       return null;
     }
-    return vCardParser.format(toCard(contact, null, false));
+    return vCardParser.format(toCard(contact, null, includePhoto));
+  }
+
+  /**
+   * The FIRST card of a received .vcf attachment, as the contact form's
+   * prefill — read, never stored: keeping the person is the user's decision,
+   * taken on the form this answer fills in.
+   * <p>
+   * First card only, on purpose: an emailed contact is one person, and a
+   * multi-card file is the bulk import's job. Nothing is persisted here — no
+   * row, no photo file — which is also why the card's picture is left behind:
+   * the form's photo travels only as an upload id from its own cropper, and a
+   * prefill must not write files for a contact that may never be saved.
+   * <p>
+   * The attachment is untrusted input and bounded like the import's file:
+   * refused whole over {@link #MAX_ATTACHMENT_CARD_BYTES}, before parsing.
+   *
+   * @param username the acting user, owner of the mailbox being read
+   * @param mailRemoteId the INBOX IMAP UID of the mail
+   * @param attachmentId the attachment's MIME part path within the mail
+   * @return the prefill, or null when the caller has no such attachment
+   * @throws IllegalAccessException when the caller has no connected mailbox
+   * @throws IllegalArgumentException with {@link #ATTACHMENT_TOO_LARGE} or
+   *           {@link #ATTACHMENT_NOT_VCARD}
+   */
+  public EmailContact getAttachmentContact(String username, long mailRemoteId, String attachmentId)
+                                                                                                    throws IllegalAccessException {
+    EmailAttachment attachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(mailRemoteId, attachmentId, username);
+    if (attachment == null || attachment.getData() == null || attachment.getData().length == 0) {
+      return null;
+    }
+    // The size gate, before parsing starts — the same promise the import makes:
+    // no code below ever runs against a file bigger than the cap.
+    if (attachment.getData().length > MAX_ATTACHMENT_CARD_BYTES) {
+      throw new IllegalArgumentException(ATTACHMENT_TOO_LARGE);
+    }
+    // parse() takes the first card of the text and only it, which is exactly
+    // this method's contract; a text with no readable card answers null.
+    ParsedVCard card = vCardParser.parse(new String(attachment.getData(), StandardCharsets.UTF_8));
+    if (card == null) {
+      throw new IllegalArgumentException(ATTACHMENT_NOT_VCARD);
+    }
+    return toPrefill(card);
   }
 
   /**
@@ -525,9 +606,52 @@ public class EmailContactVCardService {
    * @return the row to create
    */
   private EmailContact toContact(String username, ParsedVCard card, List<String> addresses) {
-    EmailContact contact = new EmailContact();
+    EmailContact contact = cardFields(card, addresses);
     contact.setUserId(username);
     contact.setSource(EmailContactSource.MANUAL);
+    contact.setSeenCount(0);
+    if (card.photo() != null && card.photo().length > 0 && card.photo().length <= MAX_PHOTO_BYTES) {
+      // Over the cap the photo is simply not stored: the contact is kept, per
+      // the cap's contract. Under it, a photo that fails to write costs the
+      // photo too — savePhotoBytes already answers null rather than throwing.
+      contact.setPhotoFileId(emailContactStorage.savePhotoBytes(null, card.photo(), card.photoMimeType()));
+    }
+    return contact;
+  }
+
+  /**
+   * The prefill a card becomes for the contact form: the same field mapping as
+   * an imported row, minus everything that belongs to a persisted one — no
+   * owner, no source, no photo file. When the card names the person only as one
+   * formatted string, it is split into the form's given and family fields with
+   * the same first-space guess the mailbox's add-sender prefill takes — a guess
+   * either way, which is exactly why a form stands between this and a row.
+   *
+   * @param card the parsed card
+   * @return the unpersisted prefill
+   */
+  private EmailContact toPrefill(ParsedVCard card) {
+    EmailContact prefill = cardFields(card, normalizedAddressesOf(card));
+    if (StringUtils.isBlank(prefill.getGivenName()) && StringUtils.isBlank(prefill.getFamilyName())
+        && StringUtils.isNotBlank(prefill.getDisplayName())) {
+      String[] parts = prefill.getDisplayName().trim().split("\\s+", 2);
+      prefill.setGivenName(parts[0]);
+      prefill.setFamilyName(parts.length > 1 ? parts[1] : null);
+    }
+    return prefill;
+  }
+
+  /**
+   * The fields a card carries into a contact, shared by the import's MANUAL row
+   * and the attachment prefill so the very same card reads the very same way on
+   * both paths.
+   *
+   * @param card the parsed card
+   * @param addresses the normalized addresses, preferred first
+   * @return a contact holding only what the card said
+   */
+  private EmailContact cardFields(ParsedVCard card, List<String> addresses) {
+    EmailContact contact = new EmailContact();
     contact.setPrimaryEmail(addresses.isEmpty() ? null : addresses.get(0));
     contact.setSecondaryEmails(addresses.size() > 1 ? addresses.subList(1, addresses.size()) : null);
     contact.setDisplayName(StringUtils.defaultIfBlank(card.formattedName(),
@@ -544,13 +668,6 @@ public class EmailContactVCardService {
     contact.setPostalAddress(card.address());
     contact.setNote(card.note());
     contact.setWebsite(card.website());
-    contact.setSeenCount(0);
-    if (card.photo() != null && card.photo().length > 0 && card.photo().length <= MAX_PHOTO_BYTES) {
-      // Over the cap the photo is simply not stored: the contact is kept, per
-      // the cap's contract. Under it, a photo that fails to write costs the
-      // photo too — savePhotoBytes already answers null rather than throwing.
-      contact.setPhotoFileId(emailContactStorage.savePhotoBytes(null, card.photo(), card.photoMimeType()));
-    }
     return contact;
   }
 
