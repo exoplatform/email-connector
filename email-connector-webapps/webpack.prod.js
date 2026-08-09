@@ -33,6 +33,7 @@ const config = {
     emailConnectorFavoriteDrawerExtension: './src/main/webapp/vue-apps/email-connector-favorite-drawer-extension/main.js',
     emailSearch: './src/main/webapp/vue-apps/email-connector-search/main.js',
     emailContactsSearch: './src/main/webapp/vue-apps/email-connector-contacts-search/main.js',
+    emailConnectorProfileExtension: './src/main/webapp/vue-apps/email-connector-profile-extension/main.js',
   },
   output: {
     path: path.join(__dirname, 'target/email-connector/'),
