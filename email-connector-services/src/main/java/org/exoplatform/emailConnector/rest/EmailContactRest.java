@@ -401,20 +401,60 @@ public class EmailContactRest {
 
   @GetMapping(value = "/{id}/vcard", produces = "text/vcard")
   @Secured("users")
-  @Operation(summary = "One contact as vCard text, without its photo", method = "GET",
-             description = "The text-only vCard of one of the caller's own contacts - what the contact card's QR code encodes, so a phone pointed at the screen can save the person. The photo is deliberately absent: an embedded picture is far past what a scannable QR can hold. Somebody else's contact is answered 404, never 403.")
+  @Operation(summary = "One contact as vCard text", method = "GET",
+             description = "The vCard of one of the caller's own contacts. Without the photo parameter it is text-only - what the contact card's QR code encodes, where an embedded picture is far past what a scannable QR can hold. With photo=true the stored picture comes along - the shape the contact travels in as a mail attachment - though only a picture this store owns: a directory colleague's platform avatar is never handed out. Neither shape carries a UID. Somebody else's contact is answered 404, never 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public String getContactVCard(HttpServletRequest request,
                                 @Parameter(description = "Contact id", required = true)
                                 @PathVariable("id")
-                                long id) {
-    String vcard = emailContactVCardService.getContactVCard(request.getRemoteUser(), id);
+                                long id,
+                                @Parameter(description = "Whether the stored picture travels; the QR path leaves it out")
+                                @RequestParam(value = "photo", required = false, defaultValue = "false")
+                                boolean photo) {
+    String vcard = emailContactVCardService.getContactVCard(request.getRemoteUser(), id, photo);
     if (vcard == null) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND);
     }
     return vcard;
+  }
+
+  @GetMapping("/from-attachment")
+  @Secured("users")
+  @Operation(summary = "Reads the first vCard of a mail attachment as a contact-form prefill", method = "GET",
+             description = "Parses a .vcf attachment of one of the caller's own received mails and answers its FIRST card as an unpersisted contact - what the 'Add to contacts' action opens the create form with. First card only, on purpose: an emailed contact is one person, and a multi-card file belongs to the contacts import. Nothing is stored by this call, and the card's embedded photo is left behind - the form owns the picture flow. An attachment over the size cap or holding no readable card answers 400 with the message code; an attachment the caller does not have answers 404, never 403.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Over the size cap, or no readable vCard"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public EmailContact getContactFromAttachment(HttpServletRequest request,
+                                               @Parameter(description = "The INBOX IMAP UID of the mail", required = true)
+                                               @RequestParam("mailRemoteId")
+                                               long mailRemoteId,
+                                               @Parameter(description = "The attachment's MIME part path within the mail", required = true)
+                                               @RequestParam("attachmentId")
+                                               String attachmentId) {
+    try {
+      EmailContact prefill = emailContactVCardService.getAttachmentContact(request.getRemoteUser(),
+                                                                           mailRemoteId,
+                                                                           attachmentId);
+      if (prefill == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return prefill;
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      // The mailbox folds "not yours", "not there" and "unreachable" into this
+      // one exception. From the caller's seat every one of them reads the same
+      // way - no such attachment of theirs exists - and answering 404 for all
+      // three is what keeps somebody else's mail id unprobeable, per this
+      // surface's 404-never-403 rule.
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
   }
 
   @PostMapping("/{id}/restore")
