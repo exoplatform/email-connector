@@ -41,6 +41,7 @@ import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
+import org.exoplatform.emailConnector.model.ContactImportState;
 import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -74,6 +75,13 @@ public class UserEmailSettingService {
    * other's fields.
    */
   public static final String        CONTACT_SYNC_STATE_KEY                             = "emailContactSyncState";
+
+  /**
+   * The vCard file import's own key, apart from both other documents for the
+   * same reason they are apart from each other: whoever rewrites a shared
+   * document last wins, silently.
+   */
+  public static final String        CONTACT_IMPORT_STATE_KEY                           = "emailContactImportState";
 
   private static final String       USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
                                                                                        "User %s is not allowed to connect email setting";
@@ -418,6 +426,42 @@ public class UserEmailSettingService {
    */
   public void clearContactSyncState(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
+  }
+
+  /**
+   * Where this user's last vCard file import got to. Never null, so callers do
+   * not branch on absence — a state with a null status says no import ever ran.
+   *
+   * @param username the store owner
+   * @return the stored state, or a fresh empty one
+   */
+  public ContactImportState getContactImportState(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_IMPORT_STATE_KEY);
+    if (value == null || value.getValue() == null) {
+      return new ContactImportState();
+    }
+    try {
+      return JsonUtils.fromJsonString(value.getValue().toString(), ContactImportState.class);
+    } catch (Exception e) {
+      // An unreadable state is a report that is gone, nothing more: the next
+      // import writes a fresh one.
+      LOG.warn("The stored contact import state of user {} could not be read, starting from scratch", username, e);
+      return new ContactImportState();
+    }
+  }
+
+  /**
+   * Stores where a vCard file import got to — written at start, along the run
+   * for the poll to see progress, and at the end as the report.
+   *
+   * @param state the state to store
+   * @param username the store owner
+   */
+  public void setContactImportState(ContactImportState state, String username) {
+    settingService.set(Context.USER.id(username),
+                       EMAIL_CONNECTOR_SCOPE,
+                       CONTACT_IMPORT_STATE_KEY,
+                       SettingValue.create(JsonUtils.toJsonString(state)));
   }
 
   private String decodePassword(String password) {
