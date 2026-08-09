@@ -30,6 +30,7 @@ const config = {
     emailConnectorContacts: './src/main/webapp/vue-apps/email-connector-contacts/main.js',
     emailConnectorNotificationExtension: './src/main/webapp/vue-apps/email-connector-notification-extension/main.js',
     emailConnectorDocumentsExtension: './src/main/webapp/vue-apps/email-connector-documents-extension/main.js',
+    emailConnectorChatActionExtension: './src/main/webapp/vue-apps/email-connector-chat-extension/main.js',
     emailConnectorFavoriteDrawerExtension: './src/main/webapp/vue-apps/email-connector-favorite-drawer-extension/main.js',
     emailSearch: './src/main/webapp/vue-apps/email-connector-search/main.js',
     emailContactsSearch: './src/main/webapp/vue-apps/email-connector-contacts-search/main.js',
