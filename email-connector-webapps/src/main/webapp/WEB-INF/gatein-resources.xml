@@ -222,6 +222,43 @@
     </depends>
   </module>
 
+  <!-- Contributes "Add to contacts" (on a vCard chat attachment) and "Contact"
+       (in the composer's "+" menu) to the chat's ('chat', 'message-action') and
+       ('chat', 'composer-action') extension points. The name MUST contain
+       "ChatActionExtension": the chat discovers its contributors by module name
+       (see matrix's vue-apps/matrix/js/ChatActionExtensions.js), so a module that
+       merely sits in the load-group is defined and then never executed. In
+       matrixGRP so it is present wherever the chat renders — the discussion
+       drawer and the full chat page both come from the same Matrix portlet.
+       Present only when this webapp is deployed; the chat needs no change. -->
+  <module>
+    <name>EmailConnectorChatActionExtension</name>
+    <load-group>matrixGRP</load-group>
+    <script>
+      <path>/js/emailConnectorChatActionExtension.bundle.js</path>
+    </script>
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>vuetify</module>
+    </depends>
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+    <depends>
+      <module>commonVueComponents</module>
+    </depends>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+    <!-- The platform's profile-picture cropper: the contact form drawer this
+         bundle carries renders <image-crop-drawer>, same as in the contacts app. -->
+    <depends>
+      <module>imageCropper</module>
+    </depends>
+  </module>
+
   <!-- Contributes the "Emails" section to the platform's global Favorites drawer. The
        name MUST contain "FavoriteDrawerExtension": the favorites portlet discovers its
        contributors with includeExtensions('FavoriteDrawerExtension'), which matches on
