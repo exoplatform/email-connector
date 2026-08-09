@@ -24,24 +24,15 @@
     ref="pickerDrawer"
     v-model="drawer"
     right
+    :loading="loading"
+    use-filter
+    :filter-placeholder="$t('emailConnector.contacts.chatPicker.searchPlaceholder')"
+    @filter-updated="onFilterUpdated"
     @closed="reset">
     <template #title>
       <span>{{ $t('emailConnector.contacts.chatPicker.title') }}</span>
     </template>
     <template v-if="drawer" #content>
-      <div class="px-4 pt-4">
-        <v-text-field
-          v-model="term"
-          :placeholder="$t('emailConnector.contacts.chatPicker.searchPlaceholder')"
-          prepend-inner-icon="fa-search"
-          class="pt-0 mt-0"
-          clearable
-          hide-details
-          @input="onTermInput" />
-      </div>
-      <v-progress-linear
-        v-if="loading"
-        indeterminate />
       <email-connector-contacts-list
         :contacts="contacts"
         :letter-index="letterIndex"
@@ -92,12 +83,15 @@ export default {
       this.load();
     },
     /**
-     * Debounces typing into one reload, the same 300ms the contacts drawer
-     * gives a search.
+     * Reloads on what was typed in the drawer's own header filter — the shell
+     * owns the field, this only owns what the term means. Debounced by the
+     * same 300ms the contacts drawer gives a search.
      *
+     * @param {string} term - what the header filter currently holds
      * @returns {void}
      */
-    onTermInput() {
+    onFilterUpdated(term) {
+      this.term = term || null;
       window.clearTimeout(this.searchTimeout);
       this.searchTimeout = window.setTimeout(() => this.load(), 300);
     },
