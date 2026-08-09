@@ -40,6 +40,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-if="contact"
         class="d-flex align-center">
         <v-btn
+          :title="$t('emailConnector.contacts.qr.open')"
+          icon
+          @click="showQrCode">
+          <v-icon size="18">
+            fas fa-qrcode
+          </v-icon>
+        </v-btn>
+        <v-btn
           v-if="editable"
           :title="$t('emailConnector.contacts.detail.edit')"
           icon
@@ -125,6 +133,15 @@ export default {
           .catch(() => null)
           .finally(() => this.loading = false);
       }
+    },
+    /**
+     * Opens the take-away QR on this contact — the dialog overlays the drawer,
+     * which stays open underneath: scanning is a glance, not a navigation.
+     *
+     * @returns {void}
+     */
+    showQrCode() {
+      this.$root.$emit('open-email-contact-qr', this.contact);
     },
     /**
      * Hands the contact to the edit form and closes the card under it.

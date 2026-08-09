@@ -119,4 +119,36 @@ public class EmailContactUtilsTest {
     assertNull(EmailContactUtils.authorNameFromListSender("dev-list"));
     assertNull(EmailContactUtils.authorNameFromListSender(null));
   }
+
+  @Test
+  void aBirthdayNormalizesFromEverySpellingItArrivesIn() {
+    // vCard basic and extended forms, with and without a year, plus the bare
+    // MM-DD a person naturally types — all to one canonical form each.
+    assertEquals("1985-04-12", EmailContactUtils.normalizeBirthday("1985-04-12"));
+    assertEquals("1985-04-12", EmailContactUtils.normalizeBirthday("19850412"));
+    assertEquals("--04-12", EmailContactUtils.normalizeBirthday("--04-12"));
+    assertEquals("--04-12", EmailContactUtils.normalizeBirthday("--0412"));
+    assertEquals("--04-12", EmailContactUtils.normalizeBirthday("04-12"));
+    // Leap day without a year is a real birthday.
+    assertEquals("--02-29", EmailContactUtils.normalizeBirthday("--02-29"));
+  }
+
+  @Test
+  void whatIsNotADateIsNotABirthday() {
+    assertNull(EmailContactUtils.normalizeBirthday("next tuesday"));
+    assertNull(EmailContactUtils.normalizeBirthday("1985-13-01"));
+    assertNull(EmailContactUtils.normalizeBirthday("--02-30"));
+    assertNull(EmailContactUtils.normalizeBirthday("1985"));
+    assertNull(EmailContactUtils.normalizeBirthday("  "));
+    assertNull(EmailContactUtils.normalizeBirthday(null));
+  }
+
+  @Test
+  void aNoteIsTrimmedAndCappedAtTheStoreLength() {
+    assertEquals("kept", EmailContactUtils.truncateNote("  kept  "));
+    assertNull(EmailContactUtils.truncateNote("   "));
+    assertNull(EmailContactUtils.truncateNote(null));
+    assertEquals(EmailContactUtils.MAX_NOTE_LENGTH,
+                 EmailContactUtils.truncateNote("x".repeat(EmailContactUtils.MAX_NOTE_LENGTH + 1)).length());
+  }
 }

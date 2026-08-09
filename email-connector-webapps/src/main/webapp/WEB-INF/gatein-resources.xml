@@ -141,6 +141,14 @@
     <depends>
       <module>imageCropper</module>
     </depends>
+    <!-- The platform's own QR library, which draws the take-away code on a
+         contact card. Declared even though the dialog requires it on demand:
+         requirejs only knows a shared module on a page where something depends
+         on it, so without this the require resolved to nothing and the dialog
+         opened empty. -->
+    <depends>
+      <module>qrcode</module>
+    </depends>
   </module>
 
   <module>
