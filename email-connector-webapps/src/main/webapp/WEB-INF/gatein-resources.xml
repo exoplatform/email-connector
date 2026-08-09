@@ -250,6 +250,29 @@
     </depends>
   </module>
 
+  <!-- The "Add to my contacts" action on a people profile. The name MUST contain
+       "PopoverExtension": the globally-injected Popover portlet discovers its
+       contributors with includeExtensions('PopoverExtension'), which matches on the
+       module NAME — a module that merely sits in popoverGRP is defined in the
+       aggregate but never executed (the FavoriteDrawerExtension trap, again). In
+       popoverGRP so it loads wherever the popover portlet does, the profile page
+       included. -->
+  <module>
+    <name>EmailConnectorContactsPopoverExtension</name>
+    <load-group>popoverGRP</load-group>
+    <script>
+      <path>/js/emailConnectorProfileExtension.bundle.js</path>
+    </script>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+    <!-- Required lazily as SHARED/eXoVueI18n from init(): requirejs only knows a
+         shared module on a page where something depends on it. -->
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+  </module>
+
   <!-- The unified-search connector's front-end half. The connector descriptor names
        it as SHARED/EmailSearch, so the module name here IS that contract: the search
        app requires it to register the row component and to call formatSearchResult on
