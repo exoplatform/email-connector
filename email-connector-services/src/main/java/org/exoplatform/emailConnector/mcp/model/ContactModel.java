@@ -66,6 +66,19 @@ public class ContactModel {
 
   private String       title;
 
+  /** The birthday, as YYYY-MM-DD or --MM-DD when the year is unknown. */
+  private String       birthday;
+
+  /** The postal address as one line — components joined, not structured. */
+  @JsonProperty("postal_address")
+  private String       postalAddress;
+
+  /** The free-text note on the contact. */
+  private String       note;
+
+  /** The contact's web page. */
+  private String       website;
+
   /** Where the row came from: COLLECTED, MANUAL, DIRECTORY or CARDDAV. */
   private String       source;
 
