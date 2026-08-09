@@ -61,6 +61,7 @@ import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.emailConnector.carddav.EzVCardParser;
 import org.exoplatform.emailConnector.carddav.VCardParser;
 import org.exoplatform.emailConnector.model.ContactImportState;
+import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSource;
@@ -93,6 +94,9 @@ public class EmailContactVCardServiceTest {
 
   @Mock
   private UploadService                          uploadService;
+
+  @Mock
+  private EmailBoxService                        emailBoxService;
 
   @Spy
   private VCardParser                            vCardParser = new EzVCardParser();
@@ -651,6 +655,154 @@ public class EmailContactVCardServiceTest {
     assertTrue(vcf.contains("ADR:;;12 rue de la Paix;Paris;;75002;France"));
     assertTrue(vcf.contains("NOTE:Met at FOSDEM."));
     assertTrue(vcf.contains("URL:https://janedoe.example"));
+  }
+
+  @Test
+  void theAttachmentCardCarriesTheStoredPhotoTheQrMustDrop() throws Exception {
+    // Same contact, two shapes: the QR path drops the picture for the byte
+    // budget a scannable code has, the attachment path has no such budget and
+    // ships it. The UID stays absent on both — CardDAV bookkeeping is not the
+    // recipient's to reconcile.
+    EmailContact contact = visibleContact(1L);
+    contact.setDisplayName("Jane Doe");
+    contact.setPhotoFileId(42L);
+    when(emailContactService.getContact(1L, USERNAME)).thenReturn(contact);
+    FileItem photo = new FileItem(42L, "emailContactPhoto", "image/jpeg", "emailConnector", 4L, null, null, false,
+                                  new java.io.ByteArrayInputStream(new byte[] { 1, 2, 3, 4 }));
+    when(emailContactStorage.getPhotoFileItem(42L)).thenReturn(photo);
+
+    String vcard = service.getContactVCard(USERNAME, 1L, true);
+
+    assertTrue(vcard.contains("FN:Jane Doe"));
+    assertTrue(vcard.contains("PHOTO"));
+    assertTrue(!vcard.contains("UID"));
+  }
+
+  @Test
+  void theAttachmentCardOfAColleagueNeverShipsThePlatformAvatar() {
+    // A directory row's picture IS the colleague's profile avatar, resolved
+    // live — not this store's to mail out, photo=true or not.
+    EmailContact directory = visibleContact(1L);
+    directory.setSource(EmailContactSource.DIRECTORY);
+    directory.setDisplayName("Colleague");
+    directory.setPhotoFileId(42L);
+    when(emailContactService.getContact(1L, USERNAME)).thenReturn(directory);
+
+    String vcard = service.getContactVCard(USERNAME, 1L, true);
+
+    assertTrue(!vcard.contains("PHOTO"));
+    verify(emailContactStorage, never()).getPhotoFileItem(any());
+  }
+
+  @Test
+  void aVCardAttachmentPrefillsTheFirstCardOnly() throws Exception {
+    // One mail, one person: the second card of the file belongs to the bulk
+    // import, and nothing of either card is persisted by the read.
+    String vcf = """
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        N:Doe;Jane;;;
+        EMAIL;TYPE=INTERNET,PREF:Jane@Example.com
+        TEL:+33612345678
+        ORG:Acme
+        PHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRg==
+        END:VCARD
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:John Roe
+        EMAIL:john@example.com
+        END:VCARD""";
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8)));
+
+    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2");
+
+    assertEquals("jane@example.com", prefill.getPrimaryEmail());
+    assertEquals("Jane", prefill.getGivenName());
+    assertEquals("Doe", prefill.getFamilyName());
+    assertEquals(List.of("+33612345678"), prefill.getPhones());
+    assertEquals("Acme", prefill.getOrganization());
+    // Unpersisted through and through: no row, no owner, no source, and the
+    // card's photo left behind — the form owns the picture flow.
+    assertNull(prefill.getId());
+    assertNull(prefill.getUserId());
+    assertNull(prefill.getSource());
+    assertNull(prefill.getPhotoFileId());
+    verify(emailContactStorage, never()).createContact(any());
+    verify(emailContactStorage, never()).savePhotoBytes(any(), any(), any());
+  }
+
+  @Test
+  void aCardNamingThePersonInOneStringIsSplitForTheForm() throws Exception {
+    // The same first-space guess the mailbox's add-sender prefill takes: a
+    // guess either way, which is why a form stands between this and a row.
+    String vcf = """
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane van Doe
+        EMAIL:jane@example.com
+        END:VCARD""";
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8)));
+
+    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2");
+
+    assertEquals("Jane", prefill.getGivenName());
+    assertEquals("van Doe", prefill.getFamilyName());
+  }
+
+  @Test
+  void anAttachmentThatIsNoVCardIsACleanRefusal() throws Exception {
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "contact.vcf", "text/vcard",
+                                        "Nothing card-shaped in here".getBytes(StandardCharsets.UTF_8)));
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.getAttachmentContact(USERNAME, 7L, "2"));
+
+    assertEquals(EmailContactVCardService.ATTACHMENT_NOT_VCARD, refusal.getMessage());
+  }
+
+  @Test
+  void anOversizedAttachmentIsRefusedBeforeParsing() throws Exception {
+    byte[] oversized = new byte[(int) EmailContactVCardService.MAX_ATTACHMENT_CARD_BYTES + 1];
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "huge.vcf", "text/vcard", oversized));
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.getAttachmentContact(USERNAME, 7L, "2"));
+
+    assertEquals(EmailContactVCardService.ATTACHMENT_TOO_LARGE, refusal.getMessage());
+    // Not one byte of it met the parser — the cap's whole point.
+    verify(vCardParser, never()).parse(anyString());
+  }
+
+  @Test
+  void somebodyElsesMailIsNobodysContactCard() throws Exception {
+    // The mailbox reads only the caller's own INBOX and answers everything
+    // else — another user's UID included — as this exception, which the REST
+    // layer turns into the 404 the never-403 rule wants.
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+        .thenThrow(new IllegalStateException("Error when connecting store for user alice"));
+
+    assertThrows(IllegalStateException.class, () -> service.getAttachmentContact(USERNAME, 7L, "2"));
+  }
+
+  @Test
+  void aUserWithoutAMailboxCannotReadAttachments() throws Exception {
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+        .thenThrow(new IllegalAccessException("no mailbox"));
+
+    assertThrows(IllegalAccessException.class, () -> service.getAttachmentContact(USERNAME, 7L, "2"));
+  }
+
+  @Test
+  void anEmptyAttachmentIsNotFound() throws Exception {
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "empty.vcf", "text/vcard", new byte[0]));
+
+    assertNull(service.getAttachmentContact(USERNAME, 7L, "2"));
   }
 
   @Test
