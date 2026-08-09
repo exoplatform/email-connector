@@ -19,11 +19,13 @@ package org.exoplatform.emailConnector.carddav;
 
 import java.util.List;
 
+import org.exoplatform.emailConnector.model.PostalAddress;
+
 /**
  * One vCard, reduced to what a contact row can hold. Everything else a vCard may
- * carry — birthdays, addresses, notes, arbitrary extensions — is dropped here on
- * purpose: the store has nowhere to put it, and carrying it would invite a
- * schema that mirrors vCard instead of serving the product.
+ * carry — instant-messaging handles, geo positions, arbitrary extensions — is
+ * dropped here on purpose: the store has nowhere to put it, and carrying it
+ * would invite a schema that mirrors vCard instead of serving the product.
  *
  * @param uid the vCard's own identity, kept so an entry that moves on the server
  *          can still be recognised
@@ -35,6 +37,14 @@ import java.util.List;
  * @param phones every phone number, in vCard order
  * @param organization the company
  * @param title the job title
+ * @param birthday the birthday in the store's canonical text — YYYY-MM-DD, or
+ *          --MM-DD when the card carried no year (which vCard allows and Apple
+ *          exports do)
+ * @param address the first postal address the card carries, structured; a card
+ *          may list several (home, work) and one is what the store holds, the
+ *          preferred/first winning
+ * @param note the first free-text note, capped at the store's note length
+ * @param website the first URL the card carries
  * @param photo the picture bytes, or null; a vCard may instead point at a URL,
  *          which this deliberately does not fetch
  * @param photoMimeType the picture's type, when the vCard declared one
@@ -47,6 +57,10 @@ public record ParsedVCard(String uid,
                           List<String> phones,
                           String organization,
                           String title,
+                          String birthday,
+                          PostalAddress address,
+                          String note,
+                          String website,
                           byte[] photo,
                           String photoMimeType) {
 }

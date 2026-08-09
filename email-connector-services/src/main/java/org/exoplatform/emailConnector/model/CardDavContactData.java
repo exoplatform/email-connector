@@ -32,6 +32,11 @@ import java.util.List;
  * @param phones the phone numbers
  * @param organization the company
  * @param title the job title
+ * @param birthday the birthday in the store's canonical text (YYYY-MM-DD, or
+ *          --MM-DD when the entry states no year)
+ * @param address the structured postal address, or null
+ * @param note the free-text note, already capped to the store's length
+ * @param website the entry's web page
  * @param vcardUid the entry's own identity on the server
  * @param photo the picture bytes, or null when the entry carries none
  * @param photoMimeType the picture's type
@@ -44,6 +49,10 @@ public record CardDavContactData(String primaryEmail,
                                  List<String> phones,
                                  String organization,
                                  String title,
+                                 String birthday,
+                                 PostalAddress address,
+                                 String note,
+                                 String website,
                                  String vcardUid,
                                  byte[] photo,
                                  String photoMimeType) {
