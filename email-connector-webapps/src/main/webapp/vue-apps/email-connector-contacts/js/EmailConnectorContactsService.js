@@ -559,3 +559,41 @@ function initEmailApp(appId, exoi18n) {
       i18n,
     }, `#${appId}`, 'Contacts Compose To')));
 }
+
+/**
+ * Whether the chat is on this platform, hence whether a contact can be sent
+ * into a conversation at all.
+ * <p>
+ * Detected rather than declared, the same way the composer detects Documents:
+ * the chat add-on publishes its service on the shared Vue prototype when it
+ * boots, so its absence is simply the action not being offered. No compile-time
+ * dependency, no gatein dependency.
+ *
+ * @returns {boolean} true when the chat add-on is deployed
+ */
+export function isChatDeployed() {
+  return !!Vue.prototype.$matrixService;
+}
+
+/**
+ * Sends a contact into a chat conversation as a .vcf file message.
+ * <p>
+ * Which conversation is the chat's question to ask, not ours: this hands over a
+ * File and nothing else, and the chat opens its own picker, applies its own
+ * upload cap and sends. The card travels without its photo — the text-only
+ * shape — because that is what the vCard endpoint hands out by default and a
+ * chat message is read, not printed.
+ *
+ * @param {object} contact - the contact to share, with its id and displayName
+ * @returns {Promise<void>} resolves once the chat has been handed the card
+ */
+export function sendByChat(contact) {
+  return getContactVCard(contact.id).then(vcard => {
+    const name = `${(contact.displayName || contact.primaryEmail || 'contact').replace(/[\\/:*?"<>|]/g, '')}.vcf`;
+    const file = new File([vcard], name, {type: 'text/vcard'});
+    // A file, not a link: a contact card exists nowhere but here — it is
+    // generated from a row only its owner can see, so there is nothing to point
+    // at. A document goes the other way and travels as a link.
+    document.dispatchEvent(new CustomEvent('meeds-chat-share', {detail: {file}}));
+  });
+}
