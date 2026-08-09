@@ -1182,6 +1182,11 @@ public class EmailContactServiceTest {
     emailContactService.getContacts(USERNAME, List.of("manual"), null, false, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.MANUAL), null, null, 0, 100);
 
+    // The directory chip, which only had rows to select once a colleague could be
+    // added from their profile.
+    emailContactService.getContacts(USERNAME, List.of("directory"), null, false, 0, 100);
+    verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.DIRECTORY), null, null, 0, 100);
+
     emailContactService.getContacts(USERNAME, List.of("addressBook"), null, false, 0, 100);
     verify(emailContactStorage).getContacts(USERNAME, List.of(EmailContactSource.CARDDAV), null, null, 0, 100);
 

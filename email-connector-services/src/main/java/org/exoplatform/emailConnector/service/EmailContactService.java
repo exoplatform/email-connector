@@ -116,6 +116,9 @@ public class EmailContactService {
   /** The chips' "address book" filter value: the curated rows (manual + CardDAV). */
   public static final String      SOURCE_FILTER_ADDRESS_BOOK  = "addressBook";
 
+  /** Colleagues taken from the platform directory, from their profile. */
+  public static final String      SOURCE_FILTER_DIRECTORY     = "directory";
+
   /** The suggestion window a recipient field gets when it asks for none (limit &lt;= 0). */
   public static final int         SUGGEST_DEFAULT_LIMIT       = 10;
 
@@ -1458,6 +1461,9 @@ public class EmailContactService {
     }
     if (SOURCE_FILTER_MANUAL.equalsIgnoreCase(source)) {
       return List.of(EmailContactSource.MANUAL);
+    }
+    if (SOURCE_FILTER_DIRECTORY.equalsIgnoreCase(source)) {
+      return List.of(EmailContactSource.DIRECTORY);
     }
     if (SOURCE_FILTER_ADDRESS_BOOK.equalsIgnoreCase(source)) {
       return ADDRESS_BOOK_SOURCES;
