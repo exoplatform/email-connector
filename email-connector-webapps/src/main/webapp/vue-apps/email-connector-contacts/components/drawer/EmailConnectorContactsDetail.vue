@@ -211,12 +211,80 @@ export default {
   },
   computed: {
     /**
-     * The note as the editor stored it. Rendered through the platform's
-     * sanitizer rather than as plain lines: a note is written in the same rich
-     * editor as a mail, and what comes back from a provider's address book is
-     * somebody else's text.
+     * The line under the name: organization/title, when known.
      *
-     * @returns {string} the note markup, or an empty string
+     * @returns {string} the subtitle
+     */
+    subtitle() {
+      return [this.contact.title, this.contact.organization].filter(part => part).join(' - ');
+    },
+    /**
+     * The initials of the fallback avatar.
+     *
+     * @returns {string} up to two uppercased initials
+     */
+    initials() {
+      return (this.contact.displayName || this.contact.primaryEmail || '?').split(/\s+/)
+        .filter(word => word)
+        .map(word => word.charAt(0).toUpperCase())
+        .slice(0, 2)
+        .join('');
+    },
+    /**
+     * Every address of the contact, primary first.
+     *
+     * @returns {Array} the addresses
+     */
+    addresses() {
+      return [this.contact.primaryEmail].concat(this.contact.secondaryEmails || []).filter(address => address);
+    },
+    /**
+     * The birthday as the viewer's locale writes it. The store's canonical
+     * forms are YYYY-MM-DD and --MM-DD; a year-less one is shown as month and
+     * day only — never with a year the person did not give.
+     *
+     * @returns {string} the localized birthday, or empty when there is none
+     */
+    formattedBirthday() {
+      const birthday = this.contact.birthday || '';
+      const lang = eXo?.env?.portal?.language || 'en';
+      try {
+        if (birthday.startsWith('--')) {
+          const [month, day] = birthday.substring(2).split('-').map(Number);
+          // Any leap year does as the carrier of a year-less month+day.
+          return new Intl.DateTimeFormat(lang, {month: 'long', day: 'numeric'}).format(new Date(2000, month - 1, day));
+        }
+        if (birthday) {
+          const [year, month, day] = birthday.split('-').map(Number);
+          return new Intl.DateTimeFormat(lang, {year: 'numeric', month: 'long', day: 'numeric'})
+            .format(new Date(year, month - 1, day));
+        }
+      } catch (e) {
+        // A value the formatter chokes on is still worth showing as itself.
+        return birthday;
+      }
+      return '';
+    },
+    /**
+     * The postal address as postal mail writes it: street, then locality line,
+     * then country — built from the structured components, which is the whole
+     * point of storing them apart.
+     *
+     * @returns {Array} the non-empty lines
+     */
+    addressLines() {
+      const address = this.contact.postalAddress;
+      if (!address) {
+        return [];
+      }
+      const localityLine = [address.postalCode, address.city, address.region].filter(part => part).join(' ');
+      return [address.street, localityLine, address.country].filter(line => line);
+    },
+    /**
+     * The note, split on its line breaks so each paragraph renders as its own
+     * block without any custom CSS.
+     *
+     * @returns {string} the note markup, empty when there is no note
      */
     noteHtml() {
       return this.contact.note || '';
