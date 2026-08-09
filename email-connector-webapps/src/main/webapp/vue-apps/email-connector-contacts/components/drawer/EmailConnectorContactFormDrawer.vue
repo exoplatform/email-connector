@@ -93,15 +93,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             v-model="form.primaryEmail"
             type="email"
             class="pt-0"
+            :disabled="identityFromProfile"
             outlined
             dense
             required />
+          <!-- Said once, under the fields it explains, rather than a tooltip on
+               each: a colleague's name and address are resolved from their
+               profile on every read, so editing them here would be undone by the
+               next one. -->
+          <div
+            v-if="identityFromProfile"
+            class="text-caption text-sub-title mb-2">
+            {{ $t('emailConnector.contacts.form.fromProfile') }}
+          </div>
           <div class="text-sub-title mb-1">
             {{ $t('emailConnector.contacts.form.givenName') }}
           </div>
           <v-text-field
             v-model="form.givenName"
             class="pt-0"
+            :disabled="identityFromProfile"
             outlined
             dense />
           <div class="text-sub-title mb-1">
@@ -110,6 +121,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-text-field
             v-model="form.familyName"
             class="pt-0"
+            :disabled="identityFromProfile"
             outlined
             dense />
           <div class="text-sub-title mb-1">
@@ -296,6 +308,19 @@ export default {
      */
     photoEditable() {
       return this.editedSource !== 'DIRECTORY' && this.editedSource !== 'CARDDAV';
+    },
+    /**
+     * Whether this contact's identity belongs to a platform profile.
+     * <p>
+     * Their name and address are resolved live on every read, so the form shows
+     * them and refuses them: typing there would be undone by the next read. What
+     * the profile does not own -- birthday, address, note, website, phones -- is
+     * the user's to keep and stays editable.
+     *
+     * @returns {boolean} true for a contact taken from the directory
+     */
+    identityFromProfile() {
+      return this.editedSource === 'DIRECTORY';
     },
     /**
      * The initials standing in for a contact with no picture, read from the form as

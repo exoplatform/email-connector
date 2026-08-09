@@ -129,7 +129,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 const PAGE_SIZE = 200;
-const SOURCES = ['collected', 'manual', 'addressBook'];
+const SOURCES = ['collected', 'manual', 'directory', 'addressBook'];
 const MAX_ROWS = 5000;
 const RAIL_MIN_CONTACTS = 100;
 // The server refuses a bigger file anyway (its own pre-parse check); saying so

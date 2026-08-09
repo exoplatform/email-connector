@@ -196,6 +196,57 @@ public class EmailContactRestTest {
   }
 
   @Test
+  void importDirectoryAnswersTheCreatedRow() throws Exception {
+    when(emailContactService.importDirectoryContact(eq(SIMPLE_USER), eq("jdoe"))).thenReturn(contact(12L));
+    mockMvc.perform(post(CONTACTS_PATH + "/directory?username=jdoe").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.id").value(12));
+    // The acting user is the authenticated caller, never a parameter: the one
+    // username the request carries names the colleague to import.
+    verify(emailContactService).importDirectoryContact(eq(SIMPLE_USER), eq("jdoe"));
+  }
+
+  @Test
+  void importDirectoryOfAnUnknownUserAnswersNotFound() throws Exception {
+    when(emailContactService.importDirectoryContact(anyString(), anyString())).thenReturn(null);
+    mockMvc.perform(post(CONTACTS_PATH + "/directory?username=ghost").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
+  }
+
+  @Test
+  void importDirectoryOfOneselfAnswersBadRequest() throws Exception {
+    when(emailContactService.importDirectoryContact(anyString(), anyString()))
+                                                                              .thenThrow(new IllegalArgumentException(EmailContactService.CONTACT_SELF_IMPORT));
+    mockMvc.perform(post(CONTACTS_PATH + "/directory?username=" + SIMPLE_USER).with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void importDirectoryOfAKnownPersonAnswersConflict() throws Exception {
+    when(emailContactService.importDirectoryContact(anyString(), anyString()))
+                                                                              .thenThrow(new IllegalStateException(EmailContactService.CONTACT_ALREADY_EXISTS));
+    mockMvc.perform(post(CONTACTS_PATH + "/directory?username=jdoe").with(testSimpleUser()))
+           .andExpect(status().isConflict());
+  }
+
+  @Test
+  void byUserAnswersTheCallersRowForTheColleague() throws Exception {
+    when(emailContactService.getContactByPlatformUser(eq(SIMPLE_USER), eq("jdoe"))).thenReturn(contact(12L));
+    mockMvc.perform(get(CONTACTS_PATH + "/by-user?username=jdoe").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.id").value(12));
+  }
+
+  @Test
+  void byUserWithNoRowAnswersNotFound() throws Exception {
+    when(emailContactService.getContactByPlatformUser(anyString(), anyString())).thenReturn(null);
+    mockMvc.perform(get(CONTACTS_PATH + "/by-user?username=jdoe").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
+    // The literal route wins over /{id}, or the lookup 400s on an unparseable id.
+    verify(emailContactService, never()).getContact(anyLong(), anyString());
+  }
+
+  @Test
   void getAContactPhotoAnswersItWithItsOwnMimetype() throws Exception {
     // Whatever the user cropped is served as what it is: relabelling a JPEG as PNG
     // only makes clients sniff.
