@@ -51,6 +51,8 @@ import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.social.core.profile.ProfileFilter;
+import org.exoplatform.social.core.profileproperty.ProfilePropertyService;
+import org.exoplatform.social.core.profileproperty.model.ProfilePropertySetting;
 
 /**
  * The per-user contact store: browse/search with the letter index the drawer's
@@ -80,6 +82,14 @@ public class EmailContactService {
 
   /** Message code answered as a 400 for an unknown source filter. */
   public static final String      CONTACT_INVALID_SOURCE      = "emailConnector.contacts.invalidSource";
+
+  /**
+   * Message code answered as a 400 when a user asks to import THEMSELVES from
+   * the directory: the store never holds its owner (collection skips the own
+   * address for the same reason), so the request is a mistake worth naming
+   * rather than a row worth creating.
+   */
+  public static final String      CONTACT_SELF_IMPORT         = "emailConnector.contacts.selfImport";
 
   /** Message code answered as a 400 when editing a CardDAV row (read-only in v1). */
   public static final String      CONTACT_CARDDAV_READ_ONLY   = "emailConnector.contacts.carddavReadOnly";
@@ -165,6 +175,16 @@ public class EmailContactService {
   // what makes per-row resolution affordable on a list page.
   @Autowired
   private IdentityManager         identityManager;
+
+  // Answers whether a profile owner chose to hide a property — the visibility
+  // the platform's own profile page honours, which the service-level Profile
+  // read does not. Directory resolution asks it before showing an address.
+  @Autowired
+  private ProfilePropertyService  profilePropertyService;
+
+  // The platform's name for the email profile property, as hidden-property ids
+  // are keyed by the property SETTING, not by the field name.
+  private static final String     PROFILE_EMAIL_PROPERTY      = "email";
 
   /**
    * One page of the user's visible contacts, sorted alphabetically, with the
@@ -658,6 +678,137 @@ public class EmailContactService {
     }
     existing.setSuppressed(false);
     return emailContactStorage.updateContact(existing);
+  }
+
+  /**
+   * Imports a platform colleague into the caller's contact store — the "Add to
+   * my contacts" action on a people profile, and the one writer of
+   * {@link EmailContactSource#DIRECTORY} rows. What is stored is a LINK (the
+   * platform username) plus a snapshot of the name and address as fallback for
+   * a profile that later disappears; every display goes live through
+   * {@link #resolveDirectoryContact(EmailContact)}.
+   * <p>
+   * Dedupe is two-keyed, in this order. First the platform username, including
+   * suppressed rows: a visible link answers "already exists", a tombstone (the
+   * user removed the link, then asked again) is revived as the same DIRECTORY
+   * row. Then the profile address, which also matches a contact's secondary
+   * addresses: a visible COLLECTED / MANUAL / CARDDAV row already carrying it
+   * is answered as a conflict, unmutated — converting a hand-made row to
+   * DIRECTORY would make it read-only for nothing, since profile enrichment
+   * already paints the avatar and profile link onto any row whose address is a
+   * colleague's. A suppressed tombstone at the address is revived as the new
+   * DIRECTORY link, the same explicit-user-act rule as
+   * {@link #createContact(EmailContact, String)}.
+   * <p>
+   * A colleague who hid their email on their profile imports WITHOUT an address
+   * snapshot: address-less contacts are supported, and storing what the owner
+   * chose to hide would resurface it the day their profile is gone. The raw
+   * address is still used for the dedupe above — matching is internal and
+   * answers only rows whose address the caller already holds.
+   *
+   * @param username the store owner and acting user
+   * @param targetUsername the platform user to import
+   * @return the created or revived contact, resolved for display; null when
+   *         the identity is unknown or deleted (the caller's 404)
+   * @throws IllegalArgumentException with {@link #CONTACT_SELF_IMPORT} when the
+   *           user asks to import themselves, or with a blank target
+   * @throws IllegalStateException with {@link #CONTACT_ALREADY_EXISTS} when a
+   *           visible row already links or carries this person
+   */
+  public EmailContact importDirectoryContact(String username, String targetUsername) {
+    if (StringUtils.isBlank(username) || StringUtils.isBlank(targetUsername)) {
+      throw new IllegalArgumentException(CONTACT_SELF_IMPORT);
+    }
+    if (StringUtils.equals(username, targetUsername)) {
+      throw new IllegalArgumentException(CONTACT_SELF_IMPORT);
+    }
+    Identity identity = getDirectoryIdentity(targetUsername);
+    Profile profile = identity == null ? null : identity.getProfile();
+    if (profile == null) {
+      return null;
+    }
+    // First key: the identity link itself, tombstones included -- an identity's
+    // profile email may have changed since it was imported, so the address alone
+    // cannot say whether this person is already in the store.
+    EmailContact linked = emailContactStorage.getContactByPlatformUsername(username, targetUsername);
+    if (linked != null) {
+      if (!linked.isSuppressed()) {
+        throw new IllegalStateException(CONTACT_ALREADY_EXISTS);
+      }
+      linked.setSuppressed(false);
+      return answerDirectoryContact(emailContactStorage.updateContact(linked));
+    }
+    // Second key: the profile address, raw even when hidden -- internal matching
+    // only ever answers a row whose address the caller already holds.
+    String address = EmailContactUtils.normalizeAddress(profile.getEmail());
+    EmailContact existing = address == null ? null : emailContactStorage.getContactByAddress(username, address);
+    if (existing != null && !existing.isSuppressed()) {
+      throw new IllegalStateException(CONTACT_ALREADY_EXISTS);
+    }
+    String storedAddress = isEmailHidden(identity) ? null : address;
+    if (existing != null) {
+      // The tombstone comes back to life as what the user just asked for: the
+      // directory link, exactly as createContact revives one as MANUAL.
+      existing.setSource(EmailContactSource.DIRECTORY);
+      existing.setPlatformUsername(targetUsername);
+      existing.setSuppressed(false);
+      existing.setDisplayName(StringUtils.trimToNull(profile.getFullName()));
+      existing.setPrimaryEmail(storedAddress);
+      return answerDirectoryContact(emailContactStorage.updateContact(existing));
+    }
+    EmailContact created = new EmailContact();
+    created.setUserId(username);
+    created.setSource(EmailContactSource.DIRECTORY);
+    created.setPlatformUsername(targetUsername);
+    created.setPrimaryEmail(storedAddress);
+    created.setDisplayName(StringUtils.trimToNull(profile.getFullName()));
+    created.setSeenCount(0);
+    return answerDirectoryContact(emailContactStorage.createContact(created));
+  }
+
+  /**
+   * The caller's own contact for a platform user, however it got there: by the
+   * identity link first (a DIRECTORY row), then by the profile's address (a
+   * COLLECTED, MANUAL or CARDDAV row that happens to hold the colleague) — the
+   * two dedupe keys of {@link #importDirectoryContact(String, String)}, read in
+   * the same order, so "which row would the import answer 409 about" and "which
+   * row does this method find" can never disagree.
+   *
+   * @param username the store owner and acting user
+   * @param targetUsername the platform user to look up
+   * @return the visible contact, enriched for display, or null when the caller
+   *         has no row for this person
+   */
+  public EmailContact getContactByPlatformUser(String username, String targetUsername) {
+    if (StringUtils.isBlank(username) || StringUtils.isBlank(targetUsername)) {
+      return null;
+    }
+    EmailContact linked = emailContactStorage.getContactByPlatformUsername(username, targetUsername);
+    if (linked != null && !linked.isSuppressed()) {
+      enrichForDisplay(linked);
+      linked.setFavorite(emailContactFavoriteService.isFavorite(linked.getId(), username));
+      return linked;
+    }
+    Identity identity = getDirectoryIdentity(targetUsername);
+    Profile profile = identity == null ? null : identity.getProfile();
+    String address = profile == null ? null : EmailContactUtils.normalizeAddress(profile.getEmail());
+    if (address == null) {
+      return null;
+    }
+    return getContactByAddress(address, username);
+  }
+
+  /**
+   * The just-written directory row as the import answers it: resolved live from
+   * the profile (name, avatar, address — minus a hidden one), so the client can
+   * render the card straight away instead of re-reading.
+   *
+   * @param contact the saved row
+   * @return the same contact, resolved
+   */
+  private EmailContact answerDirectoryContact(EmailContact contact) {
+    resolveDirectoryContact(contact);
+    return contact;
   }
 
   /**
@@ -1170,6 +1321,13 @@ public class EmailContactService {
    * (identity deleted or unknown), the row silently falls back to the stored
    * snapshot: the person the user knew, as last seen. No-op on any other
    * source.
+   * <p>
+   * The address honours the owner's CURRENT profile visibility: an email its
+   * owner hid is blanked here — stored snapshot included — because this method
+   * is the one chokepoint every directory display goes through (list, card,
+   * by-address, vCard export, the QR code), and blanking at the chokepoint is
+   * what makes "hidden means hidden" a property of the store rather than of
+   * each screen.
    *
    * @param contact the contact being answered, mutated in place
    */
@@ -1178,7 +1336,8 @@ public class EmailContactService {
         || StringUtils.isBlank(contact.getPlatformUsername())) {
       return;
     }
-    Profile profile = getDirectoryProfile(contact.getPlatformUsername());
+    Identity identity = getDirectoryIdentity(contact.getPlatformUsername());
+    Profile profile = identity == null ? null : identity.getProfile();
     if (profile == null) {
       return;
     }
@@ -1187,9 +1346,13 @@ public class EmailContactService {
     }
     contact.setAvatarUrl(profile.getAvatarUrl());
     contact.setProfileUrl(profile.getUrl());
-    String liveAddress = EmailContactUtils.normalizeAddress(profile.getEmail());
-    if (liveAddress != null) {
-      contact.setPrimaryEmail(liveAddress);
+    if (isEmailHidden(identity)) {
+      contact.setPrimaryEmail(null);
+    } else {
+      String liveAddress = EmailContactUtils.normalizeAddress(profile.getEmail());
+      if (liveAddress != null) {
+        contact.setPrimaryEmail(liveAddress);
+      }
     }
   }
 
@@ -1202,15 +1365,55 @@ public class EmailContactService {
    * @return the profile, or null
    */
   private Profile getDirectoryProfile(String platformUsername) {
+    Identity identity = getDirectoryIdentity(platformUsername);
+    return identity == null ? null : identity.getProfile();
+  }
+
+  /**
+   * The live, non-deleted identity of a platform username, or null when it
+   * does not exist, is deleted, or cannot be read. The identity — rather than
+   * only its profile — is what the callers needing the owner's property
+   * visibility resolve, since hidden-property lookups are keyed by identity id.
+   *
+   * @param platformUsername the platform identity
+   * @return the identity, or null
+   */
+  private Identity getDirectoryIdentity(String platformUsername) {
     try {
       Identity identity = identityManager.getOrCreateUserIdentity(platformUsername);
       if (identity == null || identity.isDeleted()) {
         return null;
       }
-      return identity.getProfile();
+      return identity;
     } catch (Exception e) {
       LOG.debug("Could not resolve the platform profile of {}", platformUsername, e);
       return null;
+    }
+  }
+
+  /**
+   * Whether this profile's owner chose to hide their email address — the same
+   * per-owner visibility the platform's own profile page honours
+   * ({@code ProfilePropertyService.getHiddenProfilePropertyIds}, keyed by the
+   * email property SETTING id). Fails closed: when visibility cannot be read,
+   * the address is treated as hidden — a directory card briefly missing an
+   * address costs a click, a hidden address shown costs a trust.
+   *
+   * @param identity the profile owner's identity
+   * @return true when the owner hid their email, or visibility is unreadable
+   */
+  private boolean isEmailHidden(Identity identity) {
+    try {
+      ProfilePropertySetting emailSetting = profilePropertyService.getProfileSettingByName(PROFILE_EMAIL_PROPERTY);
+      if (emailSetting == null || emailSetting.getId() == null) {
+        // A platform without an email property setting has nothing to hide.
+        return false;
+      }
+      List<Long> hiddenIds = profilePropertyService.getHiddenProfilePropertyIds(Long.parseLong(identity.getId()));
+      return hiddenIds != null && hiddenIds.contains(emailSetting.getId());
+    } catch (Exception e) {
+      LOG.debug("Could not read the email visibility of identity {}; treating it as hidden", identity.getRemoteId(), e);
+      return true;
     }
   }
 
