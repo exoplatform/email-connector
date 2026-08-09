@@ -46,7 +46,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-const SOURCES = ['collected', 'manual', 'addressBook'];
+const SOURCES = ['collected', 'manual', 'directory', 'addressBook'];
 const FAVORITES = 'favorites';
 
 export default {
