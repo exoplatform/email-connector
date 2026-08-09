@@ -39,25 +39,52 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div
         v-if="contact"
         class="d-flex align-center">
-        <!-- The two take-away shapes side by side: the QR for the phone in the
-             room, the mail for the person who is not in it. Both hand out the
-             same card, the composer's copy simply allowed its photo. -->
-        <v-btn
-          :title="$t('emailConnector.contacts.detail.sendByEmail')"
-          icon
-          @click="sendByEmail">
-          <v-icon size="18">
-            fas fa-paper-plane
-          </v-icon>
-        </v-btn>
-        <v-btn
-          :title="$t('emailConnector.contacts.qr.open')"
-          icon
-          @click="showQrCode">
-          <v-icon size="18">
-            fas fa-qrcode
-          </v-icon>
-        </v-btn>
+        <!-- The three ways of taking this contact somewhere — mail, chat, QR —
+             behind one overflow, because they are the same intent in three
+             shapes and a header of five icons reads as five unrelated things.
+             Edit and delete stay out here: they act on the contact rather than
+             hand it over. -->
+        <v-menu offset-y>
+          <template #activator="{on, attrs}">
+            <v-btn
+              v-bind="attrs"
+              :title="$t('emailConnector.contacts.detail.share')"
+              icon
+              v-on="on">
+              <v-icon size="18">
+                fas fa-ellipsis-v
+              </v-icon>
+            </v-btn>
+          </template>
+          <v-list class="pa-0" dense>
+            <v-list-item @click="sendByEmail">
+              <v-list-item-icon class="me-2 my-2">
+                <v-icon size="16">fas fa-paper-plane</v-icon>
+              </v-list-item-icon>
+              <v-list-item-title>
+                {{ $t('emailConnector.contacts.detail.sendByEmail') }}
+              </v-list-item-title>
+            </v-list-item>
+            <v-list-item
+              v-if="chatDeployed"
+              @click="sendByChat">
+              <v-list-item-icon class="me-2 my-2">
+                <v-icon size="16">fas fa-comments</v-icon>
+              </v-list-item-icon>
+              <v-list-item-title>
+                {{ $t('emailConnector.contacts.detail.sendByChat') }}
+              </v-list-item-title>
+            </v-list-item>
+            <v-list-item @click="showQrCode">
+              <v-list-item-icon class="me-2 my-2">
+                <v-icon size="16">fas fa-qrcode</v-icon>
+              </v-list-item-icon>
+              <v-list-item-title>
+                {{ $t('emailConnector.contacts.qr.open') }}
+              </v-list-item-title>
+            </v-list-item>
+          </v-list>
+        </v-menu>
         <v-btn
           v-if="editable"
           :title="$t('emailConnector.contacts.detail.edit')"
@@ -95,6 +122,16 @@ export default {
     };
   },
   computed: {
+    /**
+     * Whether the chat is on this platform. Read once per card rather than per
+     * render: the chat publishes its service when it boots, well before a
+     * contact card can be opened.
+     *
+     * @returns {boolean} true when "Send by chat" applies
+     */
+    chatDeployed() {
+      return this.$emailConnectorContactsService.isChatDeployed();
+    },
     /**
      * Whether editing applies: manual and collected rows only. A CardDAV row is the
      * server's to edit, and a directory-linked row is the platform profile's.
@@ -157,6 +194,17 @@ export default {
      */
     sendByEmail() {
       this.$emailConnectorContactsService.sendByEmail(this.contact);
+    },
+    /**
+     * Hands this contact's card to the chat, which asks the user which
+     * conversation it goes into. The card stays open underneath: the pick
+     * happens in the chat's own drawer.
+     *
+     * @returns {void}
+     */
+    sendByChat() {
+      this.$emailConnectorContactsService.sendByChat(this.contact)
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.contacts.detail.sendByChat.error'), 'error'));
     },
     /**
      * Opens the take-away QR on this contact — the dialog overlays the drawer,
