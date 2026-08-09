@@ -103,16 +103,20 @@ async function addToContacts(username) {
 /**
  * Opens the Contacts drawer on one card, through the cross-app document event
  * the contacts app listens for — the same contract the global Favorites
- * drawer and the mailbox header use.
+ * drawer and the mailbox header use. The contacts module is require()d first,
+ * exactly as the favorites item does: its listener lives in a QuickActionsGrp
+ * module that a page may have defined without executing, and an event
+ * dispatched before the define factory ran lands on nobody.
  *
  * @param {number} contactId - the contact row to open
  * @returns {void}
  */
 function openContactCard(contactId) {
   if (contactId) {
-    document.dispatchEvent(new CustomEvent('open-contacts-drawer', {
-      detail: {contactId},
-    }));
+    window.require(['SHARED/emailConnectorContactsQuickActionExtension'], () =>
+      document.dispatchEvent(new CustomEvent('open-contacts-drawer', {
+        detail: {contactId},
+      })));
   }
 }
 
