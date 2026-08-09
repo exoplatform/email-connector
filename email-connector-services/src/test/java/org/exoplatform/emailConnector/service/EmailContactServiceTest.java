@@ -468,6 +468,63 @@ public class EmailContactServiceTest {
     assertEquals(EmailContactService.CONTACT_INVALID_EMAIL, invalid.getMessage());
   }
 
+  @Test
+  void manualAddNormalizesTheCardFieldsItCarries() {
+    when(emailContactStorage.getContactByAddress(USERNAME, "carol@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    // The spellings a person actually types: a compact vCard date, an address
+    // with padding, a note with trailing whitespace.
+    input.setBirthday("19850412");
+    input.setPostalAddress(new org.exoplatform.emailConnector.model.PostalAddress(" 12 rue de la Paix ",
+                                                                                  "Paris",
+                                                                                  null,
+                                                                                  "75002",
+                                                                                  "France"));
+    input.setNote("  Met at FOSDEM.  ");
+    input.setWebsite(" https://carol.example ");
+
+    EmailContact created = emailContactService.createContact(input, USERNAME);
+
+    assertEquals("1985-04-12", created.getBirthday());
+    assertEquals("12 rue de la Paix", created.getPostalAddress().street());
+    assertEquals("Met at FOSDEM.", created.getNote());
+    assertEquals("https://carol.example", created.getWebsite());
+  }
+
+  @Test
+  void aYearlessBirthdayIsHeldAsTyped() {
+    when(emailContactStorage.getContactByAddress(USERNAME, "carol@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    input.setBirthday("12-31");
+
+    assertEquals("--12-31", emailContactService.createContact(input, USERNAME).getBirthday());
+  }
+
+  @Test
+  void aBirthdayThatIsNotADateIsRefusedNotRepaired() {
+    when(emailContactStorage.getContactByAddress(USERNAME, "carol@example.org")).thenReturn(null);
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    input.setBirthday("next tuesday");
+
+    IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailContactService.createContact(input, USERNAME));
+
+    assertEquals(EmailContactService.CONTACT_INVALID_BIRTHDAY, invalid.getMessage());
+  }
+
+  @Test
+  void anAddressOfOnlyBlanksIsRemovedNotStored() {
+    // Five emptied form fields mean "no address", not an address of blanks.
+    when(emailContactStorage.getContactByAddress(USERNAME, "carol@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    input.setPostalAddress(new org.exoplatform.emailConnector.model.PostalAddress(" ", "", null, "  ", ""));
+
+    assertNull(emailContactService.createContact(input, USERNAME).getPostalAddress());
+  }
+
   // ---------------------------------------------------------------- delete / suppress / restore
 
   @Test

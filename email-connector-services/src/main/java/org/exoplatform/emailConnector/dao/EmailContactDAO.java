@@ -66,6 +66,19 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
   List<EmailContactEntity> findByUserIdAndSource(String userId, String source);
 
   /**
+   * The row carrying this vCard identity, whoever wrote it.
+   * <p>
+   * Every provider stamps a UID on the cards it exports, so this is what lets a
+   * person with no email address be recognised on a second import -- the address
+   * table cannot speak for somebody who has no address.
+   *
+   * @param userId the store owner
+   * @param vcardUid the card's UID
+   * @return the row, if one carries it
+   */
+  Optional<EmailContactEntity> findByUserIdAndVcardUid(String userId, String vcardUid);
+
+  /**
    * Contacts one of whose SECONDARY addresses is the given one, so a message
    * from a person's alternate address still lands on their one row. The EMAILS
    * column encodes {@code type,value;type,value}, hence the two LIKE shapes: the
