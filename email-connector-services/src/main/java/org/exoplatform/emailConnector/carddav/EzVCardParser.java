@@ -32,12 +32,19 @@ import ezvcard.io.text.VCardReader;
 import ezvcard.io.text.VCardWriter;
 import ezvcard.parameter.EmailType;
 import ezvcard.parameter.ImageType;
+import ezvcard.property.Address;
+import ezvcard.property.Birthday;
 import ezvcard.property.Email;
+import ezvcard.property.Note;
 import ezvcard.property.Photo;
 import ezvcard.property.StructuredName;
 import ezvcard.property.Telephone;
 import ezvcard.property.Uid;
+import ezvcard.property.Url;
+import ezvcard.util.PartialDate;
 
+import org.exoplatform.emailConnector.model.PostalAddress;
+import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -136,6 +143,22 @@ public class EzVCardParser implements VCardParser {
     if (StringUtils.isNotBlank(card.title())) {
       vcard.addTitle(card.title());
     }
+    writeBirthday(vcard, card.birthday());
+    if (card.address() != null) {
+      Address address = new Address();
+      address.setStreetAddress(card.address().street());
+      address.setLocality(card.address().city());
+      address.setRegion(card.address().region());
+      address.setPostalCode(card.address().postalCode());
+      address.setCountry(card.address().country());
+      vcard.addAddress(address);
+    }
+    if (StringUtils.isNotBlank(card.note())) {
+      vcard.addNote(card.note());
+    }
+    if (StringUtils.isNotBlank(card.website())) {
+      vcard.addUrl(card.website());
+    }
     if (card.photo() != null && card.photo().length > 0) {
       vcard.addPhoto(new Photo(card.photo(), ImageType.get(null, StringUtils.defaultIfBlank(card.photoMimeType(), "image/jpeg"), null)));
     }
@@ -182,8 +205,152 @@ public class EzVCardParser implements VCardParser {
                                                                                                                                          .getValues()
                                                                                                                                          .get(0)),
                            vcard.getTitles().isEmpty() ? null : StringUtils.trimToNull(vcard.getTitles().get(0).getValue()),
+                           birthdayOf(vcard),
+                           addressOf(vcard),
+                           noteOf(vcard),
+                           websiteOf(vcard),
                            photo == null ? null : photo.getData(),
                            mimeTypeOf(photo));
+  }
+
+  /**
+   * The birthday, in the store's canonical text — YYYY-MM-DD, or --MM-DD when
+   * the card states no year.
+   * <p>
+   * The library answers a BDAY three different ways depending on how it was
+   * written: a full calendar date as a {@code Temporal}, a reduced-accuracy one
+   * (vCard 4.0's {@code --0412}, which Apple also writes into 3.0 cards) as a
+   * {@code PartialDate}, and anything it could not read as raw text. All three
+   * are folded into the same canonical form, and Apple's other year-less
+   * spelling — the placeholder year 1604 — is treated as the absence it means.
+   *
+   * @param vcard the parsed card
+   * @return the canonical birthday, or null when the card has none it can say
+   */
+  private String birthdayOf(VCard vcard) {
+    Birthday birthday = vcard.getBirthday();
+    if (birthday == null) {
+      return rawBirthdayOf(vcard);
+    }
+    PartialDate partial = birthday.getPartialDate();
+    if (partial != null && partial.getMonth() != null && partial.getDate() != null) {
+      return partial.getYear() != null
+                                       ? EmailContactUtils.normalizeBirthday(String.format("%04d-%02d-%02d",
+                                                                                           partial.getYear(),
+                                                                                           partial.getMonth(),
+                                                                                           partial.getDate()))
+                                       : String.format("--%02d-%02d", partial.getMonth(), partial.getDate());
+    }
+    java.time.temporal.Temporal date = birthday.getDate();
+    if (date != null && date.isSupported(java.time.temporal.ChronoField.MONTH_OF_YEAR)
+        && date.isSupported(java.time.temporal.ChronoField.DAY_OF_MONTH)) {
+      int month = date.get(java.time.temporal.ChronoField.MONTH_OF_YEAR);
+      int day = date.get(java.time.temporal.ChronoField.DAY_OF_MONTH);
+      if (date.isSupported(java.time.temporal.ChronoField.YEAR)) {
+        int year = date.get(java.time.temporal.ChronoField.YEAR);
+        // 1604 is the year Apple stamps on "no year": Gregorian-cycle-neutral for
+        // their code, meaningless for a person. Showing it would be showing a bug.
+        return year == 1604 ? String.format("--%02d-%02d", month, day)
+                            : EmailContactUtils.normalizeBirthday(String.format("%04d-%02d-%02d", year, month, day));
+      }
+      return String.format("--%02d-%02d", month, day);
+    }
+    // Whatever text the card carried, given one chance at the known spellings.
+    return EmailContactUtils.normalizeBirthday(birthday.getText());
+  }
+
+  /**
+   * The year-less birthday a 3.0 card carries as a line the library refuses to
+   * type: {@code BDAY:--0412} is not legal vCard 3.0, so ez-vcard files it as a
+   * raw property instead of a {@code Birthday} — while Apple exports it into
+   * 3.0 cards anyway. Consulted only when no typed birthday parsed.
+   *
+   * @param vcard the parsed card
+   * @return the canonical birthday, or null
+   */
+  private String rawBirthdayOf(VCard vcard) {
+    ezvcard.property.RawProperty raw = vcard.getExtendedProperty("BDAY");
+    return raw == null ? null : EmailContactUtils.normalizeBirthday(raw.getValue());
+  }
+
+  /**
+   * The first postal address of the card, its PO box and extended-address
+   * components folded in front of the street — one visual line is all the store
+   * keeps for what vCard splits over three slots.
+   *
+   * @param vcard the parsed card
+   * @return the structured address, or null when the card has none
+   */
+  private PostalAddress addressOf(VCard vcard) {
+    if (vcard.getAddresses().isEmpty()) {
+      return null;
+    }
+    Address address = vcard.getAddresses().get(0);
+    String street = java.util.stream.Stream.of(address.getPoBox(), address.getExtendedAddress(), address.getStreetAddress())
+                                           .filter(StringUtils::isNotBlank)
+                                           .map(String::trim)
+                                           .reduce((a, b) -> a + ", " + b)
+                                           .orElse(null);
+    return PostalAddress.orNull(street,
+                                address.getLocality(),
+                                address.getRegion(),
+                                address.getPostalCode(),
+                                address.getCountry());
+  }
+
+  /**
+   * The first non-blank note, capped at the store's note length — the cap is
+   * the store's, applied here so no caller can forget it.
+   *
+   * @param vcard the parsed card
+   * @return the note, or null when the card carries none
+   */
+  private String noteOf(VCard vcard) {
+    for (Note note : vcard.getNotes()) {
+      String value = EmailContactUtils.truncateNote(note.getValue());
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The first non-blank URL of the card.
+   *
+   * @param vcard the parsed card
+   * @return the website, or null when the card carries none
+   */
+  private String websiteOf(VCard vcard) {
+    for (Url url : vcard.getUrls()) {
+      String value = StringUtils.trimToNull(url.getValue());
+      if (value != null) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Writes the canonical birthday back as BDAY: a full date as a calendar date,
+   * a year-less one as a raw {@code BDAY:--MM-DD} line — never with an invented
+   * year. Raw because the library's 3.0 writer refuses a partial date (it emits
+   * an empty BDAY), while the year-less line itself is what Apple ships in 3.0
+   * cards and what this parser reads back through {@link #rawBirthdayOf}.
+   *
+   * @param vcard the card being built
+   * @param birthday the canonical birthday, ignored when blank or unreadable
+   */
+  private void writeBirthday(VCard vcard, String birthday) {
+    String canonical = EmailContactUtils.normalizeBirthday(birthday);
+    if (canonical == null) {
+      return;
+    }
+    if (canonical.startsWith("--")) {
+      vcard.addExtendedProperty("BDAY", canonical);
+    } else {
+      vcard.setBirthday(new Birthday(java.time.LocalDate.parse(canonical)));
+    }
   }
 
   /**

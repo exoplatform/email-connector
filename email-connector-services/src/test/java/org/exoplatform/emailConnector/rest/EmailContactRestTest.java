@@ -219,6 +219,23 @@ public class EmailContactRestTest {
   }
 
   @Test
+  void getTheQrVCardAnswersTheTextCard() throws Exception {
+    when(emailContactVCardService.getContactVCard(anyString(), eq(12L)))
+        .thenReturn("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Bob\r\nEND:VCARD\r\n");
+    mockMvc.perform(get(CONTACTS_PATH + "/12/vcard").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(content().contentTypeCompatibleWith("text/vcard"));
+  }
+
+  @Test
+  void getTheQrVCardOfAMissingOrForeignContactAnswersNotFound() throws Exception {
+    // Null covers "no such row" and "somebody else's row" alike — the QR
+    // endpoint must not become a way to probe another user's store either.
+    when(emailContactVCardService.getContactVCard(anyString(), anyLong())).thenReturn(null);
+    mockMvc.perform(get(CONTACTS_PATH + "/12/vcard").with(testSimpleUser())).andExpect(status().isNotFound());
+  }
+
+  @Test
   void createAnswersOk() throws Exception {
     when(emailContactService.createContact(any(EmailContact.class), anyString())).thenReturn(contact(12L));
     mockMvc.perform(post(CONTACTS_PATH).with(testSimpleUser())

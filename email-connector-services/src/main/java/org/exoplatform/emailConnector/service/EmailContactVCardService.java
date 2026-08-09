@@ -237,6 +237,29 @@ public class EmailContactVCardService {
   }
 
   /**
+   * One contact of the caller's store as vCard 3.0 text WITHOUT its photo —
+   * what the contact card's QR code encodes.
+   * <p>
+   * The photo's absence is the whole engineering constraint, not an oversight:
+   * an embedded picture is tens of kilobytes of base64, and a QR code tops out
+   * at 2953 bytes — with a photo the code is either ungenerable or an
+   * unscannable wall of modules. Text fields only is what makes pointing a
+   * phone at the screen actually work. The vCard UID is left out too: a phone
+   * saving a scanned card has no server entry to reconcile against.
+   *
+   * @param username the store owner
+   * @param contactId the contact to encode
+   * @return the vCard text, or null when this user has no such visible contact
+   */
+  public String getContactVCard(String username, long contactId) {
+    EmailContact contact = emailContactService.getContact(contactId, username);
+    if (contact == null) {
+      return null;
+    }
+    return vCardParser.format(toCard(contact, null, false));
+  }
+
+  /**
    * One stored contact as the fields a vCard carries, photo included when the
    * user's store owns one.
    *
@@ -245,6 +268,19 @@ public class EmailContactVCardService {
    * @return the card to format
    */
   private ParsedVCard toCard(EmailContact contact, String vcardUid) {
+    return toCard(contact, vcardUid, true);
+  }
+
+  /**
+   * One stored contact as the fields a vCard carries — the export's shape, with
+   * the photo optional for the QR path.
+   *
+   * @param contact the enriched store row
+   * @param vcardUid the CardDAV uid to carry over, null for every other source
+   * @param includePhoto whether the stored picture travels; the QR path says no
+   * @return the card to format
+   */
+  private ParsedVCard toCard(EmailContact contact, String vcardUid, boolean includePhoto) {
     List<String> emails = new ArrayList<>();
     if (StringUtils.isNotBlank(contact.getPrimaryEmail())) {
       emails.add(contact.getPrimaryEmail());
@@ -252,7 +288,7 @@ public class EmailContactVCardService {
     if (contact.getSecondaryEmails() != null) {
       emails.addAll(contact.getSecondaryEmails());
     }
-    FileItem photo = readPhoto(contact);
+    FileItem photo = includePhoto ? readPhoto(contact) : null;
     return new ParsedVCard(vcardUid,
                            contact.getDisplayName(),
                            contact.getGivenName(),
@@ -261,6 +297,10 @@ public class EmailContactVCardService {
                            contact.getPhones() == null ? List.of() : contact.getPhones(),
                            contact.getOrganization(),
                            contact.getTitle(),
+                           contact.getBirthday(),
+                           contact.getPostalAddress(),
+                           EmailContactUtils.noteAsText(contact.getNote()),
+                           contact.getWebsite(),
                            photo == null ? null : photo.getAsByte(),
                            photo == null || photo.getFileInfo() == null ? null : photo.getFileInfo().getMimetype());
   }
@@ -498,6 +538,12 @@ public class EmailContactVCardService {
     contact.setPhones(card.phones() == null || card.phones().isEmpty() ? null : card.phones());
     contact.setOrganization(card.organization());
     contact.setTitle(card.title());
+    // Already canonical (birthday) and capped (note) by the parser, so this path
+    // stores what the sync path stores for the very same card.
+    contact.setBirthday(card.birthday());
+    contact.setPostalAddress(card.address());
+    contact.setNote(card.note());
+    contact.setWebsite(card.website());
     contact.setSeenCount(0);
     if (card.photo() != null && card.photo().length > 0 && card.photo().length <= MAX_PHOTO_BYTES) {
       // Over the cap the photo is simply not stored: the contact is kept, per

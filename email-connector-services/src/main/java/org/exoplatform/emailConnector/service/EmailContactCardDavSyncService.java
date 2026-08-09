@@ -659,6 +659,10 @@ public class EmailContactCardDavSyncService {
                                   card.phones(),
                                   card.organization(),
                                   card.title(),
+                                  card.birthday(),
+                                  card.address(),
+                                  card.note(),
+                                  card.website(),
                                   card.uid(),
                                   card.photo(),
                                   card.photoMimeType());

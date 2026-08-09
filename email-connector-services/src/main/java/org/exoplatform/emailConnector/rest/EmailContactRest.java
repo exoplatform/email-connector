@@ -355,6 +355,24 @@ public class EmailContactRest {
     return emailContactVCardService.getImportState(request.getRemoteUser());
   }
 
+  @GetMapping(value = "/{id}/vcard", produces = "text/vcard")
+  @Secured("users")
+  @Operation(summary = "One contact as vCard text, without its photo", method = "GET",
+             description = "The text-only vCard of one of the caller's own contacts - what the contact card's QR code encodes, so a phone pointed at the screen can save the person. The photo is deliberately absent: an embedded picture is far past what a scannable QR can hold. Somebody else's contact is answered 404, never 403.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public String getContactVCard(HttpServletRequest request,
+                                @Parameter(description = "Contact id", required = true)
+                                @PathVariable("id")
+                                long id) {
+    String vcard = emailContactVCardService.getContactVCard(request.getRemoteUser(), id);
+    if (vcard == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+    return vcard;
+  }
+
   @PostMapping("/{id}/restore")
   @Secured("users")
   @Operation(summary = "Restores a suppressed contact", method = "POST",
