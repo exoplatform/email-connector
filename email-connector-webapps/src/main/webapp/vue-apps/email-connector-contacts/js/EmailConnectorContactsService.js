@@ -495,7 +495,12 @@ function toVCardAttachment(contact) {
  */
 async function bootstrapMailApp(exoi18n) {
   const appId = 'emailConnector-contacts-compose';
-  if (!document.querySelector('#emailConenctor-mailBox-quick-actions') && !document.querySelector(`#${appId}`)) {
+  // Every way the mail app can already be on this page, including the mail page
+  // itself, where it is mounted as a portlet under its own root id. Missing that
+  // one mounted a SECOND app: both instances listened for the compose event and
+  // both handed the composer the attachment, so a shared contact arrived twice.
+  const mounted = document.querySelector(`#emailConnectorMailBox, #emailConenctor-mailBox-quick-actions, #${appId}`);
+  if (!mounted) {
     const parent = document.createElement('div');
     parent.id = appId;
     document.querySelector('#vuetify-apps').appendChild(parent);
