@@ -66,8 +66,11 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
+import org.exoplatform.emailConnector.model.ContactImportState;
+import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.service.EmailContactCardDavSyncService;
 import org.exoplatform.emailConnector.service.EmailContactService;
+import org.exoplatform.emailConnector.service.EmailContactVCardService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
@@ -102,6 +105,9 @@ public class EmailContactRestTest {
 
   @MockBean
   private EmailContactCardDavSyncService emailContactCardDavSyncService;
+
+  @MockBean
+  private EmailContactVCardService       emailContactVCardService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -213,6 +219,23 @@ public class EmailContactRestTest {
   }
 
   @Test
+  void getTheQrVCardAnswersTheTextCard() throws Exception {
+    when(emailContactVCardService.getContactVCard(anyString(), eq(12L)))
+        .thenReturn("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Bob\r\nEND:VCARD\r\n");
+    mockMvc.perform(get(CONTACTS_PATH + "/12/vcard").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(content().contentTypeCompatibleWith("text/vcard"));
+  }
+
+  @Test
+  void getTheQrVCardOfAMissingOrForeignContactAnswersNotFound() throws Exception {
+    // Null covers "no such row" and "somebody else's row" alike — the QR
+    // endpoint must not become a way to probe another user's store either.
+    when(emailContactVCardService.getContactVCard(anyString(), anyLong())).thenReturn(null);
+    mockMvc.perform(get(CONTACTS_PATH + "/12/vcard").with(testSimpleUser())).andExpect(status().isNotFound());
+  }
+
+  @Test
   void createAnswersOk() throws Exception {
     when(emailContactService.createContact(any(EmailContact.class), anyString())).thenReturn(contact(12L));
     mockMvc.perform(post(CONTACTS_PATH).with(testSimpleUser())
@@ -274,6 +297,62 @@ public class EmailContactRestTest {
 
     when(emailContactService.restoreContact(eq(13L), anyString())).thenReturn(null);
     mockMvc.perform(post(CONTACTS_PATH + "/13/restore").with(testSimpleUser())).andExpect(status().isNotFound());
+  }
+
+  @Test
+  void exportAnswersAVcfAttachment() throws Exception {
+    // The service writes onto whatever writer the response hands it; here it
+    // writes one recognisable line so the test can see the streaming happened.
+    org.mockito.Mockito.doAnswer(invocation -> {
+      ((java.io.Writer) invocation.getArgument(1)).write("BEGIN:VCARD\r\n");
+      return null;
+    }).when(emailContactVCardService).exportContacts(anyString(), any());
+
+    mockMvc.perform(get(CONTACTS_PATH + "/export").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                                                                                       .string("Content-Disposition",
+                                                                                               "attachment; filename=\"contacts.vcf\""))
+           .andExpect(content().string("BEGIN:VCARD\r\n"));
+  }
+
+  @Test
+  void importStartsARunAndAnswersItsState() throws Exception {
+    ContactImportState started = new ContactImportState();
+    started.setStatus(SyncStatus.IN_PROGRESS);
+    when(emailContactVCardService.startImport(anyString(), eq("up-1"))).thenReturn(started);
+
+    mockMvc.perform(post(CONTACTS_PATH + "/import?uploadId=up-1").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+  }
+
+  @Test
+  void importOfAMissingUploadAnswersBadRequest() throws Exception {
+    when(emailContactVCardService.startImport(anyString(), anyString()))
+                                                                        .thenThrow(new IllegalArgumentException(EmailContactVCardService.IMPORT_UPLOAD_MISSING));
+    mockMvc.perform(post(CONTACTS_PATH + "/import?uploadId=up-1").with(testSimpleUser())).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void importWhileOneRunsAnswersConflict() throws Exception {
+    when(emailContactVCardService.startImport(anyString(), anyString()))
+                                                                        .thenThrow(new IllegalStateException(EmailContactVCardService.IMPORT_ALREADY_RUNNING));
+    mockMvc.perform(post(CONTACTS_PATH + "/import?uploadId=up-1").with(testSimpleUser())).andExpect(status().isConflict());
+  }
+
+  @Test
+  void importStatusAnswersTheStoredReport() throws Exception {
+    ContactImportState state = new ContactImportState();
+    state.setStatus(SyncStatus.SUCCESS);
+    state.setImported(3);
+    state.setAlreadyKnown(2);
+    when(emailContactVCardService.getImportState(anyString())).thenReturn(state);
+
+    mockMvc.perform(get(CONTACTS_PATH + "/import/status").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.imported").value(3))
+           .andExpect(jsonPath("$.alreadyKnown").value(2));
   }
 
   /**
