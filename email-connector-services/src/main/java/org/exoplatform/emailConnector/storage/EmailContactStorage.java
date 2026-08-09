@@ -20,6 +20,7 @@ import java.io.ByteArrayInputStream;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -46,6 +47,7 @@ import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.CardDavContactData;
 import org.exoplatform.emailConnector.model.CardDavRow;
 import org.exoplatform.emailConnector.model.PhotoOrigin;
+import org.exoplatform.emailConnector.model.PostalAddress;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -228,6 +230,23 @@ public class EmailContactStorage {
    * @param userId the store owner
    * @param addresses every address, already normalized, in preference order
    */
+  /**
+   * Every address a synced card can be reached at, preferred one first.
+   *
+   * @param data the card as the sync read it
+   * @return the addresses, never null
+   */
+  private List<String> addressesOfCardDav(CardDavContactData data) {
+    List<String> addresses = new ArrayList<>();
+    if (StringUtils.isNotBlank(data.primaryEmail())) {
+      addresses.add(data.primaryEmail());
+    }
+    if (data.secondaryEmails() != null) {
+      addresses.addAll(data.secondaryEmails());
+    }
+    return addresses;
+  }
+
   private void saveAddresses(Long contactId, String userId, List<String> addresses) {
     if (contactId == null) {
       return;
@@ -450,6 +469,10 @@ public class EmailContactStorage {
     entity.setPhones(joinValues(data.phones()));
     entity.setOrganization(data.organization());
     entity.setTitle(data.title());
+    applyPostalAddress(data.address(), entity);
+    entity.setBirthday(data.birthday());
+    entity.setNote(EmailContactUtils.truncateNote(data.note()));
+    entity.setWebsite(data.website());
     entity.setHref(href);
     entity.setEtag(etag);
     entity.setVcardUid(data.vcardUid());
@@ -466,7 +489,13 @@ public class EmailContactStorage {
         entity.setPhotoOrigin(null);
       }
     }
-    return emailContactDAO.save(entity).getId();
+    EmailContactEntity saved = emailContactDAO.save(entity);
+    // The address table, which every lookup by address reads. Missing here, a
+    // synced contact could not be found by their own address: mail from them
+    // was collected as somebody new, clicking their name in a header offered to
+    // create them, and an import of the same address book duplicated the lot.
+    saveAddresses(saved.getId(), saved.getUserId(), addressesOfCardDav(data));
+    return saved.getId();
   }
 
   /**
@@ -503,7 +532,65 @@ public class EmailContactStorage {
   }
 
   /**
-   * Stores picture bytes that came from an address book rather than an upload.
+   * Stamps a contact with the identity the card it came from carried.
+   * <p>
+   * Written here rather than through the DTO: the column is not something a
+   * caller of the REST may set, and the import is the only other writer -- it
+   * needs the identity so a second import of the same file recognises a person
+   * with no address, which nothing else can do.
+   *
+   * @param id the contact
+   * @param vcardUid the card's UID, ignored when blank
+   */
+  @Transactional
+  public void setVcardUid(long id, String vcardUid) {
+    if (StringUtils.isBlank(vcardUid)) {
+      return;
+    }
+    emailContactDAO.findById(id).ifPresent(entity -> {
+      entity.setVcardUid(vcardUid);
+      emailContactDAO.save(entity);
+    });
+  }
+
+  /**
+   * The contact carrying a vCard's identity, if this store already holds it.
+   *
+   * @param userId the store owner
+   * @param vcardUid the card's UID
+   * @return the contact, or null
+   */
+  public EmailContact getContactByVcardUid(String userId, String vcardUid) {
+    if (StringUtils.isBlank(vcardUid)) {
+      return null;
+    }
+    return emailContactDAO.findByUserIdAndVcardUid(userId, vcardUid).map(this::fromEntity).orElse(null);
+  }
+
+  /**
+   * The vCard uid of every address-book row this user holds, keyed by row id.
+   * <p>
+   * What the export consults so a CardDAV contact leaves the store carrying the
+   * identity its server gave it — one query for the whole export rather than
+   * putting a bookkeeping column on the DTO every other read would then carry
+   * for nothing.
+   *
+   * @param userId the store owner
+   * @return row id → vCard uid, rows without one absent; never null
+   */
+  public Map<Long, String> getVcardUids(String userId) {
+    Map<Long, String> uids = new HashMap<>();
+    for (EmailContactEntity entity : emailContactDAO.findByUserIdAndSource(userId, EmailContactSource.CARDDAV)) {
+      if (StringUtils.isNotBlank(entity.getVcardUid())) {
+        uids.put(entity.getId(), entity.getVcardUid());
+      }
+    }
+    return uids;
+  }
+
+  /**
+   * Stores picture bytes that came from a vCard rather than an upload — the
+   * address-book sync's path, and the file import's.
    *
    * @param photoFileId the file to replace, or null to write a new one
    * @param bytes the picture
@@ -511,7 +598,7 @@ public class EmailContactStorage {
    * @return the stored file id, or null when it could not be written
    */
   @SneakyThrows
-  private Long savePhotoBytes(Long photoFileId, byte[] bytes, String mimeType) {
+  public Long savePhotoBytes(Long photoFileId, byte[] bytes, String mimeType) {
     FileItem fileItem = new FileItem(photoFileId,
                                      PHOTO_FILE_NAME,
                                      StringUtils.defaultIfBlank(mimeType, "image/jpeg"),
@@ -680,6 +767,10 @@ public class EmailContactStorage {
     entity.setPhones(joinValues(contact.getPhones()));
     entity.setOrganization(contact.getOrganization());
     entity.setTitle(contact.getTitle());
+    entity.setBirthday(contact.getBirthday());
+    applyPostalAddress(contact.getPostalAddress(), entity);
+    entity.setNote(EmailContactUtils.truncateNote(contact.getNote()));
+    entity.setWebsite(contact.getWebsite());
     entity.setPlatformUsername(contact.getPlatformUsername());
     entity.setPhotoFileId(contact.getPhotoFileId());
     entity.setSuppressed(contact.isSuppressed());
@@ -713,6 +804,14 @@ public class EmailContactStorage {
     contact.setPhones(splitValues(entity.getPhones()));
     contact.setOrganization(entity.getOrganization());
     contact.setTitle(entity.getTitle());
+    contact.setBirthday(entity.getBirthday());
+    contact.setPostalAddress(PostalAddress.orNull(entity.getAddressStreet(),
+                                                  entity.getAddressCity(),
+                                                  entity.getAddressRegion(),
+                                                  entity.getAddressPostalCode(),
+                                                  entity.getAddressCountry()));
+    contact.setNote(entity.getNote());
+    contact.setWebsite(entity.getWebsite());
     contact.setPlatformUsername(entity.getPlatformUsername());
     contact.setPhotoFileId(entity.getPhotoFileId());
     contact.setSuppressed(entity.isSuppressed());
@@ -757,6 +856,23 @@ public class EmailContactStorage {
                  .map(entry -> entry.contains(",") ? entry.substring(entry.indexOf(',') + 1) : entry)
                  .filter(StringUtils::isNotBlank)
                  .toList();
+  }
+
+  /**
+   * Writes a structured postal address onto its five columns — null clears all
+   * five, so a removed address does not leave a country behind. One writer for
+   * the authored path and the sync path alike, which is what keeps the two from
+   * drifting a component apart.
+   *
+   * @param address the address, or null for none
+   * @param entity the row being written, mutated in place
+   */
+  private void applyPostalAddress(PostalAddress address, EmailContactEntity entity) {
+    entity.setAddressStreet(address == null ? null : address.street());
+    entity.setAddressCity(address == null ? null : address.city());
+    entity.setAddressRegion(address == null ? null : address.region());
+    entity.setAddressPostalCode(address == null ? null : address.postalCode());
+    entity.setAddressCountry(address == null ? null : address.country());
   }
 
   /**
