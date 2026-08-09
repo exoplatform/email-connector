@@ -39,6 +39,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div
         v-if="contact"
         class="d-flex align-center">
+        <!-- The two take-away shapes side by side: the QR for the phone in the
+             room, the mail for the person who is not in it. Both hand out the
+             same card, the composer's copy simply allowed its photo. -->
+        <v-btn
+          :title="$t('emailConnector.contacts.detail.sendByEmail')"
+          icon
+          @click="sendByEmail">
+          <v-icon size="18">
+            fas fa-paper-plane
+          </v-icon>
+        </v-btn>
         <v-btn
           :title="$t('emailConnector.contacts.qr.open')"
           icon
@@ -136,6 +147,16 @@ export default {
           .catch(() => null)
           .finally(() => this.loading = false);
       }
+    },
+    /**
+     * Opens the composer with this contact's vCard already attached and nobody
+     * addressed — sharing the person is this click, choosing who gets them is
+     * the user's next one. The card stays open underneath, like under the QR.
+     *
+     * @returns {void}
+     */
+    sendByEmail() {
+      this.$emailConnectorContactsService.sendByEmail(this.contact);
     },
     /**
      * Opens the take-away QR on this contact — the dialog overlays the drawer,
