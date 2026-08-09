@@ -1131,3 +1131,66 @@ export function forwardAttachment(attachment) {
     },
   }));
 }
+
+/**
+ * Whether a received attachment is a contact card. Both signals count, either
+ * alone sufficing: senders name the file .vcf with any content type their
+ * client felt like, and webmails send text/vcard under generated names.
+ * text/x-vcard is the pre-registration spelling old Outlook still uses.
+ *
+ * @param {Object} attachment the received attachment
+ * @returns {Boolean} true when "Add to contacts" applies
+ */
+export function isVCardAttachment(attachment) {
+  return (attachment?.name || '').toLowerCase().endsWith('.vcf')
+    || ['text/vcard', 'text/x-vcard'].includes(normaliseMimeType(attachment));
+}
+
+/**
+ * Reads the first vCard of a received attachment server-side and opens the
+ * contact form prefilled with it — the same confirmation step the "add this
+ * sender" flow takes, so what is kept is what the user saw and approved, and
+ * the actual create keeps the ordinary path's validation and duplicate rule.
+ * The server reads the FIRST card only: an emailed contact is one person, and
+ * a multi-card file belongs to the contacts import.
+ *
+ * Errors are reported here as their own toasts — an unreadable card deserves a
+ * better sentence than a generic failure — so the returned promise resolves
+ * either way and the menu's fallback reporting stays quiet.
+ *
+ * @param {Object} attachment the received .vcf attachment
+ * @param {Object} messages the translated toasts: { notVCard, error }
+ * @returns {Promise} resolved once the form was asked to open, or the toast shown
+ */
+export function addAttachmentToContacts(attachment, messages = {}) {
+  const params = new URLSearchParams({
+    mailRemoteId: attachment.mailRemoteId,
+    attachmentId: attachment.attachmentRemoteId,
+  });
+  return fetch(`/email-connector/rest/contacts/from-attachment?${params}`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    const status = resp?.status;
+    return resp.text().then(code => {
+      const error = new Error(code || 'Error when reading the attachment contact');
+      error.status = status;
+      throw error;
+    });
+  }).then(prefill =>
+    // The listener lives in a QuickActionsGrp module a page may have defined
+    // without executing — require it first, or the first click's event lands
+    // on nobody (the favorites item and the profile action learned the same).
+    new Promise(resolve => window.require(['SHARED/emailConnectorContactsQuickActionExtension'], () => {
+      document.dispatchEvent(new CustomEvent('open-contacts-drawer', {detail: {prefill}}));
+      resolve();
+    }))
+  ).catch(error => {
+    // A 400 is the server saying "this is not a readable contact card" (or too
+    // big a file wearing the name) — the one outcome worth its own sentence.
+    notify(error?.status === 400 && messages.notVCard || messages.error, 'error');
+  });
+}

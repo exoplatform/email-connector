@@ -90,6 +90,20 @@ extensionRegistry.registerExtension(EXTENSION_TYPE, EXTENSION_NAME, {
   click: attachment => service.forwardAttachment(attachment),
 });
 
+// The way back into the contact store for a card somebody mailed: the server
+// parses the FIRST card of the file and the contact form opens prefilled with
+// it — the same confirmation step as adding a sender, never a silent create.
+// Through the context because the toast sentences are the menu's to translate,
+// like saveInDocuments' are.
+extensionRegistry.registerExtension(EXTENSION_TYPE, EXTENSION_NAME, {
+  id: 'addToContacts',
+  rank: 40,
+  labelKey: 'emailConnector.mailBox.attachment.action.addToContacts.label',
+  icon: 'fa-address-book',
+  enabled: attachment => service.isVCardAttachment(attachment),
+  click: (attachment, context) => context.addToContacts(),
+});
+
 // No "Open read-only" action: clicking the attachment already opens it read only in
 // the editor (see EmailConnectorAttachmentOpenMixin), so a menu entry doing the same
 // would only be a duplicate. Editing means Save in Documents first.
