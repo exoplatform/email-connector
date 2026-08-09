@@ -97,6 +97,8 @@ public class EmailContactVCardService {
 
   /** Message code answered as a 400 for a vCard attachment over the size cap. */
   public static final String      ATTACHMENT_TOO_LARGE      = "emailConnector.contacts.attachment.tooLarge";
+  /** Message code answered as a 400 for a file no readable card came out of. */
+  public static final String      PARSE_NO_CARD             = "emailConnector.contacts.parse.noCard";
 
   /**
    * The most an uploaded .vcf may weigh, checked BEFORE a byte of it is parsed.
@@ -221,6 +223,56 @@ public class EmailContactVCardService {
    */
   public ContactImportState getImportState(String username) {
     return userEmailSettingService.getContactImportState(username);
+  }
+
+  /**
+   * Reads the first readable card of an uploaded .vcf as the contact it would
+   * become, WITHOUT storing anything — the prefill of a form the user still
+   * has to confirm, which is the whole point: an action that quietly wrote a
+   * row would take the confirmation away.
+   * <p>
+   * Same gates as {@link #startImport} (the upload must exist, the size cap
+   * holds), same mapping as the import (one card, the very fields
+   * {@code toContact} files for the bulk path — photo excluded, because the
+   * photo mapping stores bytes and nothing may be stored here), and the upload
+   * is consumed either way: a parse is a one-shot read, not a handle.
+   *
+   * @param username the store owner the fields are shaped for
+   * @param uploadId the upload holding the .vcf
+   * @return the would-be contact, never persisted, never null
+   * @throws IllegalArgumentException with {@link #IMPORT_UPLOAD_MISSING},
+   *           {@link #IMPORT_FILE_TOO_LARGE} or {@link #PARSE_NO_CARD}
+   */
+  public EmailContact parseFirstCard(String username, String uploadId) {
+    if (StringUtils.isBlank(username) || StringUtils.isBlank(uploadId)) {
+      throw new IllegalArgumentException(IMPORT_UPLOAD_MISSING);
+    }
+    try {
+      UploadResource upload = uploadService.getUploadResource(uploadId);
+      if (upload == null || StringUtils.isBlank(upload.getStoreLocation())) {
+        throw new IllegalArgumentException(IMPORT_UPLOAD_MISSING);
+      }
+      if (new File(upload.getStoreLocation()).length() > MAX_IMPORT_FILE_BYTES) {
+        throw new IllegalArgumentException(IMPORT_FILE_TOO_LARGE);
+      }
+      FirstCardSink sink = new FirstCardSink();
+      try (Reader reader = new InputStreamReader(new FileInputStream(upload.getStoreLocation()), StandardCharsets.UTF_8)) {
+        vCardParser.parseAll(reader, sink);
+      } catch (IOException e) {
+        LOG.debug("The uploaded vCard of user {} could not be read", username, e);
+        throw new IllegalArgumentException(PARSE_NO_CARD);
+      }
+      if (sink.card == null) {
+        throw new IllegalArgumentException(PARSE_NO_CARD);
+      }
+      // toPrefill, not toContact: an unpersisted prefill is exactly what the mail
+      // attachment path already produces, photo left behind and a lone formatted
+      // name split into given/family — so the same card reads the same way
+      // whether it arrived by mail or by chat.
+      return toPrefill(sink.card);
+    } finally {
+      removeUpload(uploadId);
+    }
   }
 
   /**
@@ -719,6 +771,29 @@ public class EmailContactVCardService {
       uploadService.removeUploadResource(uploadId);
     } catch (Exception e) {
       LOG.debug("Upload {} could not be removed after the vCard import", uploadId, e);
+    }
+  }
+
+  /**
+   * The sink of {@link #parseFirstCard}: keeps the first readable card and
+   * stops the reader there — an unreadable prefix card costs itself, not the
+   * parse, same accounting as the import's.
+   */
+  private static class FirstCardSink implements VCardSink {
+
+    private ParsedVCard card;
+
+    /**
+     * Keeps the first readable card and stops the read: one card is all this
+     * sink is for.
+     *
+     * @param card the parsed card, never null
+     * @return false, to stop reading
+     */
+    @Override
+    public boolean accept(ParsedVCard card) {
+      this.card = card;
+      return false;
     }
   }
 }
