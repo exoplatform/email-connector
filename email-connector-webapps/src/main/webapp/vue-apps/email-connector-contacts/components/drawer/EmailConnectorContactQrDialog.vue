@@ -21,17 +21,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        past what a scannable code holds); this side owns the other half of the
        honesty: a card too big even as text says so instead of rendering an
        unscannable code. -->
+  <!-- Shaped like the platform's confirmation popup -- a titled bar, a body, one
+       action on the right -- because that is the dialog people already know here.
+       It cannot BE that component: exo-confirm-dialog carries a title and a text
+       message, with no slot to put a picture in. -->
   <v-dialog
     v-model="dialog"
-    max-width="360"
+    max-width="400"
     @input="onToggle">
-    <v-card class="pa-4 d-flex flex-column align-center">
-      <div class="text-h6 text-color mb-1">
+    <v-card>
+      <v-card-title class="text-h6 text-color pb-2">
         {{ contactName }}
-      </div>
-      <div class="text-sub-title mb-3">
+      </v-card-title>
+      <v-card-subtitle class="pb-0">
         {{ $t('emailConnector.contacts.qr.hint') }}
-      </div>
+      </v-card-subtitle>
+      <v-card-text class="d-flex flex-column align-center pt-4">
       <v-progress-circular
         v-if="loading"
         indeterminate
@@ -48,11 +53,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-show="!loading && !message"
         ref="qrCanvas"
         :key="contactId"></div>
-      <v-btn
-        class="btn mt-4"
-        @click="close">
-        {{ $t('emailConnector.contacts.qr.close') }}
-      </v-btn>
+      </v-card-text>
+      <v-card-actions class="pb-4 pe-4">
+        <v-spacer />
+        <v-btn
+          class="btn"
+          @click="close">
+          {{ $t('emailConnector.contacts.qr.close') }}
+        </v-btn>
+      </v-card-actions>
     </v-card>
   </v-dialog>
 </template>
