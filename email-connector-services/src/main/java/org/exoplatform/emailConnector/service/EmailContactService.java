@@ -39,6 +39,7 @@ import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.PostalAddress;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailContactStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -68,6 +69,14 @@ public class EmailContactService {
 
   /** Message code answered as a 400 for an unusable address. */
   public static final String      CONTACT_INVALID_EMAIL       = "emailConnector.contacts.invalidEmail";
+
+  /**
+   * Message code answered as a 400 for a birthday that is not a date. Unlike
+   * the note (truncated) or the address (component-trimmed), a bad birthday is
+   * refused rather than repaired: there is a user on this path to ask, and
+   * silently storing "next tuesday" as nothing would look like a lost field.
+   */
+  public static final String      CONTACT_INVALID_BIRTHDAY    = "emailConnector.contacts.invalidBirthday";
 
   /** Message code answered as a 400 for an unknown source filter. */
   public static final String      CONTACT_INVALID_SOURCE      = "emailConnector.contacts.invalidSource";
@@ -1056,6 +1065,18 @@ public class EmailContactService {
     target.setPhones(authored.getPhones());
     target.setOrganization(StringUtils.trimToNull(authored.getOrganization()));
     target.setTitle(StringUtils.trimToNull(authored.getTitle()));
+    target.setBirthday(normalizedBirthdayOf(authored));
+    // The record's own factory trims and collapses an all-blank address to null,
+    // so a form of five emptied fields removes the address rather than storing a
+    // shell of blanks.
+    target.setPostalAddress(authored.getPostalAddress() == null ? null
+                                                                : PostalAddress.orNull(authored.getPostalAddress().street(),
+                                                                                       authored.getPostalAddress().city(),
+                                                                                       authored.getPostalAddress().region(),
+                                                                                       authored.getPostalAddress().postalCode(),
+                                                                                       authored.getPostalAddress().country()));
+    target.setNote(EmailContactUtils.truncateNote(authored.getNote()));
+    target.setWebsite(StringUtils.trimToNull(authored.getWebsite()));
     // The display name is not simply overwritten by what the request carries,
     // because a collected contact HAS one and the form does not offer it: the name
     // came from the mail header as a single string, while the form only knows the
@@ -1071,6 +1092,28 @@ public class EmailContactService {
     } else if (authoredDisplayName != null) {
       target.setDisplayName(authoredDisplayName);
     }
+  }
+
+  /**
+   * The birthday a request carries, in canonical form: {@code YYYY-MM-DD}, or
+   * {@code --MM-DD} for the year-less birthday vCard allows. Blank means none;
+   * anything that is not a date is refused — see
+   * {@link #CONTACT_INVALID_BIRTHDAY} for why refusal, not repair.
+   *
+   * @param authored what the user typed
+   * @return the canonical birthday, or null when the request carries none
+   * @throws IllegalArgumentException with {@link #CONTACT_INVALID_BIRTHDAY}
+   *           when the value is present but not a date
+   */
+  private String normalizedBirthdayOf(EmailContact authored) {
+    if (StringUtils.isBlank(authored.getBirthday())) {
+      return null;
+    }
+    String canonical = EmailContactUtils.normalizeBirthday(authored.getBirthday());
+    if (canonical == null) {
+      throw new IllegalArgumentException(CONTACT_INVALID_BIRTHDAY);
+    }
+    return canonical;
   }
 
   /**

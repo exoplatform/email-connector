@@ -98,6 +98,41 @@ public class EmailContactEntity {
   @Column(name = "TITLE")
   private String  title;
 
+  // The canonical birthday text: YYYY-MM-DD, or --MM-DD when the card carried no
+  // year. A VARCHAR rather than a DATE column on purpose — a DATE cannot hold a
+  // year-less birthday without inventing a year (Apple's infamous 1604), and
+  // nothing ever computes on this value, it is only held and shown.
+  @Column(name = "BIRTHDAY")
+  private String  birthday;
+
+  // The postal address, one column per vCard ADR component. Structured, not a
+  // joined string: the phones column is joined and that is what made phone
+  // matching unreliable; an address flattened here could only ever be exported
+  // back as one long street line. See the PostalAddress model for the argument.
+  @Column(name = "ADDRESS_STREET")
+  private String  addressStreet;
+
+  @Column(name = "ADDRESS_CITY")
+  private String  addressCity;
+
+  @Column(name = "ADDRESS_REGION")
+  private String  addressRegion;
+
+  @Column(name = "ADDRESS_POSTAL_CODE")
+  private String  addressPostalCode;
+
+  @Column(name = "ADDRESS_COUNTRY")
+  private String  addressCountry;
+
+  // Free text, multi-line, capped at EmailContactUtils.MAX_NOTE_LENGTH on every
+  // write path. Named NOTE_TEXT because NOTE flirts with reserved words on some
+  // dialects, and a column rename is the most expensive kind of caution.
+  @Column(name = "NOTE_TEXT")
+  private String  note;
+
+  @Column(name = "WEBSITE")
+  private String  website;
+
   // The platform identity a DIRECTORY row links to. The row's name/email columns are
   // only the fallback for when this profile is gone: display resolves live from it.
   @Column(name = "PLATFORM_USERNAME")

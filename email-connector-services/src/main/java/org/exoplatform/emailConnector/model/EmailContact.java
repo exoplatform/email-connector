@@ -73,6 +73,24 @@ public class EmailContact {
   private String       title;
 
   /**
+   * The birthday as this store's canonical text: {@code YYYY-MM-DD} when the
+   * year is known, {@code --MM-DD} when it is not. Text rather than a date
+   * because a year-less birthday — {@code BDAY:--0412}, legal vCard and common
+   * in Apple exports — has no honest {@code Date} representation: forcing a
+   * fake year is exactly the corruption this field exists to avoid.
+   */
+  private String       birthday;
+
+  /** The postal address, structured — see {@link PostalAddress} for why. */
+  private PostalAddress postalAddress;
+
+  /** The free-text note, possibly multi-line, capped at storage. */
+  private String       note;
+
+  /** The contact's web page, as the card or the user wrote it. */
+  private String       website;
+
+  /**
    * The platform identity a {@link EmailContactSource#DIRECTORY} row links to.
    * Display fields of such a row resolve live from this profile at read time;
    * the stored name/address are only the fallback when the profile is gone.
