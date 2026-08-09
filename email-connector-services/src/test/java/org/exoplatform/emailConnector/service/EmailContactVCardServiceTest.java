@@ -488,6 +488,97 @@ public class EmailContactVCardServiceTest {
     assertEquals(201, out.toString().split("BEGIN:VCARD", -1).length - 1);
   }
 
+  @Test
+  void parsingAnswersTheFirstCardsFieldsAndStoresNothing() throws Exception {
+    // Two cards on purpose: the parse is defined as "the FIRST card", and the
+    // second one must not leak into the answer nor into the store.
+    givenUpload("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        N:Doe;Jane;;;
+        EMAIL;TYPE=INTERNET,PREF:Jane@Example.com
+        TEL:+33612345678
+        ORG:Acme
+        END:VCARD
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:John Roe
+        EMAIL:john@example.com
+        END:VCARD""");
+
+    EmailContact parsed = service.parseFirstCard(USERNAME, UPLOAD_ID);
+
+    assertEquals("Jane Doe", parsed.getDisplayName());
+    assertEquals("jane@example.com", parsed.getPrimaryEmail());
+    assertEquals(List.of("+33612345678"), parsed.getPhones());
+    assertEquals("Acme", parsed.getOrganization());
+    // No source and no id: a prefill is not a row. The source is decided by the
+    // save that follows, exactly as it is on the mail attachment's prefill —
+    // both paths go through toPrefill, so the same card reads the same way
+    // whether it arrived by chat or by mail.
+    assertNull(parsed.getSource());
+    assertNull(parsed.getId());
+    // Nothing persisted: the whole point is a form the user still confirms.
+    verify(emailContactStorage, never()).createContact(any());
+    verify(emailContactStorage, never()).savePhotoBytes(any(), any(), any());
+    // The upload is consumed: a parse is a one-shot read, not a handle.
+    verify(uploadService).removeUploadResource(UPLOAD_ID);
+  }
+
+  @Test
+  void parsingLeavesThePhotoAlone() throws Exception {
+    // Mapping a photo STORES its bytes, and a parse may store nothing — so the
+    // photo is deliberately absent from the answer, not resized, not inlined.
+    givenUpload("BEGIN:VCARD\nVERSION:3.0\nFN:Jane Doe\nEMAIL:jane@example.com\nPHOTO;ENCODING=b;TYPE=JPEG:"
+        + Base64.getEncoder().encodeToString(new byte[] { 1, 2, 3, 4 }) + "\nEND:VCARD");
+
+    EmailContact parsed = service.parseFirstCard(USERNAME, UPLOAD_ID);
+
+    assertNull(parsed.getPhotoFileId());
+    verify(emailContactStorage, never()).savePhotoBytes(any(), any(), any());
+  }
+
+  @Test
+  void parsingRefusesAMissingUpload() {
+    when(uploadService.getUploadResource(UPLOAD_ID)).thenReturn(null);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.parseFirstCard(USERNAME, UPLOAD_ID));
+
+    assertEquals(EmailContactVCardService.IMPORT_UPLOAD_MISSING, refusal.getMessage());
+  }
+
+  @Test
+  void parsingRefusesAFileWithNoReadableCard() throws Exception {
+    givenUpload("this is not a vCard at all");
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.parseFirstCard(USERNAME, UPLOAD_ID));
+
+    assertEquals(EmailContactVCardService.PARSE_NO_CARD, refusal.getMessage());
+    // Consumed even when refused: the caller retries with a new upload.
+    verify(uploadService).removeUploadResource(UPLOAD_ID);
+  }
+
+  @Test
+  void parsingRefusesAFileOverTheSizeCapBeforeParsing() throws Exception {
+    Path file = tempDir.resolve("huge-parse.vcf");
+    try (RandomAccessFile huge = new RandomAccessFile(file.toFile(), "rw")) {
+      huge.setLength(EmailContactVCardService.MAX_IMPORT_FILE_BYTES + 1);
+    }
+    UploadResource upload = new UploadResource(UPLOAD_ID);
+    upload.setStoreLocation(file.toString());
+    when(uploadService.getUploadResource(UPLOAD_ID)).thenReturn(upload);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.parseFirstCard(USERNAME, UPLOAD_ID));
+
+    assertEquals(EmailContactVCardService.IMPORT_FILE_TOO_LARGE, refusal.getMessage());
+    verify(vCardParser, never()).parseAll(any(), any());
+    verify(uploadService).removeUploadResource(UPLOAD_ID);
+  }
+
   /**
    * Stages a .vcf as the upload the service will read.
    *

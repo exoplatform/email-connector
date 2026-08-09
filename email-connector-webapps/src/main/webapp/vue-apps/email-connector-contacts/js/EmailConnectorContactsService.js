@@ -249,6 +249,33 @@ export function importContacts(uploadId) {
 }
 
 /**
+ * Reads the first card of an uploaded .vcf as the contact it would become —
+ * fields only, nothing persisted, no photo. This is the prefill of the
+ * add-contact form: the user confirms, and only the confirming save creates
+ * anything. The upload is consumed either way.
+ *
+ * @param {string} uploadId - the upload id the file was pushed under
+ * @returns {Promise<object>} the would-be contact, or a rejection whose
+ *          message is the server's message code (missing upload, oversized
+ *          file, no readable card)
+ */
+export function parseVCardFile(uploadId) {
+  return fetch(`/email-connector/rest/contacts/parse?uploadId=${encodeURIComponent(uploadId)}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.text().then(message => {
+      const error = new Error(message || 'Error when parsing the vCard file');
+      error.status = resp.status;
+      throw error;
+    });
+  });
+}
+
+/**
  * How the caller's vCard import is going, or went: the status, the four
  * counters, and the message code of whatever cut a run short.
  *
