@@ -63,6 +63,13 @@ public final class EmailContactUtils {
   private static final Pattern COMPLETE_ADDRESS  = Pattern.compile("[^\\s@,;]+@[^\\s@,;.]+\\.[^\\s@,;]+");
 
   /**
+   * The most a contact note may hold, matching the NOTE_TEXT column. Applied on
+   * every write path — form, import, sync — so the cap is a property of the
+   * store, not of whichever door the note came in by.
+   */
+  public static final int      MAX_NOTE_LENGTH   = 2000;
+
+  /**
    * Normalizes an address to the form the store keys by: trimmed and lowercased.
    * Returns null for anything that is not plausibly an address (blank, or no
    * {@code @}), so callers can skip in one test.
@@ -272,5 +279,92 @@ public final class EmailContactUtils {
     }
     int via = senderName.lastIndexOf(" via ");
     return via > 0 ? senderName.substring(0, via).trim() : null;
+  }
+
+  // The spellings a birthday may arrive in: vCard basic and extended forms, with
+  // or without a year, plus the bare MM-DD a person naturally types when they do
+  // not know the year. Everything normalizes to YYYY-MM-DD or --MM-DD.
+  private static final Pattern BIRTHDAY_WITH_YEAR    = Pattern.compile("(\\d{4})-?(\\d{2})-?(\\d{2})");
+
+  private static final Pattern BIRTHDAY_WITHOUT_YEAR = Pattern.compile("(?:--)?(\\d{2})-?(\\d{2})");
+
+  /**
+   * Normalizes a birthday to the store's canonical text: {@code YYYY-MM-DD}
+   * when a year is present, {@code --MM-DD} (vCard 4.0's own year-less form)
+   * when it is not. The month and day are validated as a real calendar date —
+   * leap day allowed, since year-less February 29 birthdays exist.
+   *
+   * @param birthday the raw text, may be null
+   * @return the canonical form, or null when the input is blank OR not a date —
+   *         a caller that must tell the two apart checks blankness itself
+   */
+  public static String normalizeBirthday(String birthday) {
+    String trimmed = StringUtils.trimToNull(birthday);
+    if (trimmed == null) {
+      return null;
+    }
+    try {
+      java.util.regex.Matcher withYear = BIRTHDAY_WITH_YEAR.matcher(trimmed);
+      if (withYear.matches()) {
+        return java.time.LocalDate.of(Integer.parseInt(withYear.group(1)),
+                                      Integer.parseInt(withYear.group(2)),
+                                      Integer.parseInt(withYear.group(3)))
+                                  .toString();
+      }
+      java.util.regex.Matcher withoutYear = BIRTHDAY_WITHOUT_YEAR.matcher(trimmed);
+      if (withoutYear.matches()) {
+        java.time.MonthDay monthDay = java.time.MonthDay.of(Integer.parseInt(withoutYear.group(1)),
+                                                            Integer.parseInt(withoutYear.group(2)));
+        return String.format("--%02d-%02d", monthDay.getMonthValue(), monthDay.getDayOfMonth());
+      }
+    } catch (java.time.DateTimeException e) {
+      // A month or day outside the calendar: same answer as a shape that never
+      // matched — not a date.
+    }
+    return null;
+  }
+
+  /**
+   * Trims a note and caps it at {@link #MAX_NOTE_LENGTH} — the store's cap,
+   * applied wherever a note is written. Truncation over refusal: a note is
+   * prose, and losing its tail is better than losing the contact carrying it
+   * (the import and the sync have no user to ask).
+   *
+   * @param note the raw note, may be null
+   * @return the trimmed, capped note, or null when there is nothing in it
+   */
+  public static String truncateNote(String note) {
+    String trimmed = StringUtils.trimToNull(note);
+    return trimmed == null ? null : StringUtils.left(trimmed, MAX_NOTE_LENGTH);
+  }
+
+  /**
+   * A note as a vCard can carry it: text, with the paragraphs kept.
+   * <p>
+   * The note is written in the platform's rich editor and stored as markup, but
+   * NOTE has no notion of markup -- writing tags into a card would hand another
+   * address book a paragraph of angle brackets. Block ends become line breaks so
+   * the shape of what was written survives, and the rest is unwrapped.
+   *
+   * @param note the stored note, possibly markup, possibly null
+   * @return the note as plain text, or null
+   */
+  public static String noteAsText(String note) {
+    if (StringUtils.isBlank(note)) {
+      return null;
+    }
+    String text = note.replaceAll("(?i)<br\\s*/?>", "\n")
+                      .replaceAll("(?i)</(p|div|li|h[1-6])>", "\n")
+                      .replaceAll("<[^>]+>", "");
+    // The entities an editor actually emits. A general HTML unescaper would mean
+    // another dependency for six replacements.
+    text = text.replace("&nbsp;", " ")
+               .replace("&lt;", "<")
+               .replace("&gt;", ">")
+               .replace("&quot;", "\"")
+               .replace("&#39;", "'")
+               .replace("&amp;", "&")
+               .replaceAll("\n{3,}", "\n\n");
+    return StringUtils.trimToNull(text);
   }
 }

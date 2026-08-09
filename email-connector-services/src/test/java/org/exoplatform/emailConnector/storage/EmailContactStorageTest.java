@@ -54,6 +54,8 @@ import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSource;
+import org.exoplatform.emailConnector.model.PostalAddress;
+import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.upload.UploadService;
 
 @ExtendWith(MockitoExtension.class)
@@ -267,6 +269,55 @@ public class EmailContactStorageTest {
     assertEquals(created, saved.getValue().getCreatedDate());
     // and the payload still lands
     assertEquals("Acme", saved.getValue().getOrganization());
+  }
+
+  @Test
+  void theCardFieldsSurviveTheEntityRoundTrip() {
+    // Each new column through both mappers: what the DTO says lands on the row,
+    // and what the row holds comes back as the same DTO — the address as its
+    // components, never re-joined into a string.
+    when(emailContactDAO.save(any(EmailContactEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact contact = new EmailContact();
+    contact.setUserId(USERNAME);
+    contact.setSource(EmailContactSource.MANUAL);
+    contact.setPrimaryEmail("jane@example.com");
+    contact.setBirthday("--04-12");
+    contact.setPostalAddress(new PostalAddress("12 rue de la Paix", "Paris", "Île-de-France", "75002", "France"));
+    contact.setNote("Met at FOSDEM.\nPrefers email.");
+    contact.setWebsite("https://janedoe.example");
+
+    EmailContact saved = emailContactStorage.createContact(contact);
+
+    ArgumentCaptor<EmailContactEntity> written = ArgumentCaptor.forClass(EmailContactEntity.class);
+    verify(emailContactDAO).save(written.capture());
+    assertEquals("--04-12", written.getValue().getBirthday());
+    assertEquals("12 rue de la Paix", written.getValue().getAddressStreet());
+    assertEquals("Paris", written.getValue().getAddressCity());
+    assertEquals("Île-de-France", written.getValue().getAddressRegion());
+    assertEquals("75002", written.getValue().getAddressPostalCode());
+    assertEquals("France", written.getValue().getAddressCountry());
+    assertEquals("Met at FOSDEM.\nPrefers email.", written.getValue().getNote());
+    assertEquals("https://janedoe.example", written.getValue().getWebsite());
+    assertEquals(contact.getPostalAddress(), saved.getPostalAddress());
+    assertEquals(contact.getBirthday(), saved.getBirthday());
+    assertEquals(contact.getNote(), saved.getNote());
+    assertEquals(contact.getWebsite(), saved.getWebsite());
+  }
+
+  @Test
+  void aNoteOverTheCapIsTruncatedNotRefused() {
+    when(emailContactDAO.save(any(EmailContactEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact contact = new EmailContact();
+    contact.setUserId(USERNAME);
+    contact.setSource(EmailContactSource.MANUAL);
+    contact.setPrimaryEmail("jane@example.com");
+    contact.setNote("x".repeat(EmailContactUtils.MAX_NOTE_LENGTH + 100));
+
+    emailContactStorage.createContact(contact);
+
+    ArgumentCaptor<EmailContactEntity> written = ArgumentCaptor.forClass(EmailContactEntity.class);
+    verify(emailContactDAO).save(written.capture());
+    assertEquals(EmailContactUtils.MAX_NOTE_LENGTH, written.getValue().getNote().length());
   }
 
   /**
