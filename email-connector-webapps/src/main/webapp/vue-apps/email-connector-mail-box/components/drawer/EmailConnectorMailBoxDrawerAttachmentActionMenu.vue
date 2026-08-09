@@ -141,6 +141,10 @@ export default {
           error: this.$t('emailConnector.mailBox.attachment.action.error'),
           see: this.$t('emailConnector.mailBox.attachment.saveInDocuments.see'),
         }),
+        addToContacts: () => this.$emailConnectorMailBoxService.addAttachmentToContacts(this.attachment, {
+          notVCard: this.$t('emailConnector.mailBox.attachment.addToContacts.notVCard'),
+          error: this.$t('emailConnector.mailBox.attachment.action.error'),
+        }),
       };
       try {
         Promise.resolve(action.click(this.attachment, context)).catch(() => this.reportFailure());
