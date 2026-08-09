@@ -603,7 +603,13 @@ public class EmailContactService {
       throw new IllegalArgumentException(CONTACT_CARDDAV_READ_ONLY);
     }
     if (EmailContactSource.DIRECTORY.equals(existing.getSource())) {
-      throw new IllegalArgumentException(CONTACT_DIRECTORY_READ_ONLY);
+      // The profile owns who they are; the user owns what they remember about
+      // them. Refusing the whole row was too broad: a colleague's birthday and
+      // the note about where you met them are not their profile's business, and
+      // nothing resolves them at read time, so an edit both sticks and shows.
+      // Only what resolveDirectoryContact overwrites is refused -- editing it
+      // would be invisible by the next read, which is worse than saying no.
+      return updateDirectoryAnnotations(existing, contact);
     }
     String address = EmailContactUtils.normalizeAddress(contact == null ? null : contact.getPrimaryEmail());
     if (address == null) {
@@ -1200,6 +1206,42 @@ public class EmailContactService {
     } catch (Exception e) {
       LOG.debug("The favorite of contact {} could not be dropped for user {}", contactId, username, e);
     }
+  }
+
+  /**
+   * Saves what a user may keep about a colleague they took from the directory.
+   * <p>
+   * Identity comes from the profile and is resolved on every read -- name,
+   * avatar, profile link, address -- so it is kept exactly as stored and any
+   * attempt to change it is ignored rather than refused: the caller sees those
+   * fields greyed out, and a stale client must not be able to write them.
+   * Everything else is the user's own annotation.
+   *
+   * @param existing the stored contact
+   * @param contact what the caller sent
+   * @return the saved contact, resolved for display
+   */
+  private EmailContact updateDirectoryAnnotations(EmailContact existing, EmailContact contact) {
+    if (contact == null) {
+      return getContact(existing.getId(), existing.getUserId());
+    }
+    // The picture stays the profile's. Refused rather than ignored, unlike the
+    // name and the address: those arrive on every save because the form carries
+    // them, while a photo only arrives because somebody asked for one.
+    // Absent means "leave it alone"; anything else -- an upload id, or the empty
+    // string that asks for removal -- is a photo change.
+    if (contact.getPhotoUploadId() != null) {
+      throw new IllegalArgumentException(CONTACT_DIRECTORY_READ_ONLY);
+    }
+    contact.setPrimaryEmail(existing.getPrimaryEmail());
+    contact.setSecondaryEmails(existing.getSecondaryEmails());
+    contact.setDisplayName(existing.getDisplayName());
+    contact.setGivenName(existing.getGivenName());
+    contact.setFamilyName(existing.getFamilyName());
+    applyAuthoredFields(existing, contact);
+    EmailContact saved = emailContactStorage.updateContact(existing);
+    enrichForDisplay(saved);
+    return saved;
   }
 
   /**

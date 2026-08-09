@@ -1147,15 +1147,19 @@ public class EmailContactServiceTest {
   }
 
   @Test
-  void editingADirectoryContactIsRefused() {
-    when(emailContactStorage.getContactById(5L)).thenReturn(directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe"));
+  void aDirectoryContactKeepsTheIdentityItsProfileOwns() {
+    // Editing used to be refused outright. It is not any more -- the fields the
+    // profile resolves are simply kept, so a stale client cannot write them,
+    // while everything the profile does not own is the user's to keep.
+    EmailContact stored = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    IllegalArgumentException readOnly =
-                                      assertThrows(IllegalArgumentException.class,
-                                                   () -> emailContactService.updateContact(5L,
-                                                                                           manualInput("J", "jane.doe@example.com"),
-                                                                                           USERNAME));
-    assertEquals(EmailContactService.CONTACT_DIRECTORY_READ_ONLY, readOnly.getMessage());
+    EmailContact saved = emailContactService.updateContact(5L, manualInput("J", "renamed@example.com"), USERNAME);
+
+    assertNotNull(saved);
+    assertEquals("jane.doe@example.com", saved.getPrimaryEmail());
+    assertEquals("Jane Doe", saved.getDisplayName());
   }
 
   // ---------------------------------------------------------------- listing
@@ -1474,6 +1478,33 @@ public class EmailContactServiceTest {
     when(emailContactStorage.getContactByAddress(eq(USERNAME), anyString())).thenReturn(hidden);
 
     assertNull(emailContactService.getContactByAddress("hidden@example.org", USERNAME));
+  }
+
+  @Test
+  void aColleagueKeepsTheirProfileIdentityButTakesYourAnnotations() {
+    // What the profile owns is resolved on every read, so an edit to it would be
+    // undone; what it does not own -- a birthday, a note about where you met --
+    // is the user's, and refusing the whole row denied them both.
+    EmailContact stored = collectedContact(12L, "colleague@exoplatform.com", "Jane Colleague");
+    stored.setSource(EmailContactSource.DIRECTORY);
+    stored.setPlatformUsername("jane");
+    when(emailContactStorage.getContactById(12L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact edit = new EmailContact();
+    edit.setPrimaryEmail("someone.else@example.com");
+    edit.setDisplayName("Renamed By Hand");
+    edit.setNote("Met at the Grenoble offsite");
+    edit.setBirthday("--12-31");
+
+    EmailContact saved = emailContactService.updateContact(12L, edit, USERNAME);
+
+    assertNotNull(saved);
+    assertEquals("Met at the Grenoble offsite", saved.getNote());
+    assertEquals("--12-31", saved.getBirthday());
+    // Ignored rather than refused: a stale client must not be able to write them.
+    assertEquals("colleague@exoplatform.com", saved.getPrimaryEmail());
+    assertEquals("Jane Colleague", saved.getDisplayName());
   }
 
   // ---------------------------------------------------------------- recipient suggestions

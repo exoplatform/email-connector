@@ -91,7 +91,10 @@ export default {
      * @returns {boolean} true when the edit icon shows
      */
     editable() {
-      return this.contact?.source === 'MANUAL' || this.contact?.source === 'COLLECTED';
+      // A directory contact is editable too, for what the profile does not own:
+      // their birthday, an address, a note about where you met. The form greys
+      // out the identity the profile resolves on every read.
+      return ['MANUAL', 'COLLECTED', 'DIRECTORY'].includes(this.contact?.source);
     },
     /**
      * The delete icon's honest tooltip. A manual or directory-linked contact deletes
