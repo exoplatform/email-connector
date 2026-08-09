@@ -431,28 +431,81 @@ export function composeTo(recipient) {
     'SHARED/eXoVueI18n',
     'PORTLET/email-connector/EmailConnectorUserSetting',
     'SHARED/emailConnectorQuickActionExtension',
-  ], exoi18n => bootstrapAndCompose(exoi18n, recipient));
+  ], exoi18n => bootstrapMailApp(exoi18n).then(() =>
+    document.dispatchEvent(new CustomEvent('open-email-composer', {
+      detail: {to: [recipient]},
+    }))));
 }
 
 /**
- * Mounts the mailbox app if this page never loaded it, then hands the
- * recipient over through the document-level composer event.
+ * Opens the email composer with the contact's own vCard already attached and
+ * nobody addressed — sharing a person is the user's act, and who receives them
+ * is the user's next decision, not this card's.
+ * <p>
+ * The card travels as a download URL, not as bytes: the composer already knows
+ * how to turn a URL into a commons upload id (the very path a file picked from
+ * Documents takes), so this rides the existing
+ * 'open-email-compose-with-attachment' door rather than opening a second one.
+ * photo=true asks the full card — an attachment has none of the QR's byte
+ * budget, and the server still keeps a colleague's platform avatar to itself.
+ *
+ * @param {object} contact - the contact to share, with its id and displayName
+ * @returns {void}
+ */
+export function sendByEmail(contact) {
+  window.require([
+    'SHARED/eXoVueI18n',
+    'PORTLET/email-connector/EmailConnectorUserSetting',
+    'SHARED/emailConnectorQuickActionExtension',
+  ], exoi18n => bootstrapMailApp(exoi18n).then(() =>
+    document.dispatchEvent(new CustomEvent('open-email-compose-with-attachment', {
+      detail: {attachment: toVCardAttachment(contact)},
+    }))));
+}
+
+/**
+ * The composer-shaped attachment descriptor of a contact's vCard. Named for a
+ * human — the person's name, .vcf — with only what no filesystem accepts
+ * stripped; the size stays 0 because the card is only fetched when the
+ * composer materialises the URL, and an unknown size simply shows no size.
+ *
+ * @param {object} contact - the contact to share
+ * @returns {object} the attachment descriptor the composer seeds itself with
+ */
+function toVCardAttachment(contact) {
+  const name = `${(contact.displayName || contact.primaryEmail || 'contact')
+    .replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim() || 'contact'}.vcf`;
+  return {
+    id: null,
+    name,
+    title: name,
+    mimeType: 'text/vcard',
+    mimetype: 'text/vcard',
+    size: 0,
+    downloadUrl: `/email-connector/rest/contacts/${contact.id}/vcard?photo=true`,
+  };
+}
+
+/**
+ * Mounts the mailbox app if this page never loaded it — the shared doorstep of
+ * every "open the composer from the contacts app" path.
  *
  * @param {object} exoi18n - the platform i18n loader
- * @param {object} recipient - {name, address}
- * @returns {Promise<void>} resolves once the event is dispatched
+ * @returns {Promise<void>} resolves once the mailbox app is on the page
  */
-async function bootstrapAndCompose(exoi18n, recipient) {
+async function bootstrapMailApp(exoi18n) {
   const appId = 'emailConnector-contacts-compose';
-  if (!document.querySelector('#emailConenctor-mailBox-quick-actions') && !document.querySelector(`#${appId}`)) {
+  // Every way the mail app can already be on this page, including the mail page
+  // itself, where it is mounted as a portlet under its own root id. Missing that
+  // one mounted a SECOND app: both instances listened for the compose event and
+  // both handed the composer the attachment, so a shared contact arrived twice.
+  const mounted = document.querySelector(`#emailConnectorMailBox, #emailConenctor-mailBox-quick-actions, #${appId}`);
+  if (!mounted) {
     const parent = document.createElement('div');
     parent.id = appId;
     document.querySelector('#vuetify-apps').appendChild(parent);
     await initEmailApp(appId, exoi18n);
   }
-  document.dispatchEvent(new CustomEvent('open-email-composer', {
-    detail: {to: [recipient]},
-  }));
 }
 
 /**

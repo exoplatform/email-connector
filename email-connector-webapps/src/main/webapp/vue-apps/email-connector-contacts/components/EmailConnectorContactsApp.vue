@@ -79,6 +79,12 @@ export default {
         this.$root.$emit('open-email-contact-detail', {id: opening.contactId});
       } else if (opening.address) {
         this.openOnAddress(opening.address, opening.name);
+      } else if (opening.prefill) {
+        // A whole prefill, not just an address: the mailbox's "add to contacts"
+        // on a received vCard sends the server-parsed card this way, and it
+        // opens straight onto the create form — the confirmation step — with
+        // everything the card said already typed in.
+        this.$root.$emit('open-email-contact-form', opening.prefill);
       } else {
         this.$root.$emit('open-email-contacts-drawer', opening);
       }
