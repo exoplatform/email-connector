@@ -399,6 +399,24 @@ public class EmailContactRest {
     return emailContactVCardService.getImportState(request.getRemoteUser());
   }
 
+  @PostMapping("/parse")
+  @Secured("users")
+  @Operation(summary = "Reads the first card of an uploaded .vcf as a would-be contact, storing nothing", method = "POST",
+             description = "Parses a vCard file previously pushed to the upload service and answers the contact its FIRST readable card would become - fields only, nothing persisted, no photo. This is the prefill of the add-contact form: the caller shows the fields, the user confirms, and only the confirming save creates anything. The upload is consumed either way.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Missing upload, a file over the size cap, or no readable card in it"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public EmailContact parseFirstCard(HttpServletRequest request,
+                                     @Parameter(description = "The upload id the file was pushed under", required = true)
+                                     @RequestParam("uploadId")
+                                     String uploadId) {
+    try {
+      return emailContactVCardService.parseFirstCard(request.getRemoteUser(), uploadId);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
   @GetMapping(value = "/{id}/vcard", produces = "text/vcard")
   @Secured("users")
   @Operation(summary = "One contact as vCard text", method = "GET",
