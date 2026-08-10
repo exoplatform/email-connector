@@ -218,19 +218,6 @@ public class EmailContactStorage {
   }
 
   /**
-   * Writes the addresses a contact can be reached at, replacing whatever was
-   * stored.
-   * <p>
-   * Called on every save so the lookup table cannot drift from the contact. The
-   * set may be empty: a contact with a phone number and no mail address is
-   * ordinary in an address book, and is exactly what the old model could not
-   * hold.
-   *
-   * @param contactId the contact
-   * @param userId the store owner
-   * @param addresses every address, already normalized, in preference order
-   */
-  /**
    * Every address a synced card can be reached at, preferred one first.
    *
    * @param data the card as the sync read it
@@ -247,6 +234,20 @@ public class EmailContactStorage {
     return addresses;
   }
 
+  /**
+   * Writes the addresses a contact can be reached at, replacing whatever was
+   * stored.
+   * <p>
+   * Called on every authored save so the lookup table cannot drift from the
+   * contact: an address the user removed from the form must stop resolving to
+   * them. The set may be empty — a contact with a phone number and no mail
+   * address is ordinary in an address book, and is exactly what the old model
+   * could not hold.
+   *
+   * @param contactId the contact
+   * @param userId the store owner
+   * @param addresses every address, already normalized, in preference order
+   */
   private void saveAddresses(Long contactId, String userId, List<String> addresses) {
     if (contactId == null) {
       return;
@@ -265,6 +266,50 @@ public class EmailContactStorage {
     for (String address : addresses) {
       String normalized = EmailContactUtils.normalizeAddress(address);
       if (normalized == null || !written.add(normalized)) {
+        continue;
+      }
+      EmailContactAddressEntity entity = new EmailContactAddressEntity();
+      entity.setContactId(contactId);
+      entity.setUserId(userId);
+      entity.setAddress(normalized);
+      emailContactAddressDAO.save(entity);
+    }
+  }
+
+  /**
+   * Adds addresses to a contact without removing any — the address book's path.
+   * <p>
+   * A union rather than a replacement because the vCard is not the only thing
+   * entitled to say how a person can be reached. A refresh that replaced the set
+   * would drop every address the card does not carry: today only the sync writes
+   * these rows so nothing is lost, but the moment anything else files one — mail
+   * collection against a synced contact, an import, a merge — a routine refresh
+   * would silently unfile it, and the person would stop resolving at an address
+   * they still use.
+   * <p>
+   * An address another contact already holds is left with them: the unique index
+   * is the authority on who owns an address, and a card is not grounds to take
+   * one off somebody else.
+   *
+   * @param contactId the contact
+   * @param userId the store owner
+   * @param addresses the addresses the card carries, already normalized
+   */
+  private void mergeAddresses(Long contactId, String userId, List<String> addresses) {
+    if (contactId == null || addresses == null || addresses.isEmpty()) {
+      return;
+    }
+    Set<String> filed = new LinkedHashSet<>();
+    emailContactAddressDAO.findByContactId(contactId).forEach(row -> filed.add(row.getAddress()));
+    for (String address : addresses) {
+      String normalized = EmailContactUtils.normalizeAddress(address);
+      if (normalized == null || !filed.add(normalized)) {
+        continue;
+      }
+      if (emailContactAddressDAO.findByUserIdAndAddress(userId, normalized).isPresent()) {
+        // Somebody else's, and the index would refuse it anyway -- refusing it here
+        // keeps one contested address from failing the whole run.
+        LOG.debug("Address {} is already filed under another contact of user {} and was left there", normalized, userId);
         continue;
       }
       EmailContactAddressEntity entity = new EmailContactAddressEntity();
@@ -358,12 +403,25 @@ public class EmailContactStorage {
   }
 
   /**
-   * Hard-deletes a row — the MANUAL delete path; collected rows go through the
-   * service's suppression instead.
+   * Hard-deletes a row and the addresses filed under it — the MANUAL delete
+   * path, and the sync's, since collected rows go through the service's
+   * suppression instead.
+   * <p>
+   * The addresses go here rather than through a cascading foreign key: this
+   * changelog carries exactly one FK in total, and an orphan-cleaning cascade
+   * added now would have to be written for four vendors and applied to stores
+   * that already hold orphans. Cleaning in the one method every delete call site
+   * funnels through covers the same ground without that.
+   * <p>
+   * Leaving them behind is not cosmetic. An orphan still holds {@code (USER_ID,
+   * ADDRESS)}, so the next contact reaching that address cannot be written at
+   * all, and the address book sync reports it as a failed run.
    *
    * @param id the contact id
    */
+  @Transactional
   public void deleteContact(long id) {
+    emailContactAddressDAO.deleteByContactId(id);
     emailContactDAO.deleteById(id);
   }
 
@@ -411,8 +469,27 @@ public class EmailContactStorage {
    * @param normalizedAddress the lower-cased address
    * @return the row, or null when the user has none at that address
    */
+  @Transactional
   public CardDavRow getCardDavRowByAddress(String userId, String normalizedAddress) {
-    return emailContactDAO.findByUserIdAndPrimaryEmail(userId, normalizedAddress).map(this::toCardDavRow).orElse(null);
+    // Through the address table, like every other lookup by address. Asking
+    // EMAIL_CONTACT.PRIMARY_EMAIL instead only ever found a person filed under
+    // their preferred address, so a card carrying somebody's secondary one looked
+    // like a stranger: the sync created a second row, the unique index refused it,
+    // and three such runs left the whole address book BLOCKED with nothing on
+    // screen to say why.
+    EmailContactAddressEntity row = emailContactAddressDAO.findByUserIdAndAddress(userId, normalizedAddress).orElse(null);
+    if (row == null) {
+      return null;
+    }
+    EmailContactEntity contact = emailContactDAO.findById(row.getContactId()).orElse(null);
+    if (contact == null) {
+      // Same self-heal as the collection path: an address pointing at a contact
+      // that is gone holds the unique key hostage, so nothing can be found there
+      // and nothing can be written there either.
+      emailContactAddressDAO.delete(row);
+      return null;
+    }
+    return toCardDavRow(contact);
   }
 
   /**
@@ -494,7 +571,9 @@ public class EmailContactStorage {
     // synced contact could not be found by their own address: mail from them
     // was collected as somebody new, clicking their name in a header offered to
     // create them, and an import of the same address book duplicated the lot.
-    saveAddresses(saved.getId(), saved.getUserId(), addressesOfCardDav(data));
+    // Merged, not replaced -- see mergeAddresses for why the card does not get
+    // to be the only voice on how a person is reached.
+    mergeAddresses(saved.getId(), saved.getUserId(), addressesOfCardDav(data));
     return saved.getId();
   }
 
