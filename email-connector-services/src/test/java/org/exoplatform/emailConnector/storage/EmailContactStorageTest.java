@@ -329,6 +329,39 @@ public class EmailContactStorageTest {
    * @param sortBucket the stored bucket
    * @return the entity
    */
+  @Test
+  void aReboundMailboxHandsItsCollectedContactsToTheUser() {
+    // The mailbox they were derived from is gone: they stay, as the user's own,
+    // and stop ranking on correspondence that no longer exists here.
+    EmailContactEntity collected = entity(1L, "jane@example.com", "Jane Doe", 10);
+    collected.setSeenCount(42);
+    collected.setLastSeenDate(new Date());
+    when(emailContactDAO.findByUserIdAndSource(USERNAME, EmailContactSource.COLLECTED)).thenReturn(List.of(collected));
+
+    int released = emailContactStorage.releaseCollectedContacts(USERNAME);
+
+    assertEquals(1, released);
+    ArgumentCaptor<EmailContactEntity> saved = ArgumentCaptor.forClass(EmailContactEntity.class);
+    verify(emailContactDAO).save(saved.capture());
+    assertEquals(EmailContactSource.MANUAL, saved.getValue().getSource());
+    assertEquals(0, saved.getValue().getSeenCount());
+    assertNull(saved.getValue().getLastSeenDate());
+  }
+
+  @Test
+  void aSuppressedContactIsNotRevivedByTheHandover() {
+    // A tombstone is a decision to not see somebody. Handing it over would put
+    // them back in the list on the very screen where the account changed.
+    EmailContactEntity tombstone = entity(2L, "removed@example.com", "Removed Person", 18);
+    tombstone.setSuppressed(true);
+    when(emailContactDAO.findByUserIdAndSource(USERNAME, EmailContactSource.COLLECTED)).thenReturn(List.of(tombstone));
+
+    int released = emailContactStorage.releaseCollectedContacts(USERNAME);
+
+    assertEquals(0, released);
+    verify(emailContactDAO, never()).save(any());
+  }
+
   private EmailContactEntity entity(Long id, String primaryEmail, String displayName, int sortBucket) {
     EmailContactEntity entity = new EmailContactEntity();
     entity.setId(id);
