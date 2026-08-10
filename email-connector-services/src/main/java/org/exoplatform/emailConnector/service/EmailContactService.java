@@ -1554,6 +1554,35 @@ public class EmailContactService {
    *
    * @param username the mailbox owner
    */
+  /**
+   * Hands the contacts collected from a mailbox over to the user, when that
+   * mailbox is rebound or disconnected.
+   * <p>
+   * "Collected" says a contact was derived from mail in this mailbox. Once the
+   * mailbox is gone that is no longer true of them, and leaving the label on
+   * means the list keeps claiming a provenance that does not exist and a
+   * correspondence history the app can no longer show. They become MANUAL rows —
+   * the one thing still true is that the user has these people — which is the
+   * rule the address-book release already follows: when a source disappears,
+   * downgrade provenance rather than delete what somebody may still want.
+   * <p>
+   * Done without asking. Nothing is lost, only relabelled, so there is no outcome
+   * worth interrupting somebody in the middle of connecting an account. The catch
+   * is on the other side: a MANUAL row deletes for real and never returns on its
+   * own, so an inherited set has to be cleared deliberately.
+   *
+   * @param username the mailbox owner
+   */
+  public void releaseCollectedContacts(String username) {
+    if (StringUtils.isBlank(username)) {
+      return;
+    }
+    int released = emailContactStorage.releaseCollectedContacts(username);
+    if (released > 0) {
+      LOG.info("Collected contacts of user {} handed over as added: {} contact(s)", username, released);
+    }
+  }
+
   public void resetCollectionBackfill(String username) {
     if (StringUtils.isBlank(username)) {
       return;
