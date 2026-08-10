@@ -257,7 +257,7 @@ public class EmailContactRest {
   @PostMapping
   @Secured("users")
   @Operation(summary = "Creates a manual contact", method = "POST",
-             description = "Adds a contact by hand. If the address belongs to a previously removed (suppressed) collected contact, that row is revived and updated from this body - the caller sees a normal create, never a conflict about a row it cannot see. A visible row with the same address answers 409. A 'photoUploadId' on the body gives the new contact its picture in the same round-trip.")
+             description = "Adds a contact by hand. If the address belongs to a previously removed (suppressed) collected contact, that row is revived and updated from this body - the caller sees a normal create, never a conflict about a row it cannot see. A visible row with the same address answers 409, and so does one holding any of the body's secondaryEmails - the contact is filed under every address the body lists. A 'photoUploadId' on the body gives the new contact its picture in the same round-trip.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Unusable email address"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
@@ -278,7 +278,7 @@ public class EmailContactRest {
   @PutMapping("/{id}")
   @Secured("users")
   @Operation(summary = "Updates a contact", method = "PUT",
-             description = "Edits a manual or collected contact (a collected one keeps its source; collection never overwrites a name a user set). CardDAV rows are read-only in this version, and directory-linked ones always are. Changing the address re-checks uniqueness. The photo travels in the same body as 'photoUploadId': absent leaves the stored photo alone, an empty string removes it, an upload id sets or replaces it.")
+             description = "Edits a manual or collected contact (a collected one keeps its source; collection never overwrites a name a user set). CardDAV rows are read-only in this version, and directory-linked ones always are. Changing any address re-checks uniqueness. 'secondaryEmails' is three-state like the photo: absent keeps the stored other addresses (a changed primary is then demoted into them, not dropped), a present list is the authoritative set. The photo travels in the same body as 'photoUploadId': absent leaves the stored photo alone, an empty string removes it, an upload id sets or replaces it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Unusable email address, a read-only CardDAV or directory row, or a photo on a row whose picture is not editable"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
