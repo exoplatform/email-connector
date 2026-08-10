@@ -18,6 +18,8 @@
  */
 package org.exoplatform.emailConnector.plugin;
 
+import java.util.List;
+
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,6 +32,9 @@ import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
 import io.meeds.appcenter.plugin.ApplicationBadgePlugin;
+import io.meeds.appcenter.service.ApplicationBadgePluginRegistry;
+
+import jakarta.annotation.PostConstruct;
 
 /**
  * Reports the user's unread emails on the E-mail application tile.
@@ -42,23 +47,32 @@ import io.meeds.appcenter.plugin.ApplicationBadgePlugin;
 @Component
 public class EmailApplicationBadgePlugin implements ApplicationBadgePlugin {
 
-  private static final Log        LOG        = ExoLogger.getLogger(EmailApplicationBadgePlugin.class);
+  private static final Log               LOG        = ExoLogger.getLogger(EmailApplicationBadgePlugin.class);
 
-  public static final String      BADGE_NAME = "emailUnread";
-
-  @Autowired
-  private EmailBoxService         emailBoxService;
+  public static final String             BADGE_NAME = "emailUnread";
 
   @Autowired
-  private UserEmailSettingService userEmailSettingService;
+  private ApplicationBadgePluginRegistry applicationBadgePluginRegistry;
+
+  @Autowired
+  private EmailBoxService                emailBoxService;
+
+  @Autowired
+  private UserEmailSettingService        userEmailSettingService;
 
   /**
-   * The url of the Application Center catalog entry shipped in this addon's
-   * {@code applications.json}, so that the binding resolves with no
-   * administrator action.
+   * The urls of the Application Center catalog entries this badge belongs to.
+   * Only the entry shipped in this addon's {@code applications.json} today, but
+   * comma-separated and configurable so a deployment can add or rename one
+   * without an administrator having to set the binding by hand.
    */
-  @Value("${email.badge.drawerName:email}")
-  private String                  drawerName;
+  @Value("${email.badge.drawerNames:email}")
+  private List<String>                   drawerNames;
+
+  @PostConstruct
+  public void init() {
+    applicationBadgePluginRegistry.addPlugin(this);
+  }
 
   @Override
   public String getName() {
@@ -66,8 +80,8 @@ public class EmailApplicationBadgePlugin implements ApplicationBadgePlugin {
   }
 
   @Override
-  public String getDrawerName() {
-    return drawerName;
+  public List<String> getDrawerNames() {
+    return drawerNames;
   }
 
   @Override
