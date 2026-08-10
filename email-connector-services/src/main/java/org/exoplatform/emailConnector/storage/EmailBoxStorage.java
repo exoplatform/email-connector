@@ -321,6 +321,10 @@ public class EmailBoxStorage {
                            .toList();
   }
 
+  public long countUnreadEmails(String userId) {
+    return emailBoxDao.countUnreadByUserId(userId);
+  }
+
   public void deleteEmailsByIds(List<Long> emailsIds) {
     emailBoxDao.deleteEmailsByIds(emailsIds);
   }
