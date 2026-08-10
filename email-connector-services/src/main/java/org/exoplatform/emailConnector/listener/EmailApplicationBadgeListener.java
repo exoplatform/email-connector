@@ -20,7 +20,6 @@ package org.exoplatform.emailConnector.listener;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.plugin.EmailApplicationBadgePlugin;
@@ -29,10 +28,7 @@ import org.exoplatform.services.listener.Asynchronous;
 import org.exoplatform.services.listener.Event;
 import org.exoplatform.services.listener.Listener;
 import org.exoplatform.services.listener.ListenerService;
-import org.exoplatform.services.log.ExoLogger;
-import org.exoplatform.services.log.Log;
 
-import io.meeds.appcenter.plugin.ApplicationBadgePlugin;
 import io.meeds.appcenter.service.ApplicationBadgeService;
 
 import jakarta.annotation.PostConstruct;
@@ -45,17 +41,9 @@ import jakarta.annotation.PostConstruct;
  */
 @Component
 @Asynchronous
-@ConditionalOnClass(ApplicationBadgePlugin.class)
 public class EmailApplicationBadgeListener extends Listener<String, Object> {
 
-  private static final Log        LOG = ExoLogger.getLogger(EmailApplicationBadgeListener.class);
-
-  /**
-   * Optional for the same reason as the plugin it feeds: without the
-   * Application Center there is no badge to refresh, and the mailbox must still
-   * start.
-   */
-  @Autowired(required = false)
+  @Autowired
   private ApplicationBadgeService applicationBadgeService;
 
   @Autowired
@@ -63,10 +51,6 @@ public class EmailApplicationBadgeListener extends Listener<String, Object> {
 
   @PostConstruct
   public void init() {
-    if (applicationBadgeService == null) {
-      LOG.debug("Application Center badge service not available, Mail badge listener not registered");
-      return;
-    }
     listenerService.addListener(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, this);
   }
 
