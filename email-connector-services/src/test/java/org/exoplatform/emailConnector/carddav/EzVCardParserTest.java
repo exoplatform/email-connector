@@ -59,9 +59,49 @@ public class EzVCardParserTest {
     assertEquals("Jane", parsed.givenName());
     assertEquals("Doe", parsed.familyName());
     assertEquals("jane@example.com", parsed.emails().get(0));
-    assertEquals("+33 6 12 34 56 78", parsed.phones().get(0));
+    // The CELL type survives the read as the store's type,value entry -- it
+    // used to be dropped here, which is what flattened every imported number.
+    assertEquals("cell,+33 6 12 34 56 78", parsed.phones().get(0));
     assertEquals("Acme", parsed.organization());
     assertEquals("Head of Everything", parsed.title());
+  }
+
+  @Test
+  void phoneTypesReadAsTheStoreVocabularyAndOnlyIt() {
+    // Four TELs, four cases: a multi-typed line resolves to the best-known
+    // type (CELL wins over VOICE), a WORK line keeps work, a line typed only
+    // in words the store does not name stays a bare number, and an untyped
+    // line stays bare too -- no invented vocabulary either way.
+    ParsedVCard parsed = parser.parse("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        TEL;TYPE=CELL,VOICE:+33 6 12 34 56 78
+        TEL;TYPE=WORK:+33 1 23 45 67 89
+        TEL;TYPE=VOICE:+33 2 11 22 33 44
+        TEL:+33 3 55 66 77 88
+        END:VCARD""");
+
+    assertEquals(List.of("cell,+33 6 12 34 56 78",
+                         "work,+33 1 23 45 67 89",
+                         "+33 2 11 22 33 44",
+                         "+33 3 55 66 77 88"),
+                 parsed.phones());
+  }
+
+  @Test
+  void aTypedPhoneEntryExportsItsTypeParameter() {
+    // The write side of the same promise: a work,value entry leaves as
+    // TEL;TYPE=WORK -- the vocabulary another address book actually reads.
+    ParsedVCard card = new ParsedVCard(null, "Jane Doe", "Jane", "Doe",
+                                       List.of("jane@example.com"),
+                                       List.of("work,+33 1 23 45 67 89", "+33 6 12 34 56 78"),
+                                       null, null, null, null, null, null, null, null);
+
+    String vcf = parser.format(card);
+
+    assertTrue(vcf.contains("TEL;TYPE=WORK:+33 1 23 45 67 89") || vcf.contains("TEL;TYPE=work:+33 1 23 45 67 89"));
+    assertTrue(vcf.contains("TEL:+33 6 12 34 56 78"));
   }
 
   @Test
@@ -386,7 +426,9 @@ public class EzVCardParserTest {
                                            "Jane",
                                            "Doe",
                                            List.of("jane@personal.example", "jane.work@example.com"),
-                                           List.of("+33 6 12 34 56 78", "+33 1 23 45 67 89"),
+                                           // One typed entry and one bare number: the trip must keep the
+                                           // work type AND must not invent one for the untyped line.
+                                           List.of("work,+33 6 12 34 56 78", "+33 1 23 45 67 89"),
                                            "Acme",
                                            "Head of Everything",
                                            "1985-04-12",
