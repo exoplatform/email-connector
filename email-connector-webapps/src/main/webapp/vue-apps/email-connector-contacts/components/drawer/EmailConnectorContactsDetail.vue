@@ -79,7 +79,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-icon>
         </v-list-item-icon>
         <v-list-item-content>
-          <v-list-item-title>{{ address }}</v-list-item-title>
+          <!-- The main address wears a quiet caption rather than a section of
+               its own: it is what the list, the search and the compose
+               autocomplete file this person under, and only worth saying when
+               there are several addresses to tell apart. -->
+          <v-list-item-title>
+            {{ address }}
+            <span
+              v-if="isPrimaryAddress(address)"
+              class="text-caption text-sub-title">
+              · {{ $t('emailConnector.contacts.detail.primary') }}
+            </span>
+          </v-list-item-title>
           <v-list-item-subtitle class="text-sub-title">
             {{ $t('emailConnector.contacts.detail.composeTo') }}
           </v-list-item-subtitle>
@@ -318,6 +329,17 @@ export default {
     },
   },
   methods: {
+    /**
+     * Whether an address row deserves the main-address caption: it is the
+     * primary AND the contact has other addresses to tell it apart from — on a
+     * one-address card the caption would only be noise.
+     *
+     * @param {string} address - the row's address
+     * @returns {boolean} true when the caption shows
+     */
+    isPrimaryAddress(address) {
+      return this.addresses.length > 1 && address === this.contact.primaryEmail;
+    },
     /**
      * The number as a phone can dial it: everything a tel: URI has no use for is
      * dropped, digits and the few meaningful symbols kept.

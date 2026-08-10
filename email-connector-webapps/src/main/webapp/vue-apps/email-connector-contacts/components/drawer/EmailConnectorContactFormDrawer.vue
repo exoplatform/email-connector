@@ -89,18 +89,69 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <div class="text-sub-title mb-1">
             {{ $t('emailConnector.contacts.form.email') }} *
           </div>
-          <v-text-field
-            v-model="form.primaryEmail"
-            type="email"
-            class="pt-0"
-            :disabled="identityFromProfile"
-            outlined
-            dense
-            required />
+          <!-- One row per address the person can be reached at. The star names
+               the MAIN address, the one the list, the search and the compose
+               autocomplete show; making another row the main one is just
+               starring it -- a row only ever disappears by its own remove
+               button, so changing the main address can never lose the old one.
+               The star and the remove button only appear once there are several
+               rows: on a single-address contact they would be noise. -->
+          <div
+            v-for="(email, index) in form.emails"
+            :key="index"
+            class="d-flex align-start">
+            <v-text-field
+              v-model="email.value"
+              type="email"
+              class="pt-0"
+              :disabled="identityFromProfile"
+              outlined
+              dense
+              :required="index === form.primaryIndex" />
+            <v-btn
+              v-if="form.emails.length > 1"
+              :title="index === form.primaryIndex
+                ? $t('emailConnector.contacts.form.primaryEmail')
+                : $t('emailConnector.contacts.form.setPrimary')"
+              :disabled="identityFromProfile"
+              icon
+              small
+              class="mt-1 ms-1"
+              @click="setPrimary(index)">
+              <v-icon
+                size="16"
+                :class="index === form.primaryIndex ? 'primary--text' : ''">
+                {{ index === form.primaryIndex ? 'fas fa-star' : 'far fa-star' }}
+              </v-icon>
+            </v-btn>
+            <v-btn
+              v-if="form.emails.length > 1 && !identityFromProfile"
+              :title="$t('emailConnector.contacts.form.removeEmail')"
+              icon
+              small
+              class="mt-1"
+              @click="removeEmail(index)">
+              <v-icon size="14">
+                fas fa-times
+              </v-icon>
+            </v-btn>
+          </div>
+          <v-btn
+            v-if="!identityFromProfile"
+            class="mb-2 px-0"
+            color="primary"
+            text
+            small
+            @click="addEmail">
+            <v-icon size="12" class="me-1">
+              fas fa-plus
+            </v-icon>
+            {{ $t('emailConnector.contacts.form.addEmail') }}
+          </v-btn>
           <!-- Said once, under the fields it explains, rather than a tooltip on
                each: a colleague's name and address are resolved from their
                profile on every read, so editing them here would be undone by the
-               next one. -->
+               next one -- which is exactly what the line tells the reader. -->
           <div
             v-if="identityFromProfile"
             class="text-caption text-sub-title mb-2">
@@ -242,7 +293,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             {{ $t('emailConnector.contacts.form.cancel') }}
           </v-btn>
           <v-btn
-            :disabled="!form.primaryEmail"
+            :disabled="!primaryEmail"
             :loading="saving"
             class="btn btn-primary"
             @click="save">
@@ -317,6 +368,16 @@ export default {
       return this.editedSource === 'DIRECTORY';
     },
     /**
+     * The address the contact will be filed under: the starred row, trimmed.
+     * Empty while the user has not typed one, which is what keeps Save
+     * disabled.
+     *
+     * @returns {string} the main address as typed
+     */
+    primaryEmail() {
+      return (this.form.emails[this.form.primaryIndex]?.value || '').trim();
+    },
+    /**
      * The initials standing in for a contact with no picture, read from the form as
      * it is being typed rather than from the stored contact — so the placeholder
      * follows the name the user is entering.
@@ -329,7 +390,7 @@ export default {
         .filter(word => word)
         .map(word => word.charAt(0).toUpperCase())
         .slice(0, 2)
-        .join('') || (this.form.primaryEmail || '?').charAt(0).toUpperCase();
+        .join('') || (this.primaryEmail || '?').charAt(0).toUpperCase();
     },
     /**
      * The drawer's title: adding, or editing.
@@ -355,7 +416,10 @@ export default {
      */
     emptyForm() {
       return {
-        primaryEmail: '',
+        // Rows are objects, not bare strings: v-model on an array INDEX writes
+        // past Vue 2's reactivity, while a row object's property is watched.
+        emails: [{value: ''}],
+        primaryIndex: 0,
         givenName: '',
         familyName: '',
         phone: '',
@@ -382,7 +446,11 @@ export default {
       this.editedSource = contact?.source || 'MANUAL';
       this.resetPhoto(contact);
       this.form = contact ? {
-        primaryEmail: contact.primaryEmail || '',
+        // Every address the contact holds becomes a row -- a vCard prefill's
+        // secondaries included, so nothing a card carried is lost at the
+        // confirm step. The stored primary is always the first row.
+        emails: [contact.primaryEmail || '', ...(contact.secondaryEmails || [])].map(value => ({value})),
+        primaryIndex: 0,
         givenName: contact.givenName || '',
         familyName: contact.familyName || '',
         phone: contact.phones?.[0] || '',
@@ -398,6 +466,40 @@ export default {
       } : this.emptyForm();
       this.formDrawer = true;
       this.$refs.emailContactFormDrawer.open();
+    },
+    /**
+     * Adds an empty address row for the user to fill.
+     *
+     * @returns {void}
+     */
+    addEmail() {
+      this.form.emails.push({value: ''});
+    },
+    /**
+     * Removes one address row. When the removed row carried the star, the first
+     * remaining row inherits it — the form must always name a main address —
+     * and a star sitting below the removed row slides up with its owner.
+     *
+     * @param {number} index - the row to remove
+     * @returns {void}
+     */
+    removeEmail(index) {
+      this.form.emails.splice(index, 1);
+      if (this.form.primaryIndex === index) {
+        this.form.primaryIndex = 0;
+      } else if (this.form.primaryIndex > index) {
+        this.form.primaryIndex--;
+      }
+    },
+    /**
+     * Stars a row as the main address. The previous main row simply keeps its
+     * place as a secondary — demoting is never removing.
+     *
+     * @param {number} index - the row to star
+     * @returns {void}
+     */
+    setPrimary(index) {
+      this.form.primaryIndex = index;
     },
     /**
      * Puts the photo state back to "this is what is stored, and I am not touching
@@ -466,7 +568,15 @@ export default {
         || this.form.postalCode || this.form.country;
       const contact = {
         id: this.editedId,
-        primaryEmail: this.form.primaryEmail,
+        primaryEmail: this.primaryEmail,
+        // Always sent, empty included: a present list is the authoritative set
+        // server-side (a removed row is a removal), while ABSENT means "keep
+        // what is stored" — a contract for clients that cannot show the rows,
+        // which this form is not.
+        secondaryEmails: this.form.emails
+          .filter((email, index) => index !== this.form.primaryIndex)
+          .map(email => (email.value || '').trim())
+          .filter(value => value),
         givenName: this.form.givenName,
         familyName: this.form.familyName,
         phones: this.form.phone ? [this.form.phone] : null,
