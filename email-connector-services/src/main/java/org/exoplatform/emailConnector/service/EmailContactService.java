@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.service;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -539,14 +540,19 @@ public class EmailContactService {
    *
    * A {@code photoUploadId} on the body sets the new contact's picture in the
    * same round-trip, per the three-state contract documented on the field.
+   * {@code secondaryEmails} on the body files the contact under every address
+   * it lists — see {@link #resolveSecondaryEmails(EmailContact, EmailContact,
+   * String)} for the null-means-keep contract, and
+   * {@link #claimAddress(String, Long, String)} for what happens when one of
+   * them already belongs to somebody.
    *
-   * @param contact what the user typed (names, address, phone, organization)
+   * @param contact what the user typed (names, addresses, phone, organization)
    * @param username the store owner
    * @return the created (or revived) contact
    * @throws IllegalArgumentException with {@link #CONTACT_INVALID_EMAIL} for an
-   *           unusable address
+   *           unusable address, primary or secondary
    * @throws IllegalStateException with {@link #CONTACT_ALREADY_EXISTS} when a
-   *           visible row already carries the address
+   *           visible row already carries any of the addresses
    */
   public EmailContact createContact(EmailContact contact, String username) {
     String address = EmailContactUtils.normalizeAddress(contact == null ? null : contact.getPrimaryEmail());
@@ -558,8 +564,15 @@ public class EmailContactService {
       throw new IllegalStateException(CONTACT_ALREADY_EXISTS);
     }
     if (existing != null) {
-      // The tombstone comes back to life as what the user just authored.
+      // The tombstone comes back to life as what the user just authored --
+      // typed primary included: the lookup above matches ANY of the tombstone's
+      // addresses, so without adopting the authored primary a row found by a
+      // secondary would revive filed under an address the user did not type.
+      List<String> secondaryEmails = resolveSecondaryEmails(existing, contact, address);
+      claimAddresses(secondaryEmails, existing.getId(), username);
       applyAuthoredFields(existing, contact);
+      existing.setPrimaryEmail(address);
+      existing.setSecondaryEmails(secondaryEmails);
       existing.setSource(EmailContactSource.MANUAL);
       existing.setSuppressed(false);
       applyPhoto(existing, contact.getPhotoUploadId());
@@ -569,7 +582,10 @@ public class EmailContactService {
     created.setUserId(username);
     created.setSource(EmailContactSource.MANUAL);
     created.setPrimaryEmail(address);
+    List<String> secondaryEmails = resolveSecondaryEmails(null, contact, address);
+    claimAddresses(secondaryEmails, null, username);
     applyAuthoredFields(created, contact);
+    created.setSecondaryEmails(secondaryEmails);
     created.setSeenCount(0);
     applyPhoto(created, contact.getPhotoUploadId());
     return answer(emailContactStorage.createContact(created));
@@ -584,9 +600,14 @@ public class EmailContactService {
    * the stored fallback would change nothing the user sees. Changing the
    * address re-checks uniqueness; when the new address belongs to a suppressed
    * tombstone, the tombstone is absorbed rather than reported as a conflict the
-   * user cannot see. A {@code photoUploadId} on the body sets, replaces or
-   * clears the picture, per the three-state contract documented on the field —
-   * so one save carries every edit the form made.
+   * user cannot see. The secondary addresses follow the same null-means-keep
+   * contract as the photo ({@link #resolveSecondaryEmails(EmailContact,
+   * EmailContact, String)}): a body that says nothing about them keeps them,
+   * and a primary change then demotes the old primary into them instead of
+   * orphaning an address the mailbox may still know this person by. A
+   * {@code photoUploadId} on the body sets, replaces or clears the picture, per
+   * the three-state contract documented on the field — so one save carries
+   * every edit the form made.
    *
    * @param id the contact id
    * @param contact the fields to apply
@@ -620,22 +641,118 @@ public class EmailContactService {
     if (address == null) {
       throw new IllegalArgumentException(CONTACT_INVALID_EMAIL);
     }
+    // Resolved BEFORE the primary moves: the demote-on-silence rule needs to see
+    // which address the row was filed under until now.
+    List<String> secondaryEmails = resolveSecondaryEmails(existing, contact, address);
     if (!address.equals(existing.getPrimaryEmail())) {
-      EmailContact other = emailContactStorage.getContactByAddress(username, address);
-      if (other != null && !other.getId().equals(existing.getId())) {
-        if (!other.isSuppressed()) {
-          throw new IllegalStateException(CONTACT_ALREADY_EXISTS);
-        }
-        deleteContactRow(other);
-        // The tombstone's favorite was already dropped at suppression; this only
-        // covers a row suppressed before favorites existed.
-        dropFavorite(other.getId(), username);
-      }
+      claimAddress(address, existing.getId(), username);
       existing.setPrimaryEmail(address);
     }
+    claimAddresses(secondaryEmails, existing.getId(), username);
+    existing.setSecondaryEmails(secondaryEmails);
     applyAuthoredFields(existing, contact);
     applyPhoto(existing, contact.getPhotoUploadId());
     return answer(emailContactStorage.updateContact(existing));
+  }
+
+  /**
+   * The secondary addresses a save leaves on the row, resolved from what the
+   * request said — or did not say. Like the photo, the field is deliberately
+   * three-state, because the clients differ in what they know:
+   * <ul>
+   * <li>a present list is the authoritative set — the form sends every address
+   * row it shows, so an address missing from the list was removed on
+   * purpose;</li>
+   * <li>an absent (null) list says nothing about the other addresses: the
+   * stored ones are kept, and when the primary is moving, the old primary is
+   * DEMOTED into them rather than dropped — the mailbox may still know this
+   * person by that address, and a caller that never heard of secondary
+   * addresses must not be able to orphan it.</li>
+   * </ul>
+   * The answered list is normalized, de-duplicated, and never contains the
+   * primary; an entry that is not usable as an address is refused the same way
+   * a broken primary is.
+   *
+   * @param stored the row as it is stored, or null on a fresh create
+   * @param authored what the caller sent, may be null
+   * @param primary the normalized address the row is about to be filed under
+   * @return the resolved secondary addresses, or null when there are none
+   * @throws IllegalArgumentException with {@link #CONTACT_INVALID_EMAIL} for an
+   *           entry that is not usable as an address
+   */
+  private List<String> resolveSecondaryEmails(EmailContact stored, EmailContact authored, String primary) {
+    List<String> requested = new ArrayList<>();
+    if (authored != null && authored.getSecondaryEmails() != null) {
+      requested.addAll(authored.getSecondaryEmails());
+    } else {
+      if (stored != null && stored.getSecondaryEmails() != null) {
+        requested.addAll(stored.getSecondaryEmails());
+      }
+      if (stored != null && stored.getPrimaryEmail() != null && !stored.getPrimaryEmail().equals(primary)) {
+        requested.add(stored.getPrimaryEmail());
+      }
+    }
+    Set<String> resolved = new LinkedHashSet<>();
+    for (String address : requested) {
+      if (StringUtils.isBlank(address)) {
+        // A blank entry expresses nothing — an emptied form row, not an address.
+        continue;
+      }
+      String normalized = EmailContactUtils.normalizeAddress(address);
+      if (normalized == null) {
+        throw new IllegalArgumentException(CONTACT_INVALID_EMAIL);
+      }
+      if (!normalized.equals(primary)) {
+        resolved.add(normalized);
+      }
+    }
+    return resolved.isEmpty() ? null : new ArrayList<>(resolved);
+  }
+
+  /**
+   * Claims one address for a row about to be saved: a VISIBLE row of another
+   * contact holding it is a real conflict, a suppressed tombstone holding it is
+   * absorbed — hard-deleted, so the unique index frees the address — exactly as
+   * the primary-change path has always done. Absorption, never revival: the
+   * user removed that person, and a save of somebody else is not the place to
+   * bring them back.
+   *
+   * @param normalizedAddress the address being claimed
+   * @param selfId the row being saved, whose own addresses are no conflict;
+   *          null on a fresh create
+   * @param username the store owner
+   * @throws IllegalStateException with {@link #CONTACT_ALREADY_EXISTS} when a
+   *           visible row of another contact holds the address
+   */
+  private void claimAddress(String normalizedAddress, Long selfId, String username) {
+    EmailContact other = emailContactStorage.getContactByAddress(username, normalizedAddress);
+    if (other == null || other.getId().equals(selfId)) {
+      return;
+    }
+    if (!other.isSuppressed()) {
+      throw new IllegalStateException(CONTACT_ALREADY_EXISTS);
+    }
+    deleteContactRow(other);
+    // The tombstone's favorite was already dropped at suppression; this only
+    // covers a row suppressed before favorites existed.
+    dropFavorite(other.getId(), username);
+  }
+
+  /**
+   * Claims every address of a resolved secondary list — see
+   * {@link #claimAddress(String, Long, String)} for what claiming means.
+   *
+   * @param addresses the resolved secondary addresses, may be null
+   * @param selfId the row being saved, null on a fresh create
+   * @param username the store owner
+   */
+  private void claimAddresses(List<String> addresses, Long selfId, String username) {
+    if (addresses == null) {
+      return;
+    }
+    for (String address : addresses) {
+      claimAddress(address, selfId, username);
+    }
   }
 
   /**
@@ -1238,8 +1355,9 @@ public class EmailContactService {
     if (contact.getPhotoUploadId() != null) {
       throw new IllegalArgumentException(CONTACT_DIRECTORY_READ_ONLY);
     }
-    contact.setPrimaryEmail(existing.getPrimaryEmail());
-    contact.setSecondaryEmails(existing.getSecondaryEmails());
+    // The addresses need no such pinning: applyAuthoredFields never touches
+    // them (their conflict rules live with the create/update paths), so a
+    // directory row's stored addresses survive whatever the payload carries.
     contact.setDisplayName(existing.getDisplayName());
     contact.setGivenName(existing.getGivenName());
     contact.setFamilyName(existing.getFamilyName());
@@ -1252,7 +1370,9 @@ public class EmailContactService {
   /**
    * Copies the user-authored fields of a request body onto a stored contact —
    * and only those: sources, counters and suppression are this service's to
-   * manage, never the caller's.
+   * manage, never the caller's. The addresses (primary and secondary) are
+   * deliberately absent too: they carry uniqueness rules a dumb copier cannot
+   * honour, so the create/update paths resolve and set them themselves.
    *
    * @param target the stored contact being written
    * @param authored what the user typed, may be null
