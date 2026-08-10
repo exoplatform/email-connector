@@ -238,6 +238,7 @@ public class EmailBoxService {
         LOG.warn("Could not sync the Archive folder for user {}", username, e);
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
+      broadcastUnreadCountChanged(username);
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
@@ -643,7 +644,35 @@ public class EmailBoxService {
         }
       }
     }
+    // Read/unread transitions are what the App Center badge reflects; without
+    // this broadcast the counter would only refresh at the next sync
+    broadcastUnreadCountChanged(username);
     return failedEmailUpdates;
+  }
+
+  /**
+   * Counts the unread emails of the locally synced mirror, for the mailbox
+   * owner only.
+   *
+   * @param  username the mailbox owner
+   * @return          the number of unread emails
+   */
+  public long countUnreadEmails(String username) {
+    return emailBoxStorage.countUnreadEmails(username);
+  }
+
+  /**
+   * Signals that a user's unread count may have changed, so that anything
+   * displaying it can refresh.
+   *
+   * @param username the mailbox owner
+   */
+  public void broadcastUnreadCountChanged(String username) {
+    try {
+      listenerService.broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, username, null);
+    } catch (Exception e) {
+      LOG.warn("Error broadcasting unread emails change for user {}", username, e);
+    }
   }
 
   public int deleteEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
