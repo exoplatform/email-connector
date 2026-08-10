@@ -2021,6 +2021,25 @@ public class EmailBoxService {
    * @param username the synchronized user
    * @param newEmailIds the IMAP UIDs of every email created during this sync
    */
+  /**
+   * Broadcasts {@link EmailConnectorUtils#MAILBOX_SYNC_COMPLETED} once every folder of
+   * the run has been cached.
+   * <p>
+   * Separate from {@link #broadcastNewEmailsSyncCompleted} because that one fires at
+   * the end of the INBOX, and Sent is cached after it. A consumer that reads sent mail
+   * — the contact backfill does, to learn who the user writes to — starts on the wrong
+   * one and finds an empty folder on a first connection.
+   *
+   * @param username the mailbox owner
+   */
+  private void broadcastMailboxSyncCompleted(String username) {
+    try {
+      listenerService.broadcast(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, List.<Long> of());
+    } catch (Exception e) {
+      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, e);
+    }
+  }
+
   private void broadcastNewEmailsSyncCompleted(String username, List<Long> newEmailIds) {
     try {
       LOG.info("Broadcasting '{}' for user {}: the inbox sync ended with {} newly-cached message(s) in total",
