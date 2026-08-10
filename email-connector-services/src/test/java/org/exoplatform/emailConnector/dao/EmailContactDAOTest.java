@@ -36,6 +36,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
 
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.entity.EmailContactAddressEntity;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -69,6 +70,9 @@ public class EmailContactDAOTest {
 
   @Autowired
   private EmailContactDAO     emailContactDAO;
+
+  @Autowired
+  private EmailContactAddressDAO emailContactAddressDAO;
 
   @Autowired
   private EmailBoxDAO         emailBoxDAO;
@@ -114,11 +118,6 @@ public class EmailContactDAOTest {
     assertEquals(18, ((Number) buckets.get(1)[0]).intValue());
     assertEquals(26, ((Number) buckets.get(2)[0]).intValue());
 
-    // The secondary-address LIKE, bounded on both sides.
-    assertEquals("ann@example.org",
-                 emailContactDAO.findBySecondaryEmail(USERNAME, "ann@other.org").get(0).getPrimaryEmail());
-    assertTrue(emailContactDAO.findBySecondaryEmail(USERNAME, "ann@other.or").isEmpty());
-
     // The presence probe counts tombstones too.
     assertEquals(4, emailContactDAO.countByUserIdAndSourceIn(USERNAME, List.of(EmailContactSource.COLLECTED)));
 
@@ -135,6 +134,48 @@ public class EmailContactDAOTest {
     assertEquals("jdoe@example.org",
                  emailContactDAO.findFirstByUserIdAndPlatformUsername(USERNAME, "jdoe").orElseThrow().getPrimaryEmail());
     assertTrue(emailContactDAO.findFirstByUserIdAndPlatformUsername(USERNAME, "ghost").isEmpty());
+  }
+
+  /**
+   * The address table's two statements, run for real: the lookup every
+   * address-keyed path now goes through, and the cleanup a hard delete owes it.
+   */
+  @Test
+  void addressTableResolvesAnyAddressAndIsClearedByContactOnARealDatabase() {
+    long jane = persistContact("jane@work.example", "Jane Doe", "DOE JANE", 3, false, null);
+    persistAddress(jane, "jane@work.example");
+    persistAddress(jane, "jane@home.example");
+
+    // The point of the table: a person is found by ANY address they hold, not
+    // only by the one they happen to be filed under.
+    assertEquals(jane, emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "jane@home.example").orElseThrow().getContactId().longValue());
+    assertEquals(jane, emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "jane@work.example").orElseThrow().getContactId().longValue());
+    assertTrue(emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "jane@home.exampl").isEmpty());
+    assertTrue(emailContactAddressDAO.findByUserIdAndAddress("bob", "jane@home.example").isEmpty());
+
+    assertEquals(2, emailContactAddressDAO.findByContactId(jane).size());
+
+    // Nothing cascades from EMAIL_CONTACT, so this is the only thing standing
+    // between a deleted contact and two rows that hold their addresses hostage.
+    emailContactAddressDAO.deleteByContactId(jane);
+    entityManager.flush();
+    assertTrue(emailContactAddressDAO.findByContactId(jane).isEmpty());
+    assertTrue(emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "jane@home.example").isEmpty());
+  }
+
+  /**
+   * Files one address for a contact.
+   *
+   * @param contactId the contact
+   * @param address the normalized address
+   */
+  private void persistAddress(long contactId, String address) {
+    EmailContactAddressEntity entity = new EmailContactAddressEntity();
+    entity.setContactId(contactId);
+    entity.setUserId(USERNAME);
+    entity.setAddress(address);
+    entityManager.persist(entity);
+    entityManager.flush();
   }
 
   @Test
