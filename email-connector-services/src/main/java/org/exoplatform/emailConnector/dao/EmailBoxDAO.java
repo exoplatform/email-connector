@@ -72,6 +72,17 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   void deleteEmailsByIds(@Param("ids")
   List<Long> ids);
 
+  /**
+   * Counts the unread emails of the locally synced mirror. Never reaches the
+   * IMAP server: the badge reflects what the platform already knows.
+   *
+   * @param  userId the mailbox owner
+   * @return        the number of unread emails
+   */
+  @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND (email.read IS NULL OR email.read = FALSE)")
+  long countUnreadByUserId(@Param("userId")
+  String userId);
+
   @Transactional
   @Modifying
   @Query("UPDATE EmailBoxEntity email SET email.read = :readStatus WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read <> :readStatus)")
