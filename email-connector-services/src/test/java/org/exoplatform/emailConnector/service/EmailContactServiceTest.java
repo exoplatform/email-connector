@@ -741,6 +741,119 @@ public class EmailContactServiceTest {
     assertEquals("Met at FOSDEM.", updated.getNote());
   }
 
+  // ---------------------------------------------------------------- phones
+
+  @Test
+  void updateSayingNothingAboutPhonesKeepsThem() {
+    // THE data-loss bug this slice fixes: applyAuthoredFields used to copy the
+    // payload's phones raw, so a body that said nothing about them -- or only
+    // knew the first one -- silently deleted the rest. Silence now keeps them.
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setPhones(List.of("cell,+33 6 12 34 56 78", "work,+33 1 23 45 67 89"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact updated = emailContactService.updateContact(5L, manualInput("Bob", "bob@example.org"), USERNAME);
+
+    assertEquals(List.of("cell,+33 6 12 34 56 78", "work,+33 1 23 45 67 89"), updated.getPhones());
+  }
+
+  @Test
+  void updateReplacesThePhonesTheRequestCarries() {
+    // A present list is the authoritative set, exactly as for the secondary
+    // addresses: the form sends every row it shows, so a number missing from
+    // the list was removed on purpose.
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setPhones(List.of("cell,+33 6 12 34 56 78", "work,+33 1 23 45 67 89"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setPhones(List.of("home,+33 2 11 22 33 44"));
+
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    assertEquals(List.of("home,+33 2 11 22 33 44"), updated.getPhones());
+  }
+
+  @Test
+  void removingEveryPhoneTakesAnExplicitEmptyList() {
+    // Clearing stays possible -- it just has to be said. Only silence keeps.
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setPhones(List.of("cell,+33 6 12 34 56 78"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setPhones(List.of());
+
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    assertNull(updated.getPhones());
+  }
+
+  @Test
+  void phonesDedupeBySameDigitsAndTheFirstSpellingWins() {
+    // Normalization happens at comparison time, never on the stored value: the
+    // first spelling of a number is kept exactly as typed, and a second way of
+    // writing the same digits -- typed or bare -- is recognized and dropped.
+    when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setPhones(List.of("+33 6 12 34 56 78", "cell,+33612345678", "  ", "work,+33 1 23 45 67 89"));
+
+    EmailContact created = emailContactService.createContact(input, USERNAME);
+
+    assertEquals(List.of("+33 6 12 34 56 78", "work,+33 1 23 45 67 89"), created.getPhones());
+  }
+
+  @Test
+  void anUnknownPhoneTypePrefixStaysPartOfTheNumber() {
+    // Only the vocabulary the exporter can write back counts as a type; any
+    // other prefix is simply part of what the user typed, kept messy rather
+    // than mangled.
+    when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setPhones(List.of("office,+33 1 23 45 67 89"));
+
+    EmailContact created = emailContactService.createContact(input, USERNAME);
+
+    assertEquals(List.of("office,+33 1 23 45 67 89"), created.getPhones());
+  }
+
+  @Test
+  void aRevivedTombstoneKeepsItsPhonesWhenTheCreateSaysNothing() {
+    // The revival adopts what the user typed, but silence about the phones
+    // must not cost the tombstone's numbers -- same contract as everywhere.
+    EmailContact tombstone = collectedContact(5L, "bob@example.org", "Bob");
+    tombstone.setPhones(List.of("cell,+33 6 12 34 56 78"));
+    tombstone.setSuppressed(true);
+    when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(tombstone);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact revived = emailContactService.createContact(manualInput("Bob", "bob@example.org"), USERNAME);
+
+    assertEquals(List.of("cell,+33 6 12 34 56 78"), revived.getPhones());
+  }
+
+  @Test
+  void directoryPhonesFollowTheSameKeepAndReplaceContract() {
+    // A directory row's phones are the user's own annotation (the profile does
+    // not feed them), so they stay editable -- and now loss-proof: silence
+    // keeps them, a present list replaces them.
+    EmailContact directory = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    directory.setPhones(List.of("work,+33 1 23 45 67 89"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(directory);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact kept = emailContactService.updateContact(5L, manualInput("Jane", "jane.doe@example.com"), USERNAME);
+    assertEquals(List.of("work,+33 1 23 45 67 89"), kept.getPhones());
+
+    EmailContact input = manualInput("Jane", "jane.doe@example.com");
+    input.setPhones(List.of("cell,+33 6 12 34 56 78"));
+    EmailContact replaced = emailContactService.updateContact(5L, input, USERNAME);
+    assertEquals(List.of("cell,+33 6 12 34 56 78"), replaced.getPhones());
+  }
+
   // ---------------------------------------------------------------- delete / suppress / restore
 
   @Test
