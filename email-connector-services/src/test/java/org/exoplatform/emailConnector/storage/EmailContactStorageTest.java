@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -51,6 +52,8 @@ import org.exoplatform.emailConnector.dao.EmailContactAddressDAO;
 import org.exoplatform.emailConnector.dao.EmailContactDAO;
 import org.exoplatform.emailConnector.entity.EmailContactAddressEntity;
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
+import org.exoplatform.emailConnector.model.CardDavContactData;
+import org.exoplatform.emailConnector.model.CardDavRow;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSource;
@@ -318,6 +321,131 @@ public class EmailContactStorageTest {
     ArgumentCaptor<EmailContactEntity> written = ArgumentCaptor.forClass(EmailContactEntity.class);
     verify(emailContactDAO).save(written.capture());
     assertEquals(EmailContactUtils.MAX_NOTE_LENGTH, written.getValue().getNote().length());
+  }
+
+  /**
+   * The sync's lookup, which used to ask the contact's PRIMARY_EMAIL column and
+   * so could only ever recognise somebody filed under their preferred address.
+   */
+  @Test
+  void theSyncsLookupFindsAContactHeldUnderASecondaryAddress() {
+    EmailContactEntity entity = entity(9L, "jane@work.example", "Jane Doe", 3);
+    EmailContactAddressEntity address = new EmailContactAddressEntity();
+    address.setContactId(9L);
+    address.setUserId(USERNAME);
+    address.setAddress("jane@home.example");
+    when(emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "jane@home.example")).thenReturn(Optional.of(address));
+    when(emailContactDAO.findById(9L)).thenReturn(Optional.of(entity));
+
+    CardDavRow row = emailContactStorage.getCardDavRowByAddress(USERNAME, "jane@home.example");
+
+    // Without this the card looks like a new person, a second row is attempted,
+    // the unique index refuses it and three such runs BLOCK the address book.
+    assertEquals(9L, row.id());
+    verify(emailContactDAO, never()).findByUserIdAndPrimaryEmail(anyString(), anyString());
+  }
+
+  /**
+   * An address left pointing at a contact that is gone holds the unique key with
+   * nothing behind it, so the sync's lookup clears it the way collection does.
+   */
+  @Test
+  void theSyncsLookupClearsAnAddressWhoseContactIsGone() {
+    EmailContactAddressEntity orphan = new EmailContactAddressEntity();
+    orphan.setContactId(404L);
+    orphan.setUserId(USERNAME);
+    orphan.setAddress("ghost@example.org");
+    when(emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "ghost@example.org")).thenReturn(Optional.of(orphan));
+    when(emailContactDAO.findById(404L)).thenReturn(Optional.empty());
+
+    assertNull(emailContactStorage.getCardDavRowByAddress(USERNAME, "ghost@example.org"));
+
+    verify(emailContactAddressDAO).delete(orphan);
+  }
+
+  /**
+   * Nothing cascades from the contact table, so the hard delete owes the address
+   * table its own cleanup — at the one method every delete call site uses.
+   */
+  @Test
+  void deletingAContactUnfilesTheAddressesItHeld() {
+    emailContactStorage.deleteContact(5L);
+
+    // Left behind, these still hold (USER_ID, ADDRESS): the next contact reaching
+    // that address cannot be written at all, and the sync reports a failed run.
+    verify(emailContactAddressDAO).deleteByContactId(5L);
+    verify(emailContactDAO).deleteById(5L);
+  }
+
+  /**
+   * A refresh adds what the card carries and keeps what it does not — the set is
+   * a union, not the vCard's to replace.
+   */
+  @Test
+  void aCardDavRefreshKeepsAddressesTheCardDoesNotCarry() {
+    when(emailContactDAO.findById(9L)).thenReturn(Optional.of(entity(9L, "jane@work.example", "Jane Doe", 3)));
+    when(emailContactDAO.save(any(EmailContactEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContactAddressEntity held = new EmailContactAddressEntity();
+    held.setContactId(9L);
+    held.setUserId(USERNAME);
+    held.setAddress("jane@home.example");
+    when(emailContactAddressDAO.findByContactId(9L)).thenReturn(List.of(held));
+    when(emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "jane@work.example")).thenReturn(Optional.empty());
+    CardDavContactData data = cardData("jane@work.example");
+
+    emailContactStorage.saveCardDavContact(USERNAME, 9L, 2L, "/dav/jane.vcf", "\"v1\"", data, null, false);
+
+    // The address the card does not mention is still the person's: nothing may
+    // unfile it behind their back.
+    verify(emailContactAddressDAO, never()).deleteByContactId(anyLong());
+    ArgumentCaptor<EmailContactAddressEntity> filed = ArgumentCaptor.forClass(EmailContactAddressEntity.class);
+    verify(emailContactAddressDAO).save(filed.capture());
+    assertEquals("jane@work.example", filed.getValue().getAddress());
+  }
+
+  /**
+   * An address another contact already holds stays with them: the unique index
+   * is the authority on who owns one, and one contested address must not fail
+   * the whole run.
+   */
+  @Test
+  void aCardDavRefreshLeavesAnAddressAnotherContactAlreadyHolds() {
+    when(emailContactDAO.findById(9L)).thenReturn(Optional.of(entity(9L, "jane@work.example", "Jane Doe", 3)));
+    when(emailContactDAO.save(any(EmailContactEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    when(emailContactAddressDAO.findByContactId(9L)).thenReturn(List.of());
+    EmailContactAddressEntity someoneElses = new EmailContactAddressEntity();
+    someoneElses.setContactId(42L);
+    someoneElses.setUserId(USERNAME);
+    someoneElses.setAddress("jane@work.example");
+    when(emailContactAddressDAO.findByUserIdAndAddress(USERNAME, "jane@work.example")).thenReturn(Optional.of(someoneElses));
+
+    emailContactStorage.saveCardDavContact(USERNAME, 9L, 2L, "/dav/jane.vcf", "\"v1\"", cardData("jane@work.example"), null, false);
+
+    verify(emailContactAddressDAO, never()).save(any(EmailContactAddressEntity.class));
+  }
+
+  /**
+   * A card carrying one address and nothing else.
+   *
+   * @param primaryEmail the address
+   * @return the card data
+   */
+  private CardDavContactData cardData(String primaryEmail) {
+    return new CardDavContactData(primaryEmail,
+                                  List.of(),
+                                  "Jane Doe",
+                                  "Jane",
+                                  "Doe",
+                                  List.of(),
+                                  null,
+                                  null,
+                                  null,
+                                  null,
+                                  null,
+                                  null,
+                                  "uid-1",
+                                  null,
+                                  null);
   }
 
   /**

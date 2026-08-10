@@ -502,5 +502,24 @@
     </comment>
     <modifyDataType tableName="EMAIL_CONTACT" columnName="NOTE_TEXT" newDataType="NVARCHAR(8000)"/>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-38" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      Changeset 1.0.0-34 seeded EMAIL_CONTACT_ADDRESS with explicit ids (each row
+      taking its contact's), but SEQ_EMAIL_CONTACT_ADDRESS_ID was created at 1 and
+      hands out ids one at a time. So on every vendor that draws ids from that
+      sequence, the first addresses written after the upgrade are handed ids the
+      seeded rows already hold, and the insert fails on the primary key — until
+      the sequence has climbed past the largest seeded id, one failure at a time.
+      It is not a slow burn either: the contact address repair runs at the first
+      startup after the upgrade and writes through the same sequence.
+      MySQL is left out on purpose: its auto-increment counter advances itself
+      when a row arrives with an explicit id, which is why the bug is invisible on
+      the vendor most deployments run.
+    </comment>
+    <customChange class="org.exoplatform.emailConnector.upgrade.SequenceRepairChange">
+      <param name="sequenceName" value="SEQ_EMAIL_CONTACT_ADDRESS_ID"/>
+      <param name="tableName" value="EMAIL_CONTACT_ADDRESS"/>
+    </customChange>
+  </changeSet>
 
 </databaseChangeLog>
