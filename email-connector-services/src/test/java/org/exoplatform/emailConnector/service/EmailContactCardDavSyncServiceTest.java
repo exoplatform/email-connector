@@ -296,6 +296,10 @@ public class EmailContactCardDavSyncServiceTest {
   void anEntryIsMatchedByAnyAddressItCarries() {
     // The person may already be known here under their other address; two rows for
     // one person is exactly what this prevents.
+    // Only the LOOP is pinned here: the storage is mocked, so this passed happily
+    // while the query underneath asked PRIMARY_EMAIL and could not answer for a
+    // secondary address at all. That query is pinned in EmailContactStorageTest
+    // and, on a real database, in EmailContactDAOTest.
     givenServerHas(Map.of("/dav/jane.vcf", "\"v1\""));
     ParsedVCard twoAddresses = new ParsedVCard("uid-1",
                                                "Jane Doe",
