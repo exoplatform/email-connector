@@ -510,6 +510,45 @@ public class EmailContactStorage {
    * @param deletePhoto whether the stored picture came from the address book and
    *          should go with it
    */
+  /**
+   * Turns every collected contact of a user into one they hold themselves,
+   * forgetting the correspondence the old mailbox earned.
+   * <p>
+   * Called when a mailbox is rebound or disconnected. "Collected" means "derived
+   * from mail in this mailbox", and that mailbox is gone: the rows would
+   * otherwise keep claiming a provenance that no longer exists and a history the
+   * app can no longer show. Turning them into MANUAL rows states the only thing
+   * still true of them — the user has these people — and follows the rule the
+   * address-book release already applies, downgrading provenance rather than
+   * deleting what somebody may still want.
+   * <p>
+   * The counters go to zero rather than travelling: they rank autocomplete, and
+   * ranking people by traffic in an account the user no longer has is worse than
+   * starting the count again. Suppressed rows are deliberately left alone — a
+   * tombstone is a decision to not see somebody, and reviving it here would put
+   * them back in the list on the very screen where the user changed accounts.
+   *
+   * @param userId the store owner
+   * @return how many contacts were handed over
+   */
+  @Transactional
+  public int releaseCollectedContacts(String userId) {
+    List<EmailContactEntity> collected = emailContactDAO.findByUserIdAndSource(userId, EmailContactSource.COLLECTED);
+    int released = 0;
+    for (EmailContactEntity entity : collected) {
+      if (entity.isSuppressed()) {
+        continue;
+      }
+      entity.setSource(EmailContactSource.MANUAL);
+      entity.setSeenCount(0);
+      entity.setLastSeenDate(null);
+      entity.setUpdatedDate(new Date());
+      emailContactDAO.save(entity);
+      released++;
+    }
+    return released;
+  }
+
   @SneakyThrows
   @Transactional
   public void demoteCardDavRow(long id, boolean deletePhoto) {
