@@ -623,7 +623,8 @@ public class EmailContactService {
    * it lists — see {@link #resolveSecondaryEmails(EmailContact, EmailContact,
    * String)} for the null-means-keep contract, and
    * {@link #claimAddress(String, Long, String)} for what happens when one of
-   * them already belongs to somebody.
+   * them already belongs to somebody. The phone numbers ride the same
+   * three-state contract — {@link #resolvePhones(EmailContact, EmailContact)}.
    *
    * @param contact what the user typed (names, addresses, phone, organization)
    * @param username the store owner
@@ -652,6 +653,7 @@ public class EmailContactService {
       applyAuthoredFields(existing, contact);
       existing.setPrimaryEmail(address);
       existing.setSecondaryEmails(secondaryEmails);
+      existing.setPhones(resolvePhones(existing, contact));
       existing.setSource(EmailContactSource.MANUAL);
       existing.setSuppressed(false);
       applyPhoto(existing, contact.getPhotoUploadId());
@@ -665,6 +667,7 @@ public class EmailContactService {
     claimAddresses(secondaryEmails, null, username);
     applyAuthoredFields(created, contact);
     created.setSecondaryEmails(secondaryEmails);
+    created.setPhones(resolvePhones(null, contact));
     created.setSeenCount(0);
     applyPhoto(created, contact.getPhotoUploadId());
     return answer(emailContactStorage.createContact(created));
@@ -683,7 +686,10 @@ public class EmailContactService {
    * contract as the photo ({@link #resolveSecondaryEmails(EmailContact,
    * EmailContact, String)}): a body that says nothing about them keeps them,
    * and a primary change then demotes the old primary into them instead of
-   * orphaning an address the mailbox may still know this person by. A
+   * orphaning an address the mailbox may still know this person by. The phone
+   * numbers follow the same null-means-keep contract
+   * ({@link #resolvePhones(EmailContact, EmailContact)}): a body that says
+   * nothing about them keeps them, a present list replaces them. A
    * {@code photoUploadId} on the body sets, replaces or clears the picture, per
    * the three-state contract documented on the field — so one save carries
    * every edit the form made.
@@ -729,6 +735,7 @@ public class EmailContactService {
     }
     claimAddresses(secondaryEmails, existing.getId(), username);
     existing.setSecondaryEmails(secondaryEmails);
+    existing.setPhones(resolvePhones(existing, contact));
     applyAuthoredFields(existing, contact);
     applyPhoto(existing, contact.getPhotoUploadId());
     return answer(emailContactStorage.updateContact(existing));
@@ -786,6 +793,58 @@ public class EmailContactService {
       }
     }
     return resolved.isEmpty() ? null : new ArrayList<>(resolved);
+  }
+
+  /**
+   * The phone numbers a save leaves on the row, resolved from what the request
+   * said — or did not say. Three-state like the secondary addresses, and for
+   * the same reason: the clients differ in what they know.
+   * <ul>
+   * <li>a present list is the authoritative set — the form sends every phone
+   * row it shows, so a number missing from the list was removed on
+   * purpose;</li>
+   * <li>an absent (null) list says nothing about the phones: the stored ones
+   * are kept. This is the line that stops a caller holding only the first
+   * number — as the one-field form did, and as a terse API client may — from
+   * silently deleting the others.</li>
+   * </ul>
+   * Each kept entry is re-encoded through
+   * {@link EmailContactUtils#phoneEntryOf(String, String)} (typed entries keep
+   * their {@code type,value} shape, unknown types fall away, the store's
+   * separator is scrubbed out of values) and the list is de-duplicated by
+   * {@link EmailContactUtils#phoneComparisonKey(String)} — same digits, same
+   * number, first spelling wins. Nothing is refused: a phone has never been
+   * validated here, vCard TEL is free text, and an import must not start
+   * failing over a number a human can still read.
+   *
+   * @param stored the row as it is stored, or null on a fresh create
+   * @param authored what the caller sent, may be null
+   * @return the resolved phone entries, or null when there are none
+   */
+  private List<String> resolvePhones(EmailContact stored, EmailContact authored) {
+    List<String> requested;
+    if (authored != null && authored.getPhones() != null) {
+      requested = authored.getPhones();
+    } else {
+      requested = stored == null || stored.getPhones() == null ? List.of() : stored.getPhones();
+    }
+    Set<String> seen = new LinkedHashSet<>();
+    List<String> resolved = new ArrayList<>();
+    for (String entry : requested) {
+      String normalized = EmailContactUtils.phoneEntryOf(EmailContactUtils.phoneTypeOf(entry),
+                                                         EmailContactUtils.phoneValueOf(entry));
+      if (normalized == null) {
+        // A blank row expresses nothing -- an emptied form field, not a number.
+        continue;
+      }
+      // A digitless "number" still dedupes, by its own text: it cannot collide
+      // with a real number's key, but saving it twice is still noise.
+      String key = StringUtils.defaultString(EmailContactUtils.phoneComparisonKey(normalized), normalized);
+      if (seen.add(key)) {
+        resolved.add(normalized);
+      }
+    }
+    return resolved.isEmpty() ? null : resolved;
   }
 
   /**
@@ -1440,6 +1499,10 @@ public class EmailContactService {
     contact.setDisplayName(existing.getDisplayName());
     contact.setGivenName(existing.getGivenName());
     contact.setFamilyName(existing.getFamilyName());
+    // The phones stay the user's annotation on a directory row -- the profile
+    // does not feed them -- so they follow the same null-means-keep resolution
+    // as everywhere else instead of applyAuthoredFields' old raw copy.
+    existing.setPhones(resolvePhones(existing, contact));
     applyAuthoredFields(existing, contact);
     EmailContact saved = emailContactStorage.updateContact(existing);
     enrichForDisplay(saved);
@@ -1451,7 +1514,11 @@ public class EmailContactService {
    * and only those: sources, counters and suppression are this service's to
    * manage, never the caller's. The addresses (primary and secondary) are
    * deliberately absent too: they carry uniqueness rules a dumb copier cannot
-   * honour, so the create/update paths resolve and set them themselves.
+   * honour, so the create/update paths resolve and set them themselves. The
+   * phones are equally absent, and for a lesson learned the hard way: copying
+   * them raw is what let a payload that only knew the first number silently
+   * delete the rest — {@link #resolvePhones(EmailContact, EmailContact)} owns
+   * them now, with the same null-means-keep contract as the secondaries.
    *
    * @param target the stored contact being written
    * @param authored what the user typed, may be null
@@ -1462,7 +1529,6 @@ public class EmailContactService {
     }
     target.setGivenName(StringUtils.trimToNull(authored.getGivenName()));
     target.setFamilyName(StringUtils.trimToNull(authored.getFamilyName()));
-    target.setPhones(authored.getPhones());
     target.setOrganization(StringUtils.trimToNull(authored.getOrganization()));
     target.setTitle(StringUtils.trimToNull(authored.getTitle()));
     target.setBirthday(normalizedBirthdayOf(authored));
