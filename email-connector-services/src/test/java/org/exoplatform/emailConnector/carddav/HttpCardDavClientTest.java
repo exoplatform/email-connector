@@ -231,6 +231,29 @@ public class HttpCardDavClientTest {
   }
 
   @Test
+  void aServerThatRenamesTheEntrySaysSoThroughLocation() throws Exception {
+    // BlueMind does not keep the URL a card was PUT to: it files the card under
+    // a path of its own and answers it in Location. Missing this header is how
+    // slice 1 bound rows to entries that did not exist.
+    givenPutAnswer(201, "\"e\"", "/dav/addressbooks/alice/default/renamed-by-server.vcf");
+
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+
+    assertEquals("https://mail.example.com/dav/addressbooks/alice/default/renamed-by-server.vcf",
+                 result.location(),
+                 "resolved absolute against the request URL, like discovery's hrefs");
+  }
+
+  @Test
+  void aServerThatKeepsTheUrlAnswersNoLocation() throws Exception {
+    givenPutAnswer(201, "\"e\"", null);
+
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+
+    assertNull(result.location(), "no Location means the entry lives where it was PUT, and null says exactly that");
+  }
+
+  @Test
   void aServerThatSendsNoEtagAnswersNull() throws Exception {
     // Not every server returns an ETag on PUT. Null is the honest answer: the
     // caller stores it as unknown and the next sync settles the version.
@@ -283,9 +306,27 @@ public class HttpCardDavClientTest {
    * @throws Exception when the mock cannot be primed
    */
   private void givenPutAnswer(int status, String etag) throws Exception {
-    java.net.http.HttpHeaders headers = java.net.http.HttpHeaders.of(etag == null ? Map.of()
-                                                                                  : Map.of("ETag", List.of(etag)),
-                                                                     (name, value) -> true);
+    givenPutAnswer(status, etag, null);
+  }
+
+  /**
+   * Primes the transport with one PUT answer carrying optional ETag and
+   * Location headers.
+   *
+   * @param status the status to answer
+   * @param etag the ETag header value, or null to send none
+   * @param location the Location header value, or null to send none
+   * @throws Exception when the mock cannot be primed
+   */
+  private void givenPutAnswer(int status, String etag, String location) throws Exception {
+    Map<String, List<String>> headerMap = new java.util.HashMap<>();
+    if (etag != null) {
+      headerMap.put("ETag", List.of(etag));
+    }
+    if (location != null) {
+      headerMap.put("Location", List.of(location));
+    }
+    java.net.http.HttpHeaders headers = java.net.http.HttpHeaders.of(headerMap, (name, value) -> true);
     when(transport.send(any(HttpRequest.class), any())).thenAnswer(invocation -> {
       sent.add(invocation.getArgument(0));
       HttpResponse<String> response = response(status, "");

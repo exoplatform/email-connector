@@ -398,6 +398,59 @@ public class EmailContactCardDavSyncServiceTest {
   }
 
   @Test
+  void aRowClaimedThroughItsAddressIsNeverDeletedAsVanishedInTheSameRun() {
+    // The live BlueMind failure, pinned: the store knows the person at href A,
+    // the server lists the same card at href B (a rename, a move, or BlueMind
+    // filing a freshly published card under its own name). The apply loop
+    // matches the row by address and rewrites its href in place -- but the
+    // vanished check judges rows by a snapshot taken BEFORE that loop, where
+    // the row still says A. Without shielding the rows this run just wrote,
+    // the sync updated the contact and hard-deleted it in the same breath, and
+    // the user watched it disappear.
+    givenServerHas(Map.of("/dav/alice/default/B.vcf", "\"e2\""));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(row(9L,
+                                                                                            "bob@example.org",
+                                                                                            EmailContactSource.CARDDAV,
+                                                                                            false,
+                                                                                            0,
+                                                                                            "/dav/alice/default/A.vcf",
+                                                                                            "\"e1\"",
+                                                                                            null,
+                                                                                            null)));
+    givenServerReturns(resource("/dav/alice/default/B.vcf", "\"e2\""), card("Bob", "bob@example.org"));
+    when(emailContactStorage.getCardDavRowByAddress(USERNAME, "bob@example.org")).thenReturn(row(9L,
+                                                                                                 "bob@example.org",
+                                                                                                 EmailContactSource.CARDDAV,
+                                                                                                 false,
+                                                                                                 0,
+                                                                                                 "/dav/alice/default/A.vcf",
+                                                                                                 "\"e1\"",
+                                                                                                 null,
+                                                                                                 null));
+    when(emailContactStorage.saveCardDavContact(anyString(), anyLong(), anyLong(), anyString(), anyString(), any(), any(),
+                                                anyBoolean())).thenReturn(9L);
+
+    syncService.syncAddressBook(USERNAME);
+
+    // The entry is written onto the row it already was...
+    ArgumentCaptor<Long> claimed = ArgumentCaptor.forClass(Long.class);
+    verify(emailContactStorage).saveCardDavContact(anyString(),
+                                                   claimed.capture(),
+                                                   anyLong(),
+                                                   eq("/dav/alice/default/B.vcf"),
+                                                   anyString(),
+                                                   any(),
+                                                   any(),
+                                                   anyBoolean());
+    assertEquals(9L, claimed.getValue());
+    // ...and that row survives the run, whatever the pre-apply snapshot
+    // remembers its href to have been.
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean());
+    verify(emailContactFavoriteService, never()).removeFavorite(anyLong(), anyString());
+  }
+
+  @Test
   void aVanishedEntrysFavoriteCleanupNeverFailsTheSync() {
     doThrow(new RuntimeException("favorites unavailable")).when(emailContactFavoriteService)
                                                           .removeFavorite(anyLong(), anyString());
@@ -802,7 +855,7 @@ public class EmailContactCardDavSyncServiceTest {
     givenADiscoveredBook();
     when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
     when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
-                      .thenReturn(new PutResult(201, "\"etag-9\""));
+                      .thenReturn(new PutResult(201, "\"etag-9\"", null));
 
     EmailContact published = syncService.publishContact(USERNAME, 5L);
 
@@ -818,11 +871,38 @@ public class EmailContactCardDavSyncServiceTest {
     // the row -- one uid, three places, which is what lets the next sync
     // recognise the entry as the row it already has.
     verify(emailContactVCardService).getPublishVCard(any(), eq(uid));
-    verify(emailContactStorage).bindPublishedCard(5L, CONNECTOR_ID, href.getValue(), "\"etag-9\"", uid);
+    // Bound as the server's LISTING will name the entry -- the path, not the
+    // absolute URL that was PUT. Synced rows store PROPFIND's href shape and
+    // the reconciliation compares by string equality; an absolute URL here can
+    // never match a listing and made a published row look vanished.
+    verify(emailContactStorage).bindPublishedCard(5L, CONNECTOR_ID, "/dav/alice/default/" + uid + ".vcf", "\"etag-9\"", uid);
     // The stored ctag is not advanced: a post-PUT ctag could also cover another
     // client's concurrent change, and recording it would skip that change for
     // good. One redundant reconcile is the price, paid knowingly.
     verify(userEmailSettingService, never()).setContactSyncState(any(), anyString());
+  }
+
+  @Test
+  void theServersLocationNamesTheEntryNotOurUrl() {
+    // BlueMind files a PUT card under a path of its own choosing and says so in
+    // Location. Binding the minted URL then bookkeeps an entry that does not
+    // exist -- the first live test watched the next sync delete the contact
+    // over exactly this.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
+    givenADiscoveredBook();
+    when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(201,
+                                                "\"etag-9\"",
+                                                "https://mail.example.com/dav/alice/default/server-chosen.vcf"));
+
+    syncService.publishContact(USERNAME, 5L);
+
+    verify(emailContactStorage).bindPublishedCard(eq(5L),
+                                                  eq(CONNECTOR_ID),
+                                                  eq("/dav/alice/default/server-chosen.vcf"),
+                                                  eq("\"etag-9\""),
+                                                  anyString());
   }
 
   @Test
@@ -831,7 +911,7 @@ public class EmailContactCardDavSyncServiceTest {
     givenADiscoveredBook();
     when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
     when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
-                      .thenReturn(new PutResult(412, null));
+                      .thenReturn(new PutResult(412, null, null));
 
     IllegalStateException refusal = assertThrows(IllegalStateException.class,
                                                  () -> syncService.publishContact(USERNAME, 5L));
@@ -848,7 +928,7 @@ public class EmailContactCardDavSyncServiceTest {
     givenADiscoveredBook();
     when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
     when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
-                      .thenReturn(new PutResult(204, null));
+                      .thenReturn(new PutResult(204, null, null));
 
     syncService.publishContact(USERNAME, 5L);
 

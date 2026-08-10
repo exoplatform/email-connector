@@ -33,8 +33,14 @@ package org.exoplatform.emailConnector.carddav;
  *          (quotes included, the same raw shape PROPFIND listings answer), or
  *          null — not every server returns one, and callers must live with
  *          that by re-reading on the next sync
+ * @param location where the server actually stored the card, as an absolute
+ *          URL resolved against the request, or null when the server said
+ *          nothing. Not decoration: BlueMind files a PUT card under a path of
+ *          its own choosing, so the URL the caller asked for and the entry
+ *          that now exists are two different names — and the caller must
+ *          bookkeep the server's, not its own
  */
-public record PutResult(int status, String etag) {
+public record PutResult(int status, String etag, String location) {
 
   /** The precondition-failed status, the one answer that is a refusal, not an error. */
   public static final int PRECONDITION_FAILED = 412;

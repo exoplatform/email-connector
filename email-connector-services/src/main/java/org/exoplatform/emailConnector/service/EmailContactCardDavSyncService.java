@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
@@ -55,10 +57,12 @@ import org.exoplatform.services.log.Log;
 /**
  * Brings a user's CardDAV address book into their contact store.
  * <p>
- * One direction only, server to us, and read-only here: an address-book contact
- * is edited where it lives, and the next sync carries the change over. That is
- * why nothing in this class writes back, and why a CARDDAV row is refused edits
- * elsewhere in the service layer.
+ * Reads are the rule, server to us: an address-book contact is edited where it
+ * lives, and the next sync carries the change over — which is why a CARDDAV
+ * row is refused edits elsewhere in the service layer. The one write is
+ * {@link #publishContact}: an explicit, per-contact, creates-only push of a
+ * contact the user owns into their own book, after which the server copy is
+ * authoritative like any other.
  * <p>
  * Kept apart from {@link EmailContactService} on purpose — that class owns the
  * store's own rules and is long enough already; this one owns a protocol
@@ -396,9 +400,9 @@ public class EmailContactCardDavSyncService {
       userEmailSettingService.setContactSyncState(state, username);
     }
     String uid = UUID.randomUUID().toString();
-    String href = StringUtils.removeEnd(addressBook.url(), "/") + "/" + uid + ".vcf";
+    String putUrl = StringUtils.removeEnd(addressBook.url(), "/") + "/" + uid + ".vcf";
     String vcard = emailContactVCardService.getPublishVCard(contact, uid);
-    PutResult result = cardDavClient.putVCard(href, vcard, "*", setting.getEmailAddress(), setting.getEmailPassword());
+    PutResult result = cardDavClient.putVCard(putUrl, vcard, "*", setting.getEmailAddress(), setting.getEmailPassword());
     if (result.preconditionFailed()) {
       // The server refusing to create is it keeping the only promise that makes
       // this slice safe. A UUID colliding is not the likely story here -- a
@@ -406,7 +410,20 @@ public class EmailContactCardDavSyncService {
       // the same: report, never force.
       throw new IllegalStateException(PUBLISH_EXISTS_ON_SERVER);
     }
-    emailContactStorage.bindPublishedCard(contact.getId(), connector.getId(), href, result.etag(), uid);
+    // The name bound locally is the SERVER's name for the entry, in the shape
+    // the server's own listing will use. Two lessons from the first BlueMind
+    // run are folded in here. First, BlueMind does not keep the URL that was
+    // PUT -- it files the card under a path of its own and says so in
+    // Location, so when that header is present it wins over the minted URL.
+    // Second, the sync's rows carry hrefs exactly as PROPFIND lists them --
+    // server-relative paths -- and the reconciliation matches by string
+    // equality, so binding an absolute URL here would never match the listing
+    // and the row would look vanished on the very next run. When the server
+    // neither sends a Location nor keeps our path, the next sync still
+    // converges by claiming the row through its address; one redundant cycle,
+    // never a loss.
+    String entryHref = listingHrefOf(StringUtils.defaultIfBlank(result.location(), putUrl));
+    emailContactStorage.bindPublishedCard(contact.getId(), connector.getId(), entryHref, result.etag(), uid);
     LOG.info("Contact {} of user {} published to the address book of connector {}", contact.getId(), username, connector.getId());
     // Re-read rather than mutated in place: the caller gets the row as every
     // other read now sees it, source flipped and enrichment applied.
@@ -421,6 +438,27 @@ public class EmailContactCardDavSyncService {
    */
   private boolean isPublishEnabled() {
     return Boolean.parseBoolean(System.getProperty(PUBLISH_ENABLED_PROPERTY, "true"));
+  }
+
+  /**
+   * An entry URL in the shape the server's listing answers it — the
+   * server-relative path. This is what every synced row stores as its href
+   * (see {@code reconcile}, which compares hrefs by string equality against
+   * the PROPFIND listing), so it is the only shape a bound row may carry.
+   *
+   * @param entryUrl the entry's absolute URL
+   * @return its path, or the URL untouched when it will not parse — a name
+   *         too odd to parse still names the entry, and the address-claim
+   *         fallback absorbs a shape mismatch
+   */
+  private String listingHrefOf(String entryUrl) {
+    try {
+      String path = new URI(entryUrl).getRawPath();
+      return StringUtils.isNotBlank(path) ? path : entryUrl;
+    } catch (URISyntaxException e) {
+      LOG.debug("An entry URL could not be reduced to its path and is kept whole: {}", entryUrl, e);
+      return entryUrl;
+    }
   }
 
   /**
@@ -550,6 +588,14 @@ public class EmailContactCardDavSyncService {
     boolean complete = true;
     int written = 0;
     int skipped = 0;
+    // Every row the apply loop writes onto, whichever href it was found under.
+    // The vanished check below judges rows by the storedRows SNAPSHOT taken
+    // before this loop ran, and a row an entry just claimed through its address
+    // still carries its old href in that snapshot. Without this set, a server
+    // that files a card under a different path than the one it was known by --
+    // BlueMind does this to a freshly published card -- had its row updated by
+    // apply and then hard-deleted by removeVanished in the same run.
+    Set<Long> appliedRowIds = new HashSet<>();
     for (int start = 0; start < toFetch.size(); start += FETCH_BATCH_SIZE) {
       List<String> batch = toFetch.subList(start, Math.min(start + FETCH_BATCH_SIZE, toFetch.size()));
       try {
@@ -557,9 +603,12 @@ public class EmailContactCardDavSyncService {
                                                                batch,
                                                                setting.getEmailAddress(),
                                                                setting.getEmailPassword())) {
-          boolean stored = apply(username, connector, resource, storedByHref.get(resource.href()));
-          written += stored ? 1 : 0;
-          skipped += stored ? 0 : 1;
+          Long appliedId = apply(username, connector, resource, storedByHref.get(resource.href()));
+          written += appliedId != null ? 1 : 0;
+          skipped += appliedId != null ? 0 : 1;
+          if (appliedId != null) {
+            appliedRowIds.add(appliedId);
+          }
         }
       } catch (CardDavException e) {
         // One batch failing costs those entries this run, not the whole sync: the
@@ -569,7 +618,7 @@ public class EmailContactCardDavSyncService {
         LOG.warn("A batch of address book entries could not be read for user {}", username, e);
       }
     }
-    int removed = removeVanished(username, serverEtags.keySet(), storedRows, bookChanged);
+    int removed = removeVanished(username, serverEtags.keySet(), storedRows, bookChanged, appliedRowIds);
     // The skipped count matters as much as the written one: an address book full of
     // phone-only entries produces far fewer contacts than it has entries, and
     // without this number that gap looks like a bug rather than the store being
@@ -591,14 +640,16 @@ public class EmailContactCardDavSyncService {
    * @param connector the provider preset
    * @param resource the entry as the server returned it
    * @param sameHref the row already known to be this entry, if any
-   * @return true when something was written
+   * @return the id of the row written, or null when the entry was skipped —
+   *         the caller needs the id, not a boolean, because a written row must
+   *         be shielded from the vanished check's pre-apply snapshot
    */
-  private boolean apply(String username, EmailConnector connector, ContactResource resource, CardDavRow sameHref) {
+  private Long apply(String username, EmailConnector connector, ContactResource resource, CardDavRow sameHref) {
     ParsedVCard card = vCardParser.parse(resource.vcard());
     if (card == null) {
       // Unreadable, which the parser has already logged. One entry skipped, never a
       // failed run.
-      return false;
+      return null;
     }
     if (card.emails().isEmpty() && StringUtils.isBlank(card.formattedName()) && StringUtils.isBlank(card.familyName())) {
       // Nothing to show and nothing to reach: not a person, whatever the server
@@ -606,7 +657,7 @@ public class EmailContactCardDavSyncService {
       // a phone number is an ordinary contact, and refusing them is what made a
       // 496-entry address book arrive as 132 contacts.
       LOG.debug("An address book entry of user {} carries neither a name nor an address and was skipped", username);
-      return false;
+      return null;
     }
     CardDavContactData data = toContactData(card);
     // Matched on ANY address the entry carries, not only the first: the same person
@@ -619,18 +670,17 @@ public class EmailContactCardDavSyncService {
       // profile. Claiming it would flip it read-only and overwrite what they
       // wrote; the address book is not more right about a person than they are.
       LOG.debug("An address book entry of user {} matches a contact that is not the sync's to claim", username);
-      return false;
+      return null;
     }
     boolean writePhoto = target == null || target.photoOrigin() != PhotoOrigin.USER;
-    emailContactStorage.saveCardDavContact(username,
-                                           target == null ? null : target.id(),
-                                           connector.getId(),
-                                           resource.href(),
-                                           resource.etag(),
-                                           data,
-                                           target == null ? null : target.photoFileId(),
-                                           writePhoto);
-    return true;
+    return emailContactStorage.saveCardDavContact(username,
+                                                  target == null ? null : target.id(),
+                                                  connector.getId(),
+                                                  resource.href(),
+                                                  resource.etag(),
+                                                  data,
+                                                  target == null ? null : target.photoFileId(),
+                                                  writePhoto);
   }
 
   /**
@@ -759,12 +809,31 @@ public class EmailContactCardDavSyncService {
    *
    * @param username the mailbox owner
    * @param serverHrefs every entry the server still has
-   * @param storedRows the rows this address book wrote
+   * @param storedRows the rows this address book wrote, AS OF BEFORE the apply
+   *          loop — a snapshot, and stale by construction for any row that
+   *          loop wrote onto
+   * @param bookChanged whether the administrator repointed the book this run
+   * @param appliedRowIds every row the apply loop just wrote — untouchable
+   *          here, whatever the snapshot remembers about them
    * @return how many rows were demoted or deleted
    */
-  private int removeVanished(String username, Set<String> serverHrefs, List<CardDavRow> storedRows, boolean bookChanged) {
+  private int removeVanished(String username,
+                             Set<String> serverHrefs,
+                             List<CardDavRow> storedRows,
+                             boolean bookChanged,
+                             Set<Long> appliedRowIds) {
     int removed = 0;
     for (CardDavRow row : storedRows) {
+      // A row this run just wrote belongs to a live server entry by definition
+      // -- apply only ever writes what the server just returned. The snapshot
+      // still shows the href the row USED to carry, so when the server files a
+      // card under a new path (a rename, a move, or BlueMind renaming a
+      // published card), the old href looks vanished here while the row it
+      // names was updated moments ago. Judging it by the snapshot deleted a
+      // user's contact in the same run that had just claimed it.
+      if (appliedRowIds.contains(row.id())) {
+        continue;
+      }
       if (row.href() == null || serverHrefs.contains(row.href())) {
         continue;
       }

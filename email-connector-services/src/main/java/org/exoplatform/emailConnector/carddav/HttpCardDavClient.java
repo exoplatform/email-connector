@@ -223,7 +223,16 @@ public class HttpCardDavClient implements CardDavClient {
       }
       // The etag exactly as sent, quotes and all -- the same raw shape the
       // PROPFIND listing answers, so the sync's etag comparison stays honest.
-      return new PutResult(status, StringUtils.trimToNull(response.headers().firstValue("ETag").orElse(null)));
+      //
+      // The Location matters as much as the etag: BlueMind stores the card
+      // under a path of its own choosing, not the one that was PUT, and this
+      // header is the only same-round-trip way to learn the entry's real name.
+      // Resolved absolute against the request URL, like every other href this
+      // client answers from discovery.
+      String location = StringUtils.trimToNull(response.headers().firstValue("Location").orElse(null));
+      return new PutResult(status,
+                           StringUtils.trimToNull(response.headers().firstValue("ETag").orElse(null)),
+                           location == null ? null : resolve(url, location));
     } catch (IOException e) {
       throw new CardDavException("The address book server could not be reached at " + request.uri(), e);
     } catch (InterruptedException e) {
