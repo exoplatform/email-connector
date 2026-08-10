@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.utils;
 
 import java.text.Normalizer;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -337,5 +338,101 @@ public final class EmailContactUtils {
                .replace("&amp;", "&")
                .replaceAll("\n{3,}", "\n\n");
     return StringUtils.trimToNull(text);
+  }
+
+  // ---------------------------------------------------------------- phones
+
+  /**
+   * The phone types a contact row can name, in the priority order the vCard
+   * parser resolves a multi-typed TEL with. This IS the vCard vocabulary — each
+   * value is the lowercase name of an ez-vcard {@code TelephoneType} the
+   * exporter writes back as a TYPE parameter — rather than an invented one, so
+   * a card imported typed exports typed and another address book reads it.
+   */
+  public static final List<String> PHONE_TYPES = List.of("cell", "work", "home", "fax", "pager");
+
+  /**
+   * The type of a stored phone entry.
+   * <p>
+   * An entry is {@code type,value} when typed, a bare number when not; the
+   * prefix before the first comma only counts as a type when it names one of
+   * {@link #PHONE_TYPES} — so a legacy bare number, or a value that itself
+   * contains commas (dial pauses do), can never be misread as typed.
+   *
+   * @param entry the stored entry, may be null
+   * @return the canonical lowercase type, or null for a typeless entry
+   */
+  public static String phoneTypeOf(String entry) {
+    if (entry == null) {
+      return null;
+    }
+    int comma = entry.indexOf(',');
+    if (comma <= 0) {
+      return null;
+    }
+    String prefix = entry.substring(0, comma).trim().toLowerCase(Locale.ROOT);
+    return PHONE_TYPES.contains(prefix) ? prefix : null;
+  }
+
+  /**
+   * The number of a stored phone entry — everything after a recognized type
+   * prefix, or the whole entry when there is none.
+   *
+   * @param entry the stored entry, may be null
+   * @return the number as typed, trimmed, or null when there is nothing in it
+   */
+  public static String phoneValueOf(String entry) {
+    if (entry == null) {
+      return null;
+    }
+    String type = phoneTypeOf(entry);
+    String value = type == null ? entry : entry.substring(entry.indexOf(',') + 1);
+    return StringUtils.trimToNull(value);
+  }
+
+  /**
+   * One phone entry as the store encodes it: {@code type,value} when a type is
+   * named, the bare value when not. Unknown types are dropped rather than
+   * stored — an entry only ever carries the vocabulary the exporter can write.
+   *
+   * @param type the type, matched against {@link #PHONE_TYPES}, may be null
+   * @param value the number as typed
+   * @return the entry, or null when the value holds nothing
+   */
+  public static String phoneEntryOf(String type, String value) {
+    // The semicolon is the store column's separator: left inside a value it
+    // would split one number into two rows at the next read, so it goes.
+    String trimmedValue = StringUtils.trimToNull(value == null ? null : value.replace(";", " "));
+    if (trimmedValue == null) {
+      return null;
+    }
+    String canonicalType = type == null ? null : StringUtils.trimToNull(type.toLowerCase(Locale.ROOT));
+    return canonicalType != null && PHONE_TYPES.contains(canonicalType) ? canonicalType + "," + trimmedValue : trimmedValue;
+  }
+
+  /**
+   * A phone number reduced to what makes two ways of writing it the same
+   * number: the digits, plus a leading {@code +} when the number carries one.
+   * <p>
+   * This is deliberately a COMPARISON key, never a stored value. Canonicalizing
+   * on write (E.164) needs a default country for numbers written nationally,
+   * which the store does not know — guessing would mangle the number, and a
+   * mangled number is worse than a messy one. So the store keeps the number as
+   * typed and this key answers "is it the same one" for de-duplication and any
+   * future matching.
+   *
+   * @param value the number as typed, entry or bare value alike
+   * @return the comparison key, or null when the value carries no digits
+   */
+  public static String phoneComparisonKey(String value) {
+    String number = phoneValueOf(value);
+    if (number == null) {
+      return null;
+    }
+    String digits = number.replaceAll("[^0-9]", "");
+    if (digits.isEmpty()) {
+      return null;
+    }
+    return number.trim().startsWith("+") ? "+" + digits : digits;
   }
 }
