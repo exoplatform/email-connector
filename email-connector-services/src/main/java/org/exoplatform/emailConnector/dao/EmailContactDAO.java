@@ -79,24 +79,6 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
   Optional<EmailContactEntity> findByUserIdAndVcardUid(String userId, String vcardUid);
 
   /**
-   * Contacts one of whose SECONDARY addresses is the given one, so a message
-   * from a person's alternate address still lands on their one row. The EMAILS
-   * column encodes {@code type,value;type,value}, hence the two LIKE shapes: the
-   * value is always preceded by a comma and followed by a semicolon or the end
-   * of the string — bounding both sides keeps "ann@x.co" from matching
-   * "ann@x.com". Matching with LIKE (not LOCATE) because the column is VARCHAR
-   * precisely so HSQLDB can search it.
-   *
-   * @param userId the store owner
-   * @param address the normalized address
-   * @return the matching rows, in practice zero or one
-   */
-  @Query("SELECT c FROM EmailContactEntity c WHERE c.userId = :userId AND (LOWER(c.emails) LIKE CONCAT('%,', :address, ';%') OR LOWER(c.emails) LIKE CONCAT('%,', :address))")
-  List<EmailContactEntity> findBySecondaryEmail(@Param("userId")
-  String userId, @Param("address")
-  String address);
-
-  /**
    * The browse/search page over the user's whole visible store ("All" = the
    * local store, every source). The optional term is matched — already
    * lowercased by the caller — against the sort key, the display name and every
