@@ -43,7 +43,13 @@ public class EmailContact {
   /** Lowercased, trimmed; with the owner it is the contact's natural key. */
   private String       primaryEmail;
 
-  /** Secondary addresses (phase 3 fills them from vCards). */
+  /**
+   * The contact's other addresses, normalized; the contact is reachable at any
+   * of them. On a write the field is three-state, like {@link #photoUploadId}:
+   * absent (null) says nothing about them — the stored set is kept, and a
+   * moving primary is demoted into it — while a present list is the
+   * authoritative set, the form sending every address row it shows.
+   */
   private List<String> secondaryEmails;
 
   private String       displayName;
