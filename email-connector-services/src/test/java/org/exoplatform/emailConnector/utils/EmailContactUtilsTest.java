@@ -151,4 +151,47 @@ public class EmailContactUtilsTest {
     assertEquals(EmailContactUtils.MAX_NOTE_LENGTH,
                  EmailContactUtils.truncateNote("x".repeat(EmailContactUtils.MAX_NOTE_LENGTH + 1)).length());
   }
+
+  @Test
+  void aPhoneEntrySplitsOnlyOnAKnownType() {
+    // The prefix before the first comma is a type ONLY when the store names it:
+    // a legacy bare number, or a number that itself contains commas (dial
+    // pauses), must never be misread as typed.
+    assertEquals("work", EmailContactUtils.phoneTypeOf("work,+33 1 23 45 67 89"));
+    assertEquals("+33 1 23 45 67 89", EmailContactUtils.phoneValueOf("work,+33 1 23 45 67 89"));
+    assertNull(EmailContactUtils.phoneTypeOf("+33 6 12 34 56 78"));
+    assertEquals("+33 6 12 34 56 78", EmailContactUtils.phoneValueOf("+33 6 12 34 56 78"));
+    assertNull(EmailContactUtils.phoneTypeOf("+3312,,4567"));
+    assertEquals("+3312,,4567", EmailContactUtils.phoneValueOf("+3312,,4567"));
+    assertNull(EmailContactUtils.phoneTypeOf("office,+331"));
+    assertEquals("office,+331", EmailContactUtils.phoneValueOf("office,+331"));
+    assertNull(EmailContactUtils.phoneTypeOf(null));
+    assertNull(EmailContactUtils.phoneValueOf("   "));
+  }
+
+  @Test
+  void aPhoneEntryEncodesTheVocabularyAndDropsWhatIsNotInIt() {
+    assertEquals("cell,+33 6 12 34 56 78", EmailContactUtils.phoneEntryOf("cell", "+33 6 12 34 56 78"));
+    assertEquals("work,+331", EmailContactUtils.phoneEntryOf("WORK", " +331 "));
+    // An unknown type is dropped rather than stored: the exporter could not
+    // write it back, so keeping it would be a one-way street.
+    assertEquals("+331", EmailContactUtils.phoneEntryOf("office", "+331"));
+    assertNull(EmailContactUtils.phoneEntryOf("cell", "  "));
+    // The store column joins on semicolons, so one inside a value has to go.
+    assertEquals("12 34", EmailContactUtils.phoneEntryOf(null, "12;34"));
+  }
+
+  @Test
+  void theComparisonKeyMakesSpellingsOfOneNumberEqual() {
+    // A comparison key, never a stored value: the store keeps the number as
+    // typed, and this is only how two spellings are recognized as one number.
+    assertEquals("+33612345678", EmailContactUtils.phoneComparisonKey("+33 6 12 34 56 78"));
+    assertEquals("+33612345678", EmailContactUtils.phoneComparisonKey("cell,+33.6.12.34.56.78"));
+    assertEquals("0612345678", EmailContactUtils.phoneComparisonKey("06 12 34 56 78"));
+    // The leading plus is meaning, not formatting: +33 and 33 are not the
+    // same dialable number, so the key keeps it.
+    assertEquals("33612345678", EmailContactUtils.phoneComparisonKey("33 6 12 34 56 78"));
+    assertNull(EmailContactUtils.phoneComparisonKey("no digits here"));
+    assertNull(EmailContactUtils.phoneComparisonKey(null));
+  }
 }
