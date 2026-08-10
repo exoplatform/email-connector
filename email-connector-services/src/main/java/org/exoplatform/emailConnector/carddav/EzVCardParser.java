@@ -32,6 +32,7 @@ import ezvcard.io.text.VCardReader;
 import ezvcard.io.text.VCardWriter;
 import ezvcard.parameter.EmailType;
 import ezvcard.parameter.ImageType;
+import ezvcard.parameter.TelephoneType;
 import ezvcard.property.Address;
 import ezvcard.property.Birthday;
 import ezvcard.property.Email;
@@ -135,7 +136,19 @@ public class EzVCardParser implements VCardParser {
       first = false;
     }
     for (String phone : card.phones()) {
-      vcard.addTelephoneNumber(phone);
+      // A typed entry writes its type back as the TEL TYPE parameter -- the
+      // very vocabulary phonesOf() reads -- so a card that arrived as somebody's
+      // work number leaves as one instead of a bare string.
+      String value = EmailContactUtils.phoneValueOf(phone);
+      String type = EmailContactUtils.phoneTypeOf(phone);
+      if (value == null) {
+        continue;
+      }
+      if (type == null) {
+        vcard.addTelephoneNumber(value);
+      } else {
+        vcard.addTelephoneNumber(value, TelephoneType.get(type));
+      }
     }
     if (StringUtils.isNotBlank(card.organization())) {
       vcard.setOrganization(card.organization());
@@ -394,17 +407,35 @@ public class EzVCardParser implements VCardParser {
   }
 
   /**
-   * Every phone number, in the order the vCard lists them.
+   * Every phone number, in the order the vCard lists them, each as the store's
+   * {@code type,value} entry when the TEL carries a type this add-on names.
+   * <p>
+   * The type used to be dropped here, which flattened a number imported as
+   * "work" to a bare string the moment it was stored. Only the vocabulary of
+   * {@link EmailContactUtils#PHONE_TYPES} is kept — a TEL typed several ways
+   * (CELL;VOICE is common) resolves to the highest-priority known one, and a
+   * TEL typed only in ways the store cannot say stays a bare number rather
+   * than inventing a vocabulary the exporter could not write back.
    *
    * @param vcard the parsed vCard
-   * @return the numbers, never null
+   * @return the phone entries, never null
    */
   private List<String> phonesOf(VCard vcard) {
     List<String> values = new ArrayList<>();
     for (Telephone phone : vcard.getTelephoneNumbers()) {
       String value = StringUtils.trimToNull(phone.getText());
-      if (value != null && !values.contains(value)) {
-        values.add(value);
+      if (value == null) {
+        continue;
+      }
+      String type = EmailContactUtils.PHONE_TYPES.stream()
+                                                 .filter(candidate -> phone.getTypes()
+                                                                           .stream()
+                                                                           .anyMatch(t -> candidate.equalsIgnoreCase(t.getValue())))
+                                                 .findFirst()
+                                                 .orElse(null);
+      String entry = EmailContactUtils.phoneEntryOf(type, value);
+      if (entry != null && !values.contains(entry)) {
+        values.add(entry);
       }
     }
     return values;
