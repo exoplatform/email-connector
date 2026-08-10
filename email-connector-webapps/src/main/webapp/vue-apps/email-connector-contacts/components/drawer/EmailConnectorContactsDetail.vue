@@ -96,9 +96,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-subtitle>
         </v-list-item-content>
       </v-list-item>
+      <!-- Keyed by index, not by entry: a stored list may legitimately hold
+           the same text twice mid-edit, and the index is stable enough for a
+           list that only ever redraws whole. -->
       <v-list-item
-        v-for="phone in contact.phones || []"
-        :key="phone"
+        v-for="(phone, index) in contact.phones || []"
+        :key="`phone-${index}`"
         class="px-0">
         <v-list-item-icon class="me-3 my-auto">
           <v-icon size="16">
@@ -108,9 +111,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <!-- The number reads as the platform's own does: v-autolinker with the
              call argument is the very directive the profile's contact information
              uses, so a future fix there arrives here for free. It sets innerHTML,
-             which is why it sits on a leaf with nothing inside it. -->
+             which is why it sits on a leaf with nothing inside it — the type
+             label lives in a sibling span, the way the primary address marks
+             itself above. -->
         <v-list-item-content>
-          <v-list-item-title v-autolinker:call="phone"></v-list-item-title>
+          <v-list-item-title>
+            <span v-autolinker:call="phoneValue(phone)"></span>
+            <span
+              v-if="phoneTypeLabel(phone)"
+              class="text-caption text-sub-title">
+              · {{ phoneTypeLabel(phone) }}
+            </span>
+          </v-list-item-title>
         </v-list-item-content>
         <!-- And the action button, as the user card renders it. It is not
              decoration: a profile phone is validated to digits, so the platform's
@@ -351,11 +363,42 @@ export default {
      * DISPLAYED exactly as it was written, because that is how its owner wrote it;
      * only what gets dialled is cleaned.
      *
-     * @param {string} phone - the number as the contact holds it
+     * @param {string} phone - the entry as the contact holds it
      * @returns {string} the number a dialler can use
      */
     dialable(phone) {
-      return (phone || '').replace(/[^\d+*#]/g, '');
+      // The type prefix comes off first: "work" contains no digits, but going
+      // through phoneValue keeps the dial string honest whatever the entry.
+      return this.phoneValue(phone).replace(/[^\d+*#]/g, '');
+    },
+    /**
+     * The number of a stored phone entry, without its type prefix. The store
+     * encodes a typed number as `type,value`; the prefix only counts as a type
+     * when it is in the vCard vocabulary the backend names, so a bare legacy
+     * number — or one containing commas of its own — reads whole.
+     *
+     * @param {string} phone - the entry as the contact holds it
+     * @returns {string} the number as its owner wrote it
+     */
+    phoneValue(phone) {
+      const text = phone || '';
+      const comma = text.indexOf(',');
+      const prefix = comma > 0 ? text.slice(0, comma).trim().toLowerCase() : '';
+      return ['cell', 'work', 'home', 'fax', 'pager'].includes(prefix) ? text.slice(comma + 1).trim() : text.trim();
+    },
+    /**
+     * The localized label of an entry's type, or nothing for a bare number —
+     * an untyped number gets no caption rather than an invented one.
+     *
+     * @param {string} phone - the entry as the contact holds it
+     * @returns {string} the label, or an empty string
+     */
+    phoneTypeLabel(phone) {
+      const text = phone || '';
+      const comma = text.indexOf(',');
+      const prefix = comma > 0 ? text.slice(0, comma).trim().toLowerCase() : '';
+      return ['cell', 'work', 'home', 'fax', 'pager'].includes(prefix)
+        ? this.$t(`emailConnector.contacts.phoneType.${prefix}`) : '';
     },
     /**
      * Hands one address to the mail app's composer (mounted on demand).
