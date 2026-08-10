@@ -34,7 +34,13 @@ public class EmailBoxCleanupListener {
   @Autowired
   private EmailContactService emailContactService;
 
-  @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
+  // fallbackExecution, for the reason ContactBookReleaseListener already documents:
+  // a transactional listener with no transaction in progress does not run and does
+  // not complain. Disconnecting an account is transactional, but REBINDING one is
+  // not -- it is a settings write -- so this handler was silently skipped on the
+  // very path that needs it most, leaving the previous mailbox's cached mail in
+  // place and collection un-armed for the new account.
+  @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT, fallbackExecution = true)
   public void handleEmailBoxCleanup(EmailBoxCleanupEvent event) {
     emailBoxService.deleteUserEmails(event.getUsername());
     // The cache the collection reads has just gone, so collection has to be able to
@@ -42,5 +48,8 @@ public class EmailBoxCleanupListener {
     // first sync caches the inbox before the sent folder, and an inbox sender is
     // judged against the organisations the user has written to.
     emailContactService.resetCollectionBackfill(event.getUsername());
+    // The people collected from the mailbox that has just gone are now the user's
+    // own: kept, editable, and no longer claiming a history this store cannot show.
+    emailContactService.releaseCollectedContacts(event.getUsername());
   }
 }
