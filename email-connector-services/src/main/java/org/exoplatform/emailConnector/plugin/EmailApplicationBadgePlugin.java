@@ -23,7 +23,6 @@ import java.util.List;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -46,20 +45,13 @@ import jakarta.annotation.PostConstruct;
  * at the next synchronisation rather than instantly.
  */
 @Component
-@ConditionalOnClass(ApplicationBadgePlugin.class)
 public class EmailApplicationBadgePlugin implements ApplicationBadgePlugin {
 
   private static final Log               LOG        = ExoLogger.getLogger(EmailApplicationBadgePlugin.class);
 
   public static final String             BADGE_NAME = "emailUnread";
 
-  /**
-   * Optional on purpose: the badge is a nicety, not something the mailbox
-   * depends on. When the Application Center registry is absent — a deployment
-   * without the addon, or this module's own Spring test context — the plugin
-   * simply does not register instead of failing the whole context.
-   */
-  @Autowired(required = false)
+  @Autowired
   private ApplicationBadgePluginRegistry applicationBadgePluginRegistry;
 
   @Autowired
@@ -79,10 +71,6 @@ public class EmailApplicationBadgePlugin implements ApplicationBadgePlugin {
 
   @PostConstruct
   public void init() {
-    if (applicationBadgePluginRegistry == null) {
-      LOG.debug("Application Center badge registry not available, Mail badge not registered");
-      return;
-    }
     applicationBadgePluginRegistry.addPlugin(this);
   }
 

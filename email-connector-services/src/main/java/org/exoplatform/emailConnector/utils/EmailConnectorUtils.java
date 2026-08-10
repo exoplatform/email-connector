@@ -118,6 +118,9 @@ public class EmailConnectorUtils {
   // for an inbox-only sync, which never caches Sent at all.
   public static final String   MAILBOX_SYNC_COMPLETED    = "exo.email.mailboxSyncCompleted";
 
+  /** Raised whenever a user's unread count may have changed (sync or read status update). */
+  public static final String   UNREAD_EMAILS_CHANGED   = "exo.email.unreadEmailsChanged";
+
   public static final String   EMAIL_FEATURE           = "email";
 
   private static final int     DEFAULT_AVATAR_WIDTH    = 350;
