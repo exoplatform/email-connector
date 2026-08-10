@@ -21,9 +21,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        The actions live in the drawer's header, where this drawer's siblings keep
        theirs (the mail reader does the same), rather than as buttons stranded under
        the card. What they may do is the contact's business, not the header's: a
-       contact whose truth is a directory profile or a CardDAV server cannot be
-       edited here, and the delete tooltip says whether it removes the row or merely
-       stops collecting the person. -->
+       directory-linked row only edits what the profile does not own, a CardDAV
+       row edits through its server (and only while writing is available), and
+       the delete tooltip says whether it removes the row or merely stops
+       collecting the person. -->
   <exo-drawer
     id="emailContactDetailDrawer"
     ref="emailContactDetailDrawer"
@@ -151,16 +152,19 @@ export default {
       return this.$emailConnectorContactsService.isChatDeployed();
     },
     /**
-     * Whether editing applies: manual and collected rows only. A CardDAV row is the
-     * server's to edit, and a directory-linked row is the platform profile's.
+     * Whether editing applies. A directory-linked row is editable for what the
+     * profile does not own — their birthday, an address, a note about where you
+     * met; the form greys out the identity the profile resolves on every read.
+     * A CardDAV row is editable exactly when the address book is writable at
+     * all (same stored-state answer the publish action uses): its edit is
+     * pushed to the server before it is kept, so with writing off the edit
+     * would only be refused, and a button that can only fail must not show.
      *
      * @returns {boolean} true when the edit icon shows
      */
     editable() {
-      // A directory contact is editable too, for what the profile does not own:
-      // their birthday, an address, a note about where you met. The form greys
-      // out the identity the profile resolves on every read.
-      return ['MANUAL', 'COLLECTED', 'DIRECTORY'].includes(this.contact?.source);
+      return ['MANUAL', 'COLLECTED', 'DIRECTORY'].includes(this.contact?.source)
+        || (this.contact?.source === 'CARDDAV' && this.addressBookPublishable);
     },
     /**
      * Whether the publish action shows: the row must be the user's own to give

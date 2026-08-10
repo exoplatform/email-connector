@@ -47,6 +47,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.PhotoOrigin;
+import org.exoplatform.emailConnector.model.PostalAddress;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailContactStorage;
@@ -57,12 +58,16 @@ import org.exoplatform.services.log.Log;
 /**
  * Brings a user's CardDAV address book into their contact store.
  * <p>
- * Reads are the rule, server to us: an address-book contact is edited where it
- * lives, and the next sync carries the change over — which is why a CARDDAV
- * row is refused edits elsewhere in the service layer. The one write is
- * {@link #publishContact}: an explicit, per-contact, creates-only push of a
- * contact the user owns into their own book, after which the server copy is
- * authoritative like any other.
+ * Reads are the rule, server to us: an address-book contact is edited against
+ * the server or not at all — which is why a CARDDAV row is refused edits
+ * elsewhere in the service layer, and why that refusal is lifted only HERE,
+ * where the edit is pushed before it is kept. The writes are
+ * {@link #publishContact} — an explicit, per-contact, creates-only push of a
+ * contact the user owns into their own book — and
+ * {@link #updateAddressBookContact} — an edit merged into the server's own
+ * card and stored only when the server accepts it. Either way the server copy
+ * stays authoritative: an edit the server refuses is an edit this store
+ * refuses too, never one it keeps quietly diverged.
  * <p>
  * Kept apart from {@link EmailContactService} on purpose — that class owns the
  * store's own rules and is long enough already; this one owns a protocol
@@ -115,6 +120,18 @@ public class EmailContactCardDavSyncService {
 
   /** Message code: the server says an entry already exists where the card would go. */
   public static final String       PUBLISH_EXISTS_ON_SERVER  = "emailConnector.contacts.publish.existsOnServer";
+
+  /** Message code: the edited contact is not an address-book row at all. */
+  public static final String       UPDATE_NOT_ADDRESS_BOOK   = "emailConnector.contacts.update.notAddressBook";
+
+  /** Message code: the row carries no server entry to push the edit to. */
+  public static final String       UPDATE_NO_SERVER_ENTRY    = "emailConnector.contacts.update.noServerEntry";
+
+  /** Message code: the entry is no longer on the server at all. */
+  public static final String       UPDATE_ENTRY_GONE         = "emailConnector.contacts.update.entryGone";
+
+  /** Message code: somebody changed the entry first, and their change won. */
+  public static final String       UPDATE_CONFLICT           = "emailConnector.contacts.update.conflict";
 
   @Autowired
   private EmailContactStorage      emailContactStorage;
@@ -368,7 +385,7 @@ public class EmailContactCardDavSyncService {
     }
     if (EmailContactSource.CARDDAV.equals(contact.getSource())) {
       // Not an error to force through: the row IS an address-book entry, and
-      // "publish" for it would be the update slice, which does not exist yet.
+      // changing it is updateAddressBookContact's job, not a second create.
       throw new IllegalStateException(PUBLISH_ALREADY_PUBLISHED);
     }
     if (!EmailContactSource.MANUAL.equals(contact.getSource())
@@ -428,6 +445,318 @@ public class EmailContactCardDavSyncService {
     // Re-read rather than mutated in place: the caller gets the row as every
     // other read now sees it, source flipped and enrichment applied.
     return emailContactService.getContact(contactId, username);
+  }
+
+  /**
+   * Pushes an edit of one of the caller's address-book contacts to the CardDAV
+   * server, and keeps it locally only once the server accepted it — the write
+   * that lifts the CARDDAV-rows-are-read-only rule without ever relaxing it:
+   * the path goes from "edit refused" straight to "edit pushed", and an edit
+   * that cannot be pushed is still refused, never kept quietly diverged.
+   * <p>
+   * The order is the safety argument. The edit is validated first (usable
+   * addresses, no address collision with another row) so nothing reaches the
+   * server that could not land locally afterwards. Then the entry's card is
+   * fetched FROM THE SERVER at save time and the edit is merged into that raw
+   * card — only the form's own properties, only where they differ — because
+   * the local model is lossy and serializing it back would strip everything it
+   * has no slot for. The PUT goes out under {@code If-Match} with the etag
+   * that same fetch answered, so the server accepts the write only if nobody
+   * changed the entry since this code read it: the merge's base and the
+   * precondition's version are the same read, which is what makes the merge
+   * honest.
+   * <p>
+   * A 412 never overwrites anybody: the other change stays on the server, the
+   * server's current card is re-read and becomes the local row (the new
+   * baseline the user re-edits from), and the refusal is answered as a
+   * conflict so the form can keep the user's words on screen. On success the
+   * merged card itself is parsed back into the row, exactly as the inbound
+   * sync would store it, with whatever etag the server answered the PUT —
+   * null included, which simply makes the next sync re-read the entry.
+   *
+   * @param username the mailbox owner
+   * @param contactId the address-book contact being edited
+   * @param edited the fields as the form saved them — same three-state
+   *          contracts as the ordinary update for secondaryEmails and phones
+   * @return the contact re-read after the push; or null when the caller has
+   *         no such visible contact
+   * @throws IllegalArgumentException with a message code when a guard refuses
+   *           the edit before anything is written
+   * @throws IllegalStateException with {@link #UPDATE_CONFLICT},
+   *           {@link #UPDATE_ENTRY_GONE}, {@link #UPDATE_NO_SERVER_ENTRY} or
+   *           {@code CONTACT_ALREADY_EXISTS} — refusals, each leaving the
+   *           server untouched
+   * @throws CardDavException when the server cannot be reached, errors, or
+   *           answers a card too broken to merge safely
+   */
+  public EmailContact updateAddressBookContact(String username, long contactId, EmailContact edited) {
+    if (!isPublishEnabled()) {
+      // The same kill switch as the publish: it means "this connector does not
+      // write to address books", and an edit is a write.
+      throw new IllegalArgumentException(PUBLISH_DISABLED);
+    }
+    EmailContact contact = emailContactService.getContact(contactId, username);
+    if (contact == null) {
+      return null;
+    }
+    if (!EmailContactSource.CARDDAV.equals(contact.getSource())) {
+      // Every other source has its ordinary update; routing it through the
+      // server push would invent a server entry it does not have.
+      throw new IllegalArgumentException(UPDATE_NOT_ADDRESS_BOOK);
+    }
+    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
+    Long connectorId = boundConnectorId(setting);
+    EmailConnector connector = connectorId == null ? null : emailConnectorService.getEmailConnector(connectorId);
+    if (connector == null || StringUtils.isBlank(connector.getCarddavUrl())) {
+      throw new IllegalArgumentException(PUBLISH_NO_ADDRESS_BOOK);
+    }
+    ContactSyncState state = userEmailSettingService.getContactSyncState(username);
+    if (state == null || StringUtils.isBlank(state.getAddressBookHref())) {
+      // Same rule as the publish: never write to a book no sync has verified.
+      throw new IllegalArgumentException(PUBLISH_NOT_DISCOVERED);
+    }
+    CardDavRow row = emailContactStorage.getCardDavRowById(contactId);
+    if (row == null || StringUtils.isBlank(row.href())) {
+      // A CARDDAV row without its bookkeeping cannot be pushed anywhere, so
+      // its edit stays refused; the next sync is what repairs such a row.
+      throw new IllegalStateException(UPDATE_NO_SERVER_ENTRY);
+    }
+    // Everything refusable about the edit itself is refused HERE, before any
+    // network: past this point the only refusals left are the server's own.
+    ParsedVCard editedCard = toEditedCard(contact, edited, username, contactId);
+    String previousHref = state.getAddressBookHref();
+    AddressBook addressBook = resolveAddressBook(setting, connector, state);
+    if (!StringUtils.equals(previousHref, addressBook.url())) {
+      userEmailSettingService.setContactSyncState(state, username);
+    }
+    String entryUrl = entryUrlOf(addressBook, row.href());
+    ContactResource fetched = cardDavClient.fetchVCard(entryUrl, setting.getEmailAddress(), setting.getEmailPassword());
+    if (fetched == null) {
+      // The entry is gone from the server; the next sync will demote or delete
+      // the row, and editing it further would recreate what somebody deleted.
+      throw new IllegalStateException(UPDATE_ENTRY_GONE);
+    }
+    String merged = vCardParser.merge(fetched.vcard(), editedCard);
+    if (merged == null) {
+      // Cannot merge safely means cannot push, and cannot push means the edit
+      // stays refused -- the rule is never relaxed ahead of the push working.
+      throw new CardDavException("The server's card for contact " + contactId
+          + " could not be read for merging, so the edit was refused");
+    }
+    if (StringUtils.isBlank(fetched.etag())) {
+      // Rare, and worth a trace: without an etag from the fetch there is no
+      // precondition to send, so the PUT rides only on the freshness of the
+      // fetch the merge was based on.
+      LOG.debug("The address book server answered no etag for {}; the edit of contact {} is pushed unguarded",
+                entryUrl,
+                contactId);
+    }
+    PutResult result = cardDavClient.updateVCard(entryUrl,
+                                                 merged,
+                                                 fetched.etag(),
+                                                 setting.getEmailAddress(),
+                                                 setting.getEmailPassword());
+    if (result.preconditionFailed()) {
+      // Somebody changed the entry between this code's fetch and its PUT, and
+      // their change stays: the server's card becomes the local baseline, and
+      // the refusal travels to the form still holding the user's words.
+      adoptServerCard(username, row, connector.getId(), entryUrl, setting, fetched);
+      throw new IllegalStateException(UPDATE_CONFLICT);
+    }
+    applyCard(username, row, connector.getId(), merged, result.etag());
+    LOG.info("Contact {} of user {} was edited and pushed to the address book of connector {}",
+             contactId,
+             username,
+             connector.getId());
+    return emailContactService.getContact(contactId, username);
+  }
+
+  /**
+   * The edit as the vCard fields the merge patches with, validated to the same
+   * rules the ordinary update applies — because whatever lands on the server
+   * must be storable back here in the same breath.
+   * <p>
+   * The list fields keep their three-state contracts: an absent
+   * secondaryEmails keeps the stored other addresses and demotes a moved
+   * primary into them instead of orphaning it; an absent phones list keeps the
+   * stored numbers. Every address the edit leaves on the contact is checked
+   * against the store first — pushing a card the local save would then refuse
+   * as a collision would desynchronize the two on purpose.
+   *
+   * @param stored the contact as it reads today, for the keep-on-silence rules
+   * @param edited the fields as the caller sent them
+   * @param username the store owner
+   * @param contactId the contact being edited, exempt from its own collisions
+   * @return the fields the merge may patch with
+   * @throws IllegalArgumentException with {@code CONTACT_INVALID_EMAIL} or
+   *           {@code CONTACT_INVALID_BIRTHDAY}
+   * @throws IllegalStateException with {@code CONTACT_ALREADY_EXISTS}
+   */
+  private ParsedVCard toEditedCard(EmailContact stored, EmailContact edited, String username, long contactId) {
+    String primary = EmailContactUtils.normalizeAddress(edited == null ? null : edited.getPrimaryEmail());
+    if (primary == null) {
+      throw new IllegalArgumentException(EmailContactService.CONTACT_INVALID_EMAIL);
+    }
+    Set<String> addresses = new LinkedHashSet<>();
+    addresses.add(primary);
+    List<String> requested = new ArrayList<>();
+    if (edited.getSecondaryEmails() != null) {
+      requested.addAll(edited.getSecondaryEmails());
+    } else {
+      if (stored.getSecondaryEmails() != null) {
+        requested.addAll(stored.getSecondaryEmails());
+      }
+      if (stored.getPrimaryEmail() != null && !stored.getPrimaryEmail().equals(primary)) {
+        requested.add(stored.getPrimaryEmail());
+      }
+    }
+    for (String address : requested) {
+      if (StringUtils.isBlank(address)) {
+        continue;
+      }
+      String normalized = EmailContactUtils.normalizeAddress(address);
+      if (normalized == null) {
+        throw new IllegalArgumentException(EmailContactService.CONTACT_INVALID_EMAIL);
+      }
+      addresses.add(normalized);
+    }
+    for (String address : addresses) {
+      CardDavRow other = emailContactStorage.getCardDavRowByAddress(username, address);
+      if (other != null && other.id() != contactId) {
+        throw new IllegalStateException(EmailContactService.CONTACT_ALREADY_EXISTS);
+      }
+    }
+    String given = StringUtils.trimToNull(edited.getGivenName());
+    String family = StringUtils.trimToNull(edited.getFamilyName());
+    // The same naming rule as the ordinary update: naming the person
+    // explicitly wins, whether as the pair or as the whole; saying nothing
+    // about the name leaves the card's name alone (the merge skips a null FN).
+    String formattedName = StringUtils.isNotBlank(given) || StringUtils.isNotBlank(family)
+                                                                                           ? StringUtils.trim(StringUtils.trimToEmpty(given)
+                                                                                               + " "
+                                                                                               + StringUtils.trimToEmpty(family))
+                                                                                           : StringUtils.trimToNull(edited.getDisplayName());
+    String birthday = null;
+    if (StringUtils.isNotBlank(edited.getBirthday())) {
+      birthday = EmailContactUtils.normalizeBirthday(edited.getBirthday());
+      if (birthday == null) {
+        throw new IllegalArgumentException(EmailContactService.CONTACT_INVALID_BIRTHDAY);
+      }
+    }
+    List<String> phones = edited.getPhones() != null ? edited.getPhones()
+                                                     : stored.getPhones() == null ? List.of() : stored.getPhones();
+    PostalAddress postalAddress = edited.getPostalAddress() == null ? null
+                                                                    : PostalAddress.orNull(edited.getPostalAddress().street(),
+                                                                                           edited.getPostalAddress().city(),
+                                                                                           edited.getPostalAddress().region(),
+                                                                                           edited.getPostalAddress()
+                                                                                                 .postalCode(),
+                                                                                           edited.getPostalAddress().country());
+    return new ParsedVCard(null,
+                           formattedName,
+                           given,
+                           family,
+                           new ArrayList<>(addresses),
+                           phones,
+                           StringUtils.trimToNull(edited.getOrganization()),
+                           // The form has no job-title field, and the merge owns
+                           // no TITLE either way.
+                           null,
+                           birthday,
+                           postalAddress,
+                           EmailContactUtils.truncateNote(edited.getNote()),
+                           StringUtils.trimToNull(edited.getWebsite()),
+                           null,
+                           null);
+  }
+
+  /**
+   * The absolute URL of a bound entry — the stored href is the server-relative
+   * path exactly as PROPFIND lists it, resolved here against the verified
+   * book, never against anything configured-but-unverified.
+   *
+   * @param addressBook the resolved address book
+   * @param href the row's stored entry path
+   * @return the URL to GET and PUT
+   */
+  private String entryUrlOf(AddressBook addressBook, String href) {
+    if (StringUtils.startsWithIgnoreCase(href, "http")) {
+      return href;
+    }
+    try {
+      return new URI(addressBook.url()).resolve(href).toString();
+    } catch (URISyntaxException e) {
+      throw new CardDavException("The stored entry path could not be resolved against the address book: " + href, e);
+    }
+  }
+
+  /**
+   * Makes the server's current card the local row after a refused PUT — the
+   * half of "412 never overwrites" that faces the store: the other person's
+   * change is what the row shows from now on, so the user re-edits from the
+   * truth instead of from the copy that just lost the race. Re-fetched because
+   * the 412 proves the save-time fetch is already behind; when the re-fetch
+   * itself fails, that fetch is still newer than the row and is applied
+   * instead. Best effort throughout: however this goes, the conflict is
+   * reported and the next sync converges on the server.
+   *
+   * @param username the store owner
+   * @param row the row being edited
+   * @param connectorId the bound connector
+   * @param entryUrl the entry's absolute URL
+   * @param setting the user's mail binding
+   * @param fetchedAtSave the card the save-time fetch answered
+   */
+  private void adoptServerCard(String username,
+                               CardDavRow row,
+                               Long connectorId,
+                               String entryUrl,
+                               UserEmailSetting setting,
+                               ContactResource fetchedAtSave) {
+    ContactResource latest = fetchedAtSave;
+    try {
+      latest = cardDavClient.fetchVCard(entryUrl, setting.getEmailAddress(), setting.getEmailPassword());
+    } catch (CardDavException e) {
+      LOG.debug("The conflicting card at {} could not be re-read; the save-time copy stands in", entryUrl, e);
+    }
+    if (latest != null) {
+      applyCard(username, row, connectorId, latest.vcard(), latest.etag());
+    }
+    // A null re-fetch means the entry was deleted rather than changed: nothing
+    // to adopt, and the next sync will demote or delete the row.
+  }
+
+  /**
+   * Stores a card the server now holds onto the row, through the same write
+   * the inbound sync uses — so a pushed edit and a synced entry are
+   * indistinguishable afterwards. The photo is deliberately left untouched:
+   * the merge never writes PHOTO, so the card's picture is not news.
+   *
+   * @param username the store owner
+   * @param row the row to write onto
+   * @param connectorId the bound connector
+   * @param cardText the card as the server holds it
+   * @param etag the version to record, or null to make the next sync re-read
+   */
+  private void applyCard(String username, CardDavRow row, Long connectorId, String cardText, String etag) {
+    ParsedVCard card = vCardParser.parse(cardText);
+    if (card == null) {
+      // The write happened; only the local echo failed. The row keeps its old
+      // etag, which no longer matches the server's listing, so the next sync
+      // re-reads the entry and converges.
+      LOG.warn("The card just written for contact {} of user {} could not be read back; the next sync will settle it",
+               row.id(),
+               username);
+      return;
+    }
+    emailContactStorage.saveCardDavContact(username,
+                                           row.id(),
+                                           connectorId,
+                                           row.href(),
+                                           etag,
+                                           toContactData(card),
+                                           row.photoFileId(),
+                                           false);
   }
 
   /**

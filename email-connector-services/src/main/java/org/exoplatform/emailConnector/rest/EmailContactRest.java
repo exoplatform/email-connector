@@ -376,6 +376,39 @@ public class EmailContactRest {
     }
   }
 
+  @PutMapping("/{id}/card")
+  @Secured("users")
+  @Operation(summary = "Edits one of the caller's address-book contacts by pushing the edit to the CardDAV server", method = "PUT",
+             description = "The write-through edit of a CardDAV row, which the plain PUT /{id} refuses. The entry's card is fetched from the server at save time, the edit is merged into that raw card (only the form's own fields, everything else on the card preserved), and the card is stored back under If-Match with the etag that fetch answered - so a change somebody else made in the meantime is never overwritten: it answers 409, the server's card becomes the local row again, and the caller's edit is theirs to retry. The contact is kept locally only once the server accepted the write. Same body contract as PUT /{id}; somebody else's contact answers 404, never 403.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Writing disabled, not an address-book contact, an unusable address or birthday, no bound address book, or a book never discovered - the message code says which"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "The entry changed on the server first (the local row now shows that change), the entry is gone, the row has no server entry, or an address collides with another contact"),
+      @ApiResponse(responseCode = "502", description = "The address book server could not be reached, answered an error, or holds a card too broken to edit safely"), })
+  public EmailContact updateAddressBookContact(HttpServletRequest request,
+                                               @Parameter(description = "Contact id", required = true)
+                                               @PathVariable("id")
+                                               long id,
+                                               @Parameter(description = "The fields to apply", required = true)
+                                               @RequestBody
+                                               EmailContact contact) {
+    try {
+      EmailContact updated = emailContactCardDavSyncService.updateAddressBookContact(request.getRemoteUser(), id, contact);
+      if (updated == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return updated;
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (CardDavException e) {
+      // The server's failure, not the caller's -- same shape as the publish's.
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "emailConnector.contacts.update.serverError");
+    }
+  }
+
   @GetMapping("/carddav/publishable")
   @Secured("users")
   @Operation(summary = "Whether the caller can publish contacts to their address book", method = "GET",

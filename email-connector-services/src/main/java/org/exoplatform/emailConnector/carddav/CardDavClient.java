@@ -84,6 +84,22 @@ public interface CardDavClient {
   List<ContactResource> multiget(AddressBook addressBook, List<String> hrefs, String username, String password);
 
   /**
+   * Reads one entry's current card and version in a single GET — what an edit
+   * asks first, so the merge patches the card as the server holds it NOW rather
+   * than as the last sync remembers it.
+   *
+   * @param url the absolute entry URL to read
+   * @param username the account to authenticate as
+   * @param password that account's password
+   * @return the entry as the server returned it, or null when the server says
+   *         there is no such entry any more — an answer, not an error, because
+   *         the caller must tell "gone" apart from "unreachable"
+   * @throws CardDavException when the server cannot be reached, refuses the
+   *           credentials, or errors
+   */
+  ContactResource fetchVCard(String url, String username, String password);
+
+  /**
    * Stores one vCard at an entry URL — the protocol's only write, and the only
    * one this connector performs.
    * <p>
@@ -107,4 +123,27 @@ public interface CardDavClient {
    *           precondition refusal
    */
   PutResult putVCard(String url, String vcard, String ifNoneMatch, String username, String password);
+
+  /**
+   * Replaces one existing entry's card — the write an edit performs, guarded
+   * the opposite way from {@link #putVCard}: {@code If-Match} with the version
+   * the caller just read means the server only accepts the write when nobody
+   * changed the entry since that read. A 412 is answered as a
+   * {@link PutResult}, not thrown — it is the server protecting somebody
+   * else's change, and the caller decides what the refusal means.
+   *
+   * @param url the absolute entry URL to overwrite
+   * @param vcard the card text to store
+   * @param ifMatch the {@code If-Match} value — the etag the caller's own
+   *          fetch just answered; null sends no precondition at all, which the
+   *          caller may only choose when the server answered no etag to match
+   *          against
+   * @param username the account to authenticate as
+   * @param password that account's password
+   * @return the status and the stored card's etag when the server sent one
+   * @throws CardDavException when the server cannot be reached, refuses the
+   *           credentials, or answers a status that is neither a write nor a
+   *           precondition refusal
+   */
+  PutResult updateVCard(String url, String vcard, String ifMatch, String username, String password);
 }

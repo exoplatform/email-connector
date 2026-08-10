@@ -128,6 +128,20 @@ export function updateContact(contact) {
 }
 
 /**
+ * Updates an address-book (CardDAV) contact by pushing the edit to the
+ * server first: the server merges the edit into its own card and keeps it
+ * only if nobody changed the entry in the meantime. A rejection with status
+ * 409 and the conflict message code means somebody did — the server's card
+ * has become the local row again, and the user's edit is theirs to retry.
+ *
+ * @param {object} contact - the contact, with its id
+ * @returns {Promise<object>} the updated contact, re-read after the push
+ */
+export function updateAddressBookContact(contact) {
+  return saveContact(`/email-connector/rest/contacts/${contact.id}/card`, 'PUT', contact);
+}
+
+/**
  * Sends a create/update body and surfaces the server's message code on
  * failure, so the form can tell a conflict from a bad address.
  *

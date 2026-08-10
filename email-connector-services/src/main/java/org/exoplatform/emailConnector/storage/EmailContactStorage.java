@@ -493,6 +493,20 @@ public class EmailContactStorage {
   }
 
   /**
+   * One row in the sync's shape, by id — what the edit push reads to learn
+   * which server entry the row is bound to, without dragging the whole book's
+   * rows in for one contact. Ownership is not checked here: the caller has
+   * already resolved the contact through an owner-checked read.
+   *
+   * @param id the row id
+   * @return the row, or null when there is no such contact
+   */
+  @Transactional
+  public CardDavRow getCardDavRowById(long id) {
+    return emailContactDAO.findById(id).map(this::toCardDavRow).orElse(null);
+  }
+
+  /**
    * Writes an address-book entry onto a row, creating it when there is none.
    * <p>
    * This exists because {@code updateContact} structurally cannot do it: that

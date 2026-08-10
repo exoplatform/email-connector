@@ -703,19 +703,38 @@ export default {
         photoUploadId: this.photoUploadId,
       };
       this.saving = true;
-      const call = this.editedId ? this.$emailConnectorContactsService.updateContact(contact)
+      // A CardDAV row saves through the server push: the edit is merged into
+      // the server's own card and kept only once the server accepted it.
+      const call = this.editedId
+        ? (this.editedSource === 'CARDDAV'
+          ? this.$emailConnectorContactsService.updateAddressBookContact(contact)
+          : this.$emailConnectorContactsService.updateContact(contact))
         : this.$emailConnectorContactsService.createContact(contact);
       call.then(() => {
         this.$root.$emit('email-contacts-refresh');
         this.close();
       }).catch(error => {
         let message;
-        if (error?.status === 409) {
-          message = this.$t('emailConnector.contacts.form.alreadyExists');
+        if (error?.message?.includes('update.conflict') || error?.message?.includes('update.entryGone')) {
+          // Somebody changed (or removed) the entry on the server first. Their
+          // change has already become the local row, so the list is refreshed
+          // under the form -- while the form itself stays open, the user's
+          // words still on screen, theirs to retry or abandon.
+          message = this.$t('emailConnector.contacts.form.carddavConflict');
+          this.$root.$emit('email-contacts-refresh');
         } else if (error?.message?.includes('invalidBirthday')) {
           // The server's message code travels as the response body, which is
           // how a bad birthday is told apart from a bad address.
           message = this.$t('emailConnector.contacts.form.invalidBirthday');
+        } else if (error?.message?.includes('invalidEmail')) {
+          message = this.$t('emailConnector.contacts.form.invalidEmail');
+        } else if (error?.status === 409) {
+          message = this.$t('emailConnector.contacts.form.alreadyExists');
+        } else if (this.editedSource === 'CARDDAV') {
+          // The push could not happen, so nothing was changed anywhere -- said
+          // plainly, because "invalid email" would send the user hunting for a
+          // typo that does not exist.
+          message = this.$t('emailConnector.contacts.form.carddavPushError');
         } else {
           message = this.$t('emailConnector.contacts.form.invalidEmail');
         }
