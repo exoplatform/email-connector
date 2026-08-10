@@ -672,6 +672,40 @@ public class EmailContactStorage {
   }
 
   /**
+   * Binds a contact the user published to the server entry the publish just
+   * created: which book's connector, at which URL, at which version, under
+   * which card identity — and flips the source to CARDDAV, because from this
+   * moment the server copy is the authoritative one and the row is read-only
+   * here, exactly like a row the inbound sync wrote.
+   * <p>
+   * Deliberately NOT {@code saveCardDavContact}: that method carries the
+   * inbound sync's claim-and-merge semantics — overwriting fields from a
+   * parsed card, merging addresses, deciding photo ownership. A publish has
+   * nothing to merge: the fields already are the truth, only the bookkeeping
+   * is new. The narrow shape follows {@link #setVcardUid}.
+   *
+   * @param id the contact that was published
+   * @param connectorId the connector whose address book now holds it
+   * @param href the entry URL the card was stored at
+   * @param etag the version the server answered, or null when it sent none —
+   *          stored null on purpose, so the next sync re-reads the entry and
+   *          settles on the server's canonical version
+   * @param vcardUid the identity minted into the published card
+   */
+  @Transactional
+  public void bindPublishedCard(long id, Long connectorId, String href, String etag, String vcardUid) {
+    emailContactDAO.findById(id).ifPresent(entity -> {
+      entity.setSource(EmailContactSource.CARDDAV);
+      entity.setConnectorId(connectorId);
+      entity.setHref(href);
+      entity.setEtag(etag);
+      entity.setVcardUid(vcardUid);
+      entity.setUpdatedDate(new Date());
+      emailContactDAO.save(entity);
+    });
+  }
+
+  /**
    * The contact carrying a vCard's identity, if this store already holds it.
    *
    * @param userId the store owner

@@ -23,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -35,11 +36,13 @@ import org.exoplatform.emailConnector.carddav.CardDavClient;
 import org.exoplatform.emailConnector.carddav.CardDavException;
 import org.exoplatform.emailConnector.carddav.ContactResource;
 import org.exoplatform.emailConnector.carddav.ParsedVCard;
+import org.exoplatform.emailConnector.carddav.PutResult;
 import org.exoplatform.emailConnector.carddav.VCardParser;
 import org.exoplatform.emailConnector.model.CardDavContactData;
 import org.exoplatform.emailConnector.model.CardDavRow;
 import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.PhotoOrigin;
 import org.exoplatform.emailConnector.model.SyncStatus;
@@ -81,8 +84,42 @@ public class EmailContactCardDavSyncService {
   /** Six hours: a quarter of a day stale at worst, with Sync now for the rest. */
   private static final int         DEFAULT_SYNC_PERIOD_HOURS = 6;
 
+  /**
+   * The administrator's kill switch for publishing contacts to the address
+   * book, in the style of {@code email.connector.contacts.sync.hour.period}:
+   * a JVM property read on every call so flipping it needs no restart. Default
+   * ON — every publish is one explicit user click on their own contact — but
+   * an organisation whose CardDAV server is the authority on address books can
+   * turn this connector back to read-only with it.
+   */
+  public static final String       PUBLISH_ENABLED_PROPERTY  = "email.connector.contacts.publish.enabled";
+
+  /** Message code: the administrator turned publishing off. */
+  public static final String       PUBLISH_DISABLED          = "emailConnector.contacts.publish.disabled";
+
+  /** Message code: this source may not be published (directory rows never are). */
+  public static final String       PUBLISH_SOURCE_NOT_ALLOWED = "emailConnector.contacts.publish.sourceNotAllowed";
+
+  /** Message code: the row already lives in the address book. */
+  public static final String       PUBLISH_ALREADY_PUBLISHED = "emailConnector.contacts.publish.alreadyPublished";
+
+  /** Message code: no address book is bound, or the binding is unusable. */
+  public static final String       PUBLISH_NO_ADDRESS_BOOK   = "emailConnector.contacts.publish.noAddressBook";
+
+  /** Message code: the book was never discovered, so there is nowhere verified to write. */
+  public static final String       PUBLISH_NOT_DISCOVERED    = "emailConnector.contacts.publish.notDiscovered";
+
+  /** Message code: the server says an entry already exists where the card would go. */
+  public static final String       PUBLISH_EXISTS_ON_SERVER  = "emailConnector.contacts.publish.existsOnServer";
+
   @Autowired
   private EmailContactStorage      emailContactStorage;
+
+  @Autowired
+  private EmailContactService      emailContactService;
+
+  @Autowired
+  private EmailContactVCardService emailContactVCardService;
 
   @Autowired
   private EmailContactFavoriteService emailContactFavoriteService;
@@ -248,6 +285,142 @@ public class EmailContactCardDavSyncService {
    */
   public ContactSyncState getSyncState(String username) {
     return userEmailSettingService.getContactSyncState(username);
+  }
+
+  /**
+   * Whether the publish action exists for this user at all — what the UI asks
+   * before showing the button, and the cheap half of what {@link #publishContact}
+   * re-checks server-side.
+   * <p>
+   * Every condition here is answered from stored state, no network: the kill
+   * switch is on, an address book is bound and enabled, the connector still
+   * carries a CardDAV URL, and discovery has succeeded at least once. The last
+   * one matters most — a book that was never discovered is a book this
+   * connector has never verified exists, and offering a button that can only
+   * fail teaches users to stop trusting it.
+   *
+   * @param username the mailbox owner
+   * @return true when publishing a contact could work for this user
+   */
+  public boolean isPublishAvailable(String username) {
+    if (!isPublishEnabled() || StringUtils.isBlank(username)) {
+      return false;
+    }
+    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
+    Long connectorId = boundConnectorId(setting);
+    if (connectorId == null) {
+      return false;
+    }
+    EmailConnector connector = emailConnectorService.getEmailConnector(connectorId);
+    if (connector == null || StringUtils.isBlank(connector.getCarddavUrl())) {
+      return false;
+    }
+    ContactSyncState state = userEmailSettingService.getContactSyncState(username);
+    return state != null && StringUtils.isNotBlank(state.getAddressBookHref());
+  }
+
+  /**
+   * Publishes one of the caller's contacts into their CardDAV address book —
+   * the write-back's first and deliberately least destructive shape: it can
+   * only CREATE. The card is stored under {@code If-None-Match: *}, so an
+   * entry already at the minted URL makes the server refuse rather than this
+   * code overwrite, whatever race produced it.
+   * <p>
+   * The guards all matter, and they run server-side whatever the UI showed:
+   * the caller owns the contact and it is visible (a stranger's id answers
+   * null, indistinguishable from absent); the source is MANUAL or COLLECTED —
+   * never DIRECTORY, because pushing the company's people directory into a
+   * personal address book is an export nobody asked for, not a sync; the
+   * administrator's kill switch is on; an address book is bound; and discovery
+   * has already succeeded — a publish never writes to a guessed or
+   * configured-but-unverified URL, only to a book the inbound sync's own
+   * {@link #resolveAddressBook} vouches for, so the two directions can never
+   * disagree about which book they mean.
+   * <p>
+   * On success the row is bound to the entry it just became — connector, href,
+   * etag, uid — and flipped to CARDDAV: the server copy is authoritative from
+   * here on, exactly as if the inbound sync had written it. The stored ctag is
+   * deliberately NOT advanced: a post-PUT ctag could equal one that also
+   * covers another client's concurrent change, and recording it would make the
+   * next run's cheap check skip that change for good. One redundant reconcile
+   * is the honest price of the echo.
+   *
+   * @param username the mailbox owner
+   * @param contactId the contact to publish
+   * @return the contact re-read after the publish, now an address-book row; or
+   *         null when the caller has no such visible contact
+   * @throws IllegalArgumentException with a message code when a guard refuses
+   * @throws IllegalStateException with a message code when the row or the
+   *           server says the card already exists
+   * @throws CardDavException when the server cannot be reached or errors
+   */
+  public EmailContact publishContact(String username, long contactId) {
+    if (!isPublishEnabled()) {
+      throw new IllegalArgumentException(PUBLISH_DISABLED);
+    }
+    EmailContact contact = emailContactService.getContact(contactId, username);
+    if (contact == null) {
+      return null;
+    }
+    if (EmailContactSource.CARDDAV.equals(contact.getSource())) {
+      // Not an error to force through: the row IS an address-book entry, and
+      // "publish" for it would be the update slice, which does not exist yet.
+      throw new IllegalStateException(PUBLISH_ALREADY_PUBLISHED);
+    }
+    if (!EmailContactSource.MANUAL.equals(contact.getSource())
+        && !EmailContactSource.COLLECTED.equals(contact.getSource())) {
+      throw new IllegalArgumentException(PUBLISH_SOURCE_NOT_ALLOWED);
+    }
+    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
+    Long connectorId = boundConnectorId(setting);
+    EmailConnector connector = connectorId == null ? null : emailConnectorService.getEmailConnector(connectorId);
+    if (connector == null || StringUtils.isBlank(connector.getCarddavUrl())) {
+      throw new IllegalArgumentException(PUBLISH_NO_ADDRESS_BOOK);
+    }
+    ContactSyncState state = userEmailSettingService.getContactSyncState(username);
+    if (state == null || StringUtils.isBlank(state.getAddressBookHref())) {
+      // Discovery has never succeeded, so there is no VERIFIED collection to
+      // write into. Publishing to the configured URL as typed would be writing
+      // to a guess; the fix is a successful sync, not a bolder publish.
+      throw new IllegalArgumentException(PUBLISH_NOT_DISCOVERED);
+    }
+    // The same resolution the inbound sync uses, so both directions always mean
+    // the same book. With discovery already done this answers from stored state;
+    // it only goes back to the network when an administrator repointed the
+    // connector -- and then it verifies the NEW book before anything is written.
+    String previousHref = state.getAddressBookHref();
+    AddressBook addressBook = resolveAddressBook(setting, connector, state);
+    if (!StringUtils.equals(previousHref, addressBook.url())) {
+      // Discovery ran and found a different book: remembered, as a sync run
+      // would have remembered it, so the next publish or sync starts there.
+      userEmailSettingService.setContactSyncState(state, username);
+    }
+    String uid = UUID.randomUUID().toString();
+    String href = StringUtils.removeEnd(addressBook.url(), "/") + "/" + uid + ".vcf";
+    String vcard = emailContactVCardService.getPublishVCard(contact, uid);
+    PutResult result = cardDavClient.putVCard(href, vcard, "*", setting.getEmailAddress(), setting.getEmailPassword());
+    if (result.preconditionFailed()) {
+      // The server refusing to create is it keeping the only promise that makes
+      // this slice safe. A UUID colliding is not the likely story here -- a
+      // retried request or a proxy replay is -- and either way the answer is
+      // the same: report, never force.
+      throw new IllegalStateException(PUBLISH_EXISTS_ON_SERVER);
+    }
+    emailContactStorage.bindPublishedCard(contact.getId(), connector.getId(), href, result.etag(), uid);
+    LOG.info("Contact {} of user {} published to the address book of connector {}", contact.getId(), username, connector.getId());
+    // Re-read rather than mutated in place: the caller gets the row as every
+    // other read now sees it, source flipped and enrichment applied.
+    return emailContactService.getContact(contactId, username);
+  }
+
+  /**
+   * Whether the administrator allows publishing at all — the kill switch, read
+   * per call like the sync period so flipping it needs no restart.
+   *
+   * @return true unless the property says otherwise
+   */
+  private boolean isPublishEnabled() {
+    return Boolean.parseBoolean(System.getProperty(PUBLISH_ENABLED_PROPERTY, "true"));
   }
 
   /**

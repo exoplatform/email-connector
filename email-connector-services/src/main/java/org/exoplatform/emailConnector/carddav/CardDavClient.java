@@ -82,4 +82,29 @@ public interface CardDavClient {
    * @throws CardDavException when the server cannot be reached or refuses
    */
   List<ContactResource> multiget(AddressBook addressBook, List<String> hrefs, String username, String password);
+
+  /**
+   * Stores one vCard at an entry URL — the protocol's only write, and the only
+   * one this connector performs.
+   * <p>
+   * The conditional header is what makes the write safe to offer: with
+   * {@code If-None-Match: *} the server itself guarantees the PUT can only
+   * CREATE — an entry already at that URL answers 412 instead of being
+   * overwritten, whatever race led there. A 412 is answered as a
+   * {@link PutResult}, not thrown: it is the server keeping a promise, and the
+   * caller decides what the refusal means.
+   *
+   * @param url the absolute entry URL to store the card at
+   * @param vcard the card text to store
+   * @param ifNoneMatch the {@code If-None-Match} value to send — {@code "*"}
+   *          to insist on creating, null to send no precondition at all (no
+   *          caller does today; an unconditional PUT overwrites silently)
+   * @param username the account to authenticate as
+   * @param password that account's password
+   * @return the status and the stored card's etag when the server sent one
+   * @throws CardDavException when the server cannot be reached, refuses the
+   *           credentials, or answers a status that is neither a write nor a
+   *           precondition refusal
+   */
+  PutResult putVCard(String url, String vcard, String ifNoneMatch, String username, String password);
 }

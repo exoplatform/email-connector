@@ -193,6 +193,45 @@ public class HttpCardDavClient implements CardDavClient {
     return resources;
   }
 
+  @Override
+  public PutResult putVCard(String url, String vcard, String ifNoneMatch, String username, String password) {
+    HttpRequest.Builder builder = HttpRequest.newBuilder(uri(url))
+                                             .timeout(REQUEST_TIMEOUT)
+                                             // A card, not DAV XML: request() is not reused here because its
+                                             // Content-Type belongs to PROPFIND/REPORT bodies, and a server
+                                             // told a vCard is application/xml may refuse or misfile it.
+                                             .header("Content-Type", "text/vcard; charset=utf-8")
+                                             .header("Authorization", basicAuth(username, password))
+                                             .method("PUT", BodyPublishers.ofString(vcard, StandardCharsets.UTF_8));
+    if (StringUtils.isNotBlank(ifNoneMatch)) {
+      builder.header("If-None-Match", ifNoneMatch);
+    }
+    HttpRequest request = builder.build();
+    try {
+      HttpResponse<String> response = httpClient.send(request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+      int status = response.statusCode();
+      // PUT's own accepted set, apart from send()'s 200/207 which belongs to the
+      // read verbs: 201 is the created card, 204 and 200 are how some servers
+      // acknowledge instead. 412 is the precondition refused -- an answer the
+      // caller must be able to tell apart from an error, because under
+      // If-None-Match:* it means "already exists", which is a fact, not a fault.
+      if (status != 200 && status != 201 && status != 204 && status != PutResult.PRECONDITION_FAILED) {
+        throw new CardDavException(String.format("The address book server answered %s for %s %s",
+                                                 status,
+                                                 request.method(),
+                                                 request.uri()));
+      }
+      // The etag exactly as sent, quotes and all -- the same raw shape the
+      // PROPFIND listing answers, so the sync's etag comparison stays honest.
+      return new PutResult(status, StringUtils.trimToNull(response.headers().firstValue("ETag").orElse(null)));
+    } catch (IOException e) {
+      throw new CardDavException("The address book server could not be reached at " + request.uri(), e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new CardDavException("Interrupted while talking to " + request.uri(), e);
+    }
+  }
+
   /**
    * Reads a URL as if it were an address-book collection, answering null when it
    * is not one — used to accept a configured collection URL directly.

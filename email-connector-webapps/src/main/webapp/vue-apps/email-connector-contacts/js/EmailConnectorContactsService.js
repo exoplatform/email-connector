@@ -200,6 +200,67 @@ export function deleteContact(id) {
 }
 
 /**
+ * Publishes one of the caller's contacts into their CardDAV address book —
+ * creates only: the server stores the card under If-None-Match:*, so nothing
+ * on the server can ever be overwritten by this call.
+ *
+ * @param {number} id - the contact id
+ * @returns {Promise<object>} the contact re-read, now an address-book row; a
+ *          rejection carries the server's message code and status (409 = an
+ *          entry already exists, 400 = a guard refused)
+ */
+export function publishContact(id) {
+  return fetch(`/email-connector/rest/contacts/${id}/publish`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.text().then(message => {
+      const error = new Error(message || 'Error when publishing the contact');
+      error.status = resp.status;
+      throw error;
+    });
+  });
+}
+
+/** The one in-flight or settled answer of {@link isAddressBookPublishable}. */
+let publishablePromise = null;
+
+/**
+ * Whether the caller can publish contacts to an address book at all — what the
+ * contact card asks before showing its publish action. Cached for the page's
+ * life: the answer changes when the user rebinds their mailbox or an admin
+ * flips the kill switch, both of which come with a reload's worth of change.
+ *
+ * @returns {Promise<boolean>} true when the publish action applies
+ */
+export function isAddressBookPublishable() {
+  if (!publishablePromise) {
+    publishablePromise = fetch('/email-connector/rest/contacts/carddav/publishable', {
+      credentials: 'include',
+      method: 'GET'
+    }).then((resp) => {
+      if (!resp?.ok) {
+        throw new Error('Error when asking whether publishing is available');
+      }
+      return resp.json();
+    }).then(answer => !!answer?.available)
+      .catch(() => {
+        // An unanswered question is not a "no" forever: forget the attempt so
+        // the next card asks again, and hide the action meanwhile.
+        publishablePromise = null;
+        return false;
+      });
+  }
+  return publishablePromise;
+}
+
+/**
  * Un-suppresses a contact — the undo of deleting a collected one.
  *
  * @param {number} id - the contact id

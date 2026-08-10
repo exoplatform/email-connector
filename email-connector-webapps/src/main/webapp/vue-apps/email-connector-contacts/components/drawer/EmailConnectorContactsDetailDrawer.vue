@@ -83,6 +83,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 {{ $t('emailConnector.contacts.qr.open') }}
               </v-list-item-title>
             </v-list-item>
+            <!-- Taking the contact to the user's own address book is the same
+                 "hand this person somewhere" intent as mail, chat and QR, so it
+                 lives with them. Shown only when publishing can work at all:
+                 manual/collected rows, a bound and already-discovered book, and
+                 the admin switch on - the server re-checks every one of these. -->
+            <v-list-item
+              v-if="publishable"
+              :disabled="publishing"
+              @click="publishContact">
+              <v-list-item-icon class="me-2 my-2">
+                <v-icon size="16">fas fa-address-book</v-icon>
+              </v-list-item-icon>
+              <v-list-item-title>
+                {{ $t('emailConnector.contacts.detail.publish') }}
+              </v-list-item-title>
+            </v-list-item>
           </v-list>
         </v-menu>
         <v-btn
@@ -118,6 +134,8 @@ export default {
       detailDrawer: false,
       loading: false,
       deleting: false,
+      publishing: false,
+      addressBookPublishable: false,
       contact: null,
     };
   },
@@ -143,6 +161,18 @@ export default {
       // their birthday, an address, a note about where you met. The form greys
       // out the identity the profile resolves on every read.
       return ['MANUAL', 'COLLECTED', 'DIRECTORY'].includes(this.contact?.source);
+    },
+    /**
+     * Whether the publish action shows: the row must be the user's own to give
+     * away (manual or collected - a directory colleague is the platform's, a
+     * CardDAV row is already there), and the settings must say a discovered
+     * address book is bound with publishing allowed.
+     *
+     * @returns {boolean} true when the publish item shows
+     */
+    publishable() {
+      return this.addressBookPublishable
+        && ['MANUAL', 'COLLECTED'].includes(this.contact?.source);
     },
     /**
      * The delete icon's honest tooltip. A manual or directory-linked contact deletes
@@ -184,6 +214,11 @@ export default {
           .catch(() => null)
           .finally(() => this.loading = false);
       }
+      // Answered from a page-lifetime cache after the first card, so opening a
+      // card costs no extra request; hidden until known, which only errs by
+      // briefly not offering the action.
+      this.$emailConnectorContactsService.isAddressBookPublishable()
+        .then(available => this.addressBookPublishable = available);
     },
     /**
      * Opens the composer with this contact's vCard already attached and nobody
@@ -223,6 +258,33 @@ export default {
     editContact() {
       this.$root.$emit('open-email-contact-form', this.contact);
       this.close();
+    },
+    /**
+     * Publishes this contact into the user's own address book — creates only,
+     * server-guarded, so nothing already on the server can be overwritten. On
+     * success the card simply re-renders as an address-book contact: same
+     * person, new source, read-only here from now on.
+     *
+     * @returns {void}
+     */
+    publishContact() {
+      this.publishing = true;
+      this.$emailConnectorContactsService.publishContact(this.contact.id)
+        .then(published => {
+          this.contact = published;
+          this.$root.$emit('email-contacts-refresh');
+          this.$root.$emit('alert-message', this.$t('emailConnector.contacts.detail.publish.success'), 'success');
+        })
+        .catch(error => {
+          // 409 is the server refusing to create over an existing entry - the
+          // one refusal worth its own words, because the fix (sync, then look
+          // again) is different from "try later".
+          const key = error?.status === 409
+            && 'emailConnector.contacts.detail.publish.exists'
+            || 'emailConnector.contacts.detail.publish.error';
+          this.$root.$emit('alert-message', this.$t(key), 'error');
+        })
+        .finally(() => this.publishing = false);
     },
     /**
      * Deletes or suppresses the contact, per its source, and reports which of the two

@@ -213,6 +213,87 @@ public class HttpCardDavClientTest {
     assertThrows(CardDavException.class, () -> client.listResourceEtags(new AddressBook(BOOK_URL, "C", null), "a", "b"));
   }
 
+  @Test
+  void aCreatedCardAnswersItsStatusAndEtag() throws Exception {
+    givenPutAnswer(201, "\"etag-42\"");
+
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+
+    assertEquals(201, result.status());
+    assertEquals("\"etag-42\"", result.etag(), "the etag travels raw, quotes and all, like PROPFIND answers it");
+    HttpRequest request = sent.get(0);
+    assertEquals("PUT", request.method());
+    // The write's own media type: request()'s application/xml belongs to
+    // PROPFIND/REPORT and a server told a card is XML may refuse it.
+    assertEquals("text/vcard; charset=utf-8", request.headers().firstValue("Content-Type").orElse(null));
+    assertEquals("*", request.headers().firstValue("If-None-Match").orElse(null),
+                 "creates-only is enforced by the server, and this header is the whole enforcement");
+  }
+
+  @Test
+  void aServerThatSendsNoEtagAnswersNull() throws Exception {
+    // Not every server returns an ETag on PUT. Null is the honest answer: the
+    // caller stores it as unknown and the next sync settles the version.
+    givenPutAnswer(204, null);
+
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+
+    assertEquals(204, result.status());
+    assertNull(result.etag());
+  }
+
+  @Test
+  void aRefusedPreconditionIsAnAnswerNotAnError() throws Exception {
+    // 412 under If-None-Match:* means "an entry is already there". That is the
+    // server keeping the creates-only promise, and the caller must be able to
+    // read it -- an exception here would make refusal indistinguishable from
+    // failure.
+    givenPutAnswer(412, null);
+
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+
+    assertTrue(result.preconditionFailed());
+  }
+
+  @Test
+  void anyOtherPutStatusIsAnError() throws Exception {
+    givenPutAnswer(507, null);
+
+    assertThrows(CardDavException.class,
+                 () -> client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret"));
+  }
+
+  @Test
+  void noPreconditionHeaderTravelsWhenNoneIsAsked() throws Exception {
+    // No caller does this today; pinned so a future one knows an absent
+    // precondition means an absent header, not an empty one the server rejects.
+    givenPutAnswer(200, null);
+
+    client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", null, "alice", "secret");
+
+    assertTrue(sent.get(0).headers().firstValue("If-None-Match").isEmpty());
+  }
+
+  /**
+   * Primes the transport with one PUT answer carrying an optional ETag header,
+   * recording the request like {@link #givenAnswers} does.
+   *
+   * @param status the status to answer
+   * @param etag the ETag header value, or null to send none
+   * @throws Exception when the mock cannot be primed
+   */
+  private void givenPutAnswer(int status, String etag) throws Exception {
+    java.net.http.HttpHeaders headers = java.net.http.HttpHeaders.of(etag == null ? Map.of()
+                                                                                  : Map.of("ETag", List.of(etag)),
+                                                                     (name, value) -> true);
+    when(transport.send(any(HttpRequest.class), any())).thenAnswer(invocation -> {
+      sent.add(invocation.getArgument(0));
+      HttpResponse<String> response = response(status, "");
+      when(response.headers()).thenReturn(headers);
+      return response;
+    });
+  }
+
   /**
    * Queues the bodies the transport will answer, in order, recording every
    * request that was sent so the test can assert on it.
