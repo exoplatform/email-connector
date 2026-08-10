@@ -178,11 +178,52 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <div class="text-sub-title mb-1">
             {{ $t('emailConnector.contacts.form.phone') }}
           </div>
-          <v-text-field
-            v-model="form.phone"
-            class="pt-0"
-            outlined
-            dense />
+          <!-- One row per number, like the address rows above and for the same
+               reason: the card and the store hold several, so a form holding
+               one silently deleted the rest on every save. Each row names its
+               type from the vCard vocabulary the exporter writes back — a
+               number imported as "work" stays a work number through an edit. -->
+          <div
+            v-for="(phone, index) in form.phones"
+            :key="index"
+            class="d-flex align-start">
+            <v-select
+              v-model="phone.type"
+              :items="phoneTypeItems"
+              :aria-label="$t('emailConnector.contacts.form.phoneType')"
+              class="pt-0 me-2 flex-grow-0"
+              style="max-width: 110px;"
+              outlined
+              dense />
+            <v-text-field
+              v-model="phone.value"
+              type="tel"
+              class="pt-0"
+              outlined
+              dense />
+            <v-btn
+              v-if="form.phones.length > 1"
+              :title="$t('emailConnector.contacts.form.removePhone')"
+              icon
+              small
+              class="mt-1"
+              @click="removePhone(index)">
+              <v-icon size="14">
+                fas fa-times
+              </v-icon>
+            </v-btn>
+          </div>
+          <v-btn
+            class="mb-2 px-0"
+            color="primary"
+            text
+            small
+            @click="addPhone">
+            <v-icon size="12" class="me-1">
+              fas fa-plus
+            </v-icon>
+            {{ $t('emailConnector.contacts.form.addPhone') }}
+          </v-btn>
           <div class="text-sub-title mb-1">
             {{ $t('emailConnector.contacts.form.organization') }}
           </div>
@@ -338,6 +379,10 @@ export default {
       // platform's own profile cropper settles on, and 1 MB is generous for it.
       maxPhotoWidth: 350,
       maxPhotoFileSize: 1024 * 1024,
+      // The types a stored phone entry can name -- the exact lowercase vCard
+      // vocabulary the backend stores as a `type,` prefix and the exporter
+      // writes back as a TEL TYPE parameter. Order is display order.
+      phoneTypes: ['cell', 'work', 'home', 'fax', 'pager'],
       form: this.emptyForm(),
     };
   },
@@ -401,6 +446,21 @@ export default {
       return this.editedId && this.$t('emailConnector.contacts.form.edit.title')
         || this.$t('emailConnector.contacts.form.add.title');
     },
+    /**
+     * The type choices of a phone row: the vCard vocabulary plus "no type",
+     * which is what a bare legacy number reads as and saves back as.
+     *
+     * @returns {Array<object>} the v-select items
+     */
+    phoneTypeItems() {
+      return [
+        {text: this.$t('emailConnector.contacts.phoneType.none'), value: ''},
+        ...this.phoneTypes.map(type => ({
+          text: this.$t(`emailConnector.contacts.phoneType.${type}`),
+          value: type,
+        })),
+      ];
+    },
   },
   created() {
     this.$root.$on('open-email-contact-form', this.open);
@@ -422,7 +482,8 @@ export default {
         primaryIndex: 0,
         givenName: '',
         familyName: '',
-        phone: '',
+        // Same row-object shape as the emails, for the same Vue 2 reason.
+        phones: [{type: '', value: ''}],
         organization: '',
         birthday: '',
         website: '',
@@ -453,7 +514,11 @@ export default {
         primaryIndex: 0,
         givenName: contact.givenName || '',
         familyName: contact.familyName || '',
-        phone: contact.phones?.[0] || '',
+        // EVERY number becomes a row, not just the first: the one-field form
+        // is what silently deleted the others on the next save. A vCard
+        // prefill's numbers arrive here too, types included.
+        phones: (contact.phones?.length ? contact.phones : [''])
+          .map(entry => this.splitPhone(entry)),
         organization: contact.organization || '',
         birthday: contact.birthday || '',
         website: contact.website || '',
@@ -500,6 +565,42 @@ export default {
      */
     setPrimary(index) {
       this.form.primaryIndex = index;
+    },
+    /**
+     * One stored phone entry as a form row. The store encodes a typed number
+     * as `type,value` and a typeless one bare; the prefix only counts as a
+     * type when it is in the vocabulary, so a legacy bare number — or one
+     * containing commas of its own — can never be misread as typed.
+     *
+     * @param {string} entry - the stored entry
+     * @returns {object} the {type, value} row
+     */
+    splitPhone(entry) {
+      const text = entry || '';
+      const comma = text.indexOf(',');
+      const prefix = comma > 0 ? text.slice(0, comma).trim().toLowerCase() : '';
+      if (prefix && this.phoneTypes.includes(prefix)) {
+        return {type: prefix, value: text.slice(comma + 1).trim()};
+      }
+      return {type: '', value: text.trim()};
+    },
+    /**
+     * Adds an empty phone row for the user to fill.
+     *
+     * @returns {void}
+     */
+    addPhone() {
+      this.form.phones.push({type: '', value: ''});
+    },
+    /**
+     * Removes one phone row. The last row is not removable — it is cleared by
+     * emptying it, and an empty row saves as no number.
+     *
+     * @param {number} index - the row to remove
+     * @returns {void}
+     */
+    removePhone(index) {
+      this.form.phones.splice(index, 1);
     },
     /**
      * Puts the photo state back to "this is what is stored, and I am not touching
@@ -579,7 +680,13 @@ export default {
           .filter(value => value),
         givenName: this.form.givenName,
         familyName: this.form.familyName,
-        phones: this.form.phone ? [this.form.phone] : null,
+        // Same contract as the addresses: always sent, empty included — a
+        // present list is authoritative, so a removed row is a removal, while
+        // only clients that cannot show the rows are allowed silence.
+        phones: this.form.phones
+          .map(phone => ({type: phone.type, value: (phone.value || '').trim()}))
+          .filter(phone => phone.value)
+          .map(phone => (phone.type ? `${phone.type},${phone.value}` : phone.value)),
         organization: this.form.organization,
         birthday: this.form.birthday || null,
         website: this.form.website || null,

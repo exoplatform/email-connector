@@ -825,6 +825,28 @@ public class EmailContactVCardServiceTest {
   }
 
   @Test
+  void aPrefillCarriesEveryPhoneWithItsType() throws Exception {
+    // The confirm step's raw material: every number of the card, types kept,
+    // so nothing for the form to lose before the user even presses Save.
+    String vcf = """
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        EMAIL;TYPE=INTERNET:jane@example.com
+        TEL;TYPE=CELL:+33 6 12 34 56 78
+        TEL;TYPE=WORK:+33 1 23 45 67 89
+        TEL:+33 2 11 22 33 44
+        END:VCARD""";
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8)));
+
+    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2");
+
+    assertEquals(List.of("cell,+33 6 12 34 56 78", "work,+33 1 23 45 67 89", "+33 2 11 22 33 44"),
+                 prefill.getPhones());
+  }
+
+  @Test
   void aCardNamingThePersonInOneStringIsSplitForTheForm() throws Exception {
     // The same first-space guess the mailbox's add-sender prefill takes: a
     // guess either way, which is why a form stands between this and a row.
