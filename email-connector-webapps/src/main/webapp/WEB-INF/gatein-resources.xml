@@ -287,22 +287,40 @@
     </depends>
   </module>
 
-  <!-- The "Add to my contacts" action on a people profile. The name MUST contain
-       "PopoverExtension": the globally-injected Popover portlet discovers its
-       contributors with includeExtensions('PopoverExtension'), which matches on the
-       module NAME — a module that merely sits in popoverGRP is defined in the
-       aggregate but never executed (the FavoriteDrawerExtension trap, again). In
-       popoverGRP so it loads wherever the popover portlet does, the profile page
-       included. -->
+  <!-- The "Add to my contacts" action on the PROFILE HEADER — and nowhere else.
+       Two halves:
+
+       1. The always-on head script below (top-level <javascript>) registers the
+          descriptor into social's ('profile-header', 'action-component') point —
+          the point profileHeader.bundle.js snapshots ONCE in a module-scope
+          const, with no *-updated listener: registration MUST precede that AMD
+          factory, which only a synchronous head script guarantees (the same
+          mechanism as webconferencing's call button, this point's only other
+          registrant). NOT the shared ('profile-extension', 'action') point,
+          which the people list, search results, org chart and popovers render
+          too.
+
+       2. The module here holds the real code (i18n, user checks, the button),
+          required lazily by name from the descriptor's init(container,
+          username). The name deliberately does NOT contain "PopoverExtension":
+          the popover portlet's includeExtensions('PopoverExtension') matches on
+          module NAME, and this module must no longer run on card surfaces. It
+          stays in popoverGRP only so requirejs knows the name on every page the
+          globally-injected popover portlet reaches — the profile page included
+          (a shared module is only addressable where something on the page
+          carries it; it stays defined-not-executed until init() requires it). -->
+  <javascript>
+    <param>
+      <js-module>emailConnectorProfileHeaderPlugin</js-module>
+      <js-path>/js/emailConnectorProfileHeaderPlugin.js</js-path>
+    </param>
+  </javascript>
   <module>
-    <name>EmailConnectorContactsPopoverExtension</name>
+    <name>EmailConnectorProfileHeaderAction</name>
     <load-group>popoverGRP</load-group>
     <script>
       <path>/js/emailConnectorProfileExtension.bundle.js</path>
     </script>
-    <depends>
-      <module>extensionRegistry</module>
-    </depends>
     <!-- Required lazily as SHARED/eXoVueI18n from init(): requirejs only knows a
          shared module on a page where something depends on it. -->
     <depends>
