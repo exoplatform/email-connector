@@ -530,6 +530,217 @@ public class EmailContactServiceTest {
     assertNull(emailContactService.createContact(input, USERNAME).getPostalAddress());
   }
 
+  // ---------------------------------------------------------------- several addresses
+
+  @Test
+  void manualAddKeepsEverySecondaryAddress() {
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    // As typed: padding, case, and one address twice — the store files the
+    // normalized, de-duplicated set.
+    input.setSecondaryEmails(List.of(" Carol@Work.example ", "carol@home.example", "carol@work.example"));
+
+    EmailContact created = emailContactService.createContact(input, USERNAME);
+
+    assertEquals(List.of("carol@work.example", "carol@home.example"), created.getSecondaryEmails());
+  }
+
+  @Test
+  void manualAddRejectsAnUnusableSecondaryAddress() {
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    input.setSecondaryEmails(List.of("not-an-address"));
+
+    IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailContactService.createContact(input, USERNAME));
+
+    assertEquals(EmailContactService.CONTACT_INVALID_EMAIL, invalid.getMessage());
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void aSecondaryDuplicatingThePrimaryIsFiledOnce() {
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    input.setSecondaryEmails(List.of("Carol@Example.org"));
+
+    EmailContact created = emailContactService.createContact(input, USERNAME);
+
+    assertEquals("carol@example.org", created.getPrimaryEmail());
+    assertNull(created.getSecondaryEmails());
+  }
+
+  @Test
+  void aSecondaryHeldByAnotherVisibleContactConflicts() {
+    // The same rule as the primary: an address names one person per store.
+    when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org"))
+                                                                              .thenReturn(collectedContact(5L,
+                                                                                                           "bob@example.org",
+                                                                                                           "Bob"));
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    input.setSecondaryEmails(List.of("bob@example.org"));
+
+    IllegalStateException conflict = assertThrows(IllegalStateException.class,
+                                                  () -> emailContactService.createContact(input, USERNAME));
+
+    assertEquals(EmailContactService.CONTACT_ALREADY_EXISTS, conflict.getMessage());
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void aSecondaryHeldByATombstoneAbsorbsItInsteadOfRevivingIt() {
+    // The user removed Bob; adding his address as Carol's second one must not
+    // bring Bob back — the tombstone dies, the address changes hands, exactly
+    // as a primary change has always absorbed one.
+    EmailContact tombstone = collectedContact(5L, "bob@example.org", "Bob");
+    tombstone.setSuppressed(true);
+    when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(tombstone);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Carol", "carol@example.org");
+    input.setSecondaryEmails(List.of("bob@example.org"));
+
+    EmailContact created = emailContactService.createContact(input, USERNAME);
+
+    verify(emailContactStorage).deleteContact(5L);
+    verify(emailContactFavoriteService).removeFavorite(5L, USERNAME);
+    assertEquals(List.of("bob@example.org"), created.getSecondaryEmails());
+  }
+
+  @Test
+  void aRevivedTombstoneAdoptsTheTypedPrimary() {
+    // The tombstone is found by ANY of its addresses, so the typed one may be
+    // its secondary: the revival must file the row under what the user typed,
+    // demoting the tombstone's old primary rather than losing either address.
+    EmailContact tombstone = collectedContact(5L, "bob@example.org", "Bob");
+    tombstone.setSecondaryEmails(List.of("bob@home.example"));
+    tombstone.setSuppressed(true);
+    when(emailContactStorage.getContactByAddress(USERNAME, "bob@home.example")).thenReturn(tombstone);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact revived = emailContactService.createContact(manualInput("Bob", "bob@home.example"), USERNAME);
+
+    assertEquals("bob@home.example", revived.getPrimaryEmail());
+    assertEquals(List.of("bob@example.org"), revived.getSecondaryEmails());
+    verify(emailContactStorage, never()).createContact(any());
+  }
+
+  @Test
+  void updateReplacesTheSecondariesTheRequestCarries() {
+    // A present list is the authoritative set: the form sends every address row
+    // it shows, so an address missing from it was removed on purpose.
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setSecondaryEmails(List.of("old@example.org"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setSecondaryEmails(List.of("new@example.org"));
+
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    assertEquals(List.of("new@example.org"), updated.getSecondaryEmails());
+  }
+
+  @Test
+  void updateSayingNothingAboutSecondariesKeepsThem() {
+    // The one behaviour protecting stored data from clients that never heard of
+    // secondary addresses: silence means "leave them alone", never "drop them".
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setSecondaryEmails(List.of("bob@home.example"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact updated = emailContactService.updateContact(5L, manualInput("Bob", "bob@example.org"), USERNAME);
+
+    assertEquals(List.of("bob@home.example"), updated.getSecondaryEmails());
+  }
+
+  @Test
+  void changingThePrimaryDemotesTheOldAddressWhenTheRequestSaysNothing() {
+    // The sharpest bug this slice fixes: moving the primary used to DELETE the
+    // old address row, leaving the person unreachable at the address the
+    // mailbox knows them by. Silence about secondaries now demotes it instead.
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    EmailContact updated = emailContactService.updateContact(5L, manualInput("Bob", "bob@work.example"), USERNAME);
+
+    assertEquals("bob@work.example", updated.getPrimaryEmail());
+    assertEquals(List.of("bob@example.org"), updated.getSecondaryEmails());
+  }
+
+  @Test
+  void removingTheOldPrimaryTakesAnExplicitEmptyList() {
+    // Dropping an address stays possible — it just has to be said: an empty
+    // list is a removal, only silence demotes.
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setSecondaryEmails(List.of("bob@home.example"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Bob", "bob@work.example");
+    input.setSecondaryEmails(List.of());
+
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    assertEquals("bob@work.example", updated.getPrimaryEmail());
+    assertNull(updated.getSecondaryEmails());
+  }
+
+  @Test
+  void swappingPrimaryAndSecondaryKeepsBothAddresses() {
+    EmailContact stored = collectedContact(5L, "bob@example.org", "Bob");
+    stored.setSecondaryEmails(List.of("bob@home.example"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(stored);
+    // Both addresses resolve to the row being saved: its own addresses are
+    // never a conflict, so the swap needs no absorption and deletes nothing.
+    lenient().when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(stored);
+    lenient().when(emailContactStorage.getContactByAddress(USERNAME, "bob@home.example")).thenReturn(stored);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Bob", "bob@home.example");
+    input.setSecondaryEmails(List.of("bob@example.org"));
+
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    assertEquals("bob@home.example", updated.getPrimaryEmail());
+    assertEquals(List.of("bob@example.org"), updated.getSecondaryEmails());
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+  }
+
+  @Test
+  void updateConflictsWhenASecondaryBelongsToAnotherVisibleContact() {
+    when(emailContactStorage.getContactById(5L)).thenReturn(collectedContact(5L, "bob@example.org", "Bob"));
+    when(emailContactStorage.getContactByAddress(USERNAME, "alice@example.org"))
+                                                                                .thenReturn(collectedContact(9L,
+                                                                                                             "alice@example.org",
+                                                                                                             "Alice"));
+    EmailContact input = manualInput("Bob", "bob@example.org");
+    input.setSecondaryEmails(List.of("alice@example.org"));
+
+    IllegalStateException conflict = assertThrows(IllegalStateException.class,
+                                                  () -> emailContactService.updateContact(5L, input, USERNAME));
+
+    assertEquals(EmailContactService.CONTACT_ALREADY_EXISTS, conflict.getMessage());
+    verify(emailContactStorage, never()).updateContact(any());
+  }
+
+  @Test
+  void directoryAnnotationsNeverTouchTheAddresses() {
+    // A directory row's addresses are the profile's business: whatever address
+    // set a payload carries, the stored one survives the save.
+    EmailContact directory = directoryContact(5L, "jane.doe@example.com", "Jane Doe", "jdoe");
+    directory.setSecondaryEmails(List.of("jane@home.example"));
+    when(emailContactStorage.getContactById(5L)).thenReturn(directory);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    EmailContact input = manualInput("Somebody Else", "other@example.org");
+    input.setSecondaryEmails(List.of("sneaked@example.org"));
+    input.setNote("Met at FOSDEM.");
+
+    EmailContact updated = emailContactService.updateContact(5L, input, USERNAME);
+
+    assertEquals("jane.doe@example.com", updated.getPrimaryEmail());
+    assertEquals(List.of("jane@home.example"), updated.getSecondaryEmails());
+    assertEquals("Met at FOSDEM.", updated.getNote());
+  }
+
   // ---------------------------------------------------------------- delete / suppress / restore
 
   @Test
