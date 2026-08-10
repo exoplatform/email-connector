@@ -557,6 +557,12 @@ public class EmailBoxService {
       // must show: a mail starred from a phone arrives here, and a reset gave
       // every cached mail a new id that the stored favorites no longer match.
       emailFavoriteService.reconcileFavorites(username);
+      if (!inboxOnly) {
+        // Only now is the whole mailbox cached. Anything that reads more than the
+        // inbox has to wait for this rather than for the inbox's own completion --
+        // an inbox-only sync never caches Sent, so it never claims the run is whole.
+        broadcastMailboxSyncCompleted(username);
+      }
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
@@ -1759,6 +1765,25 @@ public class EmailBoxService {
    * @param username the synchronized user
    * @param newEmailIds the IMAP UIDs of every email created during this sync
    */
+  /**
+   * Broadcasts {@link EmailConnectorUtils#MAILBOX_SYNC_COMPLETED} once every folder of
+   * the run has been cached.
+   * <p>
+   * Separate from {@link #broadcastNewEmailsSyncCompleted} because that one fires at
+   * the end of the INBOX, and Sent is cached after it. A consumer that reads sent mail
+   * — the contact backfill does, to learn who the user writes to — starts on the wrong
+   * one and finds an empty folder on a first connection.
+   *
+   * @param username the mailbox owner
+   */
+  private void broadcastMailboxSyncCompleted(String username) {
+    try {
+      listenerService.broadcast(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, List.<Long> of());
+    } catch (Exception e) {
+      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, e);
+    }
+  }
+
   private void broadcastNewEmailsSyncCompleted(String username, List<Long> newEmailIds) {
     try {
       LOG.info("Broadcasting '{}' for user {}: the inbox sync ended with {} newly-cached message(s) in total",

@@ -900,6 +900,11 @@ public class EmailBoxServiceTest {
     verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED),
                                       eq(TEST_USER),
                                       argThat((List<Long> all) -> all.size() == 3));
+    // And the whole run is announced separately, after Sent and Archive. A consumer
+    // that reads sent mail -- the contact backfill -- must not start on the inbox's
+    // own completion: Sent is cached seconds later, and a first connection then
+    // collected nobody and marked itself done for good.
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED), eq(TEST_USER), any());
     assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
   }
 

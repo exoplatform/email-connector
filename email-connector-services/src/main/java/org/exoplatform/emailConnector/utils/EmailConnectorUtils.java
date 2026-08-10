@@ -110,6 +110,15 @@ public class EmailConnectorUtils {
 
   /** Raised whenever a user's unread count may have changed (sync or read status update). */
   public static final String   UNREAD_EMAILS_CHANGED   = "exo.email.unreadEmailsChanged";
+  // Broadcast once the WHOLE run is over -- inbox, Sent and Archive -- rather than at
+  // the end of the inbox alone: source = username, data = the UIDs the inbox cached.
+  //
+  // The distinction is not academic. Work that reads more than the inbox must not
+  // start when NEW_EMAILS_SYNC_COMPLETED fires, because Sent is cached seconds later:
+  // the contact backfill did exactly that, read an empty Sent folder on a first
+  // connection, collected nobody, and marked itself permanently done. Not broadcast
+  // for an inbox-only sync, which never caches Sent at all.
+  public static final String   MAILBOX_SYNC_COMPLETED    = "exo.email.mailboxSyncCompleted";
 
   public static final String   EMAIL_FEATURE           = "email";
 
