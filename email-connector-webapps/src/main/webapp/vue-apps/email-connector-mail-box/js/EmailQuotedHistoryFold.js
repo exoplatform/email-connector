@@ -46,11 +46,26 @@ const REPLY_INTRO_PATTERNS = [
  * history. A forward is content the sender chose to include, so it must stay visible
  * — we never fold it behind "See more". Reply markers ("On … wrote:", Outlook's
  * "Original Message") are intentionally NOT here.
+ *
+ * The marker text comes from the *sender's* mail client locale, not the reader's UI
+ * language, so English/French alone missed forwards from senders using other mail
+ * clients' languages — they fell through to the generic blockquote/gmail_quote check
+ * below and got folded, which is exactly what must never happen to a forward. This
+ * literal-string list is necessarily best-effort: it covers this addon's major
+ * supported locales (see locale/portlet/emailConnector) but can't be exhaustive over
+ * every mail-client / language combination — extend it as gaps are reported.
  */
 const FORWARD_MARKERS = [
   /-+\s*Forwarded message\s*-+/i,
   /Begin forwarded message\s*:/i,
   /-+\s*Message transféré\s*-+/i,
+  /-+\s*Weitergeleitete Nachricht\s*-+/i,
+  /-+\s*Mensaje reenviado\s*-+/i,
+  /-+\s*Messaggio inoltrato\s*-+/i,
+  /-+\s*Mensagem (reencaminhada|encaminhada)\s*-+/i,
+  /-+\s*Doorgestuurd bericht\s*-+/i,
+  /-+\s*Пересланное сообщение\s*-+/i,
+  /-+\s*Przekazana wiadomość\s*-+/i,
 ];
 
 /**
