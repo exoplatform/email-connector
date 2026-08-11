@@ -64,17 +64,22 @@ public class EmailBoxRest {
 
   @GetMapping()
   @Secured("users")
-  @Operation(summary = "Gets user emails", method = "GET", description = "This will get user emails")
+  @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE for the in-app folder switch)")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public EmailBox getEmailBox(HttpServletRequest request) {
+  public EmailBox getEmailBox(HttpServletRequest request,
+                              @Parameter(description = "Folder to list: INBOX, SENT or ARCHIVE")
+                              @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                              String folder) {
     try {
-      return emailBoxService.getEmailBox(request.getRemoteUser());
+      return emailBoxService.getEmailBox(request.getRemoteUser(), folder);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 
@@ -109,16 +114,25 @@ public class EmailBoxRest {
                                                   @Parameter(description = "Email id", required = true)
                                                   @PathVariable("mailRemoteId")
                                                   long mailRemoteId,
+                                                  @Parameter(description = "Folder the message is in: INBOX, SENT or ARCHIVE")
+                                                  @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                  String folder,
                                                   @RequestHeader(value = "If-None-Match", required = false)
                                                   String ifNoneMatch) {
     try {
-      String eTag = "\"" + Objects.hash(mailRemoteId, request.getRemoteUser()) + "\"";
+      // UIDs are per-folder, so the folder is part of the message identity / eTag.
+      String eTag = "\"" + Objects.hash(mailRemoteId, folder, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
         emailBoxService.broadcastOpenEmail(request.getRemoteUser());
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
-      Email email =
-                  emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, request.getRemoteUser(), true, true, true, true);
+      Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId,
+                                                                    request.getRemoteUser(),
+                                                                    folder,
+                                                                    true,
+                                                                    true,
+                                                                    true,
+                                                                    true);
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }

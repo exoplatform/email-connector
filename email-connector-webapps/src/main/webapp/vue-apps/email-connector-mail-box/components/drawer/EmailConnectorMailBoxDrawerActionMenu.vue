@@ -38,7 +38,39 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-icon>
         </v-btn>
       </template>
-      <email-connector-mail-box-drawer-action-menu-items />
+      <email-connector-mail-box-drawer-action-menu-items
+        :current-folder="currentFolder"
+        :available-folders="availableFolders"
+        :sync-in-progress="syncInProgress"
+        :has-webmail-access="hasWebmailAccess" />
     </v-menu>
   </v-list-item-action>
 </template>
+
+<script>
+export default {
+  props: {
+    currentFolder: {
+      type: String,
+      default: 'INBOX',
+    },
+    availableFolders: {
+      type: Array,
+      default: () => ['INBOX'],
+    },
+    syncInProgress: {
+      type: Boolean,
+      default: false,
+    },
+    hasWebmailAccess: {
+      type: Boolean,
+      default: false,
+    },
+    // kept for backward compatibility with the previous webmail-only menu.
+    webmailUrl: {
+      type: String,
+      default: null,
+    },
+  },
+};
+</script>

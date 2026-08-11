@@ -64,7 +64,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="d-flex align-center"
           :webmail-url="webmailUrl"
           :selected-emails="selectedEmails"
-          :select-mode="selectMode" 
+          :select-mode="selectMode"
+          :current-folder="currentFolder"
+          :available-folders="availableFolders"
           :sync-in-progress="syncInProgress" />
       </div>
     </template>
@@ -81,6 +83,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :webmail-url="webmailUrl"
         :selected-emails="selectedEmails"
         :select-mode="selectMode"
+        :current-folder="currentFolder"
+        :available-folders="availableFolders"
         :sync-in-progress="syncInProgress" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
@@ -173,11 +177,13 @@ export default {
       selectedCategoryId: null,
       selectedCategoryIds: [],
       deletedEmailIds: [],
-      archivedEmailIds: []
+      archivedEmailIds: [],
+      currentFolder: 'INBOX'
     };
   },
   created() {
     this.isRefreshing = false;
+    this.$root.$on('switch-folder', this.onSwitchFolder);
     this.onOpenEmailDetailContent = (mailRemoteId) => {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
@@ -254,20 +260,33 @@ export default {
     this.$root.$off('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$off('delete-email', this.onDeleteEmail);
     this.$root.$off('archive-email', this.onArchiveEmail);
+    this.$root.$off('switch-folder', this.onSwitchFolder);
   },
   computed: {
     hasEmails() {
       return this.emails?.length > 0;
+    },
+    // INBOX plus any of SENT/ARCHIVE that actually hold mail, for the ⋮ folder switch.
+    availableFolders() {
+      const counts = this.emailBox?.folderCounts || {};
+      return ['INBOX', 'SENT', 'ARCHIVE'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
     },
     syncBlocked() {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';
     },
     title() {
       if (!this.selectMode) {
-        return this.$t('emailConnector.mailBox.list.drawer.title');
+        const base = this.$t('emailConnector.mailBox.list.drawer.title');
+        if (this.currentFolder === 'SENT') {
+          return `${base} · ${this.$t('emailConnector.mailBox.list.drawer.folder.sent')}`;
+        }
+        if (this.currentFolder === 'ARCHIVE') {
+          return `${base} · ${this.$t('emailConnector.mailBox.list.drawer.folder.archive')}`;
+        }
+        return base;
       }
-      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ? 
-        this.$t('emailConnector.mailBox.list.drawer.emailSelected') : 
+      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ?
+        this.$t('emailConnector.mailBox.list.drawer.emailSelected') :
         this.$t('emailConnector.mailBox.list.drawer.emailsSelected')}`;
     },
     indeterminate() {
@@ -319,6 +338,8 @@ export default {
         this.syncInProgress = true;
         await this.$nextTick();
       }
+      // Always (re)open on the inbox.
+      this.currentFolder = 'INBOX';
       this.loading = true;
       this.emailBoxDrawer = true;
       await this.loadEmailBox();
@@ -436,7 +457,7 @@ export default {
       }
     },
     async loadEmailBox() {
-      this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox();
+      this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder);
       this.emails = this.emailBox.emails || [];
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
       this.webmailUrl = this.emailBox.webmailUrl;
@@ -445,6 +466,16 @@ export default {
         this.stopAutoRefresh();
         this.$root.$emit('synchronize-finished');
       }
+    },
+    // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
+    onSwitchFolder(folder) {
+      if (folder === this.currentFolder) {
+        return;
+      }
+      this.currentFolder = folder;
+      this.cancelSelectMode();
+      this.loading = true;
+      this.loadEmailBox().finally(() => this.loading = false);
     },
     startAutoRefresh() {
       if (this.refreshInterval) {
