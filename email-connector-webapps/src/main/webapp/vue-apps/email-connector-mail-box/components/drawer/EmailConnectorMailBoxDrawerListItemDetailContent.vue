@@ -15,8 +15,11 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list class="my-5 py-0 mx-4">
+  <!-- In a thread the outer ThreadContent already provides the horizontal margin, so
+       the message must not add its own or its avatar drifts right of the collapsed rows. -->
+  <v-list :class="['py-0', hideSubject ? 'my-0' : 'my-5 mx-4']">
     <v-list-item
+      v-if="!hideSubject"
       class="px-0 pb-1 height-auto">
       <v-list-item-content class="py-0 text-title text-wrap overflow-visible">
         <v-list-item-title v-text="email.subject" class="text-wrap overflow-visible" />
@@ -28,7 +31,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :email="email" 
         class="me-3 my-0" />
       <v-list-item-content class="py-0">
-        <v-list-item-title class="font-weight-bold mb-3" v-text="email.sender.name" />
+        <v-list-item-title
+          :class="['font-weight-bold mb-3', { clickable: collapsible }]"
+          @click="collapsible && $emit('toggle-collapse')"
+          v-text="email.sender.name" />
         <v-list-item-subtitle class="text-wrap overflow-visible d-flex">
           <span class="me-1 text-wrap text-break-all">{{ recipients }}</span>
           <v-btn
@@ -87,6 +93,16 @@ export default {
       default: () => null,
     },
     expandedDrawer: {
+      type: Boolean,
+      default: false,
+    },
+    // In a thread the subject is shown once at the top, so each message hides its own.
+    hideSubject: {
+      type: Boolean,
+      default: false,
+    },
+    // In a thread an expanded message collapses again when its sender line is clicked.
+    collapsible: {
       type: Boolean,
       default: false,
     },

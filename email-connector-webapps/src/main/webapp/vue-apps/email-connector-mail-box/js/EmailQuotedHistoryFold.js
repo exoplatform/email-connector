@@ -42,6 +42,44 @@ const REPLY_INTRO_PATTERNS = [
 ];
 
 /**
+ * Markers that a quoted block is a *forwarded* message rather than a reply's quoted
+ * history. A forward is content the sender chose to include, so it must stay visible
+ * — we never fold it behind "See more". Reply markers ("On … wrote:", Outlook's
+ * "Original Message") are intentionally NOT here.
+ *
+ * The marker text comes from the *sender's* mail client locale, not the reader's UI
+ * language, so English/French alone missed forwards from senders using other mail
+ * clients' languages — they fell through to the generic blockquote/gmail_quote check
+ * below and got folded, which is exactly what must never happen to a forward. This
+ * literal-string list is necessarily best-effort: it covers this addon's major
+ * supported locales (see locale/portlet/emailConnector) but can't be exhaustive over
+ * every mail-client / language combination — extend it as gaps are reported.
+ */
+const FORWARD_MARKERS = [
+  /-+\s*Forwarded message\s*-+/i,
+  /Begin forwarded message\s*:/i,
+  /-+\s*Message transféré\s*-+/i,
+  /-+\s*Weitergeleitete Nachricht\s*-+/i,
+  /-+\s*Mensaje reenviado\s*-+/i,
+  /-+\s*Messaggio inoltrato\s*-+/i,
+  /-+\s*Mensagem (reencaminhada|encaminhada)\s*-+/i,
+  /-+\s*Doorgestuurd bericht\s*-+/i,
+  /-+\s*Пересланное сообщение\s*-+/i,
+  /-+\s*Przekazana wiadomość\s*-+/i,
+];
+
+/**
+ * Whether an element's text carries a forwarded-message marker.
+ *
+ * @param {Element} el candidate element
+ * @returns {boolean} true when the element looks like a forwarded message
+ */
+function isForwarded(el) {
+  const text = el.textContent || '';
+  return FORWARD_MARKERS.some(pattern => pattern.test(text));
+}
+
+/**
  * Longest textContent (characters) an element may hold to still be considered a
  * one-line reply-intro rather than the quoted body itself. Keeps the end-anchored
  * intro regex from ever scanning a whole quoted thread.
@@ -86,6 +124,19 @@ function findBoundary(doc) {
   const body = doc.body;
   if (!body) {
     return null;
+  }
+  // A forwarded message is shown in full, never folded — so if the body carries a
+  // forward marker we treat it as having no foldable quoted history at all.
+  if (isForwarded(body)) {
+    return null;
+  }
+  // Outlook wraps the quoted reply — its "De:/From:" header AND the original body —
+  // in a #divRplyFwdMsg. Fold from it (or the <hr> that precedes it) so the whole
+  // previous message collapses, header included, rather than only the inner quote.
+  const outlookReply = doc.getElementById('divRplyFwdMsg');
+  if (outlookReply) {
+    const previous = outlookReply.previousElementSibling;
+    return previous && previous.tagName === 'HR' ? previous : outlookReply;
   }
   const gmailQuote = body.querySelector('.gmail_quote');
   if (gmailQuote) {
