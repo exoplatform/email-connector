@@ -36,67 +36,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </template>
     <template v-if="newEmailDrawer" #content>
-      <v-list-item class="pa-0 mx-4" dense>
-        <v-label for="to">
-          <span class="text-subtitle-color">
-            {{ $t('emailConnector.mailBox.newEmail.drawer.to.label') }}
-          </span>
-        </v-label>
-        <v-text-field
-          v-model="toEmails"
-          class="pt-0"
-          autocomplete="to"
-          id="to"
-          :aria-label="$t('emailConnector.mailBox.newEmail.drawer.to.label')"
-          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.to.placeholder')"
-          type="text"
-          required="required"
-          solo
-          flat
-          single-line
-          hide-details />
-      </v-list-item>
+      <email-connector-recipient-field
+        v-model="to"
+        class="mx-4"
+        field-id="to"
+        :label="$t('emailConnector.mailBox.newEmail.drawer.to.label')"
+        :placeholder="$t('emailConnector.mailBox.newEmail.drawer.to.placeholder')" />
       <v-divider />
       <div>
-        <v-list-item class="pa-0 mx-4" dense>
-          <v-label for="cc">
-            <span class="text-subtitle-color">
-              {{ $t('emailConnector.mailBox.newEmail.drawer.cc.label') }}
-            </span>
-          </v-label>
-          <v-text-field
-            v-model="ccEmails"
-            class="pt-0"
-            autocomplete="cc"
-            id="cc"
-            :aria-label="$t('emailConnector.mailBox.newEmail.drawer.cc.label')"
-            :placeholder="$t('emailConnector.mailBox.newEmail.drawer.cc.placeholder')"
-            type="text"
-            solo
-            flat
-            single-line
-            hide-details />
-        </v-list-item>
+        <email-connector-recipient-field
+          v-model="cc"
+          class="mx-4"
+          field-id="cc"
+          :label="$t('emailConnector.mailBox.newEmail.drawer.cc.label')"
+          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.cc.placeholder')" />
         <v-divider />
-        <v-list-item class="pa-0 mx-4" dense>
-          <v-label for="bcc">
-            <span class="text-subtitle-color">
-              {{ $t('emailConnector.mailBox.newEmail.drawer.bcc.label') }}
-            </span>
-          </v-label>
-          <v-text-field
-            v-model="bccEmails"
-            class="pt-0"
-            autocomplete="bcc"
-            id="bcc"
-            :aria-label="$t('emailConnector.mailBox.newEmail.drawer.bcc.label')"
-            :placeholder="$t('emailConnector.mailBox.newEmail.drawer.bcc.placeholder')"
-            type="text"
-            solo
-            flat
-            single-line
-            hide-details />
-        </v-list-item>
+        <email-connector-recipient-field
+          v-model="bcc"
+          class="mx-4"
+          field-id="bcc"
+          :label="$t('emailConnector.mailBox.newEmail.drawer.bcc.label')"
+          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.bcc.placeholder')" />
         <v-divider />
       </div>
       <v-list-item class="pa-0 ms-1 me-4">
@@ -152,9 +112,12 @@ export default {
   data() {
     return {
       newEmailDrawer: false,
-      toEmails: '',
-      ccEmails: '',
-      bccEmails: '',
+      // The three recipient fields hold [{name, address, avatarUrl}] chips. The
+      // send payload is still built from them as [{address}] on the way out, so
+      // this phase changes the composer without touching the send API.
+      to: [],
+      cc: [],
+      bcc: [],
       email: {
         mailHeaderId: null,
         to: [],
@@ -180,33 +143,51 @@ export default {
     });
   },
   computed: {
+    /**
+     * Whether Send is unavailable: no recipient, or an attachment still going up.
+     *
+     * @returns {boolean} true when sending must wait
+     */
     disabled() {
-      return !this.toEmails || this.attachments.some(attachment => attachment.uploading);
+      return !this.to.length || this.attachments.some(attachment => attachment.uploading);
     },
+    /**
+     * Whether closing the drawer would throw away work, and so needs confirming.
+     *
+     * @returns {boolean} true when the composer holds anything
+     */
     confirmClose() {
-      return !!(this.email.content.body || this.email.subject || this.toEmails || this.ccEmails || this.bccEmails);
+      return !!(this.email.content.body || this.email.subject) || !!this.to.length || !!this.cc.length || !!this.bcc.length;
     }
   },
   methods: {
-    // prefill ({to: [{name, address}]}) seeds a NEW email's recipients — the
-    // Contacts drawer's "compose to" hand-off. It only applies when no email is
-    // passed, so reply/forward prefills stay exactly what they were.
+    /**
+     * Opens the composer for a new mail, a reply, a reply-all or a forward.
+     *
+     * prefill ({to: [{name, address}]}) seeds a NEW email's recipients — the
+     * Contacts drawer's "compose to" hand-off. It only applies when no email is
+     * passed, so reply/forward prefills stay exactly what they were.
+     *
+     * @param {object} email - the message being replied to or forwarded
+     * @param {boolean} forward - whether this is a forward
+     * @param {boolean} replyAll - whether the reply addresses everyone
+     * @param {object} prefill - recipients to seed a new mail with
+     * @returns {void}
+     */
     open(email, forward, replyAll, prefill) {
       this.attachments = [];
       if (!email && prefill?.to?.length) {
-        this.toEmails = prefill.to.map(recipient => recipient.address?.trim()).filter(Boolean).join(', ');
+        this.to = this.toRecipients(prefill.to);
       }
       this.title = forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.title') : email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
       if (email) {
         if (!forward) {
-          this.toEmails = email.replyTo?.length > 0
-            ? email.replyTo.map(item => item.address?.trim()).filter(Boolean).join(', ')
-            : email.sender.address;
+          this.to = email.replyTo?.length > 0
+            ? this.toRecipients(email.replyTo)
+            : this.toRecipients([email.sender]);
           if (replyAll) {
-            this.ccEmails = [...new Set([...(email.to || []), ...(email.cc || [])]
-              .filter(item => item.address !== email.userEmail)
-              .map(item => item.address?.trim())
-              .filter(Boolean))].join(', ');
+            this.cc = this.toRecipients([...(email.to || []), ...(email.cc || [])]
+              .filter(item => item.address !== email.userEmail));
           }
           this.email.mailHeaderId = email.mailHeaderId;
         }
@@ -269,10 +250,40 @@ export default {
       // px, and a fractional overshoot here would trigger the drawer's own scrollbar too.
       return Math.floor(rawHeight);
     },
+    /**
+     * Turns whatever carries an address — a stored recipient, a sender, a
+     * "compose to" hand-off — into the chip shape the recipient field speaks,
+     * dropping the blanks and the duplicates a reply-all naturally produces.
+     *
+     * @param {Array} people - objects carrying an address, and maybe a name
+     * @returns {Array} the recipient chips
+     */
+    toRecipients(people) {
+      const seen = new Set();
+      return (people || []).filter(person => person?.address?.trim())
+        .map(person => ({
+          name: person.name?.trim(),
+          address: person.address.trim(),
+          avatarUrl: person.avatarUrl,
+        }))
+        .filter(person => {
+          const key = person.address.toLowerCase();
+          if (seen.has(key)) {
+            return false;
+          }
+          seen.add(key);
+          return true;
+        });
+    },
+    /**
+     * Closes and empties the composer.
+     *
+     * @returns {void}
+     */
     close() {
-      this.toEmails = '';
-      this.ccEmails = '';
-      this.bccEmails = '';
+      this.to = [];
+      this.cc = [];
+      this.bcc = [];
       this.email.subject = '';
       this.email.content.body = '';
       this.email.mailHeaderId = null;
@@ -281,23 +292,25 @@ export default {
       this.editorMaxHeight = 0;
       this.newEmailDrawer = false;
     },
+    /**
+     * Sends what the composer holds, or re-sends the payload the no-subject
+     * confirmation handed back.
+     *
+     * @param {object} email - a ready payload, or nothing to build one
+     * @returns {void}
+     */
     sendEmail(email) {
       if (email) {
         this.email = email;
       }
       else {
-        this.email.to = this.toEmails.split(',')
-          .map(email => ({ address: email.trim() }))
-          .filter(email => email.address);
-        this.email.cc = this.ccEmails.split(',')
-          .map(email => ({ address: email.trim() }))
-          .filter(email => email.address);
+        // The send API takes plain addresses; the chips' names and avatars are
+        // the field's business and stop here.
+        this.email.to = this.toAddresses(this.to);
+        this.email.cc = this.toAddresses(this.cc);
         this.email.bcc = [
           ...(this.email.bcc || []),
-          ...this.bccEmails
-            .split(',')
-            .map(email => ({ address: email.trim() }))
-            .filter(email => email.address)
+          ...this.toAddresses(this.bcc)
         ];
         if (!this.email.subject) {
           this.$root.$emit('open-no-subject-email-confirm-popup', this.email);
@@ -321,6 +334,23 @@ export default {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
       }).finally(() => this.loading = false);
     },
+    /**
+     * Narrows recipient chips to what the send API consumes.
+     *
+     * @param {Array} recipients - the field's chips
+     * @returns {Array} [{address}] entries
+     */
+    toAddresses(recipients) {
+      return (recipients || []).map(recipient => ({ address: recipient.address?.trim() }))
+        .filter(recipient => recipient.address);
+    },
+    /**
+     * Widens the quoted blocks the editor produced into something a mail client
+     * renders as a quote.
+     *
+     * @param {string} html - the composed body
+     * @returns {string} the body to send
+     */
     formatEmailBody(html) {
       if (!html) {
         return html;
