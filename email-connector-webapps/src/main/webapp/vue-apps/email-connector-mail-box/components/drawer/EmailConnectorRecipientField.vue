@@ -29,23 +29,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
        A raw address is always accepted: this is mail, not a closed directory. -->
   <div>
-    <!-- The label column has a floor rather than a fixed width: at 34px To, Cc
-         and Bcc share one left edge, and a locale whose label is wider grows
-         that one column instead of clipping the word. The alignment of the three
-         rows is the price, and it is the cheaper of the two.
-         The row centres rather than top-aligns: the field carries Vuetify's
-         own vertical padding, so aligning to the top dropped the input a line
-         below its label and gave each row a different indent. The chips wrap
-         inside their own box, which is what needs min-width 0 -- a flex item
-         will not shrink below its content otherwise, and the box pushed the
-         label out of the row. -->
-    <div class="d-flex align-center">
-      <v-label
-        :for="fieldId"
-        class="flex-grow-0 flex-shrink-0"
-        style="min-width: 34px;">
-        <span class="text-subtitle-color">{{ label }}</span>
-      </v-label>
+    <!-- The label sits in a fixed column so To, Cc and Bcc share one left edge,
+         and it aligns with the FIRST row rather than centring on the box: an
+         addressed field is as tall as its chips, and a full email address fills
+         a drawer-width row on its own, so centring left "To:" floating between
+         a chip above and the caret below. Pinned to the top it reads level with
+         the first chip however many follow -- the margin is what puts it on the
+         chip's centre line rather than its top edge, since a small chip is
+         taller than the label's text.
+
+         The chips wrap inside their own box, which is what needs min-width 0 --
+         a flex item will not shrink below its content otherwise, and the box
+         pushed the label out of the row. The input keeps a flex-basis because
+         Vuetify lays a v-text-field out at full width, which would send it to a
+         line of its own even when a short address left room beside it. -->
+    <div class="d-flex align-start">
+      <!-- The column lives on this div, not on the v-label: that component drops
+           the class and style it is given, so "To", "Cc" and "Bcc" each took
+           their own width and started their field at a different x. 40px clears
+           the widest of the three. The height matches the field's own row, so the
+           label centres exactly on the placeholder of an empty field -- which is
+           how compose opens, and so the state the eye checks first. Against a
+           chip it then sits 3px high, which on a 24px chip does not read. -->
+      <div class="d-flex align-center flex-grow-0 flex-shrink-0" style="width: 40px; height: 38px">
+        <v-label :for="fieldId">
+          <span class="text-subtitle-color">{{ label }}</span>
+        </v-label>
+      </div>
       <div class="d-flex flex-wrap align-center flex-grow-1" style="min-width: 0;">
         <v-chip
           v-for="(recipient, index) in value"
@@ -69,6 +79,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :placeholder="inputPlaceholder"
           :aria-label="label"
           class="pa-0 ma-0 flex-grow-1"
+          style="min-width: 120px; flex-basis: 120px"
           type="text"
           autocomplete="off"
           solo
