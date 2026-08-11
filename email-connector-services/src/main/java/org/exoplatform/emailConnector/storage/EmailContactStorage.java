@@ -493,6 +493,20 @@ public class EmailContactStorage {
   }
 
   /**
+   * One row in the sync's shape, by id — what the edit push reads to learn
+   * which server entry the row is bound to, without dragging the whole book's
+   * rows in for one contact. Ownership is not checked here: the caller has
+   * already resolved the contact through an owner-checked read.
+   *
+   * @param id the row id
+   * @return the row, or null when there is no such contact
+   */
+  @Transactional
+  public CardDavRow getCardDavRowById(long id) {
+    return emailContactDAO.findById(id).map(this::toCardDavRow).orElse(null);
+  }
+
+  /**
    * Writes an address-book entry onto a row, creating it when there is none.
    * <p>
    * This exists because {@code updateContact} structurally cannot do it: that
@@ -667,6 +681,40 @@ public class EmailContactStorage {
     }
     emailContactDAO.findById(id).ifPresent(entity -> {
       entity.setVcardUid(vcardUid);
+      emailContactDAO.save(entity);
+    });
+  }
+
+  /**
+   * Binds a contact the user published to the server entry the publish just
+   * created: which book's connector, at which URL, at which version, under
+   * which card identity — and flips the source to CARDDAV, because from this
+   * moment the server copy is the authoritative one and the row is read-only
+   * here, exactly like a row the inbound sync wrote.
+   * <p>
+   * Deliberately NOT {@code saveCardDavContact}: that method carries the
+   * inbound sync's claim-and-merge semantics — overwriting fields from a
+   * parsed card, merging addresses, deciding photo ownership. A publish has
+   * nothing to merge: the fields already are the truth, only the bookkeeping
+   * is new. The narrow shape follows {@link #setVcardUid}.
+   *
+   * @param id the contact that was published
+   * @param connectorId the connector whose address book now holds it
+   * @param href the entry URL the card was stored at
+   * @param etag the version the server answered, or null when it sent none —
+   *          stored null on purpose, so the next sync re-reads the entry and
+   *          settles on the server's canonical version
+   * @param vcardUid the identity minted into the published card
+   */
+  @Transactional
+  public void bindPublishedCard(long id, Long connectorId, String href, String etag, String vcardUid) {
+    emailContactDAO.findById(id).ifPresent(entity -> {
+      entity.setSource(EmailContactSource.CARDDAV);
+      entity.setConnectorId(connectorId);
+      entity.setHref(href);
+      entity.setEtag(etag);
+      entity.setVcardUid(vcardUid);
+      entity.setUpdatedDate(new Date());
       emailContactDAO.save(entity);
     });
   }
