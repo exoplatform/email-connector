@@ -45,7 +45,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.carddav.CardDavException;
+import org.exoplatform.emailConnector.carddav.CardDavPublishQueuedException;
 import org.exoplatform.emailConnector.model.ContactImportState;
+import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
@@ -349,21 +351,30 @@ public class EmailContactRest {
   @Operation(summary = "Publishes one of the caller's contacts to their CardDAV address book", method = "POST",
              description = "Creates the contact as a new entry in the caller's own address book - creates only, never overwrites: the card is stored under If-None-Match:*, so an entry already at that URL makes the server refuse (answered 409) rather than anything be replaced. Manual and collected contacts only; a directory-linked colleague is the platform's to hold, not an address book's. Requires the address book to be bound AND already discovered by a successful sync - publishing never writes to an unverified URL. On success the contact becomes an address-book row, read-only here like any other, and is answered re-read. Somebody else's contact answers 404, never 403.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "202", description = "The server could not be reached, so the publish was queued: it will be retried automatically after the next successful address-book sync. The contact stays local and visible meanwhile - accepted, not done, and not an error"),
       @ApiResponse(responseCode = "400", description = "Publishing disabled, a non-publishable source, no bound address book, or a book never discovered - the message code says which"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "The contact is already an address-book row, or the server refused to create over an existing entry"),
       @ApiResponse(responseCode = "502", description = "The address book server could not be reached, or answered an error"), })
-  public EmailContact publishContact(HttpServletRequest request,
-                                     @Parameter(description = "Contact id", required = true)
-                                     @PathVariable("id")
-                                     long id) {
+  public ResponseEntity<Object> publishContact(HttpServletRequest request,
+                                               @Parameter(description = "Contact id", required = true)
+                                               @PathVariable("id")
+                                               long id) {
     try {
       EmailContact published = emailContactCardDavSyncService.publishContact(request.getRemoteUser(), id);
       if (published == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      return published;
+      return ResponseEntity.ok(published);
+    } catch (CardDavPublishQueuedException e) {
+      // Before the CardDavException catch it extends: 202, because the click
+      // did its job even though the server was away -- the publish is queued
+      // and will go out after the next successful sync. An error status here
+      // would tell the user to retry what no longer needs retrying.
+      return ResponseEntity.status(HttpStatus.ACCEPTED)
+                           .body(Map.of("queued", true,
+                                        "messageCode", EmailContactCardDavSyncService.PUBLISH_QUEUED));
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
@@ -371,7 +382,8 @@ public class EmailContactRest {
     } catch (CardDavException e) {
       // The server's failure, not the caller's -- and answered as a message
       // code the client can show, never a stack trace. 502 because this
-      // service was the gateway to a server that did not deliver.
+      // service was the gateway to a server that did not deliver. Reached only
+      // when the queue could not take the publish either (it is full).
       throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "emailConnector.contacts.publish.serverError");
     }
   }
@@ -429,6 +441,16 @@ public class EmailContactRest {
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
   public ContactSyncState getAddressBookSyncStatus(HttpServletRequest request) {
     return emailContactCardDavSyncService.getSyncState(request.getRemoteUser());
+  }
+
+  @GetMapping("/carddav/publish-queue")
+  @Secured("users")
+  @Operation(summary = "The caller's pending address-book publishes", method = "GET",
+             description = "The publishes the address book has not taken yet: entries still waiting for the next successful sync, and entries parked after repeated failures with why. Only contact ids and bookkeeping - the contacts themselves stay in the store, visible and retryable. Holds no secret. What the settings screen turns into 'N contacts waiting to publish'.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public ContactPublishQueue getPublishQueue(HttpServletRequest request) {
+    return emailContactCardDavSyncService.getPublishQueue(request.getRemoteUser());
   }
 
   @GetMapping(value = "/export", produces = "text/vcard")

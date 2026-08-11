@@ -36,12 +36,15 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.emailConnector.carddav.AddressBook;
 import org.exoplatform.emailConnector.carddav.CardDavClient;
 import org.exoplatform.emailConnector.carddav.CardDavException;
+import org.exoplatform.emailConnector.carddav.CardDavPublishQueuedException;
 import org.exoplatform.emailConnector.carddav.ContactResource;
 import org.exoplatform.emailConnector.carddav.ParsedVCard;
 import org.exoplatform.emailConnector.carddav.PutResult;
 import org.exoplatform.emailConnector.carddav.VCardParser;
 import org.exoplatform.emailConnector.model.CardDavContactData;
 import org.exoplatform.emailConnector.model.CardDavRow;
+import org.exoplatform.emailConnector.model.ContactPublishQueue;
+import org.exoplatform.emailConnector.model.ContactPublishQueueEntry;
 import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContact;
@@ -68,6 +71,13 @@ import org.exoplatform.services.log.Log;
  * card and stored only when the server accepts it. Either way the server copy
  * stays authoritative: an edit the server refuses is an edit this store
  * refuses too, never one it keeps quietly diverged.
+ * <p>
+ * A publish the server cannot take right now is not thrown away: it waits in a
+ * small per-user queue ({@link ContactPublishQueue}, in settings beside the
+ * sync state) and is retried after the next successful inbound run — the run
+ * that proves the server reachable again. Capped retries, then parked with the
+ * reason; the contact itself never moves, so the queue can only ever lose a
+ * reminder, never a person.
  * <p>
  * Kept apart from {@link EmailContactService} on purpose — that class owns the
  * store's own rules and is long enough already; this one owns a protocol
@@ -120,6 +130,28 @@ public class EmailContactCardDavSyncService {
 
   /** Message code: the server says an entry already exists where the card would go. */
   public static final String       PUBLISH_EXISTS_ON_SERVER  = "emailConnector.contacts.publish.existsOnServer";
+
+  /**
+   * Message code: the server could not take the publish right now, so it was
+   * queued to retry after the next successful sync. Answered 202, never as an
+   * error — the click is safe to walk away from.
+   */
+  public static final String       PUBLISH_QUEUED            = "emailConnector.contacts.publish.queued";
+
+  /**
+   * Drain attempts a queued publish gets before it is parked. Three, like the
+   * sync's own {@link #MAX_FAILED_ATTEMPTS}: drains only run after a sync that
+   * just SUCCEEDED, so three failures in a row are three times the server took
+   * reads but refused this write — a shape retrying will not fix.
+   */
+  private static final int         MAX_PUBLISH_ATTEMPTS      = 3;
+
+  /**
+   * Entries a user's queue may hold. Far above what clicking during an outage
+   * can produce — the cap is not a working limit but a stop against a future
+   * bulk caller quietly turning "a small queue in settings" into a table.
+   */
+  private static final int         MAX_QUEUE_SIZE            = 50;
 
   /** Message code: the edited contact is not an address-book row at all. */
   public static final String       UPDATE_NOT_ADDRESS_BOOK   = "emailConnector.contacts.update.notAddressBook";
@@ -373,9 +405,58 @@ public class EmailContactCardDavSyncService {
    * @throws IllegalArgumentException with a message code when a guard refuses
    * @throws IllegalStateException with a message code when the row or the
    *           server says the card already exists
-   * @throws CardDavException when the server cannot be reached or errors
+   * @throws CardDavPublishQueuedException when the server could not be reached
+   *           and the publish was queued to retry — a promise, not a failure
+   * @throws CardDavException when the server erred AND the queue could not
+   *           take the publish either
    */
   public EmailContact publishContact(String username, long contactId) {
+    // Synchronous first, queue only as the fallback — the deliberate answer to
+    // "enqueue everything instead?". A click whose publish lands keeps exactly
+    // the behavior slices 1 and 2 shipped: the toast reports what the server
+    // DID, and the card re-renders as an address-book row on the spot. Routing
+    // every click through the queue would have traded that certainty for
+    // "eventually", for no gain on the happy path. The queue exists for the one
+    // case a watching user cannot fix by watching: the server being away.
+    try {
+      EmailContact published = doPublish(username, contactId);
+      if (published != null) {
+        // Whatever the queue was holding for this contact, the user just did it
+        // by hand: the entry — pending or parked — is satisfied, and the manual
+        // publish button is thereby also how a parked entry gets retried.
+        dequeuePublish(username, contactId);
+      }
+      return published;
+    } catch (CardDavException e) {
+      // Only transport failures fall back to the queue. A guard refusal
+      // (disabled, wrong source, exists-on-server, no verified book) passed
+      // through above is a NO that retrying cannot turn into a yes, and queuing
+      // it would just park it later with the same words it can have now.
+      if (enqueuePublish(username, contactId, e.getMessage())) {
+        throw new CardDavPublishQueuedException(e.getMessage(), e);
+      }
+      // A full queue keeps today's honest failure: reported, retryable by hand.
+      throw e;
+    }
+  }
+
+  /**
+   * The publish itself, exactly as slices 1 and 2 built it — every guard, the
+   * creates-only PUT, the binding of the row to the server's own name for the
+   * entry. Kept free of any queue knowledge so the drain can call it per entry
+   * and interpret the outcome itself, without the fallback re-enqueueing what
+   * the drain is in the middle of retrying.
+   *
+   * @param username the mailbox owner
+   * @param contactId the contact to publish
+   * @return the contact re-read after the publish; or null when the caller has
+   *         no such visible contact
+   * @throws IllegalArgumentException with a message code when a guard refuses
+   * @throws IllegalStateException with a message code when the row or the
+   *           server says the card already exists
+   * @throws CardDavException when the server cannot be reached or errors
+   */
+  private EmailContact doPublish(String username, long contactId) {
     if (!isPublishEnabled()) {
       throw new IllegalArgumentException(PUBLISH_DISABLED);
     }
@@ -448,11 +529,225 @@ public class EmailContactCardDavSyncService {
   }
 
   /**
+   * The caller's publish queue as stored — what the settings screen turns into
+   * "N contacts waiting to publish". Never null, entries never null.
+   *
+   * @param username the mailbox owner
+   * @return the stored queue
+   */
+  public ContactPublishQueue getPublishQueue(String username) {
+    return userEmailSettingService.getContactPublishQueue(username);
+  }
+
+  /**
+   * Puts a publish the server could not take aside, to retry after the next
+   * successful sync. Only the contact's id is kept — the retry reads the
+   * contact fresh, so nothing here can go stale, and losing the queue can lose
+   * at most the reminder, never the contact.
+   * <p>
+   * Re-asking for a contact already queued resets its entry rather than adding
+   * a second: the user pressing the button again is the retry that un-parks a
+   * parked entry and gives a tired one a fresh count.
+   *
+   * @param username the mailbox owner
+   * @param contactId the contact whose publish is postponed
+   * @param error what the attempt just failed with, kept on the entry
+   * @return true when the queue took the entry, false when it is full
+   */
+  private boolean enqueuePublish(String username, long contactId, String error) {
+    ContactPublishQueue queue = userEmailSettingService.getContactPublishQueue(username);
+    List<ContactPublishQueueEntry> entries = queue.getEntries();
+    entries.removeIf(entry -> entry.getContactId() == contactId);
+    if (entries.size() >= MAX_QUEUE_SIZE) {
+      LOG.warn("The publish queue of user {} is full ({} entries); the failed publish of contact {} stays a plain failure",
+               username,
+               entries.size(),
+               contactId);
+      return false;
+    }
+    entries.add(new ContactPublishQueueEntry(contactId, new Date().getTime(), 0, false, null, error, null));
+    userEmailSettingService.setContactPublishQueue(queue, username);
+    LOG.info("The publish of contact {} for user {} was queued after a server failure", contactId, username);
+    return true;
+  }
+
+  /**
+   * Forgets the queue's entry for a contact whose publish just happened some
+   * other way. Nothing to save when the contact was never queued, which is
+   * almost every publish.
+   *
+   * @param username the mailbox owner
+   * @param contactId the contact now published
+   */
+  private void dequeuePublish(String username, long contactId) {
+    ContactPublishQueue queue = userEmailSettingService.getContactPublishQueue(username);
+    if (queue.getEntries().removeIf(entry -> entry.getContactId() == contactId)) {
+      userEmailSettingService.setContactPublishQueue(queue, username);
+    }
+  }
+
+  /**
+   * Retries every pending publish, called only after a sync run that just
+   * SUCCEEDED — which is the whole scheduling story: a successful inbound run
+   * proves the server reachable and the address book discovered, the two
+   * preconditions a publish needs, and it happens on the mailbox job's own
+   * rhythm, so the queue drains itself without a scheduler, a hot loop, or a
+   * user watching. A run that failed never reaches this method, and a BLOCKED
+   * book therefore pauses draining by construction — a server unreachable for
+   * reads is unreachable for writes, and hammering it with queued PUTs while
+   * the sync itself is backing off would defeat the pause.
+   * <p>
+   * Outcomes are judged per entry: a publish that lands — or turns out already
+   * done, or whose contact the user deleted meanwhile — leaves the queue; a
+   * refusal specific to the entry parks it with the refusal's own words, since
+   * retrying cannot change a NO about the contact itself; a refusal about the
+   * USER's situation (publishing switched off, the book unbound) stops the
+   * drain and keeps every entry untouched, because flipping the switch back
+   * should resume them without anyone re-asking; and a transport failure
+   * counts one attempt against the entry it hit, then stops the whole drain —
+   * a server that just dropped a write is shaky, and letting the loop continue
+   * would burn every entry's attempts on one bad moment. Three attempts, then
+   * parked with the reason: parked is still not lost — the contact sits local
+   * and visible, and its publish button remains the retry.
+   * <p>
+   * Nothing thrown here escapes: a broken outbound must never bleed into the
+   * inbound bookkeeping — the run already recorded its success, and the
+   * FAILURE→BLOCKED counter belongs to reads alone.
+   *
+   * @param username the mailbox owner
+   */
+  private void drainPublishQueue(String username) {
+    ContactPublishQueue snapshot = userEmailSettingService.getContactPublishQueue(username);
+    if (snapshot.getEntries().isEmpty()) {
+      return;
+    }
+    Set<Long> done = new HashSet<>();
+    boolean changed = false;
+    int published = 0;
+    for (ContactPublishQueueEntry entry : snapshot.getEntries()) {
+      if (entry.isParked()) {
+        continue;
+      }
+      try {
+        EmailContact contact = doPublish(username, entry.getContactId());
+        // A null contact is the user having deleted it since: the queue must
+        // not resurrect what they removed, so the entry simply leaves too.
+        done.add(entry.getContactId());
+        changed = true;
+        published += contact != null ? 1 : 0;
+      } catch (IllegalStateException e) {
+        if (PUBLISH_ALREADY_PUBLISHED.equals(e.getMessage())) {
+          // The row became an address-book entry some other way -- a manual
+          // retry that worked, or the inbound run just claiming it by address.
+          // The queue's promise is kept, whoever kept it.
+          done.add(entry.getContactId());
+        } else {
+          park(entry, e.getMessage());
+        }
+        changed = true;
+      } catch (IllegalArgumentException e) {
+        if (isUserLevelRefusal(e.getMessage())) {
+          break;
+        }
+        park(entry, e.getMessage());
+        changed = true;
+      } catch (CardDavException e) {
+        entry.setAttempts(entry.getAttempts() + 1);
+        entry.setLastError(e.getMessage());
+        entry.setLastAttemptDate(new Date().getTime());
+        if (entry.getAttempts() >= MAX_PUBLISH_ATTEMPTS) {
+          park(entry, e.getMessage());
+        }
+        changed = true;
+        break;
+      } catch (Exception e) {
+        // A failure of ours, not the server's: parked immediately, with its
+        // words -- retrying a bug every sync period is the hot loop this queue
+        // exists to never be.
+        park(entry, e.getMessage());
+        changed = true;
+        LOG.warn("The queued publish of contact {} for user {} failed outside the protocol and was parked",
+                 entry.getContactId(),
+                 username,
+                 e);
+      }
+    }
+    if (changed) {
+      saveDrainedQueue(username, snapshot, done);
+      LOG.info("Publish queue drained for user {}: {} published, {} still waiting or parked",
+               username,
+               published,
+               userEmailSettingService.getContactPublishQueue(username).getEntries().size());
+    }
+  }
+
+  /**
+   * Writes the drain's outcomes back without overwriting what happened while it
+   * ran: the stored queue is re-read and the outcomes applied onto it, so an
+   * entry a concurrent click enqueued mid-drain survives the save. The drain
+   * holds no lock across its network calls on purpose — the only concurrent
+   * writer is the same user clicking, and losing their fresh entry to a
+   * wholesale save was the one way this bookkeeping could actually lose
+   * something.
+   *
+   * @param username the mailbox owner
+   * @param snapshot the queue as the drain worked on it, outcomes applied
+   * @param done the contact ids whose entries are satisfied and leave
+   */
+  private void saveDrainedQueue(String username, ContactPublishQueue snapshot, Set<Long> done) {
+    Map<Long, ContactPublishQueueEntry> outcomes = new java.util.HashMap<>();
+    snapshot.getEntries().forEach(entry -> outcomes.put(entry.getContactId(), entry));
+    ContactPublishQueue current = userEmailSettingService.getContactPublishQueue(username);
+    List<ContactPublishQueueEntry> entries = current.getEntries();
+    entries.removeIf(entry -> done.contains(entry.getContactId()));
+    entries.replaceAll(entry -> outcomes.getOrDefault(entry.getContactId(), entry));
+    userEmailSettingService.setContactPublishQueue(current, username);
+  }
+
+  /**
+   * Parks an entry with why, which is the queue keeping its second promise:
+   * never a hot loop, and never silent about giving up.
+   *
+   * @param entry the entry that stops being retried
+   * @param reason the refusal or failure it keeps
+   */
+  private void park(ContactPublishQueueEntry entry, String reason) {
+    entry.setParked(true);
+    entry.setParkedReason(reason);
+    entry.setLastError(reason);
+    entry.setLastAttemptDate(new Date().getTime());
+  }
+
+  /**
+   * Whether a refusal is about the user's situation rather than the one entry —
+   * the kill switch off, no address book bound, the book not discovered. Those
+   * stop the drain and leave the queue as it stands: the entries are fine, the
+   * ground under them moved, and it may move back.
+   *
+   * @param messageCode the refusal's message code
+   * @return true when the drain should stop rather than park anything
+   */
+  private boolean isUserLevelRefusal(String messageCode) {
+    return PUBLISH_DISABLED.equals(messageCode)
+        || PUBLISH_NO_ADDRESS_BOOK.equals(messageCode)
+        || PUBLISH_NOT_DISCOVERED.equals(messageCode);
+  }
+
+  /**
    * Pushes an edit of one of the caller's address-book contacts to the CardDAV
    * server, and keeps it locally only once the server accepted it — the write
    * that lifts the CARDDAV-rows-are-read-only rule without ever relaxing it:
    * the path goes from "edit refused" straight to "edit pushed", and an edit
    * that cannot be pushed is still refused, never kept quietly diverged.
+   * <p>
+   * Deliberately WITHOUT the publish's queue fallback: an edit's merge base is
+   * the server's card as fetched at save time, so "retry this edit later"
+   * would mean holding the user's words for a merge against a card that has
+   * meanwhile moved on — exactly the quiet divergence this method exists to
+   * refuse. An edit the server cannot take right now fails visibly, the form
+   * keeps the words, and the user retries when the server is back; only the
+   * create-shaped publish, whose content is simply the local row, is safe to
+   * postpone.
    * <p>
    * The order is the safety argument. The edit is validated first (usable
    * addresses, no address collision with another row) so nothing reaches the
@@ -822,15 +1117,24 @@ public class EmailContactCardDavSyncService {
         // Nothing in the address book moved. This is the common case, and it is
         // why the job can run often without costing anything.
         succeed(username, state, state.getCtag());
-        return;
+      } else {
+        boolean complete = reconcile(username, setting, connector, addressBook, bookChanged);
+        // The version is only recorded when the run saw everything. Recording it
+        // after a partial run would make the next run's cheap check skip exactly
+        // the entries this one missed, permanently and without a trace.
+        succeed(username, state, complete ? currentCtag : state.getCtag());
       }
-      boolean complete = reconcile(username, setting, connector, addressBook, bookChanged);
-      // The version is only recorded when the run saw everything. Recording it
-      // after a partial run would make the next run's cheap check skip exactly
-      // the entries this one missed, permanently and without a trace.
-      succeed(username, state, complete ? currentCtag : state.getCtag());
     } catch (CardDavException e) {
       fail(username, state, e);
+    }
+    // After the catch, never inside the try: whatever draining does or throws,
+    // this run's own verdict is already written, so a broken OUTBOUND can never
+    // count against the INBOUND failure counter -- a publish the server keeps
+    // refusing must not stop anybody reading their address book. And only on
+    // success: a run that failed proved nothing reachable, and a BLOCKED book
+    // pausing its reads thereby pauses these writes too.
+    if (state.getStatus() == SyncStatus.SUCCESS) {
+      drainPublishQueue(username);
     }
   }
 
@@ -1106,6 +1410,10 @@ public class EmailContactCardDavSyncService {
     // The discovered book belonged to the binding that has just gone, so a later sync
     // must discover again rather than ask the new provider for the old book's URL.
     userEmailSettingService.setContactSyncState(new ContactSyncState(), username);
+    // The queued publishes named that book too. The entries go -- their target no
+    // longer exists -- but the contacts they pointed at are rows of the store and
+    // stay exactly as local, visible and publishable as before the queue knew them.
+    userEmailSettingService.clearContactPublishQueue(username);
     LOG.info("Address book released for user {}: {} kept as collected, {} removed", username, demoted, deleted);
   }
 
