@@ -92,7 +92,9 @@ export default {
       return text.replace(/\s+/g, ' ').trim();
     },
     ariaLabel() {
-      return `Open message from ${this.email.sender.name}`;
+      return this.$t('emailConnector.mailBox.list.drawer.thread.openMessage', {
+        0: this.email.sender.name,
+      });
     },
     hasAttachment() {
       return (this.email.content?.attachments?.length || 0) > 0;
