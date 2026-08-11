@@ -28,6 +28,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
@@ -37,6 +40,8 @@ import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 import org.exoplatform.services.security.Identity;
 import org.exoplatform.services.security.IdentityConstants;
 
@@ -56,6 +61,12 @@ public class EmailConnectorService {
 
   public static final String        USER_EMAIL_SETTING_KEY                       = "userEmailSetting";
 
+  public static final String        EMAIL_BOX_CACHE_SIZE_KEY                     = "emailBoxCacheSize";
+
+  private static final int          MIN_EMAIL_BOX_CACHE_SIZE                     = 1;
+
+  private static final int          MAX_EMAIL_BOX_CACHE_SIZE                     = 5000;
+
   private static final String       EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
 
   private static final String       FEATURE_ACTIVE_IS_MANDATORY_MESSAGE          = "Feature active is mandatory";
@@ -66,7 +77,18 @@ public class EmailConnectorService {
   private static final String       USER_NOT_ALLOWED_FOR_ACTIVATE_EMAIL_MESSAGE  =
                                                                                 "User %s is not allowed to activate email feature";
 
+  private static final String       USER_NOT_ALLOWED_FOR_CACHE_SIZE_MESSAGE      =
+                                                                                "User %s is not allowed to update the email box cache size";
+
+  private static final String       CACHE_SIZE_OUT_OF_RANGE_MESSAGE              = "emailConnector.admin.cacheSize.outOfRange";
+
   private static final String       EMAIL_CONNECTOR_NOT_FOUND_MESSAGE            = "Email connector with id %s doesn't exist";
+
+  private static final Log          LOG                                          =
+                                        ExoLogger.getLogger(EmailConnectorService.class);
+
+  @Autowired
+  private SettingService            settingService;
 
   @Autowired
   private UserACL                   userAcl;
@@ -108,6 +130,50 @@ public class EmailConnectorService {
     featureService.saveActiveFeature(EmailConnectorUtils.EMAIL_FEATURE, isFeatureActive);
     activateEmailApp();
 
+  }
+
+  /**
+   * Get the number of most recent emails kept in the local cache per user. This
+   * is an administration-wide setting, read at synchronization time so a change
+   * takes effect on the next sync without a restart. When no value is stored (or
+   * the stored value is not a valid integer) the default
+   * {@link EmailConnectorUtils#DEFAULT_EMAIL_BOX_CACHE_SIZE} is returned.
+   *
+   * @return the configured mailbox cache size
+   */
+  public int getEmailBoxCacheSize() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_CACHE_SIZE_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      try {
+        return Integer.parseInt(settingValue.getValue().toString());
+      } catch (NumberFormatException e) {
+        LOG.warn("Invalid stored email box cache size '{}', falling back to the default {}",
+                 settingValue.getValue(),
+                 EmailConnectorUtils.DEFAULT_EMAIL_BOX_CACHE_SIZE);
+      }
+    }
+    return EmailConnectorUtils.DEFAULT_EMAIL_BOX_CACHE_SIZE;
+  }
+
+  /**
+   * Save the administration-wide mailbox cache size (number of most recent
+   * emails kept per user). Administrators only.
+   *
+   * @param cacheSize the number of emails to keep per user, between
+   *          {@value #MIN_EMAIL_BOX_CACHE_SIZE} and
+   *          {@value #MAX_EMAIL_BOX_CACHE_SIZE}
+   * @param username user updating the cache size
+   * @throws IllegalAccessException if the user is not allowed to update the
+   *           cache size
+   */
+  public void saveEmailBoxCacheSize(int cacheSize, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CACHE_SIZE_MESSAGE, username));
+    }
+    if (cacheSize < MIN_EMAIL_BOX_CACHE_SIZE || cacheSize > MAX_EMAIL_BOX_CACHE_SIZE) {
+      throw new IllegalArgumentException(CACHE_SIZE_OUT_OF_RANGE_MESSAGE);
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_CACHE_SIZE_KEY, SettingValue.create(String.valueOf(cacheSize)));
   }
 
   /**

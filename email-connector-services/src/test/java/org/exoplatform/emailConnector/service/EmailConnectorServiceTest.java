@@ -16,10 +16,13 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -35,6 +38,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.file.services.FileStorageException;
 import org.exoplatform.emailConnector.model.EmailConnector;
@@ -71,6 +77,9 @@ public class EmailConnectorServiceTest {
 
   @MockBean
   private FileService              fileService;
+
+  @MockBean
+  private SettingService           settingService;
 
   @Autowired
   private EmailConnectorService    emailConnectorService;
@@ -159,6 +168,39 @@ public class EmailConnectorServiceTest {
   void getEmailConnector() {
     emailConnectorService.getEmailConnector(1L);
     verify(emailConnectorStorage).getEmailConnector(1L);
+  }
+
+  @Test
+  void getEmailBoxCacheSizeReturnsDefaultWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.EMAIL_BOX_CACHE_SIZE_KEY)).thenReturn(null);
+    assertEquals(EmailConnectorUtils.DEFAULT_EMAIL_BOX_CACHE_SIZE, emailConnectorService.getEmailBoxCacheSize());
+  }
+
+  @Test
+  void getEmailBoxCacheSizeReturnsStoredValue() {
+    doReturn(SettingValue.create("250")).when(settingService)
+                                        .get(Context.GLOBAL,
+                                             EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                             EmailConnectorService.EMAIL_BOX_CACHE_SIZE_KEY);
+    assertEquals(250, emailConnectorService.getEmailBoxCacheSize());
+  }
+
+  @Test
+  @SneakyThrows
+  void saveEmailBoxCacheSize() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveEmailBoxCacheSize(500, TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxCacheSize(0, TEST_USER));
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxCacheSize(5001, TEST_USER));
+    emailConnectorService.saveEmailBoxCacheSize(500, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.EMAIL_BOX_CACHE_SIZE_KEY),
+                               any(SettingValue.class));
   }
 
   @Test
