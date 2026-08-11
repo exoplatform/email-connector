@@ -130,6 +130,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               class="mt-1">
               {{ addressBookStatus }}
             </v-list-item-subtitle>
+            <!-- The outbound side of the same line: publishes the server has
+                 not taken yet. Two counts because they mean different things --
+                 waiting is "will happen by itself after the next sync", parked
+                 is "gave up, retry it from the contact" -- and folding them
+                 into one number would hide exactly the entries needing a person. -->
+            <v-list-item-subtitle
+              v-if="carddavEnabled && pendingPublishCount"
+              class="mt-1">
+              {{ $t('UserSettings.emailConnector.addressBook.pendingPublish', {0: pendingPublishCount}) }}
+            </v-list-item-subtitle>
+            <v-list-item-subtitle
+              v-if="carddavEnabled && parkedPublishCount"
+              class="mt-1 error--text">
+              {{ $t('UserSettings.emailConnector.addressBook.parkedPublish', {0: parkedPublishCount}) }}
+            </v-list-item-subtitle>
           </v-list-item-content>
           <v-list-item-action class="d-flex flex-row align-center">
             <v-btn
@@ -200,6 +215,7 @@ export default {
     savingAddressBook: false,
     syncingAddressBook: false,
     addressBookSyncState: null,
+    publishQueue: null,
     notifyCategoryIds: [],
     saving: false,
     resetting: false,
@@ -222,6 +238,24 @@ export default {
         return this.$t('UserSettings.emailConnector.addressBook.status.failed');
       }
       return this.$t('UserSettings.emailConnector.addressBook.status.ok');
+    },
+    /**
+     * Publishes still waiting for the next successful sync — the entries the
+     * queue will retry by itself.
+     *
+     * @returns {number} how many contacts wait to publish
+     */
+    pendingPublishCount() {
+      return (this.publishQueue?.entries || []).filter(entry => !entry.parked).length;
+    },
+    /**
+     * Publishes the queue gave up on — still local, still retryable from the
+     * contact itself, but nothing automatic will touch them again.
+     *
+     * @returns {number} how many contacts could not be published
+     */
+    parkedPublishCount() {
+      return (this.publishQueue?.entries || []).filter(entry => entry.parked).length;
     },
     syncInProgress() {
       return this.userEmailSetting?.emailSyncStatus === 'IN_PROGRESS';
@@ -286,6 +320,11 @@ export default {
       this.$emailConnectorCommonService.getAddressBookSyncStatus()
         .then(state => this.addressBookSyncState = state)
         .catch(() => this.addressBookSyncState = null);
+      // Same silence rule as the status: a queue we cannot read is not worth a
+      // banner, and an unreadable answer shows nothing rather than a wrong "0".
+      this.$emailConnectorCommonService.getAddressBookPublishQueue()
+        .then(queue => this.publishQueue = queue)
+        .catch(() => this.publishQueue = null);
     },
     /**
      * Pulls the address book now, rather than waiting for the next scheduled run.
@@ -306,6 +345,11 @@ export default {
           const message = failed && this.$t('UserSettings.emailConnector.addressBook.syncError')
             || this.$t('UserSettings.emailConnector.addressBook.synced');
           this.$root.$emit('alert-message', message, failed && 'error' || 'success');
+          // A successful run just drained the publish queue, so the waiting
+          // count shown here is stale the moment the toast appears.
+          this.$emailConnectorCommonService.getAddressBookPublishQueue()
+            .then(queue => this.publishQueue = queue)
+            .catch(() => this.publishQueue = null);
         })
         .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.addressBook.syncError'), 'error'))
         .finally(() => this.syncingAddressBook = false);
