@@ -84,7 +84,7 @@ public class EmailBoxStorageTest {
                                                                                .stream()
                                                                                .filter(email -> email.getUserId().equals("root"))
                                                                                .toList());
-      when(emailBoxDAO.findByMailRemoteIdAndUserId(1212l, "root")).thenReturn(entity);
+      when(emailBoxDAO.findByMailRemoteIdAndUserIdAndFolder(1212l, "root", "INBOX")).thenReturn(entity);
 
       when(emailBoxDAO.findById(ID)).thenReturn(Optional.of(entity));
 
@@ -103,20 +103,20 @@ public class EmailBoxStorageTest {
 
     doAnswer(invocation -> {
       boolean readStatus = invocation.getArgument(2);
-      EmailBoxEntity entity = emailBoxDAO.findByMailRemoteIdAndUserId(1212L, "root");
+      EmailBoxEntity entity = emailBoxDAO.findByMailRemoteIdAndUserIdAndFolder(1212L, "root", "INBOX");
       if (entity != null) {
         entity.setRead(readStatus);
       }
       return null;
-    }).when(emailBoxDAO).updateReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean());
+    }).when(emailBoxDAO).updateReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
 
     doAnswer(invocation -> {
-      EmailBoxEntity entity = emailBoxDAO.findByMailRemoteIdAndUserId(1212L, "root");
+      EmailBoxEntity entity = emailBoxDAO.findByMailRemoteIdAndUserIdAndFolder(1212L, "root", "INBOX");
       if (entity != null) {
         entity.setRecent(false);
       }
       return null;
-    }).when(emailBoxDAO).markEmailAsNotRecent(anyLong(), anyString());
+    }).when(emailBoxDAO).markEmailAsNotRecent(anyLong(), anyString(), anyString());
   }
 
   @Test
@@ -133,8 +133,8 @@ public class EmailBoxStorageTest {
   void markEmailAsNotRecent() {
     Email email = email("root");
     emailBoxStorage.createEmail(email);
-    emailBoxStorage.markEmailAsNotRecent(1212l, "root");
-    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, false, false, false);
+    emailBoxStorage.markEmailAsNotRecent(1212l, "root", "INBOX");
+    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, "INBOX", false, false, false);
     assertNotNull(updatedEmail);
     assertFalse(updatedEmail.isRecent());
   }
@@ -143,19 +143,19 @@ public class EmailBoxStorageTest {
   void updateEmailReadStatusByMailRemoteIds() {
     Email email = email("root");
     emailBoxStorage.createEmail(email);
-    emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(1212l), "root", true);
-    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, false, false, false);
+    emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(1212l), "root", true, "INBOX");
+    Email updatedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, "INBOX", false, false, false);
     assertNotNull(updatedEmail);
     assertTrue(updatedEmail.isRead());
   }
 
   @Test
   void getEmailByMailRemoteIdAndUserId() {
-    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, false, false, false);
+    Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, "INBOX", false, false, false);
     assertNull(retrievedEmail);
     Email email1 = email("root");
     emailBoxStorage.createEmail(email1);
-    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, false, false, false);
+    retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, "INBOX", false, false, false);
     assertNotNull(retrievedEmail);
   }
 
@@ -221,7 +221,8 @@ public class EmailBoxStorageTest {
                                                        null,
                                                        null,
                                                        null,
-                                                       null);
+                                                       null,
+                                                       "INBOX");
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
                                                                                                           "2",
@@ -258,7 +259,8 @@ public class EmailBoxStorageTest {
                      null,
                      null,
                      null,
-                     null);
+                     null,
+                     "INBOX");
   }
 
   private EmailAttachment emailAttachment() {

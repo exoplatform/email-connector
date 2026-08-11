@@ -134,7 +134,11 @@ public class EmailBoxServiceTest {
     when(message2.getSubject()).thenReturn("message2Subject");
     MimeMessage[] messages = { message1, message2 };
     when((inbox).getMessages(anyInt(), anyInt())).thenReturn(messages);
-    when(emailBoxStorage.getEmails(anyString())).thenReturn(new ArrayList<Email>());
+    when(emailBoxStorage.getEmails(anyString(), anyString())).thenReturn(new ArrayList<Email>());
+    // No subscribed Sent/Archive folders in the test store, so those syncs are no-ops.
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
     emailBoxService.synchronize(TEST_USER);
     verify(userEmailSettingService, times(2)).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
     when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
@@ -154,7 +158,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     emailBoxService.getEmailBox(TEST_USER);
     verify(userEmailSettingService, times(2)).getUserEmailSetting(TEST_USER);
-    verify(emailBoxStorage).getEmails(TEST_USER);
+    verify(emailBoxStorage).getEmails(TEST_USER, "INBOX");
   }
 
   @Test
@@ -197,7 +201,7 @@ public class EmailBoxServiceTest {
   @Test
   void getEmailByMailRemoteIdAndUserId() throws IllegalAccessException {
     emailBoxService.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false, false);
-    verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, false, false, false);
+    verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", false, false, false);
   }
 
   @Test
@@ -218,7 +222,7 @@ public class EmailBoxServiceTest {
                  () -> emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, false));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, false);
-    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     reset(emailBoxStorage);
     Store store = mock(Store.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
@@ -230,7 +234,7 @@ public class EmailBoxServiceTest {
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
     int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, false, true);
     org.junit.jupiter.api.Assertions.assertEquals(0, failed);
-    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, false);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, false, "INBOX");
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.SEEN, false);
     verify(inbox).close(false);
@@ -242,8 +246,8 @@ public class EmailBoxServiceTest {
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(null);
     int failedWhenNotFound = emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, true);
     org.junit.jupiter.api.Assertions.assertEquals(1, failedWhenNotFound);
-    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true);
-    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1212l), TEST_USER, false);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
   }
 
   @Test
@@ -255,7 +259,7 @@ public class EmailBoxServiceTest {
     assertThrows(IllegalAccessException.class, () -> emailBoxService.deleteEmail(emailIds, TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, true, true, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -290,7 +294,7 @@ public class EmailBoxServiceTest {
     assertThrows(IllegalAccessException.class, () -> emailBoxService.archiveEmail(emailIds, TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, true, true, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -447,7 +451,8 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null,
-                     null);
+                     null,
+                     "INBOX");
   }
 
   private EmailConnector emailConnector() {
