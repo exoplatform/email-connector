@@ -86,4 +86,16 @@ public class EmailBoxEntity {
 
   @OneToMany(mappedBy = "email", cascade = CascadeType.PERSIST)
   private List<EmailAttachmentEntity> attachments;
+
+  // The conversation this message belongs to: the earliest-known Message-ID of the
+  // thread. Persisted (not derived) so a thread survives the eviction of its root.
+  @Column(name = "THREAD_ID")
+  private String                      threadId;
+
+  @Column(name = "IN_REPLY_TO")
+  private String                      inReplyTo;
+
+  // "REFERENCES" is a SQL reserved word, hence the MAIL_REFERENCES column / mailReferences field.
+  @Column(name = "MAIL_REFERENCES")
+  private String                      mailReferences;
 }
