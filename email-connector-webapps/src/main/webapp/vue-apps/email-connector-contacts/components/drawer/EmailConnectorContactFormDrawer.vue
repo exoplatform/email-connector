@@ -312,18 +312,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <div class="text-sub-title mb-1">
             {{ $t('emailConnector.contacts.form.note') }}
           </div>
-          <!-- The platform's own editor, with the options compose uses: a note
-               is prose, and typing it should feel like typing anywhere else in
-               the platform rather than into a bare box. What reaches a vCard is
-               still text -- the exporter flattens it -- because NOTE has no
-               notion of markup. -->
-          <rich-editor
+          <!-- A plain box, not the platform's editor: every place this note ends
+               up -- the vCard, Google and Apple Contacts, the phone -- holds
+               text and nothing else, so formatting would be a promise thrown
+               away on the first sync.
+
+               Not outlined, and not the platform's extended-textarea either.
+               The legacy skin already borders every <textarea> it finds, so
+               Vuetify's outline drew a second box around that one; and the
+               shared component always shows a character counter, which reads
+               "0 / 0" on a field with no limit. Plain, and the skin draws the
+               single box. -->
+          <v-textarea
             v-model="form.note"
             :placeholder="$t('emailConnector.contacts.form.note.placeholder')"
-            ck-editor-type="contactNote"
-            :tag-enabled="false"
-            disable-suggester
-            hide-chars-count />
+            class="pt-0"
+            rows="4"
+            auto-grow
+            hide-details
+            dense />
         </v-form>
       </template>
       <template #footer>
@@ -703,26 +710,54 @@ export default {
         photoUploadId: this.photoUploadId,
       };
       this.saving = true;
-      const call = this.editedId ? this.$emailConnectorContactsService.updateContact(contact)
+      // A CardDAV row saves through the server push: the edit is merged into
+      // the server's own card and kept only once the server accepted it.
+      const call = this.editedId
+        ? (this.editedSource === 'CARDDAV'
+          ? this.$emailConnectorContactsService.updateAddressBookContact(contact)
+          : this.$emailConnectorContactsService.updateContact(contact))
         : this.$emailConnectorContactsService.createContact(contact);
       call.then(() => {
         this.$root.$emit('email-contacts-refresh');
+        // Say so. The drawer closing is not an answer: it closes on cancel too,
+        // the edited field is often invisible in the list behind it, and for an
+        // address-book row the save travelled to a server the user cannot see.
+        // One message covers create, edit and push alike -- what matters is that
+        // the change was kept, not which of the three calls carried it.
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: 'success',
+          alertMessage: this.$t('emailConnector.contacts.form.save.success'),
+        }}));
         this.close();
       }).catch(error => {
         let message;
-        if (error?.status === 409) {
-          message = this.$t('emailConnector.contacts.form.alreadyExists');
+        if (error?.message?.includes('update.conflict') || error?.message?.includes('update.entryGone')) {
+          // Somebody changed (or removed) the entry on the server first. Their
+          // change has already become the local row, so the list is refreshed
+          // under the form -- while the form itself stays open, the user's
+          // words still on screen, theirs to retry or abandon.
+          message = this.$t('emailConnector.contacts.form.carddavConflict');
+          this.$root.$emit('email-contacts-refresh');
         } else if (error?.message?.includes('invalidBirthday')) {
           // The server's message code travels as the response body, which is
           // how a bad birthday is told apart from a bad address.
           message = this.$t('emailConnector.contacts.form.invalidBirthday');
+        } else if (error?.message?.includes('invalidEmail')) {
+          message = this.$t('emailConnector.contacts.form.invalidEmail');
+        } else if (error?.status === 409) {
+          message = this.$t('emailConnector.contacts.form.alreadyExists');
+        } else if (this.editedSource === 'CARDDAV') {
+          // The push could not happen, so nothing was changed anywhere -- said
+          // plainly, because "invalid email" would send the user hunting for a
+          // typo that does not exist.
+          message = this.$t('emailConnector.contacts.form.carddavPushError');
         } else {
           message = this.$t('emailConnector.contacts.form.invalidEmail');
         }
         // A toast, not a line under the last field: the form is taller than the
         // drawer, so a refusal printed at the bottom lands off-screen and the
         // save just looks like it did nothing.
-        this.$root.$emit('alert-message', message, 'error');
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: message}}));
       }).finally(() => this.saving = false);
     },
     /**
