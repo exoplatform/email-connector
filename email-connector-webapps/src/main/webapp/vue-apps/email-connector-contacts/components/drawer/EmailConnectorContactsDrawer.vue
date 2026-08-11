@@ -304,7 +304,7 @@ export default {
      */
     async onImportFile(file) {
       if (file.size > IMPORT_MAX_FILE_BYTES) {
-        this.$root.$emit('alert-message', this.$t('emailConnector.contacts.import.fileTooLarge'), 'error');
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: this.$t('emailConnector.contacts.import.fileTooLarge')}}));
         return;
       }
       this.importUploading = true;
@@ -325,7 +325,7 @@ export default {
         } else if (error?.message === 'emailConnector.contacts.import.fileTooLarge') {
           code = 'emailConnector.contacts.import.fileTooLarge';
         }
-        this.$root.$emit('alert-message', this.$t(code), 'error');
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: this.$t(code)}}));
       } finally {
         this.importUploading = false;
       }
@@ -372,7 +372,7 @@ export default {
       this.importState = null;
       if (!state || state.status === 'FAILED') {
         const failure = this.$t(state?.messageCode || 'emailConnector.contacts.import.failed');
-        this.$root.$emit('alert-message', failure, 'error');
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: failure}}));
         return;
       }
       const report = this.$t('emailConnector.contacts.import.report', {
@@ -385,7 +385,7 @@ export default {
       // still a success -- with the cap said in the same breath, or the numbers
       // look like a file that lost contacts for no reason.
       const capped = state.messageCode && this.$t(state.messageCode);
-      this.$root.$emit('alert-message', capped && `${report} ${capped}` || report, 'success');
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'success', alertMessage: capped && `${report} ${capped}` || report}}));
     },
     /**
      * Downloads the whole store as one .vcf — always the whole store, which
