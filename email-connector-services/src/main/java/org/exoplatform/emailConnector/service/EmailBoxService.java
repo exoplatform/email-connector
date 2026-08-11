@@ -35,6 +35,7 @@ import javax.activation.DataHandler;
 import javax.activation.FileDataSource;
 import javax.mail.Authenticator;
 import javax.mail.BodyPart;
+import javax.mail.FetchProfile;
 import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
@@ -75,6 +76,7 @@ import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
@@ -116,6 +118,11 @@ public class EmailBoxService {
 
   private static final Log        LOG                                                         =
                                       ExoLogger.getLogger(EmailBoxService.class);
+
+  // Sent/Archive are supplementary conversation context, so they sync a much
+  // smaller window than the inbox — this bounds the (potentially slow) one-time
+  // backfill and every subsequent sync on large mailboxes.
+  private static final int        NON_INBOX_FOLDER_SYNC_LIMIT                                 = 100;
 
   private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE              =
                                                                                  "User %s is not allowed to synchronize email";
@@ -202,44 +209,91 @@ public class EmailBoxService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
     }
     Store store = null;
-    Folder inbox = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting);
       updateEmailSyncStatus(username, SyncStatus.IN_PROGRESS);
-      inbox = store.getFolder("INBOX");
-      inbox.open(Folder.READ_ONLY);
-      UIDFolder uidFolder = (UIDFolder) inbox;
-      int totalMessages = inbox.getMessageCount();
-      if (totalMessages == 0) {
-        LOG.info("Inbox empty for user {}", username);
-        updateEmailSyncStatus(username, SyncStatus.SUCCESS);
-        return;
-      }
       int emailBoxCacheSize = emailConnectorService.getEmailBoxCacheSize();
-      int startIndex = Math.max(1, totalMessages - emailBoxCacheSize + 1);
-      Message[] serverMessages = inbox.getMessages(startIndex, totalMessages);
-      List<Email> userEmails = getEmailBox(username).getEmails();
-      createEmails(uidFolder, serverMessages, username);
-      cleanupObsoleteEmails(uidFolder, userEmails, serverMessages, username, emailBoxCacheSize);
+      // INBOX drives the new-mail notifications; Sent and Archive are cached (best
+      // effort — a missing folder must not fail the sync) so a conversation shows the
+      // user's own replies ("Me") and previously-archived messages inline.
+      syncFolder(store.getFolder("INBOX"), MailFolder.INBOX, username, emailBoxCacheSize, true);
+      int nonInboxWindow = Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
+      try {
+        syncFolder(findSentFolder(store), MailFolder.SENT, username, nonInboxWindow, false);
+      } catch (Exception e) {
+        LOG.warn("Could not sync the Sent folder for user {}", username, e);
+      }
+      try {
+        syncFolder(findSyncableArchiveFolder(store), MailFolder.ARCHIVE, username, nonInboxWindow, false);
+      } catch (Exception e) {
+        LOG.warn("Could not sync the Archive folder for user {}", username, e);
+      }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
-      sendNotification(uidFolder, userEmails, serverMessages, username);
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
     } finally {
-      try {
-        if (inbox != null && inbox.isOpen()) {
-          inbox.close(false);
-        }
-      } catch (MessagingException messagingException) {
-        LOG.warn("Error when closing inbox", messagingException);
-      }
       try {
         if (store != null && store.isConnected()) {
           store.close();
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing store", messagingException);
+      }
+    }
+  }
+
+  /**
+   * Synchronize one remote folder into the local cache: pull its most recent
+   * {@code emailBoxCacheSize} messages, create the new ones (stamped with
+   * {@code folderKey}), and drop the locally-cached ones no longer present. IMAP
+   * UIDs are per-folder, so every read/write here is scoped to {@code folderKey}.
+   *
+   * @param folder the remote folder (may be {@code null} when not discovered)
+   * @param folderKey the {@link MailFolder} discriminator to stamp
+   * @param username the mailbox owner
+   * @param emailBoxCacheSize the number of most recent messages to keep
+   * @param notify whether to fire the new-mail notification (INBOX only)
+   */
+  private void syncFolder(Folder folder,
+                          String folderKey,
+                          String username,
+                          int emailBoxCacheSize,
+                          boolean notify) throws MessagingException, IllegalAccessException {
+    if (folder == null) {
+      return;
+    }
+    try {
+      folder.open(Folder.READ_ONLY);
+      UIDFolder uidFolder = (UIDFolder) folder;
+      int totalMessages = folder.getMessageCount();
+      if (totalMessages == 0) {
+        return;
+      }
+      int startIndex = Math.max(1, totalMessages - emailBoxCacheSize + 1);
+      Message[] serverMessages = folder.getMessages(startIndex, totalMessages);
+      // Prefetch flags + envelope + UID in a single round-trip. Without this,
+      // isSet(SEEN)/getFrom/getSubject/... each trigger their own IMAP FETCH per
+      // message — hundreds of round-trips over a high-latency provider like Gmail,
+      // which is what makes a large sync appear to take forever.
+      FetchProfile fetchProfile = new FetchProfile();
+      fetchProfile.add(FetchProfile.Item.FLAGS);
+      fetchProfile.add(FetchProfile.Item.ENVELOPE);
+      fetchProfile.add(UIDFolder.FetchProfileItem.UID);
+      folder.fetch(serverMessages, fetchProfile);
+      List<Email> folderEmails = emailBoxStorage.getEmails(username, folderKey);
+      createEmails(uidFolder, serverMessages, username, folderKey);
+      cleanupObsoleteEmails(uidFolder, folderEmails, serverMessages, username, emailBoxCacheSize);
+      if (notify) {
+        sendNotification(uidFolder, folderEmails, serverMessages, username);
+      }
+    } finally {
+      if (folder.isOpen()) {
+        try {
+          folder.close(false);
+        } catch (MessagingException messagingException) {
+          LOG.warn("Error when closing folder {} for user {}", folderKey, username, messagingException);
+        }
       }
     }
   }
@@ -256,7 +310,7 @@ public class EmailBoxService {
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
-    List<Email> emails = emailBoxStorage.getEmails(username);
+    List<Email> emails = emailBoxStorage.getEmails(username, MailFolder.INBOX);
     return new EmailBox(emails, userEmailSetting.getEmailSyncStatus(), userEmailSetting.getEmailConnectorWebmailUrl());
   }
 
@@ -389,9 +443,29 @@ public class EmailBoxService {
     return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId,
                                                            username,
                                                            userEmail,
+                                                           MailFolder.INBOX,
                                                            withAttachments,
                                                            withRecipients,
                                                            withProfile);
+  }
+
+  /**
+   * All cached messages of a conversation, across every folder (INBOX, SENT,
+   * ARCHIVE) — the read model for the conversation reader, so a user's own sent
+   * replies and previously-archived messages show inline with the received ones.
+   *
+   * @param threadId the conversation id (see {@link #computeThreadId})
+   * @param username the mailbox owner
+   * @return the thread's messages, oldest first, each with body and recipients
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public List<Email> getThread(String threadId, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
+    return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
   }
 
   @Transactional
@@ -427,7 +501,7 @@ public class EmailBoxService {
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
-      emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, readStatus);
+      emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, readStatus, MailFolder.INBOX);
       Store store = null;
       Folder inbox = null;
       try {
@@ -443,7 +517,7 @@ public class EmailBoxService {
               // Guard the not-found case explicitly: getMessageByUID returns null
               // (rather than throwing) when the UID is unknown to the server.
               if (remoteMessage == null) {
-                emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus);
+                emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus, MailFolder.INBOX);
                 failedEmailUpdates++;
                 LOG.warn("Email {} not found on IMAP server for user {}, read status update reverted", mailRemoteId, username);
                 continue;
@@ -451,13 +525,13 @@ public class EmailBoxService {
               remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
             }
           } catch (Exception e) {
-            emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus);
+            emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus, MailFolder.INBOX);
             failedEmailUpdates++;
             LOG.error("Error when updating email {} read status for user {}", mailRemoteId, username, e);
           }
         }
       } catch (Exception e) {
-        emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, !readStatus);
+        emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, !readStatus, MailFolder.INBOX);
         LOG.error("Error when connecting store for user {}", username, e);
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
@@ -904,12 +978,14 @@ public class EmailBoxService {
     }
   }
 
-  private void createEmails(UIDFolder uidFolder, Message[] serverMessages, String username) throws MessagingException,
-                                                                                            IllegalAccessException {
+  private void createEmails(UIDFolder uidFolder,
+                            Message[] serverMessages,
+                            String username,
+                            String folderKey) throws MessagingException, IllegalAccessException {
     for (Message message : serverMessages) {
       try {
         long messageUid = uidFolder.getUID(message);
-        Email email = getEmailByMailRemoteIdAndUserId(messageUid, username, false, false, false, false);
+        Email email = emailBoxStorage.getEmailByMailRemoteIdAndUserId(messageUid, username, null, folderKey, false, false, false);
         if (email == null) {
           EmailContent emailContent = EmailConnectorUtils.getMessageContent(messageUid, message);
           EmailSender emailSender = message.getFrom() != null
@@ -956,18 +1032,22 @@ public class EmailBoxService {
                                                 null,
                                                 threadId,
                                                 inReplyTo,
-                                                references));
+                                                references,
+                                                folderKey));
 
         } else {
-          updateEmailReadStatus(List.of(messageUid), username, message.isSet(Flags.Flag.SEEN), false);
-          emailBoxStorage.markEmailAsNotRecent(messageUid, username);
+          emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(messageUid),
+                                                               username,
+                                                               message.isSet(Flags.Flag.SEEN),
+                                                               folderKey);
+          emailBoxStorage.markEmailAsNotRecent(messageUid, username, folderKey);
           // Backfill threading on rows cached before this feature: one sync cycle after
           // deployment every cached message carries a thread id.
           if (StringUtils.isEmpty(email.getThreadId())) {
             String inReplyTo = firstHeader(message, "In-Reply-To");
             String references = firstHeader(message, "References");
             String threadId = computeThreadId(username, ((MimeMessage) message).getMessageID(), messageUid, inReplyTo, references);
-            emailBoxStorage.updateThreadInfo(username, messageUid, threadId, inReplyTo, references);
+            emailBoxStorage.updateThreadInfo(username, messageUid, threadId, inReplyTo, references, folderKey);
           }
         }
       } catch (Exception e) {
@@ -1181,6 +1261,35 @@ public class EmailBoxService {
       }
       String name = imapFolder.getFullName().toLowerCase();
       if (name.contains("archive") || name.contains("archivage") || name.contains("all") || name.contains("tous")) {
+        return imapFolder;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The folder to <em>synchronize</em> as ARCHIVE: a dedicated {@code \Archive}
+   * folder only. Gmail's "All Mail" ({@code \All}) is deliberately excluded — it
+   * is a superset of the inbox, so caching it would duplicate every received
+   * message inside its conversation. (The archive <em>destination</em> still uses
+   * {@link #findArchiveFolder} so archiving keeps working on Gmail.)
+   */
+  private IMAPFolder findSyncableArchiveFolder(Store store) throws MessagingException {
+    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
+      if (!(folder instanceof IMAPFolder)) {
+        continue;
+      }
+      IMAPFolder imapFolder = (IMAPFolder) folder;
+      if (!imapFolder.exists()) {
+        continue;
+      }
+      for (String attr : imapFolder.getAttributes()) {
+        if (attr.equalsIgnoreCase("\\Archive")) {
+          return imapFolder;
+        }
+      }
+      String name = imapFolder.getFullName().toLowerCase();
+      if (name.equals("archive") || name.equals("archives") || name.equals("archivage")) {
         return imapFolder;
       }
     }

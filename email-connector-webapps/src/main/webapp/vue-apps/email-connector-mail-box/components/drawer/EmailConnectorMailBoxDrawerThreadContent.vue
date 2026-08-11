@@ -26,16 +26,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-for="(message, index) in messages">
       <v-divider
         v-if="index > 0"
-        :key="`divider-${message.mailRemoteId}`"
+        :key="`divider-${msgKey(message)}`"
         class="my-2" />
       <email-connector-mail-box-drawer-thread-message
-        :key="message.mailRemoteId"
+        :key="msgKey(message)"
         :email="message"
-        :expanded="expandedIds.includes(message.mailRemoteId)"
+        :expanded="expandedIds.includes(msgKey(message))"
         :collapsible="index !== messages.length - 1"
         :expanded-drawer="expandedDrawer"
-        @expand="expand(message.mailRemoteId)"
-        @collapse="collapse(message.mailRemoteId)" />
+        @expand="expand(msgKey(message))"
+        @collapse="collapse(msgKey(message))" />
     </template>
   </v-list>
 </template>
@@ -93,11 +93,17 @@ export default {
     threadKey(email) {
       return email.threadId || email.mailHeaderId || String(email.mailRemoteId);
     },
+    // A message is identified across the reader by its folder + IMAP UID: UIDs are
+    // per-folder, so the same number can appear in INBOX and SENT/ARCHIVE.
+    msgKey(message) {
+      return `${message.folder || 'INBOX'}-${message.mailRemoteId}`;
+    },
     /**
-     * Fetches the full body of every message of the conversation and stacks them
-     * oldest first, the newest expanded. The opened message is already loaded, so it
-     * is reused rather than fetched again. On any single fetch failure that message
-     * is dropped rather than failing the whole thread.
+     * Loads the whole conversation across folders (INBOX + SENT + ARCHIVE) from the
+     * server by thread id, so the user's own replies and previously-archived
+     * messages show inline. Falls back to the opened message alone when it has no
+     * thread id or the fetch yields nothing. Messages are stacked oldest first with
+     * the newest expanded.
      *
      * @returns {void}
      */
@@ -105,23 +111,48 @@ export default {
       if (!this.email) {
         return;
       }
-      const ids = this.threadMailRemoteIds;
       this.loadingThread = true;
-      Promise.all(ids.map(id => {
-        if (id === this.email.mailRemoteId) {
-          return Promise.resolve(this.email);
-        }
-        return this.$emailConnectorMailBoxService.getEmailByRemoteId(id).catch(() => null);
-      }))
+      const threadId = this.email.threadId;
+      const promise = threadId
+        ? this.$emailConnectorMailBoxService.getThreadByThreadId(threadId).catch(() => null)
+        : Promise.resolve(null);
+      promise
         .then(fetched => {
-          const messages = fetched.filter(Boolean)
+          const sorted = (fetched && fetched.length ? fetched : [this.email])
+            .filter(Boolean)
             .sort((first, second) => new Date(first.receivedDate) - new Date(second.receivedDate));
+          const messages = this.dedupeByHeader(sorted);
           this.messages = messages;
           const latest = messages[messages.length - 1];
-          this.expandedIds = latest ? [latest.mailRemoteId] : [];
+          this.expandedIds = latest ? [this.msgKey(latest)] : [];
           this.markThreadRead();
         })
         .finally(() => this.loadingThread = false);
+    },
+    // The same message can be present in more than one folder (e.g. a provider
+    // whose Archive/All-Mail overlaps the inbox), so show it once, preferring the
+    // INBOX copy. Messages without a Message-ID are always kept.
+    dedupeByHeader(messages) {
+      const priority = { INBOX: 0, SENT: 1, ARCHIVE: 2 };
+      const rank = message => (message.folder in priority ? priority[message.folder] : 9);
+      const seen = new Map();
+      const deduped = [];
+      messages.forEach(message => {
+        const header = message.mailHeaderId;
+        if (!header) {
+          deduped.push(message);
+          return;
+        }
+        const existing = seen.get(header);
+        if (!existing) {
+          seen.set(header, message);
+          deduped.push(message);
+        } else if (rank(message) < rank(existing)) {
+          deduped.splice(deduped.indexOf(existing), 1, message);
+          seen.set(header, message);
+        }
+      });
+      return deduped;
     },
     // Opening a conversation reads all of its messages, via the existing bulk endpoint.
     markThreadRead() {
@@ -132,13 +163,13 @@ export default {
         this.$root.$emit('update-email-read-status', true, unread);
       }
     },
-    expand(mailRemoteId) {
-      if (!this.expandedIds.includes(mailRemoteId)) {
-        this.expandedIds.push(mailRemoteId);
+    expand(key) {
+      if (!this.expandedIds.includes(key)) {
+        this.expandedIds.push(key);
       }
     },
-    collapse(mailRemoteId) {
-      this.expandedIds = this.expandedIds.filter(id => id !== mailRemoteId);
+    collapse(key) {
+      this.expandedIds = this.expandedIds.filter(id => id !== key);
     },
   },
 };

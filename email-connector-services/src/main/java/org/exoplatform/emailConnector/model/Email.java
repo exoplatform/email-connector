@@ -73,4 +73,8 @@ public class Email {
 
   @JsonIgnore
   private String               mailReferences;
+
+  // The remote folder this message belongs to (INBOX / SENT / ARCHIVE). Exposed so
+  // the client can scope the list to the inbox while the reader spans all folders.
+  private String               folder;
 }
