@@ -312,18 +312,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <div class="text-sub-title mb-1">
             {{ $t('emailConnector.contacts.form.note') }}
           </div>
-          <!-- The platform's own editor, with the options compose uses: a note
-               is prose, and typing it should feel like typing anywhere else in
-               the platform rather than into a bare box. What reaches a vCard is
-               still text -- the exporter flattens it -- because NOTE has no
-               notion of markup. -->
-          <rich-editor
+          <!-- A plain box, not the platform's editor: every place this note ends
+               up -- the vCard, Google and Apple Contacts, the phone -- holds
+               text and nothing else, so formatting would be a promise thrown
+               away on the first sync. -->
+          <v-textarea
             v-model="form.note"
             :placeholder="$t('emailConnector.contacts.form.note.placeholder')"
-            ck-editor-type="contactNote"
-            :tag-enabled="false"
-            disable-suggester
-            hide-chars-count />
+            class="pt-0"
+            rows="4"
+            auto-grow
+            outlined
+            dense />
         </v-form>
       </template>
       <template #footer>
