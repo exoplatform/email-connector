@@ -24,7 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item-content>
     </v-list-item>
     <!-- Assign the conversation to the add-on's email categories (Important / Invitation
-         / Notification) and show the ones already applied. -->
+         / Notification / To review) and show the ones already applied. -->
     <email-connector-mail-box-drawer-category-bar :emails="messages" />
     <!-- A thin progress bar while the archived tail is fetched in the background. -->
     <v-progress-linear
