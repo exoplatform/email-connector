@@ -61,8 +61,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-btn>
           <email-connector-contacts-transfer-menu
             :importing="importing"
+            :publishable="publishable"
             @import="onImportFile"
-            @export="onExport" />
+            @export="onExport"
+            @bulk-publish="$root.$emit('email-contacts-bulk-publish')" />
         </div>
       </div>
     </template>
@@ -78,8 +80,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
         <email-connector-contacts-transfer-menu
           :importing="importing"
+          :publishable="publishable"
           @import="onImportFile"
-          @export="onExport" />
+          @export="onExport"
+          @bulk-publish="$root.$emit('email-contacts-bulk-publish')" />
       </div>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
@@ -160,6 +164,10 @@ export default {
       // than in the menu because the menu unmounts when the drawer expands,
       // and an import must survive that.
       importState: null,
+      // Whether this user has an address book at all, which is what decides
+      // that the bulk-publish entry is worth offering. Answered once and
+      // cached by the service, so both menu instances cost one call.
+      publishable: false,
       importPollTimeout: null,
       // True from the moment a file is chosen until the server's answer or the
       // poll says the run ended — the window the menu greys Import out for.
@@ -180,6 +188,9 @@ export default {
     // on, drops the row that just lost its own.
     document.addEventListener('favorite-added', this.onFavoriteToggled);
     document.addEventListener('favorite-removed', this.onFavoriteToggled);
+    this.$emailConnectorContactsService.isAddressBookPublishable()
+      .then(available => this.publishable = available)
+      .catch(() => this.publishable = false);
   },
   beforeDestroy() {
     this.$root.$off('open-email-contacts-drawer', this.open);

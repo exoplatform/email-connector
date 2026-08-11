@@ -178,7 +178,8 @@ public class EmailContactPublishQueueTest {
 
   @Test
   void aFullQueueKeepsTheHonestFailure() {
-    for (long id = 100; id < 150; id++) {
+    // 500 entries: the cap, resized in slice 4 for the reviewed bulk publish.
+    for (long id = 100; id < 600; id++) {
       queue.getEntries().add(entry(id, 0, false));
     }
     when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
@@ -374,6 +375,156 @@ public class EmailContactPublishQueueTest {
 
     assertTrue(queue.getEntries().isEmpty());
     verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  // -------------------------------------------------------------------------
+  // The reviewed bulk enqueue -- slice 4. The rules pinned here are the
+  // checklist's own, re-checked server-side: manual contacts only, the whole
+  // selection or none of it, and no card ever written by the enqueue itself.
+  // -------------------------------------------------------------------------
+
+  @Test
+  void aReviewedSelectionIsQueuedWholeWithoutTouchingTheServer() {
+    lenient().when(emailContactService.getContact(6L, USERNAME)).thenReturn(ownContact(6L, EmailContactSource.MANUAL));
+
+    ContactPublishQueue stored = syncService.queuePublishes(USERNAME, java.util.List.of(CONTACT_ID, 6L, CONTACT_ID));
+
+    // De-duplicated, all pending, none parked -- and NOTHING published here:
+    // the enqueue is bookkeeping, the drain after the next successful sync is
+    // the publisher.
+    assertEquals(2, stored.getEntries().size());
+    assertTrue(stored.getEntries().stream().noneMatch(ContactPublishQueueEntry::isParked));
+    verify(userEmailSettingService).setContactPublishQueue(any(), eq(USERNAME));
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void theBulkEnqueueNeedsNoBoundOrDiscoveredBook() {
+    // The provider-switch flow answers the checklist right after a rebind,
+    // before the new book was ever reached -- or with no book at all. The
+    // queue is target-agnostic; requiring a book here would break exactly the
+    // flow this exists for.
+    UserEmailSetting plainImap = new UserEmailSetting();
+    plainImap.setEmailConnectorId("99");
+    plainImap.setCarddavEnabled(false);
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(plainImap);
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(new ContactSyncState());
+
+    ContactPublishQueue stored = syncService.queuePublishes(USERNAME, java.util.List.of(CONTACT_ID));
+
+    assertEquals(1, stored.getEntries().size());
+  }
+
+  @Test
+  void aCollectedContactInTheSelectionRefusesTheWholeSelection() {
+    // Collected rows are never OFFERED by the checklist, so one arriving here
+    // is a client not showing what the server will do -- and the answer is a
+    // refusal of everything, never a silent partial enqueue: what the user
+    // reviewed either happens as reviewed or not at all.
+    lenient().when(emailContactService.getContact(6L, USERNAME))
+             .thenReturn(ownContact(6L, EmailContactSource.COLLECTED));
+
+    IllegalArgumentException refusal =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> syncService.queuePublishes(USERNAME,
+                                                                                   java.util.List.of(CONTACT_ID, 6L)));
+
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_SOURCE_NOT_ALLOWED, refusal.getMessage());
+    assertTrue(queue.getEntries().isEmpty(), "all-or-nothing: the valid half was not quietly enqueued");
+    verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
+  }
+
+  @Test
+  void aDirectoryContactInTheSelectionRefusesTheWholeSelection() {
+    lenient().when(emailContactService.getContact(6L, USERNAME))
+             .thenReturn(ownContact(6L, EmailContactSource.DIRECTORY));
+
+    IllegalArgumentException refusal =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> syncService.queuePublishes(USERNAME,
+                                                                                   java.util.List.of(6L, CONTACT_ID)));
+
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_SOURCE_NOT_ALLOWED, refusal.getMessage());
+    verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
+  }
+
+  @Test
+  void somebodyElsesIdRefusesTheSelectionWithoutSayingWhose() {
+    when(emailContactService.getContact(66L, USERNAME)).thenReturn(null);
+
+    IllegalArgumentException refusal =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> syncService.queuePublishes(USERNAME,
+                                                                                   java.util.List.of(CONTACT_ID, 66L)));
+
+    // Absent and not-yours answer identically, as everywhere on this surface.
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_UNKNOWN_CONTACT, refusal.getMessage());
+    verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
+  }
+
+  @Test
+  void anAlreadyPublishedContactIsSkippedAsSatisfiedNotRefused() {
+    // The race the checklist cannot avoid: a contact published between the
+    // listing and the submit. The state the user asked for already holds, so
+    // refusing the review over it would only teach them to stop reviewing.
+    lenient().when(emailContactService.getContact(6L, USERNAME)).thenReturn(ownContact(6L, EmailContactSource.CARDDAV));
+
+    ContactPublishQueue stored = syncService.queuePublishes(USERNAME, java.util.List.of(CONTACT_ID, 6L));
+
+    assertEquals(1, stored.getEntries().size());
+    assertEquals(CONTACT_ID, stored.getEntries().get(0).getContactId());
+  }
+
+  @Test
+  void reSelectingAQueuedContactResetsItsEntry() {
+    // Same rule as the single publish's fallback: asking again is the retry
+    // that un-parks a parked entry and gives a tired one a fresh count.
+    queue.getEntries().add(entry(CONTACT_ID, 3, true));
+
+    ContactPublishQueue stored = syncService.queuePublishes(USERNAME, java.util.List.of(CONTACT_ID));
+
+    assertEquals(1, stored.getEntries().size());
+    ContactPublishQueueEntry entry = stored.getEntries().get(0);
+    assertFalse(entry.isParked());
+    assertEquals(0, entry.getAttempts());
+  }
+
+  @Test
+  void aSelectionTheQueueCannotFitWholeIsRefusedWhole() {
+    // Refused, not truncated: silently dropping names out of the one reviewed
+    // checkpoint would be the quiet loss this whole slice exists to prevent.
+    for (long id = 100; id < 600; id++) {
+      queue.getEntries().add(entry(id, 0, false));
+    }
+
+    IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                 () -> syncService.queuePublishes(USERNAME,
+                                                                                  java.util.List.of(CONTACT_ID)));
+
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_QUEUE_FULL, refusal.getMessage());
+    verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
+  }
+
+  @Test
+  void theBulkEnqueueHonorsTheKillSwitch() {
+    System.setProperty(EmailContactCardDavSyncService.PUBLISH_ENABLED_PROPERTY, "false");
+    try {
+      IllegalArgumentException refusal =
+                                       assertThrows(IllegalArgumentException.class,
+                                                    () -> syncService.queuePublishes(USERNAME,
+                                                                                     java.util.List.of(CONTACT_ID)));
+      assertEquals(EmailContactCardDavSyncService.PUBLISH_DISABLED, refusal.getMessage());
+    } finally {
+      System.clearProperty(EmailContactCardDavSyncService.PUBLISH_ENABLED_PROPERTY);
+    }
+  }
+
+  @Test
+  void anEmptySelectionIsANoOp() {
+    ContactPublishQueue stored = syncService.queuePublishes(USERNAME, java.util.List.of());
+
+    assertTrue(stored.getEntries().isEmpty());
+    verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
   }
 
   /**

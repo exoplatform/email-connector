@@ -251,6 +251,58 @@ export function publishContact(id) {
   });
 }
 
+/**
+ * The contacts the bulk checklist may offer: everything publishable, which is
+ * neither collected nor from the directory and not already on the server.
+ * <p>
+ * Read fresh every time the drawer opens rather than filtered from the list in
+ * memory: the list is paged and filtered by whatever the user was browsing,
+ * and a checklist that silently omitted somebody would be worse than no
+ * checklist at all.
+ *
+ * @returns {Promise<Array>} the publishable contacts, newest sort order kept
+ */
+export function getPublishCandidates() {
+  return fetch('/email-connector/rest/contacts?offset=0&limit=1000&source=MANUAL', {
+    credentials: 'include'
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when listing the contacts to publish');
+    }
+    return resp.json();
+  }).then(body => (body?.contacts || body || []).filter(contact => !contact.addressBookHref));
+}
+
+/**
+ * Queues a reviewed selection to publish.
+ * <p>
+ * The queue answers, not the server: what comes back says what is waiting, so
+ * the caller reports contacts accepted for publishing rather than claiming
+ * they already reached the address book.
+ *
+ * @param {Array<Number>} contactIds the reviewed ids
+ * @returns {Promise<Object>} the stored queue
+ */
+export function queuePublishes(contactIds) {
+  return fetch('/email-connector/rest/contacts/carddav/publish-queue', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(contactIds)
+  }).then(resp => {
+    if (!resp?.ok) {
+      return resp.text().then(message => {
+        const error = new Error(message || 'Error when queueing the contacts to publish');
+        error.status = resp.status;
+        throw error;
+      });
+    }
+    return resp.json();
+  });
+}
+
 /** The one in-flight or settled answer of {@link isAddressBookPublishable}. */
 let publishablePromise = null;
 
