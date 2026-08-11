@@ -127,6 +127,15 @@ export function getEmailBox() {
     } else {
       throw new Error('Error when getting email box');
     }
+  }).then((box) => {
+    // Decorate each inbox email with its full cross-folder conversation total (from the
+    // server's per-thread counts), so the list badge shows the whole conversation size
+    // (Gmail-style), not just the messages that happen to be in the inbox.
+    const counts = box?.threadCounts || {};
+    (box?.emails || []).forEach(email => {
+      email.threadCount = counts[email.threadId];
+    });
+    return box;
   });
 }
 
@@ -146,12 +155,16 @@ export function groupEmailsByThread(emails) {
     const key = email.threadId || email.mailHeaderId || String(email.mailRemoteId);
     let thread = byKey.get(key);
     if (!thread) {
-      thread = { threadId: key, emails: [], latest: email, mailRemoteIds: [], count: 0, unreadCount: 0 };
+      thread = { threadId: key, emails: [], latest: email, mailRemoteIds: [], count: 0, unreadCount: 0, inboxCount: 0 };
       byKey.set(key, thread);
     }
     thread.emails.push(email);
     thread.mailRemoteIds.push(email.mailRemoteId);
-    thread.count++;
+    thread.inboxCount++;
+    // The badge shows the whole conversation total (all folders) that the server stamped
+    // on each email; fall back to the inbox count until that arrives. mailRemoteIds /
+    // unreadCount stay inbox-scoped since list actions act on the inbox.
+    thread.count = email.threadCount || thread.inboxCount;
     if (!email.read) {
       thread.unreadCount++;
     }
@@ -187,6 +200,30 @@ export function getThreadByThreadId(threadId) {
       return resp.json();
     } else {
       throw new Error('Error when getting the conversation');
+    }
+  });
+}
+
+/**
+ * Completes a conversation from the provider's archive (Gmail All Mail) and returns
+ * the whole thread. Slower than getThreadByThreadId (it may hit IMAP), so the reader
+ * calls it in the background after rendering the cached thread.
+ *
+ * @param {String} threadId the conversation id
+ * @returns {Promise<Array>} the thread including any recovered archived messages
+ */
+export function completeThreadByThreadId(threadId) {
+  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}/complete`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when completing the conversation');
     }
   });
 }

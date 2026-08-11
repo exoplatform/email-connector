@@ -23,8 +23,11 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -42,6 +45,7 @@ import javax.mail.BodyPart;
 import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
+import javax.mail.MessageRemovedException;
 import javax.mail.Multipart;
 import javax.mail.Session;
 import javax.mail.Store;
@@ -286,6 +290,117 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void deleteEmailToleratesGmailTrashExpunge() throws Exception {
+    // On Gmail, copying into [Gmail]/Trash moves the message and expunges the source,
+    // so the following setFlag(DELETED) throws MessageRemovedException. The delete has
+    // in fact succeeded, so it must NOT be counted as a failure nor re-insert the row.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email email = email(TEST_USER);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false)).thenReturn(email);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    when(store.isConnected()).thenReturn(true);
+    IMAPFolder trashFolder = mock(IMAPFolder.class);
+    when(trashFolder.getFullName()).thenReturn("trash");
+    when(folder.listSubscribed("*")).thenReturn(new Folder[] { trashFolder });
+    when(trashFolder.exists()).thenReturn(true);
+    when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    doThrow(new MessageRemovedException()).when(message).setFlag(Flags.Flag.DELETED, true);
+
+    emailBoxService.deleteEmail(List.of(1212l), TEST_USER);
+
+    verify(inbox).copyMessages(any(Message[].class), any(Folder.class));
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
+    // The delete succeeded on the server, so the compensating re-insert must NOT fire.
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  void getThreadReadsCacheWithoutImap() throws Exception {
+    // getThread is the fast path: a pure cache read, never an IMAP connection, so the
+    // reader can render the conversation instantly on open.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setMailHeaderId("<self@host>");
+    cached.setThreadId("<self@host>");
+    when(emailBoxStorage.getEmailsByThreadId(anyString(), anyString(), anyString())).thenReturn(List.of(cached));
+
+    List<Email> thread = emailBoxService.getThread("<self@host>", TEST_USER);
+
+    assertEquals(1, thread.size());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  @Test
+  void completeThreadSkipsArchiveLookupWhenNothingMissing() throws Exception {
+    // A conversation whose cached messages reference nothing external needs no archive
+    // lookup — completeThread must not open an IMAP connection (keeps repeat opens fast).
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setMailHeaderId("<self@host>");
+    cached.setThreadId("<self@host>");
+    when(emailBoxStorage.getEmailsByThreadId(anyString(), anyString(), anyString())).thenReturn(List.of(cached));
+
+    List<Email> thread = emailBoxService.completeThread("<self@host>", TEST_USER);
+
+    assertEquals(1, thread.size());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  @Test
+  void completeThreadRecoversArchivedAncestorFromAllMail() throws Exception {
+    // The cached message references an ancestor we never synced (archived in Gmail).
+    // completeThread must fetch it from All Mail, cache it under ALL_MAIL, and unify
+    // the fragments INTO the opened thread id (not flip to the older root id).
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setMailHeaderId("<reply@host>");
+    cached.setThreadId("<reply@host>");
+    cached.setMailReferences("<root@host>");
+    when(emailBoxStorage.getEmailsByThreadId(anyString(), anyString(), anyString())).thenReturn(List.of(cached));
+
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(allMail.exists()).thenReturn(true);
+    when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
+    when(allMail.isOpen()).thenReturn(true);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { allMail });
+    MimeMessage archived = mock(MimeMessage.class);
+    when(archived.getMessageID()).thenReturn("<root@host>");
+    when(archived.getSubject()).thenReturn("root subject");
+    when(allMail.search(any())).thenReturn(new Message[] { archived });
+    when(((UIDFolder) allMail).getUID(archived)).thenReturn(999l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(999l, TEST_USER, null, "ALL_MAIL", false, false, false)).thenReturn(null);
+    when(emailBoxStorage.getSiblingThreadIds(anyString(), anyList())).thenReturn(List.of("<reply@host>", "<root@host>"));
+
+    emailBoxService.completeThread("<reply@host>", TEST_USER);
+
+    verify(allMail).search(any());
+    // The archived ancestor is persisted under ALL_MAIL and the fragments are unified
+    // into the opened id "<reply@host>".
+    verify(emailBoxStorage).createEmail(any(Email.class));
+    verify(emailBoxStorage).mergeThreads(TEST_USER, "<reply@host>", List.of("<root@host>"));
+  }
+
+  @Test
   void archiveEmail() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
@@ -452,7 +567,8 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null,
-                     "INBOX");
+                     "INBOX",
+                     null);
   }
 
   private EmailConnector emailConnector() {

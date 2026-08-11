@@ -103,4 +103,9 @@ public class EmailBoxEntity {
   // are per-folder, so the cache is keyed by (USER_ID, FOLDER, MAIL_REMOTE_ID).
   @Column(name = "FOLDER")
   private String                      folder;
+
+  // The Exchange Thread-Index conversation-root GUID (hex); messages sharing it are
+  // the same conversation even when the References chain is broken.
+  @Column(name = "THREAD_INDEX_ROOT")
+  private String                      threadIndexRoot;
 }

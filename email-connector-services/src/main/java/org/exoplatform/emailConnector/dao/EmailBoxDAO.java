@@ -83,6 +83,27 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("mailHeaderIds")
   List<String> mailHeaderIds);
 
+  // Count DISTINCT messages per thread (by Message-ID), matching the reader which
+  // shows the same message once even when it is cached in several folders (e.g. INBOX
+  // and ALL_MAIL). A raw row count would over-report by the cross-folder duplicates.
+  @Query("SELECT email.threadId, COUNT(DISTINCT email.mailHeaderId) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.mailHeaderId IS NOT NULL GROUP BY email.threadId")
+  List<Object[]> countMessagesByThread(@Param("userId")
+  String userId);
+
+  @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadIndexRoot = :threadIndexRoot AND email.threadId IS NOT NULL")
+  List<String> findDistinctThreadIdsByThreadIndexRoot(@Param("userId")
+  String userId, @Param("threadIndexRoot")
+  String threadIndexRoot);
+
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.threadIndexRoot = :threadIndexRoot WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId")
+  void updateThreadIndexRoot(@Param("userId")
+  String userId, @Param("mailRemoteId")
+  Long mailRemoteId, @Param("folder")
+  String folder, @Param("threadIndexRoot")
+  String threadIndexRoot);
+
   @Query("SELECT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds ORDER BY email.receivedDate ASC")
   List<String> findThreadIdsOrderedByAge(@Param("userId")
   String userId, @Param("threadIds")
@@ -98,13 +119,14 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   @Transactional
   @Modifying
-  @Query("UPDATE EmailBoxEntity email SET email.threadId = :threadId, email.inReplyTo = :inReplyTo, email.mailReferences = :mailReferences WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId")
+  @Query("UPDATE EmailBoxEntity email SET email.threadId = :threadId, email.inReplyTo = :inReplyTo, email.mailReferences = :mailReferences, email.threadIndexRoot = :threadIndexRoot WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId")
   void updateThreadInfo(@Param("userId")
   String userId, @Param("mailRemoteId")
   Long mailRemoteId, @Param("threadId")
   String threadId, @Param("inReplyTo")
   String inReplyTo, @Param("mailReferences")
   String mailReferences, @Param("folder")
-  String folder);
+  String folder, @Param("threadIndexRoot")
+  String threadIndexRoot);
 
 }
