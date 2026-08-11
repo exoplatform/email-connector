@@ -21,9 +21,14 @@ import java.io.Reader;
 import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.text.StringEscapeUtils;
 import org.springframework.stereotype.Component;
 
 import ezvcard.VCard;
@@ -36,8 +41,11 @@ import ezvcard.parameter.TelephoneType;
 import ezvcard.property.Address;
 import ezvcard.property.Birthday;
 import ezvcard.property.Email;
+import ezvcard.property.FormattedName;
 import ezvcard.property.Note;
+import ezvcard.property.Organization;
 import ezvcard.property.Photo;
+import ezvcard.property.RawProperty;
 import ezvcard.property.StructuredName;
 import ezvcard.property.Telephone;
 import ezvcard.property.Uid;
@@ -167,7 +175,7 @@ public class EzVCardParser implements VCardParser {
       vcard.addAddress(address);
     }
     if (StringUtils.isNotBlank(card.note())) {
-      vcard.addNote(card.note());
+      vcard.addNote(plainText(card.note()));
     }
     if (StringUtils.isNotBlank(card.website())) {
       vcard.addUrl(card.website());
@@ -176,6 +184,386 @@ public class EzVCardParser implements VCardParser {
       vcard.addPhoto(new Photo(card.photo(), ImageType.get(null, StringUtils.defaultIfBlank(card.photoMimeType(), "image/jpeg"), null)));
     }
     return write(vcard);
+  }
+
+  @Override
+  public String merge(String rawVCard, ParsedVCard edited) {
+    if (StringUtils.isBlank(rawVCard) || edited == null) {
+      return null;
+    }
+    try {
+      VCard vcard = ezvcard.Ezvcard.parse(rawVCard).first();
+      if (vcard == null) {
+        return null;
+      }
+      // The delta baseline: each patch below compares the edit against what the
+      // card CURRENTLY reads as through the very same reduction the form was
+      // filled from, and an equal field is not touched at all -- parameters,
+      // group and formatting quirks included.
+      ParsedVCard current = toParsed(vcard);
+      patchName(vcard, current, edited);
+      patchEmails(vcard, current, edited);
+      patchPhones(vcard, current, edited);
+      patchOrganization(vcard, current, edited);
+      patchBirthday(vcard, current, edited);
+      patchAddress(vcard, current, edited);
+      patchNote(vcard, current, edited);
+      patchWebsite(vcard, current, edited);
+      return writePreserving(vcard);
+    } catch (Exception e) {
+      // Refusing to answer is the merge failing SAFE: a card this code cannot
+      // read is one it cannot promise to patch without loss, and the caller's
+      // contract is to not write at all rather than to write a guess.
+      LOG.warn("A server vCard could not be merged with an edit, so the write was refused", e);
+      return null;
+    }
+  }
+
+  /**
+   * Patches the name — N's given and family halves in place, so a card's
+   * middle names, prefixes and suffixes survive an edit to the two halves the
+   * form shows; and FN only when the service resolved one to say, because a
+   * form silent about the name must leave the name alone.
+   *
+   * @param vcard the card being patched
+   * @param current what the card reads as today
+   * @param edited what the user saved
+   */
+  private void patchName(VCard vcard, ParsedVCard current, ParsedVCard edited) {
+    if (!StringUtils.equals(current.givenName(), edited.givenName())
+        || !StringUtils.equals(current.familyName(), edited.familyName())) {
+      StructuredName name = vcard.getStructuredName();
+      if (name == null) {
+        name = new StructuredName();
+        vcard.setStructuredName(name);
+      }
+      name.setGiven(edited.givenName());
+      name.setFamily(edited.familyName());
+    }
+    String editedFn = StringUtils.trimToNull(edited.formattedName());
+    if (editedFn != null && !StringUtils.equals(current.formattedName(), editedFn)) {
+      FormattedName fn = vcard.getFormattedName();
+      if (fn == null) {
+        vcard.setFormattedName(editedFn);
+      } else {
+        fn.setValue(editedFn);
+      }
+    }
+  }
+
+  /**
+   * Patches the addresses as a delta, never as a rewrite: a line whose value
+   * the user kept stays byte-for-byte theirs (its TYPE, its group, its label),
+   * a value they removed loses its line, a value they added gets a plain new
+   * one. A line whose value the model could not read was never shown on the
+   * form, so it is not the user's removal to make and is left alone.
+   * <p>
+   * The preference marker moves only when the primary actually moved — and
+   * then it must: the row is keyed on the first address and the inbound sync
+   * orders by preference, so leaving the old marker would have the very next
+   * sync swap the user's choice back.
+   *
+   * @param vcard the card being patched
+   * @param current what the card reads as today
+   * @param edited what the user saved, primary first
+   */
+  private void patchEmails(VCard vcard, ParsedVCard current, ParsedVCard edited) {
+    Set<String> editedSet = new LinkedHashSet<>();
+    if (edited.emails() != null) {
+      edited.emails().forEach(address -> {
+        String normalized = EmailContactUtils.normalizeAddress(address);
+        if (normalized != null) {
+          editedSet.add(normalized);
+        }
+      });
+    }
+    List<String> currentVisible = current.emails()
+                                         .stream()
+                                         .map(EmailContactUtils::normalizeAddress)
+                                         .filter(Objects::nonNull)
+                                         .distinct()
+                                         .toList();
+    if (currentVisible.equals(new ArrayList<>(editedSet))) {
+      return;
+    }
+    Set<String> present = new HashSet<>();
+    for (Email email : new ArrayList<>(vcard.getEmails())) {
+      String normalized = EmailContactUtils.normalizeAddress(email.getValue());
+      if (normalized == null) {
+        continue;
+      }
+      if (editedSet.contains(normalized)) {
+        present.add(normalized);
+      } else {
+        vcard.removeProperty(email);
+      }
+    }
+    for (String address : editedSet) {
+      if (!present.contains(address)) {
+        Email added = new Email(address);
+        if (vcard.getVersion() != VCardVersion.V4_0) {
+          added.getTypes().add(EmailType.INTERNET);
+        }
+        vcard.addEmail(added);
+      }
+    }
+    String editedPrimary = editedSet.isEmpty() ? null : editedSet.iterator().next();
+    String currentPrimary = currentVisible.isEmpty() ? null : currentVisible.get(0);
+    if (editedPrimary != null && !editedPrimary.equals(currentPrimary)) {
+      for (Email email : vcard.getEmails()) {
+        boolean primary = editedPrimary.equals(EmailContactUtils.normalizeAddress(email.getValue()));
+        // Both spellings of preference are (re)written, because both are read:
+        // 4.0's numeric PREF parameter, 3.0's TYPE=PREF flag.
+        email.setPref(primary && vcard.getVersion() == VCardVersion.V4_0 ? 1 : null);
+        email.getTypes().removeIf(type -> "pref".equalsIgnoreCase(type.getValue()));
+        if (primary && vcard.getVersion() != VCardVersion.V4_0) {
+          email.getTypes().add(EmailType.PREF);
+        }
+      }
+    }
+  }
+
+  /**
+   * Patches the phone numbers with the same delta rule as the addresses: a
+   * kept entry keeps its line untouched, a removed entry loses its line, an
+   * added entry gets a new one typed the way the store names it. Equality is
+   * on the store's own {@code type,value} entry, so retyping a number's kind
+   * counts as the edit it is.
+   *
+   * @param vcard the card being patched
+   * @param current what the card reads as today
+   * @param edited what the user saved
+   */
+  private void patchPhones(VCard vcard, ParsedVCard current, ParsedVCard edited) {
+    Set<String> editedSet = new LinkedHashSet<>();
+    if (edited.phones() != null) {
+      edited.phones().forEach(entry -> {
+        String canonical = EmailContactUtils.phoneEntryOf(EmailContactUtils.phoneTypeOf(entry),
+                                                          EmailContactUtils.phoneValueOf(entry));
+        if (canonical != null) {
+          editedSet.add(canonical);
+        }
+      });
+    }
+    if (new HashSet<>(current.phones()).equals(editedSet)) {
+      return;
+    }
+    Set<String> present = new HashSet<>();
+    for (Telephone phone : new ArrayList<>(vcard.getTelephoneNumbers())) {
+      String entry = entryOf(phone);
+      if (entry == null) {
+        continue;
+      }
+      if (editedSet.contains(entry)) {
+        present.add(entry);
+      } else {
+        vcard.removeProperty(phone);
+      }
+    }
+    for (String entry : editedSet) {
+      if (present.contains(entry)) {
+        continue;
+      }
+      String value = EmailContactUtils.phoneValueOf(entry);
+      String type = EmailContactUtils.phoneTypeOf(entry);
+      if (value == null) {
+        continue;
+      }
+      if (type == null) {
+        vcard.addTelephoneNumber(value);
+      } else {
+        vcard.addTelephoneNumber(value, TelephoneType.get(type));
+      }
+    }
+  }
+
+  /**
+   * Patches the company name into ORG's first slot only, so a card that also
+   * files a department in the slots behind it keeps that department.
+   *
+   * @param vcard the card being patched
+   * @param current what the card reads as today
+   * @param edited what the user saved
+   */
+  private void patchOrganization(VCard vcard, ParsedVCard current, ParsedVCard edited) {
+    if (StringUtils.equals(current.organization(), edited.organization())) {
+      return;
+    }
+    Organization organization = vcard.getOrganization();
+    if (StringUtils.isBlank(edited.organization())) {
+      if (organization != null) {
+        vcard.removeProperty(organization);
+      }
+    } else if (organization == null) {
+      vcard.setOrganization(edited.organization());
+    } else if (organization.getValues().isEmpty()) {
+      organization.getValues().add(edited.organization());
+    } else {
+      organization.getValues().set(0, edited.organization());
+    }
+  }
+
+  /**
+   * Patches the birthday by replacement, not in place: BDAY may live in the
+   * card as a typed property or as the raw year-less line Apple writes, and
+   * whichever it was, the edit leaves exactly one spelling behind — written
+   * through the same rules the export uses.
+   *
+   * @param vcard the card being patched
+   * @param current what the card reads as today
+   * @param edited what the user saved, already canonical
+   */
+  private void patchBirthday(VCard vcard, ParsedVCard current, ParsedVCard edited) {
+    if (StringUtils.equals(current.birthday(), edited.birthday())) {
+      return;
+    }
+    vcard.removeProperties(Birthday.class);
+    for (RawProperty raw : new ArrayList<>(vcard.getExtendedProperties("BDAY"))) {
+      vcard.removeProperty(raw);
+    }
+    writeBirthday(vcard, edited.birthday());
+  }
+
+  /**
+   * Patches the FIRST postal address in place and leaves every other ADR
+   * alone — the model holds one address, so one is all an edit can speak for.
+   * The read folds PO box and extended address into the one street line the
+   * form shows, so the edited street goes back whole into the street slot and
+   * the two slots it absorbed are cleared rather than repeated.
+   *
+   * @param vcard the card being patched
+   * @param current what the card reads as today
+   * @param edited what the user saved
+   */
+  private void patchAddress(VCard vcard, ParsedVCard current, ParsedVCard edited) {
+    if (Objects.equals(current.address(), edited.address())) {
+      return;
+    }
+    Address first = vcard.getAddresses().isEmpty() ? null : vcard.getAddresses().get(0);
+    if (edited.address() == null) {
+      if (first != null) {
+        vcard.removeProperty(first);
+      }
+      return;
+    }
+    if (first == null) {
+      first = new Address();
+      vcard.addAddress(first);
+    }
+    first.setPoBox(null);
+    first.setExtendedAddress(null);
+    first.setStreetAddress(edited.address().street());
+    first.setLocality(edited.address().city());
+    first.setRegion(edited.address().region());
+    first.setPostalCode(edited.address().postalCode());
+    first.setCountry(edited.address().country());
+  }
+
+  /**
+   * Patches the note the form showed — the first non-blank one, the very one
+   * {@link #noteOf} reads — in place, leaving any further NOTE lines alone.
+   *
+   * @param vcard the card being patched
+   * @param current what the card reads as today
+   * @param edited what the user saved, already capped
+   */
+  private void patchNote(VCard vcard, ParsedVCard current, ParsedVCard edited) {
+    // Compared as plain text, because that is what the card holds: the editor
+    // hands us HTML, so a note nobody touched still differs from the stored one
+    // by its markup alone, and every save would rewrite the card for nothing.
+    String value = plainText(edited.note());
+    if (StringUtils.equals(plainText(current.note()), value)) {
+      return;
+    }
+    Note target = vcard.getNotes().stream().filter(note -> StringUtils.isNotBlank(note.getValue())).findFirst().orElse(null);
+    if (StringUtils.isBlank(value)) {
+      if (target != null) {
+        vcard.removeProperty(target);
+      }
+    } else if (target == null) {
+      vcard.addNote(value);
+    } else {
+      target.setValue(value);
+    }
+  }
+
+  /**
+   * Flattens the rich text of the contact form into the plain text a vCard
+   * property holds.
+   * <p>
+   * The note is typed in an HTML editor, but {@code NOTE} is defined as plain
+   * text: pushing the markup verbatim showed raw {@code <div>} tags in Google
+   * Contacts, Apple Contacts and on the phone, and the next sync read them back
+   * as content, so every round trip nested them one level deeper.
+   * <p>
+   * Block boundaries become line breaks before the tags are dropped, so the
+   * text keeps the shape it was written in. Only what really looks like a tag is
+   * removed — {@code a < b} is prose and survives.
+   *
+   * @param html the value as the form stores it, possibly blank or already plain
+   * @return the same text without markup, or {@code null} when there is nothing left
+   */
+  private static String plainText(String html) {
+    if (StringUtils.isBlank(html)) {
+      return html;
+    }
+    String text = html.replaceAll("(?i)<br\\s*/?>", "\n")
+                      .replaceAll("(?i)</(p|div|li|tr|h[1-6])\\s*>", "\n")
+                      .replaceAll("(?i)<li\\s*[^>]*>", "- ")
+                      .replaceAll("</?[a-zA-Z][^>]*>", "");
+    text = StringEscapeUtils.unescapeHtml4(text).replace('\u00A0', ' ');
+    // Collapse the runs of blank lines that closing tags leave behind, and drop
+    // the trailing break a final </div> always produces.
+    return StringUtils.trimToNull(text.replaceAll("[ \\t]+\n", "\n").replaceAll("\n{3,}", "\n\n"));
+  }
+
+  /**
+   * Patches the website the form showed — the first non-blank URL, the very
+   * one {@link #websiteOf} reads — in place, leaving any further URL lines
+   * alone.
+   *
+   * @param vcard the card being patched
+   * @param current what the card reads as today
+   * @param edited what the user saved
+   */
+  private void patchWebsite(VCard vcard, ParsedVCard current, ParsedVCard edited) {
+    if (StringUtils.equals(current.website(), edited.website())) {
+      return;
+    }
+    Url target = vcard.getUrls().stream().filter(url -> StringUtils.isNotBlank(url.getValue())).findFirst().orElse(null);
+    if (StringUtils.isBlank(edited.website())) {
+      if (target != null) {
+        vcard.removeProperty(target);
+      }
+    } else if (target == null) {
+      vcard.addUrl(edited.website());
+    } else {
+      target.setValue(edited.website());
+    }
+  }
+
+  /**
+   * Serializes a merged card in ITS OWN version, adding and dropping nothing
+   * beyond the patch itself: no PRODID stamped into somebody's card, and no
+   * property discarded for being unknown to the card's declared version —
+   * this writer's whole reason to exist apart from {@link #write(VCard)},
+   * whose 3.0-normalizing behavior is exactly right for exports and exactly
+   * wrong here.
+   *
+   * @param vcard the merged card
+   * @return the vCard text to PUT
+   */
+  private String writePreserving(VCard vcard) {
+    StringWriter out = new StringWriter();
+    VCardVersion version = vcard.getVersion() == null ? VCardVersion.V3_0 : vcard.getVersion();
+    try (VCardWriter writer = new VCardWriter(out, version)) {
+      writer.setAddProdId(false);
+      writer.setVersionStrict(false);
+      writer.write(vcard);
+    } catch (IOException e) {
+      throw new IllegalStateException("A vCard could not be written", e);
+    }
+    return out.toString();
   }
 
   /**
@@ -423,22 +811,34 @@ public class EzVCardParser implements VCardParser {
   private List<String> phonesOf(VCard vcard) {
     List<String> values = new ArrayList<>();
     for (Telephone phone : vcard.getTelephoneNumbers()) {
-      String value = StringUtils.trimToNull(phone.getText());
-      if (value == null) {
-        continue;
-      }
-      String type = EmailContactUtils.PHONE_TYPES.stream()
-                                                 .filter(candidate -> phone.getTypes()
-                                                                           .stream()
-                                                                           .anyMatch(t -> candidate.equalsIgnoreCase(t.getValue())))
-                                                 .findFirst()
-                                                 .orElse(null);
-      String entry = EmailContactUtils.phoneEntryOf(type, value);
+      String entry = entryOf(phone);
       if (entry != null && !values.contains(entry)) {
         values.add(entry);
       }
     }
     return values;
+  }
+
+  /**
+   * One TEL as the store's {@code type,value} entry — the single mapping both
+   * the read and the merge's kept-or-removed decision go through, so a line
+   * always counts as the same entry it was shown as.
+   *
+   * @param phone the TEL property
+   * @return the entry, or null when the line holds no number
+   */
+  private String entryOf(Telephone phone) {
+    String value = StringUtils.trimToNull(phone.getText());
+    if (value == null) {
+      return null;
+    }
+    String type = EmailContactUtils.PHONE_TYPES.stream()
+                                               .filter(candidate -> phone.getTypes()
+                                                                         .stream()
+                                                                         .anyMatch(t -> candidate.equalsIgnoreCase(t.getValue())))
+                                               .findFirst()
+                                               .orElse(null);
+    return EmailContactUtils.phoneEntryOf(type, value);
   }
 
   /**
