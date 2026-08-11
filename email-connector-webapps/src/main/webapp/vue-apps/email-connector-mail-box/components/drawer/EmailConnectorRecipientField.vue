@@ -44,9 +44,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          Vuetify lays a v-text-field out at full width, which would send it to a
          line of its own even when a short address left room beside it. -->
     <div class="d-flex align-start">
-      <v-label :for="fieldId" class="flex-grow-0 flex-shrink-0 mt-2" style="width: 34px;">
-        <span class="text-subtitle-color">{{ label }}</span>
-      </v-label>
+      <!-- The column lives on this div, not on the v-label: that component drops
+           the class and style it is given, so "To", "Cc" and "Bcc" each took
+           their own width and started their field at a different x. 40px clears
+           the widest of the three, and the 36px box centres the text between an
+           empty field (its text sits at 20px) and a first chip row (16px). -->
+      <div class="d-flex align-center flex-grow-0 flex-shrink-0" style="width: 40px; height: 36px">
+        <v-label :for="fieldId">
+          <span class="text-subtitle-color">{{ label }}</span>
+        </v-label>
+      </div>
       <div class="d-flex flex-wrap align-center flex-grow-1" style="min-width: 0;">
         <v-chip
           v-for="(recipient, index) in value"
