@@ -741,7 +741,7 @@ export default {
         // A toast, not a line under the last field: the form is taller than the
         // drawer, so a refusal printed at the bottom lands off-screen and the
         // save just looks like it did nothing.
-        this.$root.$emit('alert-message', message, 'error');
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: message}}));
       }).finally(() => this.saving = false);
     },
     /**

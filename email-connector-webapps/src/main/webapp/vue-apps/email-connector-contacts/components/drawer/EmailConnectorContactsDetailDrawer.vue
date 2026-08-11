@@ -243,7 +243,7 @@ export default {
      */
     sendByChat() {
       this.$emailConnectorContactsService.sendByChat(this.contact)
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.contacts.detail.sendByChat.error'), 'error'));
+        .catch(() => document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: this.$t('emailConnector.contacts.detail.sendByChat.error')}})));
     },
     /**
      * Opens the take-away QR on this contact — the dialog overlays the drawer,
@@ -277,7 +277,7 @@ export default {
         .then(published => {
           this.contact = published;
           this.$root.$emit('email-contacts-refresh');
-          this.$root.$emit('alert-message', this.$t('emailConnector.contacts.detail.publish.success'), 'success');
+          document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'success', alertMessage: this.$t('emailConnector.contacts.detail.publish.success')}}));
         })
         .catch(error => {
           // 409 is the server refusing to create over an existing entry - the
@@ -286,7 +286,7 @@ export default {
           const key = error?.status === 409
             && 'emailConnector.contacts.detail.publish.exists'
             || 'emailConnector.contacts.detail.publish.error';
-          this.$root.$emit('alert-message', this.$t(key), 'error');
+          document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: this.$t(key)}}));
         })
         .finally(() => this.publishing = false);
     },
@@ -306,7 +306,7 @@ export default {
           this.$root.$emit('email-contacts-refresh');
           this.close();
         })
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.contacts.delete.error'), 'error'))
+        .catch(() => document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: this.$t('emailConnector.contacts.delete.error')}})))
         .finally(() => this.deleting = false);
     },
     /**
