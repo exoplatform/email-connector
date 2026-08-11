@@ -30,21 +30,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        A raw address is always accepted: this is mail, not a closed directory. -->
   <div>
     <!-- The label sits in a fixed column so To, Cc and Bcc share one left edge,
-         and the row centres rather than top-aligns: the field carries Vuetify's
-         own vertical padding, so aligning to the top dropped the input a line
-         below its label and gave each row a different indent. The chips wrap
-         inside their own box, which is what needs min-width 0 -- a flex item
-         will not shrink below its content otherwise, and the box pushed the
-         label out of the row.
+         and it aligns with the FIRST row rather than centring on the box: an
+         addressed field is as tall as its chips, and a full email address fills
+         a drawer-width row on its own, so centring left "To:" floating between
+         a chip above and the caret below. Pinned to the top it reads level with
+         the first chip however many follow -- the margin is what puts it on the
+         chip's centre line rather than its top edge, since a small chip is
+         taller than the label's text.
 
-         The input carries a flex-basis of its own because Vuetify lays a
-         v-text-field out at full width: inside a wrapping box it then claimed a
-         line to itself, so a single chip already made the box two lines tall
-         and the centred label read as dropped below its own chip. Given a
-         basis it shares the line, and the chips wrap only once they truly
-         fill it. -->
-    <div class="d-flex align-center">
-      <v-label :for="fieldId" class="flex-grow-0 flex-shrink-0" style="width: 34px;">
+         The chips wrap inside their own box, which is what needs min-width 0 --
+         a flex item will not shrink below its content otherwise, and the box
+         pushed the label out of the row. The input keeps a flex-basis because
+         Vuetify lays a v-text-field out at full width, which would send it to a
+         line of its own even when a short address left room beside it. -->
+    <div class="d-flex align-start">
+      <v-label :for="fieldId" class="flex-grow-0 flex-shrink-0 mt-2" style="width: 34px;">
         <span class="text-subtitle-color">{{ label }}</span>
       </v-label>
       <div class="d-flex flex-wrap align-center flex-grow-1" style="min-width: 0;">

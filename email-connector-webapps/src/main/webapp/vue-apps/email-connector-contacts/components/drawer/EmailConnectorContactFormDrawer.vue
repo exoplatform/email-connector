@@ -315,14 +315,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <!-- A plain box, not the platform's editor: every place this note ends
                up -- the vCard, Google and Apple Contacts, the phone -- holds
                text and nothing else, so formatting would be a promise thrown
-               away on the first sync. -->
+               away on the first sync.
+
+               Not outlined, and not the platform's extended-textarea either.
+               The legacy skin already borders every <textarea> it finds, so
+               Vuetify's outline drew a second box around that one; and the
+               shared component always shows a character counter, which reads
+               "0 / 0" on a field with no limit. Plain, and the skin draws the
+               single box. -->
           <v-textarea
             v-model="form.note"
             :placeholder="$t('emailConnector.contacts.form.note.placeholder')"
             class="pt-0"
             rows="4"
             auto-grow
-            outlined
+            hide-details
             dense />
         </v-form>
       </template>
@@ -712,6 +719,15 @@ export default {
         : this.$emailConnectorContactsService.createContact(contact);
       call.then(() => {
         this.$root.$emit('email-contacts-refresh');
+        // Say so. The drawer closing is not an answer: it closes on cancel too,
+        // the edited field is often invisible in the list behind it, and for an
+        // address-book row the save travelled to a server the user cannot see.
+        // One message covers create, edit and push alike -- what matters is that
+        // the change was kept, not which of the three calls carried it.
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: 'success',
+          alertMessage: this.$t('emailConnector.contacts.form.save.success'),
+        }}));
         this.close();
       }).catch(error => {
         let message;
