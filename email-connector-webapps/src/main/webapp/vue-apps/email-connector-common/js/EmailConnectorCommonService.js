@@ -136,3 +136,22 @@ export function getAddressBookSyncStatus() {
     return resp.json();
   });
 }
+
+/**
+ * The publishes the caller's address book has not taken yet — pending entries
+ * waiting for the next successful sync, parked ones with why. What the
+ * settings screen turns into "N contacts waiting to publish".
+ *
+ * @returns {Promise<object>} the queue, with an `entries` array
+ */
+export function getAddressBookPublishQueue() {
+  return fetch('/email-connector/rest/contacts/carddav/publish-queue', {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when reading the address book publish queue');
+    }
+    return resp.json();
+  });
+}
