@@ -80,7 +80,7 @@ public class EmailContactDAOTest {
   @Test
   void contactQueriesRunOnARealDatabase() {
     persistContact("bob@example.org", "Bob Smith", "SMITH BOB", 18, false, null);
-    persistContact("ann@example.org", "Ann Ax", "AX ANN", 0, false, "other,ann@other.org");
+    persistContact("ann@example.org", "Ann Ax", "AX ANN", 0, false, List.of("other,ann@other.org"));
     persistContact("gone@example.org", "Gone", "GONE", 6, true, null);
     persistContact("42@example.org", "42 Things", "42 THINGS", 26, false, null);
 
@@ -164,10 +164,10 @@ public class EmailContactDAOTest {
    * @param sortName the derived sort key
    * @param sortBucket the derived bucket
    * @param suppressed whether the row is a tombstone
-   * @param emails the encoded secondary addresses, may be null
+   * @param emails the encoded secondary addresses (type,value pairs), may be null
    */
   private void persistContact(String address, String displayName, String sortName, int sortBucket, boolean suppressed,
-                              String emails) {
+                              List<String> emails) {
     EmailContactEntity entity = new EmailContactEntity();
     entity.setUserId(USERNAME);
     entity.setSource(EmailContactSource.COLLECTED);
