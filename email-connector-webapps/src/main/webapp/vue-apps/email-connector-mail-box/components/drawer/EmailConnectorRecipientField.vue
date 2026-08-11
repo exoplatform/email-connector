@@ -35,7 +35,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          below its label and gave each row a different indent. The chips wrap
          inside their own box, which is what needs min-width 0 -- a flex item
          will not shrink below its content otherwise, and the box pushed the
-         label out of the row. -->
+         label out of the row.
+
+         The input carries a flex-basis of its own because Vuetify lays a
+         v-text-field out at full width: inside a wrapping box it then claimed a
+         line to itself, so a single chip already made the box two lines tall
+         and the centred label read as dropped below its own chip. Given a
+         basis it shares the line, and the chips wrap only once they truly
+         fill it. -->
     <div class="d-flex align-center">
       <v-label :for="fieldId" class="flex-grow-0 flex-shrink-0" style="width: 34px;">
         <span class="text-subtitle-color">{{ label }}</span>
@@ -63,6 +70,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :placeholder="inputPlaceholder"
           :aria-label="label"
           class="pa-0 ma-0 flex-grow-1"
+          style="min-width: 120px; flex-basis: 120px"
           type="text"
           autocomplete="off"
           solo

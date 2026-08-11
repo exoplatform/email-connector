@@ -694,6 +694,58 @@ public class EzVCardParserTest {
   }
 
   @Test
+  void mergeWritesTheNoteAsPlainTextBecauseThatIsWhatACardHolds() {
+    // The note is typed in an HTML editor. Pushed verbatim it showed raw tags in
+    // Google and Apple Contacts, and came back as content on the next sync, so
+    // each round trip nested it one level deeper.
+    ParsedVCard current = parser.parse(RICH_CARD);
+    String merged = parser.merge(RICH_CARD,
+                                 noteOf(current,
+                                        "<div>Met at the summit</div><div><br></div><div>Follow up &amp; send the deck</div>"));
+
+    assertFalse(merged.contains("<div>"), "no markup reaches the card");
+    assertFalse(merged.contains("&amp;"), "entities are resolved, not escaped twice");
+    assertTrue(merged.contains("Met at the summit"));
+    assertTrue(merged.contains("Follow up & send the deck"));
+  }
+
+  @Test
+  void aNoteChangedOnlyByItsMarkupIsNotRewritten() {
+    // The editor re-wraps the same words on every open. Comparing the raw HTML
+    // would make each save a write, and each write a new etag for nothing.
+    ParsedVCard current = parser.parse(RICH_CARD);
+    String words = "Met at the summit";
+
+    assertEquals(parser.merge(RICH_CARD, noteOf(current, words)),
+                 parser.merge(RICH_CARD, noteOf(current, "<div>" + words + "</div>")),
+                 "the same words, marked up or not, produce the same card");
+  }
+
+  /**
+   * An edit that changes the note and nothing else.
+   *
+   * @param current what the card reads as today
+   * @param note the note as the form hands it over, markup included
+   * @return the edit to merge
+   */
+  private ParsedVCard noteOf(ParsedVCard current, String note) {
+    return new ParsedVCard(null,
+                           current.formattedName(),
+                           current.givenName(),
+                           current.familyName(),
+                           current.emails(),
+                           current.phones(),
+                           current.organization(),
+                           null,
+                           current.birthday(),
+                           current.address(),
+                           note,
+                           current.website(),
+                           null,
+                           null);
+  }
+
+  @Test
   void mergeRefusesWhatItCannotReadRatherThanGuessing() {
     ParsedVCard current = parser.parse(RICH_CARD);
     ParsedVCard edited = editOf(current, current.emails(), current.phones(), "NewCorp", current.address());

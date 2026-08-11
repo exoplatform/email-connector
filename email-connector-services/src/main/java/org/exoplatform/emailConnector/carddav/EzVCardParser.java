@@ -28,6 +28,7 @@ import java.util.Objects;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.text.StringEscapeUtils;
 import org.springframework.stereotype.Component;
 
 import ezvcard.VCard;
@@ -174,7 +175,7 @@ public class EzVCardParser implements VCardParser {
       vcard.addAddress(address);
     }
     if (StringUtils.isNotBlank(card.note())) {
-      vcard.addNote(card.note());
+      vcard.addNote(plainText(card.note()));
     }
     if (StringUtils.isNotBlank(card.website())) {
       vcard.addUrl(card.website());
@@ -467,19 +468,53 @@ public class EzVCardParser implements VCardParser {
    * @param edited what the user saved, already capped
    */
   private void patchNote(VCard vcard, ParsedVCard current, ParsedVCard edited) {
-    if (StringUtils.equals(current.note(), edited.note())) {
+    // Compared as plain text, because that is what the card holds: the editor
+    // hands us HTML, so a note nobody touched still differs from the stored one
+    // by its markup alone, and every save would rewrite the card for nothing.
+    String value = plainText(edited.note());
+    if (StringUtils.equals(plainText(current.note()), value)) {
       return;
     }
     Note target = vcard.getNotes().stream().filter(note -> StringUtils.isNotBlank(note.getValue())).findFirst().orElse(null);
-    if (StringUtils.isBlank(edited.note())) {
+    if (StringUtils.isBlank(value)) {
       if (target != null) {
         vcard.removeProperty(target);
       }
     } else if (target == null) {
-      vcard.addNote(edited.note());
+      vcard.addNote(value);
     } else {
-      target.setValue(edited.note());
+      target.setValue(value);
     }
+  }
+
+  /**
+   * Flattens the rich text of the contact form into the plain text a vCard
+   * property holds.
+   * <p>
+   * The note is typed in an HTML editor, but {@code NOTE} is defined as plain
+   * text: pushing the markup verbatim showed raw {@code <div>} tags in Google
+   * Contacts, Apple Contacts and on the phone, and the next sync read them back
+   * as content, so every round trip nested them one level deeper.
+   * <p>
+   * Block boundaries become line breaks before the tags are dropped, so the
+   * text keeps the shape it was written in. Only what really looks like a tag is
+   * removed — {@code a < b} is prose and survives.
+   *
+   * @param html the value as the form stores it, possibly blank or already plain
+   * @return the same text without markup, or {@code null} when there is nothing left
+   */
+  private static String plainText(String html) {
+    if (StringUtils.isBlank(html)) {
+      return html;
+    }
+    String text = html.replaceAll("(?i)<br\\s*/?>", "\n")
+                      .replaceAll("(?i)</(p|div|li|tr|h[1-6])\\s*>", "\n")
+                      .replaceAll("(?i)<li\\s*[^>]*>", "- ")
+                      .replaceAll("</?[a-zA-Z][^>]*>", "");
+    text = StringEscapeUtils.unescapeHtml4(text).replace('\u00A0', ' ');
+    // Collapse the runs of blank lines that closing tags leave behind, and drop
+    // the trailing break a final </div> always produces.
+    return StringUtils.trimToNull(text.replaceAll("[ \\t]+\n", "\n").replaceAll("\n{3,}", "\n\n"));
   }
 
   /**
