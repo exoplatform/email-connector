@@ -219,9 +219,12 @@ export function deleteContact(id) {
  * on the server can ever be overwritten by this call.
  *
  * @param {number} id - the contact id
- * @returns {Promise<object>} the contact re-read, now an address-book row; a
- *          rejection carries the server's message code and status (409 = an
- *          entry already exists, 400 = a guard refused)
+ * @returns {Promise<object>} the contact re-read, now an address-book row; or
+ *          `{queued: true}` when the server was unreachable and the publish
+ *          was queued to retry after the next successful sync (HTTP 202 —
+ *          accepted, not done, not an error). A rejection carries the server's
+ *          message code and status (409 = an entry already exists, 400 = a
+ *          guard refused)
  */
 export function publishContact(id) {
   return fetch(`/email-connector/rest/contacts/${id}/publish`, {
@@ -231,6 +234,12 @@ export function publishContact(id) {
     credentials: 'include',
     method: 'POST'
   }).then((resp) => {
+    if (resp?.status === 202) {
+      // Not the contact: the publish is queued, and the contact is unchanged
+      // until the queue lands it. Resolved rather than rejected because the
+      // click succeeded at the only thing still possible -- not losing it.
+      return resp.json().catch(() => ({})).then(body => ({...body, queued: true}));
+    }
     if (resp?.ok) {
       return resp.json();
     }
