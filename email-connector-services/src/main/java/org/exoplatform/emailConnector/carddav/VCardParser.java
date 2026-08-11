@@ -69,4 +69,30 @@ public interface VCardParser {
    * @return the vCard text, ready to append to a .vcf file
    */
   String format(ParsedVCard card);
+
+  /**
+   * Patches an edit into a card AS THE SERVER HOLDS IT, and answers the whole
+   * card back — the only safe way to write onto somebody's real address-book
+   * entry, because {@link ParsedVCard} is lossy on purpose: reading the card
+   * into the model and formatting it back would silently strip every property
+   * the model has no slot for.
+   * <p>
+   * So the contract is a merge, not a rewrite. Only the properties the contact
+   * form owns are touched — FN, N's given/family halves, EMAIL, TEL, ORG's
+   * company, BDAY, the first ADR, the first NOTE, the first URL — and each
+   * only when the edit actually differs from what the card currently reads as
+   * through {@link #parse}: an untouched field keeps its property untouched,
+   * parameters, group and all. Everything else — TITLE (the form has no such
+   * field), PHOTO, UID, instant-messaging handles, {@code X-} extensions,
+   * second addresses and beyond — passes through unchanged, and the card keeps
+   * its own vCard version.
+   *
+   * @param rawVCard the card exactly as the server answered it
+   * @param edited the fields as the user saved them — addresses normalized,
+   *          the first address being the primary
+   * @return the whole card with the edit folded in, or null when the text
+   *         holds no card this parser can safely patch — which the caller must
+   *         treat as "do not write", never as "write something else"
+   */
+  String merge(String rawVCard, ParsedVCard edited);
 }

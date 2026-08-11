@@ -63,6 +63,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.commons.file.model.FileItem;
+import org.exoplatform.emailConnector.carddav.CardDavException;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
@@ -446,6 +447,62 @@ public class EmailContactRestTest {
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.imported").value(3))
            .andExpect(jsonPath("$.alreadyKnown").value(2));
+  }
+
+  @Test
+  void publishAnswersTheContactReRead() throws Exception {
+    EmailContact published = contact(5L);
+    published.setSource(EmailContactSource.CARDDAV);
+    when(emailContactCardDavSyncService.publishContact(anyString(), eq(5L))).thenReturn(published);
+
+    mockMvc.perform(post(CONTACTS_PATH + "/5/publish").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.source").value("CARDDAV"));
+  }
+
+  @Test
+  void publishOfSomebodyElsesContactAnswersNotFound() throws Exception {
+    // Null from the service covers absent, foreign and suppressed alike, and
+    // 404 keeps them indistinguishable -- the surface's 404-never-403 rule.
+    when(emailContactCardDavSyncService.publishContact(anyString(), anyLong())).thenReturn(null);
+
+    mockMvc.perform(post(CONTACTS_PATH + "/5/publish").with(testSimpleUser())).andExpect(status().isNotFound());
+  }
+
+  @Test
+  void aPublishGuardRefusalAnswersBadRequestWithItsCode() throws Exception {
+    when(emailContactCardDavSyncService.publishContact(anyString(), anyLong()))
+                                                                               .thenThrow(new IllegalArgumentException(EmailContactCardDavSyncService.PUBLISH_NOT_DISCOVERED));
+
+    mockMvc.perform(post(CONTACTS_PATH + "/5/publish").with(testSimpleUser())).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void aRefusedCreateAnswersConflict() throws Exception {
+    when(emailContactCardDavSyncService.publishContact(anyString(), anyLong()))
+                                                                               .thenThrow(new IllegalStateException(EmailContactCardDavSyncService.PUBLISH_EXISTS_ON_SERVER));
+
+    mockMvc.perform(post(CONTACTS_PATH + "/5/publish").with(testSimpleUser())).andExpect(status().isConflict());
+  }
+
+  @Test
+  void aCardDavFailureAnswersBadGatewayNotAStackTrace() throws Exception {
+    // The server's failure, not the caller's: a message code at 502, so a
+    // client -- or a third-party integrator with no server log -- can tell
+    // "your address book server is down" from "you asked wrong".
+    when(emailContactCardDavSyncService.publishContact(anyString(), anyLong()))
+                                                                               .thenThrow(new CardDavException("boom"));
+
+    mockMvc.perform(post(CONTACTS_PATH + "/5/publish").with(testSimpleUser())).andExpect(status().isBadGateway());
+  }
+
+  @Test
+  void publishableAnswersTheStoredFlag() throws Exception {
+    when(emailContactCardDavSyncService.isPublishAvailable(anyString())).thenReturn(true);
+
+    mockMvc.perform(get(CONTACTS_PATH + "/carddav/publishable").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.available").value(true));
   }
 
   /**

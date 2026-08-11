@@ -128,6 +128,20 @@ export function updateContact(contact) {
 }
 
 /**
+ * Updates an address-book (CardDAV) contact by pushing the edit to the
+ * server first: the server merges the edit into its own card and keeps it
+ * only if nobody changed the entry in the meantime. A rejection with status
+ * 409 and the conflict message code means somebody did — the server's card
+ * has become the local row again, and the user's edit is theirs to retry.
+ *
+ * @param {object} contact - the contact, with its id
+ * @returns {Promise<object>} the updated contact, re-read after the push
+ */
+export function updateAddressBookContact(contact) {
+  return saveContact(`/email-connector/rest/contacts/${contact.id}/card`, 'PUT', contact);
+}
+
+/**
  * Sends a create/update body and surfaces the server's message code on
  * failure, so the form can tell a conflict from a bad address.
  *
@@ -197,6 +211,67 @@ export function deleteContact(id) {
       throw new Error('Error when deleting the contact');
     }
   });
+}
+
+/**
+ * Publishes one of the caller's contacts into their CardDAV address book —
+ * creates only: the server stores the card under If-None-Match:*, so nothing
+ * on the server can ever be overwritten by this call.
+ *
+ * @param {number} id - the contact id
+ * @returns {Promise<object>} the contact re-read, now an address-book row; a
+ *          rejection carries the server's message code and status (409 = an
+ *          entry already exists, 400 = a guard refused)
+ */
+export function publishContact(id) {
+  return fetch(`/email-connector/rest/contacts/${id}/publish`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.text().then(message => {
+      const error = new Error(message || 'Error when publishing the contact');
+      error.status = resp.status;
+      throw error;
+    });
+  });
+}
+
+/** The one in-flight or settled answer of {@link isAddressBookPublishable}. */
+let publishablePromise = null;
+
+/**
+ * Whether the caller can publish contacts to an address book at all — what the
+ * contact card asks before showing its publish action. Cached for the page's
+ * life: the answer changes when the user rebinds their mailbox or an admin
+ * flips the kill switch, both of which come with a reload's worth of change.
+ *
+ * @returns {Promise<boolean>} true when the publish action applies
+ */
+export function isAddressBookPublishable() {
+  if (!publishablePromise) {
+    publishablePromise = fetch('/email-connector/rest/contacts/carddav/publishable', {
+      credentials: 'include',
+      method: 'GET'
+    }).then((resp) => {
+      if (!resp?.ok) {
+        throw new Error('Error when asking whether publishing is available');
+      }
+      return resp.json();
+    }).then(answer => !!answer?.available)
+      .catch(() => {
+        // An unanswered question is not a "no" forever: forget the attempt so
+        // the next card asks again, and hide the action meanwhile.
+        publishablePromise = null;
+        return false;
+      });
+  }
+  return publishablePromise;
 }
 
 /**
