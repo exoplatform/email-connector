@@ -351,6 +351,26 @@ public class EmailContactVCardService {
   }
 
   /**
+   * One contact as the vCard 3.0 text a CardDAV publish stores on the server —
+   * photo included, and carrying the UID the publish minted, because on this
+   * path the card IS about to become a server entry and the UID is how the
+   * next sync recognises it as ours. The QR and attachment shapes keep their
+   * no-UID rule; this is the one path where the bookkeeping belongs in the
+   * card.
+   * <p>
+   * Ownership is the caller's business: the publish service has already
+   * resolved the contact through {@link EmailContactService#getContact}, and
+   * re-checking here would read the row twice for one refusal message.
+   *
+   * @param contact the caller's own contact, already ownership-checked
+   * @param vcardUid the identity minted for the entry being created
+   * @return the vCard text to PUT
+   */
+  public String getPublishVCard(EmailContact contact, String vcardUid) {
+    return vCardParser.format(toCard(contact, vcardUid, true));
+  }
+
+  /**
    * The FIRST card of a received .vcf attachment, as the contact form's
    * prefill — read, never stored: keeping the person is the user's decision,
    * taken on the form this answer fills in.
