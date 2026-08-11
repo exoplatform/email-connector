@@ -18,12 +18,17 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.atLeastOnce;
@@ -49,11 +54,13 @@ import org.exoplatform.emailConnector.carddav.CardDavClient;
 import org.exoplatform.emailConnector.carddav.CardDavException;
 import org.exoplatform.emailConnector.carddav.ContactResource;
 import org.exoplatform.emailConnector.carddav.ParsedVCard;
+import org.exoplatform.emailConnector.carddav.PutResult;
 import org.exoplatform.emailConnector.carddav.VCardParser;
 import org.exoplatform.emailConnector.model.CardDavContactData;
 import org.exoplatform.emailConnector.model.CardDavRow;
 import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.PhotoOrigin;
 import org.exoplatform.emailConnector.model.SyncStatus;
@@ -92,6 +99,12 @@ public class EmailContactCardDavSyncServiceTest {
 
   @MockBean
   private EmailContactFavoriteService        emailContactFavoriteService;
+
+  @MockBean
+  private EmailContactService                emailContactService;
+
+  @MockBean
+  private EmailContactVCardService           emailContactVCardService;
 
   @Autowired
   private EmailContactCardDavSyncService      syncService;
@@ -382,6 +395,59 @@ public class EmailContactCardDavSyncServiceTest {
     // The row is gone for real, so its favorite goes with it; a demoted row keeps
     // its favorite on purpose, the person being still there.
     verify(emailContactFavoriteService).removeFavorite(4L, USERNAME);
+  }
+
+  @Test
+  void aRowClaimedThroughItsAddressIsNeverDeletedAsVanishedInTheSameRun() {
+    // The live BlueMind failure, pinned: the store knows the person at href A,
+    // the server lists the same card at href B (a rename, a move, or BlueMind
+    // filing a freshly published card under its own name). The apply loop
+    // matches the row by address and rewrites its href in place -- but the
+    // vanished check judges rows by a snapshot taken BEFORE that loop, where
+    // the row still says A. Without shielding the rows this run just wrote,
+    // the sync updated the contact and hard-deleted it in the same breath, and
+    // the user watched it disappear.
+    givenServerHas(Map.of("/dav/alice/default/B.vcf", "\"e2\""));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(row(9L,
+                                                                                            "bob@example.org",
+                                                                                            EmailContactSource.CARDDAV,
+                                                                                            false,
+                                                                                            0,
+                                                                                            "/dav/alice/default/A.vcf",
+                                                                                            "\"e1\"",
+                                                                                            null,
+                                                                                            null)));
+    givenServerReturns(resource("/dav/alice/default/B.vcf", "\"e2\""), card("Bob", "bob@example.org"));
+    when(emailContactStorage.getCardDavRowByAddress(USERNAME, "bob@example.org")).thenReturn(row(9L,
+                                                                                                 "bob@example.org",
+                                                                                                 EmailContactSource.CARDDAV,
+                                                                                                 false,
+                                                                                                 0,
+                                                                                                 "/dav/alice/default/A.vcf",
+                                                                                                 "\"e1\"",
+                                                                                                 null,
+                                                                                                 null));
+    when(emailContactStorage.saveCardDavContact(anyString(), anyLong(), anyLong(), anyString(), anyString(), any(), any(),
+                                                anyBoolean())).thenReturn(9L);
+
+    syncService.syncAddressBook(USERNAME);
+
+    // The entry is written onto the row it already was...
+    ArgumentCaptor<Long> claimed = ArgumentCaptor.forClass(Long.class);
+    verify(emailContactStorage).saveCardDavContact(anyString(),
+                                                   claimed.capture(),
+                                                   anyLong(),
+                                                   eq("/dav/alice/default/B.vcf"),
+                                                   anyString(),
+                                                   any(),
+                                                   any(),
+                                                   anyBoolean());
+    assertEquals(9L, claimed.getValue());
+    // ...and that row survives the run, whatever the pre-apply snapshot
+    // remembers its href to have been.
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean());
+    verify(emailContactFavoriteService, never()).removeFavorite(anyLong(), anyString());
   }
 
   @Test
@@ -701,6 +767,453 @@ public class EmailContactCardDavSyncServiceTest {
                          Long photoFileId,
                          PhotoOrigin photoOrigin) {
     return new CardDavRow(id, address, source, suppressed, seenCount, href, etag, photoFileId, photoOrigin);
+  }
+
+  // -------------------------------------------------------------------------
+  // Publishing -- slice 1 of write-back, creates only. Every guard is pinned:
+  // each one is what stands between "save my contact" and writing into
+  // somebody's real address book by mistake.
+  // -------------------------------------------------------------------------
+
+  @Test
+  void publishRefusesWhenTheAdministratorTurnedItOff() {
+    System.setProperty(EmailContactCardDavSyncService.PUBLISH_ENABLED_PROPERTY, "false");
+    try {
+      IllegalArgumentException refusal =
+                                       assertThrows(IllegalArgumentException.class,
+                                                    () -> syncService.publishContact(USERNAME, 5L));
+      assertEquals(EmailContactCardDavSyncService.PUBLISH_DISABLED, refusal.getMessage());
+      verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    } finally {
+      System.clearProperty(EmailContactCardDavSyncService.PUBLISH_ENABLED_PROPERTY);
+    }
+  }
+
+  @Test
+  void publishAnswersNullForAContactTheCallerDoesNotOwn() {
+    // getContact already folds "absent", "somebody else's" and "suppressed"
+    // into null, and publish must not distinguish them either: a null is the
+    // REST layer's 404, and 404-never-403 is what keeps ids unprobeable.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(null);
+
+    assertNull(syncService.publishContact(USERNAME, 5L));
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void aDirectoryContactIsNeverPublished() {
+    // The company directory in a personal address book is an export nobody
+    // asked for, not a sync. This is the guard the task exists to keep.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.DIRECTORY));
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> syncService.publishContact(USERNAME, 5L));
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_SOURCE_NOT_ALLOWED, refusal.getMessage());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void anAddressBookRowIsNotPublishedTwice() {
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+
+    IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                 () -> syncService.publishContact(USERNAME, 5L));
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_ALREADY_PUBLISHED, refusal.getMessage());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void publishRefusesWithoutABoundAddressBook() {
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
+    userEmailSettingService.getUserEmailSetting(USERNAME).setCarddavEnabled(false);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> syncService.publishContact(USERNAME, 5L));
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_NO_ADDRESS_BOOK, refusal.getMessage());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void publishRefusesUntilDiscoveryHasSucceededOnce() {
+    // The one guard that makes the write trustworthy: a blank stored href means
+    // no sync ever verified the book exists, and publishing would write to a
+    // configured guess. The refusal must NOT trigger discovery either -- the fix
+    // is a sync, initiated as a sync.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(new ContactSyncState());
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> syncService.publishContact(USERNAME, 5L));
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_NOT_DISCOVERED, refusal.getMessage());
+    verify(cardDavClient, never()).discoverAddressBook(anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void aPublishedContactIsBoundToTheEntryItBecame() {
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
+    givenADiscoveredBook();
+    when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(201, "\"etag-9\"", null));
+
+    EmailContact published = syncService.publishContact(USERNAME, 5L);
+
+    assertNotNull(published);
+    ArgumentCaptor<String> href = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<String> condition = ArgumentCaptor.forClass(String.class);
+    verify(cardDavClient).putVCard(href.capture(), anyString(), condition.capture(), eq("alice@example.com"), eq("secret"));
+    assertTrue(href.getValue().startsWith(BOOK_URL), "the card goes into the book discovery verified, nowhere else");
+    assertTrue(href.getValue().endsWith(".vcf"));
+    assertEquals("*", condition.getValue(), "creates-only: the server is told to refuse an existing entry");
+    String uid = href.getValue().substring(BOOK_URL.length(), href.getValue().length() - ".vcf".length());
+    // The identity in the card is the identity in the URL is the identity on
+    // the row -- one uid, three places, which is what lets the next sync
+    // recognise the entry as the row it already has.
+    verify(emailContactVCardService).getPublishVCard(any(), eq(uid));
+    // Bound as the server's LISTING will name the entry -- the path, not the
+    // absolute URL that was PUT. Synced rows store PROPFIND's href shape and
+    // the reconciliation compares by string equality; an absolute URL here can
+    // never match a listing and made a published row look vanished.
+    verify(emailContactStorage).bindPublishedCard(5L, CONNECTOR_ID, "/dav/alice/default/" + uid + ".vcf", "\"etag-9\"", uid);
+    // The stored ctag is not advanced: a post-PUT ctag could also cover another
+    // client's concurrent change, and recording it would skip that change for
+    // good. One redundant reconcile is the price, paid knowingly.
+    verify(userEmailSettingService, never()).setContactSyncState(any(), anyString());
+  }
+
+  @Test
+  void theServersLocationNamesTheEntryNotOurUrl() {
+    // BlueMind files a PUT card under a path of its own choosing and says so in
+    // Location. Binding the minted URL then bookkeeps an entry that does not
+    // exist -- the first live test watched the next sync delete the contact
+    // over exactly this.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
+    givenADiscoveredBook();
+    when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(201,
+                                                "\"etag-9\"",
+                                                "https://mail.example.com/dav/alice/default/server-chosen.vcf"));
+
+    syncService.publishContact(USERNAME, 5L);
+
+    verify(emailContactStorage).bindPublishedCard(eq(5L),
+                                                  eq(CONNECTOR_ID),
+                                                  eq("/dav/alice/default/server-chosen.vcf"),
+                                                  eq("\"etag-9\""),
+                                                  anyString());
+  }
+
+  @Test
+  void aServerRefusingToCreateIsReportedNeverForced() {
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.COLLECTED));
+    givenADiscoveredBook();
+    when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(412, null, null));
+
+    IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                 () -> syncService.publishContact(USERNAME, 5L));
+
+    assertEquals(EmailContactCardDavSyncService.PUBLISH_EXISTS_ON_SERVER, refusal.getMessage());
+    // Nothing local moves either: a refused create must leave the row exactly
+    // the manual/collected contact it was.
+    verify(emailContactStorage, never()).bindPublishedCard(anyLong(), anyLong(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void aServerThatSendsNoEtagLeavesTheVersionUnknown() {
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
+    givenADiscoveredBook();
+    when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(204, null, null));
+
+    syncService.publishContact(USERNAME, 5L);
+
+    // Null on purpose: an unknown version makes the next sync re-read the entry
+    // and settle on the server's canonical etag, which costs one fetch and can
+    // never be wrong. Inventing a version here could be.
+    verify(emailContactStorage).bindPublishedCard(eq(5L), eq(CONNECTOR_ID), anyString(), isNull(), anyString());
+  }
+
+  @Test
+  void publishAvailabilityNeedsADiscoveredBook() {
+    // The UI's question, answered from stored state with no network: the button
+    // must not exist while nothing verified has ever been discovered.
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(new ContactSyncState());
+    assertFalse(syncService.isPublishAvailable(USERNAME));
+
+    givenADiscoveredBook();
+    assertTrue(syncService.isPublishAvailable(USERNAME));
+  }
+
+  // -------------------------------------------------------------------------
+  // Editing -- slice 2 of write-back. The rule under every case: the path goes
+  // from "edit refused" straight to "edit pushed", never through "edit kept
+  // locally, diverging quietly" -- and a push that cannot happen leaves the
+  // edit refused.
+  // -------------------------------------------------------------------------
+
+  @Test
+  void editRefusesWhenTheAdministratorTurnedWritingOff() {
+    System.setProperty(EmailContactCardDavSyncService.PUBLISH_ENABLED_PROPERTY, "false");
+    try {
+      IllegalArgumentException refusal =
+                                       assertThrows(IllegalArgumentException.class,
+                                                    () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
+      assertEquals(EmailContactCardDavSyncService.PUBLISH_DISABLED, refusal.getMessage());
+      verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    } finally {
+      System.clearProperty(EmailContactCardDavSyncService.PUBLISH_ENABLED_PROPERTY);
+    }
+  }
+
+  @Test
+  void anEditOfANonAddressBookRowDoesNotGoNearTheServer() {
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
+
+    IllegalArgumentException refusal =
+                                     assertThrows(IllegalArgumentException.class,
+                                                  () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
+    assertEquals(EmailContactCardDavSyncService.UPDATE_NOT_ADDRESS_BOOK, refusal.getMessage());
+    verify(cardDavClient, never()).fetchVCard(anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void aRowWithoutAServerEntryStaysRefused() {
+    // A CARDDAV row with no href has nowhere verified to push to, and "cannot
+    // push" must mean "still refused", never "saved locally meanwhile".
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+    givenADiscoveredBook();
+    when(emailContactStorage.getCardDavRowById(5L)).thenReturn(row(5L,
+                                                                   "bob@example.org",
+                                                                   EmailContactSource.CARDDAV,
+                                                                   false,
+                                                                   0,
+                                                                   null,
+                                                                   null,
+                                                                   null,
+                                                                   PhotoOrigin.VCARD));
+
+    IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                 () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
+    assertEquals(EmailContactCardDavSyncService.UPDATE_NO_SERVER_ENTRY, refusal.getMessage());
+    verify(cardDavClient, never()).fetchVCard(anyString(), anyString(), anyString());
+    verify(emailContactStorage, never()).saveCardDavContact(anyString(), any(), any(), any(), any(), any(), any(), anyBoolean());
+  }
+
+  @Test
+  void anAddressCollisionIsRefusedBeforeAnythingReachesTheServer() {
+    // Pushing a card the local save would then refuse as a collision would
+    // desynchronize the two on purpose, so the refusal comes first.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+    givenADiscoveredBook();
+    givenABoundRow();
+    when(emailContactStorage.getCardDavRowByAddress(USERNAME, "bob@example.org"))
+                                                                                 .thenReturn(row(9L,
+                                                                                                 "bob@example.org",
+                                                                                                 EmailContactSource.MANUAL,
+                                                                                                 false,
+                                                                                                 0,
+                                                                                                 null,
+                                                                                                 null,
+                                                                                                 null,
+                                                                                                 PhotoOrigin.USER));
+
+    IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                 () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
+    assertEquals(EmailContactService.CONTACT_ALREADY_EXISTS, refusal.getMessage());
+    verify(cardDavClient, never()).fetchVCard(anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void anEntryGoneFromTheServerRefusesTheEditInsteadOfRecreatingIt() {
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+    givenADiscoveredBook();
+    givenABoundRow();
+    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString())).thenReturn(null);
+
+    IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                 () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
+    assertEquals(EmailContactCardDavSyncService.UPDATE_ENTRY_GONE, refusal.getMessage());
+    verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void theEditGoesOutUnderTheEtagOfItsOwnFetchNotTheStoredOne() {
+    // The whole If-Match contract: the merge's base and the precondition's
+    // version are the SAME read. The etag the last sync stored may be days
+    // old, and sending it would refuse every edit of a since-synced entry --
+    // or worse, let one through against a base the merge never saw.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+    givenADiscoveredBook();
+    givenABoundRow();
+    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+                      .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"fresh\"", "RAW-CARD"));
+    when(vCardParser.merge(eq("RAW-CARD"), any())).thenReturn("MERGED-CARD");
+    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(204, "\"after\"", null));
+    when(vCardParser.parse("MERGED-CARD")).thenReturn(card("Bobby", "bob@example.org"));
+
+    syncService.updateAddressBookContact(USERNAME, 5L, editedBody());
+
+    verify(cardDavClient).fetchVCard(eq(BOOK_URL + "bob.vcf"), eq("alice@example.com"), eq("secret"));
+    verify(cardDavClient).updateVCard(eq(BOOK_URL + "bob.vcf"),
+                                      eq("MERGED-CARD"),
+                                      eq("\"fresh\""),
+                                      eq("alice@example.com"),
+                                      eq("secret"));
+    // The local row becomes the merged card AS PUSHED, through the inbound
+    // sync's own write, at the version the PUT answered -- photo untouched.
+    verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
+                                                   eq(5L),
+                                                   eq(CONNECTOR_ID),
+                                                   eq("/dav/alice/default/bob.vcf"),
+                                                   eq("\"after\""),
+                                                   any(),
+                                                   isNull(),
+                                                   eq(false));
+  }
+
+  @Test
+  void theEtagTheServerAnswersIsTheOneRecorded() {
+    // A server may answer the PUT with any etag it likes -- or none. Whatever
+    // it says is what the row records: null makes the next sync re-read the
+    // entry, which costs one fetch and can never be wrong.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+    givenADiscoveredBook();
+    givenABoundRow();
+    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+                      .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"fresh\"", "RAW-CARD"));
+    when(vCardParser.merge(eq("RAW-CARD"), any())).thenReturn("MERGED-CARD");
+    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(204, null, null));
+    when(vCardParser.parse("MERGED-CARD")).thenReturn(card("Bobby", "bob@example.org"));
+
+    syncService.updateAddressBookContact(USERNAME, 5L, editedBody());
+
+    verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
+                                                   eq(5L),
+                                                   eq(CONNECTOR_ID),
+                                                   anyString(),
+                                                   isNull(),
+                                                   any(),
+                                                   isNull(),
+                                                   eq(false));
+  }
+
+  @Test
+  void aConflictNeverOverwritesAndTheServersCardBecomesTheBaseline() {
+    // Somebody changed the entry between this code's fetch and its PUT. Their
+    // change must win everywhere: the PUT is refused by the server (If-Match),
+    // the local row adopts the server's CURRENT card -- re-fetched, because
+    // the 412 proves the save-time fetch is already behind -- and the user
+    // gets the conflict, their words still on their screen, never applied.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+    givenADiscoveredBook();
+    givenABoundRow();
+    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+                      .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"fresh\"", "RAW-CARD"))
+                      .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"theirs\"", "THEIR-CARD"));
+    when(vCardParser.merge(eq("RAW-CARD"), any())).thenReturn("MERGED-CARD");
+    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(412, null, null));
+    when(vCardParser.parse("THEIR-CARD")).thenReturn(card("Their Bob", "bob@example.org"));
+
+    IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                 () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
+
+    assertEquals(EmailContactCardDavSyncService.UPDATE_CONFLICT, refusal.getMessage());
+    // The baseline written is THEIR card at THEIR version -- the user's merged
+    // card is never stored, locally or remotely.
+    verify(vCardParser, never()).parse("MERGED-CARD");
+    verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
+                                                   eq(5L),
+                                                   eq(CONNECTOR_ID),
+                                                   eq("/dav/alice/default/bob.vcf"),
+                                                   eq("\"theirs\""),
+                                                   any(),
+                                                   isNull(),
+                                                   eq(false));
+  }
+
+  @Test
+  void aCardTheMergeCannotReadLeavesTheEditRefused() {
+    // Cannot merge safely means cannot push, and cannot push means still
+    // refused: the one path that must never exist is "kept locally anyway".
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+    givenADiscoveredBook();
+    givenABoundRow();
+    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+                      .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"fresh\"", "GARBAGE"));
+    when(vCardParser.merge(eq("GARBAGE"), any())).thenReturn(null);
+
+    assertThrows(CardDavException.class, () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
+    verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(emailContactStorage, never()).saveCardDavContact(anyString(), any(), any(), any(), any(), any(), any(), anyBoolean());
+  }
+
+  /**
+   * Primes the row as the sync would have bound it: an entry of the current
+   * book, stored under the listing-shaped href, at a version the LAST sync
+   * saw — which the If-Match test proves is not the one the push uses.
+   */
+  private void givenABoundRow() {
+    when(emailContactStorage.getCardDavRowById(5L)).thenReturn(row(5L,
+                                                                   "bob@example.org",
+                                                                   EmailContactSource.CARDDAV,
+                                                                   false,
+                                                                   0,
+                                                                   "/dav/alice/default/bob.vcf",
+                                                                   "\"stale\"",
+                                                                   null,
+                                                                   PhotoOrigin.VCARD));
+  }
+
+  /**
+   * The body a form save sends for the bound row: same primary, a new given
+   * name, the always-present authoritative lists.
+   *
+   * @return the edit
+   */
+  private EmailContact editedBody() {
+    EmailContact edited = new EmailContact();
+    edited.setPrimaryEmail("bob@example.org");
+    edited.setGivenName("Bobby");
+    edited.setSecondaryEmails(List.of());
+    edited.setPhones(List.of());
+    return edited;
+  }
+
+  /**
+   * Primes the stored state as after a successful discovery: the book's href is
+   * known and belongs to the currently configured URL, so resolution answers
+   * from state without any network.
+   */
+  private void givenADiscoveredBook() {
+    ContactSyncState state = new ContactSyncState();
+    state.setAddressBookHref(BOOK_URL);
+    state.setConfiguredUrl("https://mail.example.com");
+    when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
+  }
+
+  /**
+   * One of the caller's own visible contacts, as {@code getContact} answers it.
+   *
+   * @param id the contact id
+   * @param source where the row came from
+   * @return the contact
+   */
+  private EmailContact ownContact(long id, String source) {
+    EmailContact contact = new EmailContact();
+    contact.setId(id);
+    contact.setUserId(USERNAME);
+    contact.setSource(source);
+    contact.setPrimaryEmail("bob@example.org");
+    contact.setDisplayName("Bob");
+    return contact;
   }
 
   /**

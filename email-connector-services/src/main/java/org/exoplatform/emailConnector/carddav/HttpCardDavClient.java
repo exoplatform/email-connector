@@ -193,6 +193,117 @@ public class HttpCardDavClient implements CardDavClient {
     return resources;
   }
 
+  @Override
+  public ContactResource fetchVCard(String url, String username, String password) {
+    HttpRequest request = HttpRequest.newBuilder(uri(url))
+                                     .timeout(REQUEST_TIMEOUT)
+                                     .header("Authorization", basicAuth(username, password))
+                                     .GET()
+                                     .build();
+    try {
+      HttpResponse<String> response = httpClient.send(request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+      int status = response.statusCode();
+      if (status == 404 || status == 410) {
+        // The entry is gone, which for an edit is a fact to report -- the sync
+        // will reconcile the row -- not a protocol failure to log as one.
+        return null;
+      }
+      if (status != 200) {
+        throw new CardDavException(String.format("The address book server answered %s for %s %s",
+                                                 status,
+                                                 request.method(),
+                                                 request.uri()));
+      }
+      // The etag exactly as sent, quotes and all, like everywhere else in this
+      // client: it goes straight back out as an If-Match, which only works
+      // verbatim.
+      return new ContactResource(url,
+                                 StringUtils.trimToNull(response.headers().firstValue("ETag").orElse(null)),
+                                 response.body());
+    } catch (IOException e) {
+      throw new CardDavException("The address book server could not be reached at " + request.uri(), e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new CardDavException("Interrupted while talking to " + request.uri(), e);
+    }
+  }
+
+  @Override
+  public PutResult putVCard(String url, String vcard, String ifNoneMatch, String username, String password) {
+    return put(url, vcard, "If-None-Match", ifNoneMatch, username, password);
+  }
+
+  @Override
+  public PutResult updateVCard(String url, String vcard, String ifMatch, String username, String password) {
+    return put(url, vcard, "If-Match", ifMatch, username, password);
+  }
+
+  /**
+   * The one PUT both writes share; only the precondition header differs —
+   * {@code If-None-Match: *} to insist on creating, {@code If-Match: etag} to
+   * insist on replacing what was just read and nothing newer.
+   *
+   * @param url the absolute entry URL
+   * @param vcard the card text to store
+   * @param preconditionHeader which precondition header to send
+   * @param preconditionValue its value, blank to send no precondition
+   * @param username the account to authenticate as
+   * @param password that account's password
+   * @return the status and the stored card's etag when the server sent one
+   */
+  private PutResult put(String url,
+                        String vcard,
+                        String preconditionHeader,
+                        String preconditionValue,
+                        String username,
+                        String password) {
+    HttpRequest.Builder builder = HttpRequest.newBuilder(uri(url))
+                                             .timeout(REQUEST_TIMEOUT)
+                                             // A card, not DAV XML: request() is not reused here because its
+                                             // Content-Type belongs to PROPFIND/REPORT bodies, and a server
+                                             // told a vCard is application/xml may refuse or misfile it.
+                                             .header("Content-Type", "text/vcard; charset=utf-8")
+                                             .header("Authorization", basicAuth(username, password))
+                                             .method("PUT", BodyPublishers.ofString(vcard, StandardCharsets.UTF_8));
+    if (StringUtils.isNotBlank(preconditionValue)) {
+      builder.header(preconditionHeader, preconditionValue);
+    }
+    HttpRequest request = builder.build();
+    try {
+      HttpResponse<String> response = httpClient.send(request, BodyHandlers.ofString(StandardCharsets.UTF_8));
+      int status = response.statusCode();
+      // PUT's own accepted set, apart from send()'s 200/207 which belongs to the
+      // read verbs: 201 is the created card, 204 and 200 are how some servers
+      // acknowledge instead. 412 is the precondition refused -- an answer the
+      // caller must be able to tell apart from an error, because under
+      // If-None-Match:* it means "already exists" and under If-Match it means
+      // "somebody changed it first" -- facts either way, not faults.
+      if (status != 200 && status != 201 && status != 204 && status != PutResult.PRECONDITION_FAILED) {
+        throw new CardDavException(String.format("The address book server answered %s for %s %s",
+                                                 status,
+                                                 request.method(),
+                                                 request.uri()));
+      }
+      // The etag exactly as sent, quotes and all -- the same raw shape the
+      // PROPFIND listing answers, so the sync's etag comparison stays honest.
+      //
+      // The Location matters as much as the etag: BlueMind stores the card
+      // under a path of its own choosing, not the one that was PUT, and this
+      // header is the only same-round-trip way to learn the entry's real name.
+      // Resolved absolute against the request URL, like every other href this
+      // client answers from discovery.
+      String location = StringUtils.trimToNull(response.headers().firstValue("Location").orElse(null));
+      return new PutResult(status,
+                           StringUtils.trimToNull(response.headers().firstValue("ETag").orElse(null)),
+                           location == null ? null : resolve(url, location));
+    } catch (IOException e) {
+      throw new CardDavException("The address book server could not be reached at " + request.uri(), e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new CardDavException("Interrupted while talking to " + request.uri(), e);
+    }
+  }
+
   /**
    * Reads a URL as if it were an address-book collection, answering null when it
    * is not one — used to accept a configured collection URL directly.

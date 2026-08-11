@@ -92,7 +92,7 @@ public class EmailContactService {
    */
   public static final String      CONTACT_SELF_IMPORT         = "emailConnector.contacts.selfImport";
 
-  /** Message code answered as a 400 when editing a CardDAV row (read-only in v1). */
+  /** Message code answered as a 400 when editing a CardDAV row through this path — its edits go through the server push. */
   public static final String      CONTACT_CARDDAV_READ_ONLY   = "emailConnector.contacts.carddavReadOnly";
 
   /**
@@ -676,10 +676,13 @@ public class EmailContactService {
   /**
    * Updates a contact the user can see. Manual and collected rows are editable
    * (a collected row keeps its source — collection never overwrites a name a
-   * user set, it only backfills empty ones). CardDAV rows are read-only in v1
-   * (they would resurrect at the next address book sync), and directory-linked
-   * rows are read-only always: their truth is the platform profile, and editing
-   * the stored fallback would change nothing the user sees. Changing the
+   * user set, it only backfills empty ones). CardDAV rows are refused HERE and
+   * only here: their truth is the server's card, so their edits go through
+   * {@code EmailContactCardDavSyncService#updateAddressBookContact}, which
+   * pushes before it keeps — a local-only edit would resurrect at the next
+   * address book sync. Directory-linked rows are read-only always: their truth
+   * is the platform profile, and editing the stored fallback would change
+   * nothing the user sees. Changing the
    * address re-checks uniqueness; when the new address belongs to a suppressed
    * tombstone, the tombstone is absorbed rather than reported as a conflict the
    * user cannot see. The secondary addresses follow the same null-means-keep
