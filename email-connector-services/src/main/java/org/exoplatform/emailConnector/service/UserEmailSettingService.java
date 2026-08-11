@@ -42,6 +42,7 @@ import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.model.ContactImportState;
+import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -82,6 +83,14 @@ public class UserEmailSettingService {
    * document last wins, silently.
    */
   public static final String        CONTACT_IMPORT_STATE_KEY                           = "emailContactImportState";
+
+  /**
+   * The outbound publish queue's own key, a fourth separate document for the
+   * same last-writer-wins reason — and separate from the sync state in
+   * particular because the sync rewrites its state on every run while the
+   * queue usually stays empty for months.
+   */
+  public static final String        CONTACT_PUBLISH_QUEUE_KEY                          = "emailContactPublishQueue";
 
   private static final String       USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE =
                                                                                        "User %s is not allowed to connect email setting";
@@ -426,6 +435,57 @@ public class UserEmailSettingService {
    */
   public void clearContactSyncState(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_SYNC_STATE_KEY);
+  }
+
+  /**
+   * The publishes still waiting to reach this user's address book. Never null
+   * and never with a null list, so callers iterate without branching — and an
+   * unreadable stored queue reads as empty rather than failing, which loses at
+   * worst the reminders to publish, never the contacts themselves (they are
+   * rows of the store, not of this document).
+   *
+   * @param username the mailbox owner
+   * @return the stored queue, or a fresh empty one
+   */
+  public ContactPublishQueue getContactPublishQueue(String username) {
+    SettingValue<?> value = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_PUBLISH_QUEUE_KEY);
+    if (value == null || value.getValue() == null) {
+      return new ContactPublishQueue();
+    }
+    try {
+      ContactPublishQueue queue = JsonUtils.fromJsonString(value.getValue().toString(), ContactPublishQueue.class);
+      if (queue == null || queue.getEntries() == null) {
+        return new ContactPublishQueue();
+      }
+      return queue;
+    } catch (Exception e) {
+      LOG.warn("The stored contact publish queue of user {} could not be read, starting from empty", username, e);
+      return new ContactPublishQueue();
+    }
+  }
+
+  /**
+   * Stores the publishes still waiting to reach the address book.
+   *
+   * @param queue the queue to store
+   * @param username the mailbox owner
+   */
+  public void setContactPublishQueue(ContactPublishQueue queue, String username) {
+    settingService.set(Context.USER.id(username),
+                       EMAIL_CONNECTOR_SCOPE,
+                       CONTACT_PUBLISH_QUEUE_KEY,
+                       SettingValue.create(JsonUtils.toJsonString(queue)));
+  }
+
+  /**
+   * Drops the publish queue entirely — what unbinding the address book implies:
+   * the entries named a book that no longer exists, while the contacts they
+   * pointed at stay in the store, publishable to whatever book comes next.
+   *
+   * @param username the mailbox owner
+   */
+  public void clearContactPublishQueue(String username) {
+    settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, CONTACT_PUBLISH_QUEUE_KEY);
   }
 
   /**
