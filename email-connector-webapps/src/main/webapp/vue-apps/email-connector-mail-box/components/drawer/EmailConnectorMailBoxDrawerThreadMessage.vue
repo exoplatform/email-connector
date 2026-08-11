@@ -92,7 +92,9 @@ export default {
       return text.replace(/\s+/g, ' ').trim();
     },
     ariaLabel() {
-      return `Open message from ${this.senderLabel}`;
+      return this.$t('emailConnector.mailBox.list.drawer.thread.openMessage', {
+        0: this.senderLabel,
+      });
     },
     // A message from the user's own Sent folder is shown as "Me", like Gmail.
     senderLabel() {
