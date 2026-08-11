@@ -64,6 +64,9 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.carddav.CardDavException;
+import org.exoplatform.emailConnector.carddav.CardDavPublishQueuedException;
+import org.exoplatform.emailConnector.model.ContactPublishQueue;
+import org.exoplatform.emailConnector.model.ContactPublishQueueEntry;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
@@ -499,6 +502,34 @@ public class EmailContactRestTest {
                                                                                .thenThrow(new CardDavException("boom"));
 
     mockMvc.perform(post(CONTACTS_PATH + "/5/publish").with(testSimpleUser())).andExpect(status().isBadGateway());
+  }
+
+  @Test
+  void aQueuedPublishAnswersAcceptedNotAnError() throws Exception {
+    // The one CardDavException that is a promise: the click did its job, the
+    // publish waits for the next successful sync. 202 with the message code,
+    // so the client says "will be saved" instead of telling the user to retry
+    // what no longer needs retrying.
+    when(emailContactCardDavSyncService.publishContact(anyString(), anyLong()))
+                                                                               .thenThrow(new CardDavPublishQueuedException("away", null));
+
+    mockMvc.perform(post(CONTACTS_PATH + "/5/publish").with(testSimpleUser()))
+           .andExpect(status().isAccepted())
+           .andExpect(jsonPath("$.queued").value(true))
+           .andExpect(jsonPath("$.messageCode").value(EmailContactCardDavSyncService.PUBLISH_QUEUED));
+  }
+
+  @Test
+  void thePublishQueueAnswersItsStoredEntries() throws Exception {
+    ContactPublishQueue queue = new ContactPublishQueue();
+    queue.getEntries().add(new ContactPublishQueueEntry(42L, 1721000000000L, 2, true, "server said no", "boom", null));
+    when(emailContactCardDavSyncService.getPublishQueue(anyString())).thenReturn(queue);
+
+    mockMvc.perform(get(CONTACTS_PATH + "/carddav/publish-queue").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.entries[0].contactId").value(42))
+           .andExpect(jsonPath("$.entries[0].parked").value(true))
+           .andExpect(jsonPath("$.entries[0].parkedReason").value("server said no"));
   }
 
   @Test

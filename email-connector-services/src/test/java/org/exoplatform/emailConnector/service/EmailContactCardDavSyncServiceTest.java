@@ -58,6 +58,7 @@ import org.exoplatform.emailConnector.carddav.PutResult;
 import org.exoplatform.emailConnector.carddav.VCardParser;
 import org.exoplatform.emailConnector.model.CardDavContactData;
 import org.exoplatform.emailConnector.model.CardDavRow;
+import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContact;
@@ -123,6 +124,9 @@ public class EmailContactCardDavSyncServiceTest {
     connector.setCarddavUrl("https://mail.example.com");
     lenient().when(emailConnectorService.getEmailConnector(CONNECTOR_ID)).thenReturn(connector);
     lenient().when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(new ContactSyncState());
+    // Empty and shared across calls, like the real accessor's never-null answer:
+    // the publish and drain paths consult it even when nothing was ever queued.
+    lenient().when(userEmailSettingService.getContactPublishQueue(USERNAME)).thenReturn(new ContactPublishQueue());
     lenient().when(cardDavClient.discoverAddressBook(anyString(), anyString(), anyString()))
              .thenReturn(new AddressBook(BOOK_URL, "Contacts", "ctag-1"));
   }
