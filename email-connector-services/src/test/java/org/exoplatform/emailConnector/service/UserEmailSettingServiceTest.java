@@ -56,6 +56,8 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.model.ContactPublishQueue;
+import org.exoplatform.emailConnector.model.ContactPublishQueueEntry;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.SyncStatus;
@@ -182,6 +184,67 @@ public class UserEmailSettingServiceTest {
 
     assertNotNull(state);
     assertNull(state.getCtag());
+  }
+
+  @Test
+  void thePublishQueueSurvivesItsTripThroughSettingsJson() {
+    // The queue's whole persistence is one JSON string in settings; this pins
+    // that a parked entry comes back exactly as it went in -- id, attempts,
+    // parked flag AND the reason, which is the part "never silent" rides on.
+    ContactPublishQueue queue = new ContactPublishQueue();
+    queue.getEntries().add(new ContactPublishQueueEntry(42L, 1721000000000L, 2, true, "server said no", "boom", 1721000060000L));
+    queue.getEntries().add(new ContactPublishQueueEntry(43L, 1721000001000L, 0, false, null, null, null));
+
+    userEmailSettingService.setContactPublishQueue(queue, TEST_USER);
+
+    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.CONTACT_PUBLISH_QUEUE_KEY),
+                               stored.capture());
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONTACT_PUBLISH_QUEUE_KEY)))
+                       .thenReturn((SettingValue) SettingValue.create(stored.getValue().getValue().toString()));
+
+    ContactPublishQueue reread = userEmailSettingService.getContactPublishQueue(TEST_USER);
+
+    assertEquals(2, reread.getEntries().size());
+    ContactPublishQueueEntry parked = reread.getEntries().get(0);
+    assertEquals(42L, parked.getContactId());
+    assertEquals(2, parked.getAttempts());
+    assertTrue(parked.isParked());
+    assertEquals("server said no", parked.getParkedReason());
+    assertEquals("boom", parked.getLastError());
+    ContactPublishQueueEntry pending = reread.getEntries().get(1);
+    assertEquals(43L, pending.getContactId());
+    assertFalse(pending.isParked());
+    assertNull(pending.getParkedReason());
+  }
+
+  @Test
+  void anAbsentPublishQueueReadsAsEmptyNeverNull() {
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONTACT_PUBLISH_QUEUE_KEY)))
+                       .thenReturn(null);
+
+    ContactPublishQueue queue = userEmailSettingService.getContactPublishQueue(TEST_USER);
+
+    assertNotNull(queue);
+    assertNotNull(queue.getEntries());
+    assertTrue(queue.getEntries().isEmpty());
+  }
+
+  @Test
+  void anUnreadableStoredQueueReadsAsEmptyRatherThanFailing() {
+    // Losing the stored document loses reminders, never contacts -- the
+    // contacts are rows of the store. Failing the read would lose the drain too.
+    SettingValue<?> broken = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.CONTACT_PUBLISH_QUEUE_KEY)))
+                       .thenReturn((SettingValue) broken);
+    when(broken.getValue()).thenReturn((Object) "this is not json");
+
+    ContactPublishQueue queue = userEmailSettingService.getContactPublishQueue(TEST_USER);
+
+    assertNotNull(queue);
+    assertTrue(queue.getEntries().isEmpty());
   }
 
   @Test

@@ -275,6 +275,15 @@ export default {
       this.publishing = true;
       this.$emailConnectorContactsService.publishContact(this.contact.id)
         .then(published => {
+          if (published?.queued) {
+            // The server was away, so the publish waits in the queue and goes
+            // out after the next successful sync. The contact is unchanged --
+            // still local, still here -- so nothing re-renders; only the words
+            // change: "will be saved", never an error asking to retry what no
+            // longer needs retrying.
+            document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'info', alertMessage: this.$t('emailConnector.contacts.detail.publish.queued')}}));
+            return;
+          }
           this.contact = published;
           this.$root.$emit('email-contacts-refresh');
           document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'success', alertMessage: this.$t('emailConnector.contacts.detail.publish.success')}}));
