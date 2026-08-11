@@ -47,9 +47,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- The column lives on this div, not on the v-label: that component drops
            the class and style it is given, so "To", "Cc" and "Bcc" each took
            their own width and started their field at a different x. 40px clears
-           the widest of the three, and the 36px box centres the text between an
-           empty field (its text sits at 20px) and a first chip row (16px). -->
-      <div class="d-flex align-center flex-grow-0 flex-shrink-0" style="width: 40px; height: 36px">
+           the widest of the three. The height matches the field's own row, so the
+           label centres exactly on the placeholder of an empty field -- which is
+           how compose opens, and so the state the eye checks first. Against a
+           chip it then sits 3px high, which on a 24px chip does not read. -->
+      <div class="d-flex align-center flex-grow-0 flex-shrink-0" style="width: 40px; height: 38px">
         <v-label :for="fieldId">
           <span class="text-subtitle-color">{{ label }}</span>
         </v-label>
