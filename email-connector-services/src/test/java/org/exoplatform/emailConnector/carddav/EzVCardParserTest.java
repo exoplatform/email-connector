@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.carddav;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -504,6 +505,254 @@ public class EzVCardParserTest {
     assertTrue(formatted.contains("BEGIN:VCARD"));
     assertTrue(formatted.contains("VERSION:3.0"));
     assertTrue(formatted.contains("END:VCARD"));
+  }
+
+  // -------------------------------------------------------------------------
+  // The merge -- slice 2 of write-back. These cases are the slice's whole
+  // point: the model is lossy on purpose, so writing an edit back must patch
+  // the server's own card, and everything the model has no slot for must come
+  // out exactly as it went in. A bug here corrupts somebody's real address
+  // book, silently.
+  // -------------------------------------------------------------------------
+
+  /** A card carrying one of everything the model drops, for the merge to preserve. */
+  private static final String RICH_CARD = """
+      BEGIN:VCARD
+      VERSION:3.0
+      UID:uid-7
+      FN:Jane Doe
+      N:Doe;Jane;Middle;Dr;PhD
+      EMAIL;TYPE=INTERNET,PREF:jane@example.com
+      item1.TEL;TYPE=CELL:+336000001
+      item1.X-ABLabel:iPhone
+      IMPP:xmpp:jane@chat.example.com
+      ADR;TYPE=HOME:;;1 Home St;Paris;;75001;France
+      ADR;TYPE=WORK:;;2 Work Av;Lyon;;69000;France
+      X-CUSTOM-FLAG:kept
+      TITLE:Head of Everything
+      ORG:Acme;R&D
+      END:VCARD""";
+
+  /**
+   * The edit a form save carries, built on what the card currently reads as so
+   * each test changes exactly the fields it means to.
+   *
+   * @param current what the raw card reads as
+   * @param emails the addresses the form saved, primary first
+   * @param phones the phone entries the form saved
+   * @param organization the company the form saved
+   * @param address the postal address the form saved
+   * @return the edit
+   */
+  private ParsedVCard editOf(ParsedVCard current,
+                             List<String> emails,
+                             List<String> phones,
+                             String organization,
+                             PostalAddress address) {
+    return new ParsedVCard(null,
+                           current.formattedName(),
+                           current.givenName(),
+                           current.familyName(),
+                           emails,
+                           phones,
+                           organization,
+                           null,
+                           current.birthday(),
+                           address,
+                           current.note(),
+                           current.website(),
+                           null,
+                           null);
+  }
+
+  @Test
+  void mergeTouchesOnlyTheFieldItWasHandedAndNothingElse() {
+    // One owned field changes -- the company. Everything the model has no slot
+    // for, and every owned field the edit repeats unchanged, must come out as
+    // it went in: multiple ADRs, the IM handle, the X- extension, the grouped
+    // TEL with its label, the N halves the form does not show, the TITLE the
+    // form does not own.
+    ParsedVCard current = parser.parse(RICH_CARD);
+    String merged = parser.merge(RICH_CARD, editOf(current, current.emails(), current.phones(), "NewCorp", current.address()));
+
+    assertTrue(merged.contains("VERSION:3.0"));
+    assertTrue(merged.contains("UID:uid-7"));
+    assertTrue(merged.contains("item1.TEL"), "a grouped TEL keeps its group");
+    assertTrue(merged.contains("item1.X-ABLabel:iPhone"));
+    assertTrue(merged.contains("IMPP:xmpp:jane@chat.example.com"));
+    assertTrue(merged.contains("X-CUSTOM-FLAG:kept"));
+    assertTrue(merged.contains("1 Home St"), "the first ADR survives an edit that kept it");
+    assertTrue(merged.contains("2 Work Av"), "the second ADR is not the model's to lose");
+    assertTrue(merged.contains("N:Doe;Jane;Middle;Dr;PhD"), "the N halves the form does not own survive");
+    assertTrue(merged.contains("TITLE:Head of Everything"), "the form has no title field, so TITLE is not its to change");
+    assertTrue(merged.contains("EMAIL;TYPE=INTERNET,PREF:jane@example.com"), "an unchanged address keeps its line untouched");
+    assertTrue(merged.contains("ORG:NewCorp;R&D"), "the company changes, the department behind it stays");
+    assertFalse(merged.contains("PRODID"), "nothing is stamped into somebody else's card");
+  }
+
+  @Test
+  void mergeKeepsAVCard4CardInItsOwnDialect() {
+    String raw = """
+        BEGIN:VCARD
+        VERSION:4.0
+        UID:urn:uuid:x
+        FN:Jane Doe
+        N:Doe;Jane;;;
+        EMAIL;PREF=1:jane@example.com
+        GENDER:F
+        END:VCARD""";
+    ParsedVCard current = parser.parse(raw);
+    ParsedVCard edited = new ParsedVCard(null,
+                                         "Jane Doe-Smith",
+                                         "Jane",
+                                         "Doe-Smith",
+                                         current.emails(),
+                                         current.phones(),
+                                         null,
+                                         null,
+                                         null,
+                                         null,
+                                         null,
+                                         null,
+                                         null,
+                                         null);
+    String merged = parser.merge(raw, edited);
+
+    assertTrue(merged.contains("VERSION:4.0"), "a 4.0 card is not downgraded by an edit");
+    assertTrue(merged.contains("GENDER:F"), "a 4.0-only property survives");
+    assertTrue(merged.contains("EMAIL;PREF=1:jane@example.com"), "an unchanged address keeps its 4.0 preference");
+    assertTrue(merged.contains("FN:Jane Doe-Smith"));
+    assertTrue(merged.contains("N:Doe-Smith;Jane"));
+  }
+
+  @Test
+  void removingAnAddressRemovesOnlyItsLine() {
+    String raw = """
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        EMAIL;TYPE=HOME:jane@home.example
+        EMAIL;TYPE=WORK:jane@work.example
+        END:VCARD""";
+    ParsedVCard current = parser.parse(raw);
+    String merged = parser.merge(raw, editOf(current, List.of("jane@home.example"), List.of(), null, null));
+
+    assertTrue(merged.contains("EMAIL;TYPE=HOME:jane@home.example"), "the kept address keeps its parameters");
+    assertFalse(merged.contains("jane@work.example"));
+  }
+
+  @Test
+  void aMovedPrimaryMovesThePreferenceMarkerWithIt() {
+    // The row is keyed on the first address and the inbound sync orders by
+    // preference: an edit that swaps the primary but leaves TYPE=PREF where it
+    // was would be swapped straight back by the next sync.
+    String raw = """
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        EMAIL;TYPE=INTERNET,PREF:jane@old.example
+        EMAIL;TYPE=INTERNET:jane@new.example
+        END:VCARD""";
+    ParsedVCard current = parser.parse(raw);
+    String merged = parser.merge(raw, editOf(current, List.of("jane@new.example", "jane@old.example"), List.of(), null, null));
+
+    ParsedVCard reread = parser.parse(merged);
+    assertEquals("jane@new.example", reread.emails().get(0), "the new primary reads back preferred");
+    assertTrue(merged.contains("EMAIL;TYPE=INTERNET:jane@old.example"), "the old primary lost only its marker");
+  }
+
+  @Test
+  void editingThePhonesLeavesTheGroupedLabelMachineryAlone() {
+    String raw = """
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        item1.TEL;TYPE=CELL:+336000001
+        item1.X-ABLabel:Perso
+        TEL;TYPE=WORK:+331000002
+        END:VCARD""";
+    ParsedVCard current = parser.parse(raw);
+    String merged = parser.merge(raw,
+                                 editOf(current, List.of(), List.of("cell,+336000001", "home,+333000003"), null, null));
+
+    assertTrue(merged.contains("item1.TEL;TYPE=CELL:+336000001"), "the kept grouped TEL is untouched, group and all");
+    assertTrue(merged.contains("item1.X-ABLabel:Perso"));
+    assertFalse(merged.contains("+331000002"), "the removed number loses its line");
+    assertTrue(merged.contains("+333000003"), "the added number gets one");
+  }
+
+  @Test
+  void editingTheAddressPatchesTheFirstAdrAndOnlyIt() {
+    ParsedVCard current = parser.parse(RICH_CARD);
+    PostalAddress moved = PostalAddress.orNull("9 New St", "Nice", null, "06000", "France");
+    String merged = parser.merge(RICH_CARD, editOf(current, current.emails(), current.phones(), current.organization(), moved));
+
+    assertTrue(merged.contains("9 New St"));
+    assertTrue(merged.contains("Nice"));
+    assertFalse(merged.contains("1 Home St"), "the first ADR is the one the form edited");
+    assertTrue(merged.contains("2 Work Av"), "the second ADR belongs to the card, not to the form");
+  }
+
+  @Test
+  void mergeWritesTheNoteAsPlainTextBecauseThatIsWhatACardHolds() {
+    // The note is typed in an HTML editor. Pushed verbatim it showed raw tags in
+    // Google and Apple Contacts, and came back as content on the next sync, so
+    // each round trip nested it one level deeper.
+    ParsedVCard current = parser.parse(RICH_CARD);
+    String merged = parser.merge(RICH_CARD,
+                                 noteOf(current,
+                                        "<div>Met at the summit</div><div><br></div><div>Follow up &amp; send the deck</div>"));
+
+    assertFalse(merged.contains("<div>"), "no markup reaches the card");
+    assertFalse(merged.contains("&amp;"), "entities are resolved, not escaped twice");
+    assertTrue(merged.contains("Met at the summit"));
+    assertTrue(merged.contains("Follow up & send the deck"));
+  }
+
+  @Test
+  void aNoteChangedOnlyByItsMarkupIsNotRewritten() {
+    // The editor re-wraps the same words on every open. Comparing the raw HTML
+    // would make each save a write, and each write a new etag for nothing.
+    ParsedVCard current = parser.parse(RICH_CARD);
+    String words = "Met at the summit";
+
+    assertEquals(parser.merge(RICH_CARD, noteOf(current, words)),
+                 parser.merge(RICH_CARD, noteOf(current, "<div>" + words + "</div>")),
+                 "the same words, marked up or not, produce the same card");
+  }
+
+  /**
+   * An edit that changes the note and nothing else.
+   *
+   * @param current what the card reads as today
+   * @param note the note as the form hands it over, markup included
+   * @return the edit to merge
+   */
+  private ParsedVCard noteOf(ParsedVCard current, String note) {
+    return new ParsedVCard(null,
+                           current.formattedName(),
+                           current.givenName(),
+                           current.familyName(),
+                           current.emails(),
+                           current.phones(),
+                           current.organization(),
+                           null,
+                           current.birthday(),
+                           current.address(),
+                           note,
+                           current.website(),
+                           null,
+                           null);
+  }
+
+  @Test
+  void mergeRefusesWhatItCannotReadRatherThanGuessing() {
+    ParsedVCard current = parser.parse(RICH_CARD);
+    ParsedVCard edited = editOf(current, current.emails(), current.phones(), "NewCorp", current.address());
+
+    assertNull(parser.merge("this is not a vCard at all", edited));
+    assertNull(parser.merge("", edited));
+    assertNull(parser.merge(RICH_CARD, null));
   }
 
   /**
