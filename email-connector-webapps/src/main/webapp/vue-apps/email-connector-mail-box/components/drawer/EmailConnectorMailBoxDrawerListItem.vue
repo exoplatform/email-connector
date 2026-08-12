@@ -300,6 +300,12 @@ export default {
       }
     },
     openActionMenuDrawer() {
+      // Every action in that menu — reply, forward, archive, delete, categorize —
+      // addresses a message by its IMAP UID, which a draft may not have yet, and none
+      // of them means anything for an unsent message anyway.
+      if (this.email.draftLocalId) {
+        return;
+      }
       if (!this.selectMode && !this.isSwiping) {
         this.$root.$emit('open-email-action-menu-drawer', this.email, this.thread);
       }
@@ -321,6 +327,13 @@ export default {
       this.minWidth = Math.max(this.minWidth, this.$refs?.mail?.$el?.offsetWidth);
     },
     moveEnd() {
+      // Delete and archive both address messages by IMAP UID, and a draft that has
+      // not been uploaded has none. Discarding a draft is its own action, in the
+      // composer, where the user can see what they are throwing away.
+      if (this.email.draftLocalId) {
+        this.reset();
+        return;
+      }
       const deleteEmail = this.left > 0;
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
       if (confirm) {
