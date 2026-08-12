@@ -2982,6 +2982,29 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void aDraftIsStampedWithTheMomentItWasTypedSoItLandsLastInItsThread() throws Exception {
+    // The reader shows a draft at the bottom of its conversation without any sort
+    // dimension of its own: the thread query orders by date, and every save rewrites
+    // the row's date to now. This is that guarantee, asserted where it is produced --
+    // if it ever stops holding, the draft quietly moves up the conversation.
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Date before = new Date();
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+    assertNotNull(saved.getReceivedDate());
+    assertNotNull(saved.getDraftUpdatedDate());
+    assertFalse(saved.getReceivedDate().before(before));
+    // A later revision moves it again: the date means "when the user last typed", not
+    // "when this draft was started".
+    Email stored = draft("draft-1");
+    stored.setDraftRevision(1L);
+    stored.setReceivedDate(new Date(0));
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    Email edited = emailBoxService.saveDraft(draft("draft-1"), TEST_USER, false);
+    assertFalse(edited.getReceivedDate().before(before));
+  }
+
+  @Test
   void sendDraftRefusesAUserWhoMayNotUseTheirMailbox() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);

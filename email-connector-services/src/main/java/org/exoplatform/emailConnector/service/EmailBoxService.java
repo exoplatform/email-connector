@@ -2285,6 +2285,12 @@ public class EmailBoxService {
    * All cached messages of a conversation, across every folder (INBOX, SENT,
    * ARCHIVE) — the read model for the conversation reader, so a user's own sent
    * replies and previously-archived messages show inline with the received ones.
+   * <p>
+   * DRAFTS included, and that is why a draft is a row of this table rather than a
+   * table of its own: an unsent reply belongs in the conversation it answers, and
+   * putting it there costs nothing here. It sorts last on its own — the query orders
+   * by date and a draft's date is the moment its author last typed — so nothing in
+   * this method distinguishes it. The reader is where a draft stops looking like mail.
    *
    * @param threadId the conversation id (see {@link #computeThreadId})
    * @param username the mailbox owner
