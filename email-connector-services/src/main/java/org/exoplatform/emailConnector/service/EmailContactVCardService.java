@@ -28,10 +28,12 @@ import java.util.Date;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -99,6 +101,18 @@ public class EmailContactVCardService {
   public static final String      ATTACHMENT_TOO_LARGE      = "emailConnector.contacts.attachment.tooLarge";
   /** Message code answered as a 400 for a file no readable card came out of. */
   public static final String      PARSE_NO_CARD             = "emailConnector.contacts.parse.noCard";
+
+  /** Message code answered as a 400 for a selection past {@link #MAX_EXPORT_IDS}. */
+  public static final String      EXPORT_TOO_MANY_IDS       = "emailConnector.contacts.export.tooMany";
+
+  /**
+   * The most contacts one scoped export may name. The ids travel in the query
+   * string — the export is a plain download link and a composer attachment URL,
+   * both of which can only be GETs — so the cap is really the request line's:
+   * five hundred ids is about three kilobytes, comfortably inside every proxy's
+   * limit, and past it the whole-store export is the right tool anyway.
+   */
+  public static final int         MAX_EXPORT_IDS            = 500;
 
   /**
    * The most an uploaded .vcf may weigh, checked BEFORE a byte of it is parsed.
@@ -292,7 +306,37 @@ public class EmailContactVCardService {
    * @throws IOException when the writer fails — the download was abandoned
    */
   public void exportContacts(String username, Writer out) throws IOException {
+    exportContacts(username, out, null);
+  }
+
+  /**
+   * The same file, optionally narrowed to named contacts — what the drawer's
+   * selection exports.
+   * <p>
+   * Naming ids reads them one by one through
+   * {@link EmailContactService#getContact}, which is the read that scopes to the
+   * caller: an id belonging to somebody else, to a suppressed row or to nothing
+   * at all answers null and is simply skipped. So a selection cannot become a
+   * way to ask this server whether a given id exists elsewhere — the file is
+   * shorter, and nothing says why.
+   * <p>
+   * Order is the caller's, deduplicated: the drawer sends its list order, which
+   * is the alphabetical order the user was looking at when they ticked.
+   *
+   * @param username the store owner
+   * @param out where the file goes, typically the HTTP response; flushed per
+   *          page, closed by the caller
+   * @param contactIds the contacts to write, or null/empty for the whole store
+   * @throws IOException when the writer fails — the download was abandoned
+   * @throws IllegalArgumentException with {@link #EXPORT_TOO_MANY_IDS} when the
+   *           selection is past {@link #MAX_EXPORT_IDS}; nothing is written
+   */
+  public void exportContacts(String username, Writer out, List<Long> contactIds) throws IOException {
     Map<Long, String> vcardUids = emailContactStorage.getVcardUids(username);
+    if (CollectionUtils.isNotEmpty(contactIds)) {
+      exportSelectedContacts(username, out, contactIds, vcardUids);
+      return;
+    }
     int offset = 0;
     long total;
     do {
@@ -305,6 +349,34 @@ public class EmailContactVCardService {
       out.flush();
       offset += EXPORT_PAGE_SIZE;
     } while (offset < total);
+  }
+
+  /**
+   * Writes the named contacts, cap checked before a byte leaves — a refusal
+   * must be answerable as a 400, which an already-flushed response no longer
+   * can be.
+   *
+   * @param username the store owner
+   * @param out where the file goes
+   * @param contactIds the contacts to write, in the caller's order
+   * @param vcardUids the CardDAV UIDs of this store, by contact id
+   * @throws IOException when the writer fails
+   */
+  private void exportSelectedContacts(String username,
+                                      Writer out,
+                                      List<Long> contactIds,
+                                      Map<Long, String> vcardUids) throws IOException {
+    List<Long> ids = contactIds.stream().filter(Objects::nonNull).distinct().toList();
+    if (ids.size() > MAX_EXPORT_IDS) {
+      throw new IllegalArgumentException(EXPORT_TOO_MANY_IDS);
+    }
+    for (Long id : ids) {
+      EmailContact contact = emailContactService.getContact(id, username);
+      if (contact != null) {
+        out.write(vCardParser.format(toCard(contact, vcardUids.get(contact.getId()))));
+      }
+    }
+    out.flush();
   }
 
   /**
