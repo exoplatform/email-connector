@@ -26,115 +26,86 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-model="contactsDrawer"
     right
     :loading="loading"
-    use-filter
+    :use-filter="canSearch"
     :filter-placeholder="$t('emailConnector.contacts.filter.placeholder')"
+    :go-back-button="canGoBack"
     @filter-updated="onFilterUpdated"
+    @go-back="cancelSelectMode"
     @closed="close"
     class="no-box-shadow">
     <template #title>
       <!-- The count follows whatever is filtered, so it doubles as the answer to
            "did my search find anything". It is also the cheapest possible alarm:
            an address book sync that quietly removed everything shows up here the
-           moment the drawer opens, instead of in a log line nobody reads. -->
-      <span v-if="!hasFullAppLeft">
-        {{ $t('emailConnector.contacts.drawer.title') }}
+           moment the drawer opens, instead of in a log line nobody reads.
+           While picking, the same line counts what is ticked instead: one place
+           says what the drawer is doing, and it is the place already read. -->
+      <span v-if="!hasFullAppLeft" :class="{ 'text-body': selectMode }">
+        {{ title }}
         <span
-          v-if="size"
+          v-if="size && !selectMode"
           class="text-sub-title ms-1">· {{ size }}</span>
       </span>
       <span v-else></span>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftTitle>
+      <!-- The way out of picking, in the wide layout: the drawer's own go-back
+           button belongs to the narrow header, which this slot replaces. -->
+      <v-btn
+        v-if="selectMode"
+        icon
+        @click="cancelSelectMode">
+        <v-icon size="20">
+          {{ $vuetify.rtl && 'fa fa-arrow-right' || 'fa fa-arrow-left' }}
+        </v-icon>
+      </v-btn>
+      <!-- A flex line, so the title and the actions are centred against each
+           other. Left to inline layout they align on baselines a button and a
+           menu compute differently, and the menu sat low. -->
       <div class="d-flex align-center justify-space-between width-full">
-        <span>{{ $t('emailConnector.contacts.drawer.title') }}</span>
-        <!-- A flex line, so the add button and the overflow menu are centred
-             against each other. Left to inline layout they align on baselines a
-             button and a menu compute differently, and the menu sat low. -->
-        <div class="d-flex align-center">
-          <v-btn
-            :title="$t('emailConnector.contacts.add')"
-            icon
-            @click="openForm()">
-            <v-icon size="18">
-              fas fa-user-plus
-            </v-icon>
-          </v-btn>
-          <email-connector-contacts-transfer-menu
-            :importing="importing"
-            :publishable="publishable"
-            @import="onImportFile"
-            @export="onExport"
-            @bulk-publish="startSelectMode" />
-        </div>
+        <span :class="{ 'text-body': selectMode }">{{ title }}</span>
+        <email-connector-contacts-drawer-actions
+          :select-mode="selectMode"
+          :ticked-count="tickedIds.length"
+          :publishing="publishing"
+          :importing="importing"
+          :publishable="publishable"
+          @add="openForm()"
+          @import="onImportFile"
+          @export="onExport"
+          @bulk-publish="startSelectMode"
+          @publish="publishTicked" />
       </div>
     </template>
     <template #titleIcons>
-      <div v-if="!hasFullAppLeft" class="d-flex align-center">
-        <v-btn
-          :title="$t('emailConnector.contacts.add')"
-          icon
-          @click="openForm()">
-          <v-icon size="18">
-            fas fa-user-plus
-          </v-icon>
-        </v-btn>
-        <email-connector-contacts-transfer-menu
-          :importing="importing"
-          :publishable="publishable"
-          @import="onImportFile"
-          @export="onExport"
-          @bulk-publish="startSelectMode" />
-      </div>
+      <email-connector-contacts-drawer-actions
+        v-if="!hasFullAppLeft"
+        :select-mode="selectMode"
+        :ticked-count="tickedIds.length"
+        :publishing="publishing"
+        :importing="importing"
+        :publishable="publishable"
+        @add="openForm()"
+        @import="onImportFile"
+        @export="onExport"
+        @bulk-publish="startSelectMode"
+        @publish="publishTicked" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <email-connector-contacts-source-filter
         v-model="filterChips"
         :counts="sourceCounts" />
-      <!-- The action bar of select mode: it counts what is ticked, because
-           publishing writes cards to a server we do not own and there is no
-           undo. The count IS the review the bespoke checklist drawer used to
-           be -- kept, but where the user already is. -->
-      <div
-        v-if="selectMode"
-        class="d-flex align-center px-4 py-2 border-box-sizing">
-        <!-- Scoped to what can actually be published: "all" ticking rows the
-             server would refuse would be a promise the next screen breaks. -->
-        <v-checkbox
-          v-model="allTicked"
-          :indeterminate="someTicked"
-          :label="$t('emailConnector.contacts.select.all')"
-          class="mt-0 pt-0 me-4"
-          color="#707070"
-          hide-details
-          dense
-          @click.stop />
-        <span class="text-subtitle-color">
-          {{ $t('emailConnector.contacts.select.count', [tickedIds.length]) }}
-        </span>
-        <v-spacer />
-        <v-btn
-          class="btn me-2"
-          small
-          @click="cancelSelectMode">
-          {{ $t('emailConnector.contacts.form.cancel') }}
-        </v-btn>
-        <v-btn
-          :disabled="!tickedIds.length || publishing"
-          :loading="publishing"
-          class="btn btn-primary"
-          small
-          @click="publishTicked">
-          {{ $t('emailConnector.contacts.select.publish') }}
-        </v-btn>
-      </div>
-      <email-connector-contacts-list
+      <email-connector-contacts-drawer-content
         :contacts="contacts"
+        :selectable-contacts="selectableContacts"
         :letter-index="letterIndex"
         :rail-visible="railVisible"
         :selected-id="selectedContact?.id"
         :empty-label="emptyLabel"
         :select-mode="selectMode"
         :ticked-ids="tickedIds"
+        :indeterminate="someTicked"
+        @update:ticked-ids="tickedIds = $event"
         @select="selectContact"
         @tick="toggleTick" />
     </template>
@@ -143,50 +114,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-contacts-source-filter
           v-model="filterChips"
           :counts="sourceCounts" />
-        <!-- The action bar of select mode: it counts what is ticked, because
-             publishing writes cards to a server we do not own and there is no
-             undo. The count IS the review the bespoke checklist drawer used to
-             be -- kept, but where the user already is. -->
-        <div
-          v-if="selectMode"
-          class="d-flex align-center px-4 py-2 border-box-sizing">
-          <!-- Scoped to what can actually be published: "all" ticking rows the
-               server would refuse would be a promise the next screen breaks. -->
-          <v-checkbox
-            v-model="allTicked"
-            :indeterminate="someTicked"
-            :label="$t('emailConnector.contacts.select.all')"
-            class="mt-0 pt-0 me-4"
-            color="#707070"
-            hide-details
-            dense
-            @click.stop />
-          <span class="text-subtitle-color">
-            {{ $t('emailConnector.contacts.select.count', [tickedIds.length]) }}
-          </span>
-          <v-spacer />
-          <v-btn
-            class="btn me-2"
-            small
-            @click="cancelSelectMode">
-            {{ $t('emailConnector.contacts.form.cancel') }}
-          </v-btn>
-          <v-btn
-            :disabled="!tickedIds.length || publishing"
-            :loading="publishing"
-            class="btn btn-primary"
-            small
-            @click="publishTicked">
-            {{ $t('emailConnector.contacts.select.publish') }}
-          </v-btn>
-        </div>
-        <email-connector-contacts-list
+        <email-connector-contacts-drawer-content
           :contacts="contacts"
+          :selectable-contacts="selectableContacts"
           :letter-index="letterIndex"
           :rail-visible="railVisible"
           :empty-label="emptyLabel"
           :select-mode="selectMode"
           :ticked-ids="tickedIds"
+          :indeterminate="someTicked"
+          @update:ticked-ids="tickedIds = $event"
           @select="selectContact"
           @tick="toggleTick" />
       </template>
@@ -273,6 +210,10 @@ export default {
   },
   watch: {
     filterChips() {
+      // A chip narrows the list, and a ticked row it hides would still be
+      // published — invisibly, on somebody else's server, with no undo. The
+      // selection dies with the view it was made in.
+      this.cancelSelectMode();
       this.reload();
     },
   },
@@ -308,15 +249,33 @@ export default {
       return (this.contacts || []).filter(contact => contact.source === 'MANUAL');
     },
     /**
-     * Ticks or clears every selectable row.
+     * What the header says the drawer is doing: its name while browsing, the
+     * count of what is ticked while picking.
+     *
+     * @returns {string} the localized title
      */
-    allTicked: {
-      get() {
-        return this.selectableContacts.length > 0 && this.tickedIds.length === this.selectableContacts.length;
-      },
-      set(value) {
-        this.tickedIds = value ? this.selectableContacts.map(contact => contact.id) : [];
-      },
+    title() {
+      return this.selectMode ? this.$t('emailConnector.contacts.select.count', [this.tickedIds.length])
+        : this.$t('emailConnector.contacts.drawer.title');
+    },
+    /**
+     * Whether the header's filter field is offered. It is the platform's own
+     * (exo-drawer), and it hides the go-back button, so it steps aside while
+     * picking needs that button — the same trade the mailbox makes.
+     *
+     * @returns {boolean} true when the field should show
+     */
+    canSearch() {
+      return !this.selectMode;
+    },
+    /**
+     * Whether the drawer's own back arrow shows: the way out of picking in the
+     * narrow layout. The wide one replaces this header, and carries its own.
+     *
+     * @returns {boolean} true when the back arrow should show
+     */
+    canGoBack() {
+      return this.selectMode && !this.expanded;
     },
     /**
      * Whether some but not all are ticked, which is the box's third state --
@@ -646,6 +605,9 @@ export default {
     close() {
       this.selectedContact = null;
       this.term = null;
+      // Before the chips, whose watcher would otherwise cancel picking on a
+      // drawer already closed — harmless, but it hides where this belongs.
+      this.cancelSelectMode();
       this.filterChips = [];
       this.contactsDrawer = false;
       // The poll dies with the drawer; the run itself does not need it, and
