@@ -1934,6 +1934,49 @@ public class EmailContactServiceTest {
     assertEquals(1, suggest("bob", 10).size());
   }
 
+  // ---------------------------------------------------------------- start fresh
+
+  @Test
+  void startFreshEmptiesTheStoreWithItsFavoritesAndItsPublishQueue() {
+    // The provider switch's destructive half -- reached ONLY through the
+    // exporting front door, which this service does not even hold: the wipe
+    // itself is a dumb sweep, and everything that pointed into the store goes
+    // with it.
+    when(emailContactStorage.deleteAllContacts(USERNAME)).thenReturn(List.of(1L, 2L, 3L));
+
+    int deleted = emailContactService.startFresh(USERNAME);
+
+    assertEquals(3, deleted);
+    verify(emailContactStorage).deleteAllContacts(USERNAME);
+    verify(emailContactFavoriteService).removeFavorite(1L, USERNAME);
+    verify(emailContactFavoriteService).removeFavorite(2L, USERNAME);
+    verify(emailContactFavoriteService).removeFavorite(3L, USERNAME);
+    // The queued publishes named rows that no longer exist.
+    verify(userEmailSettingService).clearContactPublishQueue(USERNAME);
+  }
+
+  @Test
+  void startFreshSurvivesAFavoritesStoreHavingABadDay() {
+    // The favorites cleanup is best effort, same as every deletion path here:
+    // failing the wipe over its own bookkeeping would leave the user with a
+    // store they asked to empty.
+    when(emailContactStorage.deleteAllContacts(USERNAME)).thenReturn(List.of(1L));
+    doThrow(new RuntimeException("favorites unavailable")).when(emailContactFavoriteService)
+                                                          .removeFavorite(anyLong(), anyString());
+
+    assertEquals(1, emailContactService.startFresh(USERNAME));
+
+    verify(userEmailSettingService).clearContactPublishQueue(USERNAME);
+  }
+
+  @Test
+  void startFreshWithoutAUserTouchesNothing() {
+    assertEquals(0, emailContactService.startFresh(" "));
+
+    verify(emailContactStorage, never()).deleteAllContacts(anyString());
+    verify(userEmailSettingService, never()).clearContactPublishQueue(anyString());
+  }
+
   // ---------------------------------------------------------------- helpers
 
   /**

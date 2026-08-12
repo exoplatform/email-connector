@@ -453,6 +453,27 @@ public class EmailContactRest {
     return emailContactCardDavSyncService.getPublishQueue(request.getRemoteUser());
   }
 
+  @PostMapping("/carddav/publish-queue")
+  @Secured("users")
+  @Operation(summary = "Queues a reviewed selection of the caller's contacts to publish to their address book", method = "POST",
+             description = "The bulk half of the write-back, fed by the review checklist: the selected contacts are queued and published automatically after the next successful address-book sync - no card is written by this call itself, so it works even before the new account's book has ever been reached. Manual contacts only, re-checked server-side: collected and directory contacts are never offered by the checklist and are refused here too - the human's explicit tick is the provenance this rides on. All-or-nothing: any refusal leaves the queue untouched, so what was reviewed is exactly what happens. A selected contact already in the address book is skipped as already satisfied.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled; the stored queue is answered"),
+      @ApiResponse(responseCode = "400", description = "Publishing disabled, an id that is not one of the caller's visible contacts, or a non-manual contact in the selection - the message code says which; nothing was queued"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "409", description = "The whole selection cannot fit in the queue; nothing was queued"), })
+  public ContactPublishQueue queuePublishes(HttpServletRequest request,
+                                            @Parameter(description = "The reviewed contact ids to publish", required = true)
+                                            @RequestBody
+                                            List<Long> contactIds) {
+    try {
+      return emailContactCardDavSyncService.queuePublishes(request.getRemoteUser(), contactIds);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    }
+  }
+
   @GetMapping(value = "/export", produces = "text/vcard")
   @Secured("users")
   @Operation(summary = "Exports the caller's whole contact store as a .vcf file", method = "GET",
@@ -466,6 +487,21 @@ public class EmailContactRest {
     // constant with nothing to escape.
     response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"contacts.vcf\"");
     emailContactVCardService.exportContacts(request.getRemoteUser(), response.getWriter());
+  }
+
+  @PostMapping(value = "/export-then-start-fresh", produces = "text/vcard")
+  @Secured("users")
+  @Operation(summary = "Downloads the caller's whole contact store as a .vcf backup, THEN empties the store", method = "POST",
+             description = "The provider-switch 'download a backup, then start fresh' choice, as one operation whose ordering is the contract: the response body IS the backup - every visible contact, same file as /export - and the store is emptied only after the last byte was written and flushed without error. A failed or abandoned download deletes nothing. THERE IS NO UNDO past a delivered download: the .vcf in the user's hands is the recovery path, re-importable through /import. A POST on purpose - a destructive download must never be reachable by a prefetchable GET.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The backup was delivered and the store emptied"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public void exportContactsThenStartFresh(HttpServletRequest request, HttpServletResponse response) throws IOException {
+    response.setContentType("text/vcard");
+    response.setCharacterEncoding("UTF-8");
+    // A distinct filename from the ordinary export's contacts.vcf: in a Downloads
+    // folder six months later, "backup" still says why this file exists.
+    response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"contacts-backup.vcf\"");
+    emailContactVCardService.exportContactsThenStartFresh(request.getRemoteUser(), response.getWriter());
   }
 
   @PostMapping("/import")
