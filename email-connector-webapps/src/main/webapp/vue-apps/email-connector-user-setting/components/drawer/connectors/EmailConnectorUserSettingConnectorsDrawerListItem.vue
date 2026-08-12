@@ -78,21 +78,22 @@ export default {
     },    
   },
   methods: {
+    /**
+     * Hands the one button over to whichever flow owns the direction it points.
+     * <p>
+     * Both directions cost the user their contacts if taken carelessly, so
+     * neither is decided here: connecting opens the credentials drawer and
+     * disconnecting opens the drawer that asks what should happen to the store
+     * -- and, when the store is empty, releases the account in that same click.
+     *
+     * @returns {void}
+     */
     connect() {
       if (!this.userEmailConnector.userConnected) {
         this.$root.$emit('open-user-setting-drawer', this.userEmailConnector);
       }
       else {
-        this.$emailConnectorUserSettingService.deleteUserEmailSetting()
-          .then(() =>
-          {
-            document.dispatchEvent(new CustomEvent('refresh-active-connectors-list'));
-            document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
-            this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.success'), 'success');
-          })
-          .catch(() => { 
-            this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.connectors.drawer.connector.disconnect.error'), 'error');
-          });
+        this.$root.$emit('open-user-setting-disconnect-drawer', this.userEmailConnector);
       }
     }
   }
