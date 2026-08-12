@@ -46,6 +46,13 @@ public class MailboxSyncState {
 
   private String             archiveFolderName;
 
+  // The discovered Drafts folder, remembered for the same reason as the two above:
+  // the draft save path resolves it on every save, and re-walking the whole folder
+  // list to re-find a folder that never moves would put a LIST * in front of every
+  // autosave. Declared last so the Lombok all-args constructor only grows a trailing
+  // argument.
+  private String             draftsFolderName;
+
   /**
    * The stored snapshot of a bulk-synced folder.
    *

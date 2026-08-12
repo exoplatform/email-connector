@@ -202,6 +202,29 @@ public class EmailBoxService {
   // open, so an unusually long conversation can't build a giant IMAP SEARCH.
   private static final int        ARCHIVE_COMPLETION_SEARCH_LIMIT                             = 50;
 
+  // The RFC 6154 SPECIAL-USE attribute that names a mailbox's Drafts folder. The
+  // server saying so beats any name we could guess, which is why it is tried first.
+  private static final String     DRAFTS_SPECIAL_USE_ATTRIBUTE                                = "\\Drafts";
+
+  // The well-known Drafts folder names, for the servers that never learned
+  // SPECIAL-USE, in the locales the product ships plus the few its users' other
+  // clients create. Matched on the folder's last path segment, for equality — see
+  // findDraftsFolder for why this list is not applied as a "contains".
+  private static final Set<String> DRAFTS_FOLDER_NAMES                                        =
+                                                                                              Set.of("drafts",
+                                                                                                     "draft",
+                                                                                                     "brouillons",
+                                                                                                     "brouillon",
+                                                                                                     "entwürfe",
+                                                                                                     "entwuerfe",
+                                                                                                     "bozze",
+                                                                                                     "borradores",
+                                                                                                     "rascunhos",
+                                                                                                     "concepten",
+                                                                                                     "utkast",
+                                                                                                     "kladde",
+                                                                                                     "luonnokset");
+
   // Hard cap on the hits a mailbox search returns. A SEARCH over a 161k-message
   // mailbox can match thousands of UIDs; only this many (the newest) get their
   // envelope fetched, so the result list's cost stays one bounded batched FETCH
@@ -1000,6 +1023,35 @@ public class EmailBoxService {
     IMAPFolder archiveFolder = findSyncableArchiveFolder(store);
     syncState.setArchiveFolderName(archiveFolder != null ? archiveFolder.getFullName() : null);
     return archiveFolder;
+  }
+
+  /**
+   * The Drafts folder, from the name remembered in the sync state when possible —
+   * same reasoning and same fallback as {@link #resolveSentFolder}, and more
+   * pressing here: Sent and Archive are resolved once per scheduled sync, whereas
+   * the Drafts folder is resolved on every draft upload, and a draft is uploaded
+   * whenever a compose drawer closes. Re-walking the whole folder list ({@code LIST
+   * *}) to re-find a folder that never moves would sit in front of each of those.
+   * <p>
+   * A mailbox with no Drafts folder resolves to null and STAYS null-resolving: we
+   * deliberately never create one (see {@link #findDraftsFolder}), so the caller's
+   * only correct reaction is to keep the draft local and say so.
+   *
+   * @param store the connected store
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @return the Drafts folder, or null when the mailbox has none
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder resolveDraftsFolder(Store store, MailboxSyncState syncState) throws MessagingException {
+    if (StringUtils.isNotBlank(syncState.getDraftsFolderName())) {
+      Folder cached = store.getFolder(syncState.getDraftsFolderName());
+      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
+        return imapFolder;
+      }
+    }
+    IMAPFolder draftsFolder = findDraftsFolder(store);
+    syncState.setDraftsFolderName(draftsFolder != null ? draftsFolder.getFullName() : null);
+    return draftsFolder;
   }
 
   /**
@@ -2869,18 +2921,7 @@ public class EmailBoxService {
         link.attr("href", currentDomain + href);
       }
       applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds);
-      if (!StringUtils.isEmpty(email.getMailHeaderId())) {
-        String parentMessageId = email.getMailHeaderId();
-        message.setHeader("In-Reply-To", parentMessageId);
-        // RFC 5322 §3.6.4: References is the parent's own References plus the parent's
-        // Message-ID — not just the parent id, otherwise a third message in the chain
-        // loses the link to the first and starts a new thread.
-        String parentReferences = emailBoxStorage.getMailReferencesByMailHeaderId(parentMessageId, username);
-        String referencesHeader = EmailThreadingUtils.buildReferencesHeader(parentReferences, parentMessageId);
-        if (!StringUtils.isEmpty(referencesHeader)) {
-          message.setHeader("References", referencesHeader);
-        }
-      }
+      applyThreadingHeaders(message, email, username);
       Transport.send(message);
       String emailType = StringUtils.isEmpty(email.getMailHeaderId()) ? "newEmail" : "reply";
       listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL, username, emailType);
@@ -2909,6 +2950,42 @@ public class EmailBoxService {
       // Free the commons temporary upload resources only after the message (and its Sent-folder copy) has been built,
       // since the attachment body parts stream their bytes lazily from those temporary files.
       removeUploadResources(uploadIds);
+    }
+  }
+
+  /**
+   * Stamps a composed message with the RFC 5322 headers that put it back into its
+   * conversation. Extracted from {@link #sendEmail} unchanged so that the draft
+   * upload path can write the SAME headers — a draft has to carry them from its
+   * first save, not gain them at send time, or the draft sits outside the thread it
+   * is a reply to for its entire life, which is precisely the moment the user is
+   * looking at it.
+   * <p>
+   * Note what {@code mailHeaderId} means on a COMPOSED email: it is the PARENT's
+   * Message-ID, not the composed message's own. (On a cached, synced email the same
+   * field means the message's own id.) The compose drawer sets it when replying and
+   * leaves it empty for a new mail, which is exactly the "is this a reply" test
+   * below.
+   *
+   * @param message the message being composed
+   * @param email the composed email, whose {@code mailHeaderId} carries the parent's
+   *          Message-ID when this is a reply
+   * @param username the mailbox owner, to look the parent's chain up in the cache
+   * @throws MessagingException if a header cannot be set
+   */
+  private void applyThreadingHeaders(Message message, Email email, String username) throws MessagingException {
+    if (StringUtils.isEmpty(email.getMailHeaderId())) {
+      return;
+    }
+    String parentMessageId = email.getMailHeaderId();
+    message.setHeader("In-Reply-To", parentMessageId);
+    // RFC 5322 §3.6.4: References is the parent's own References plus the parent's
+    // Message-ID — not just the parent id, otherwise a third message in the chain
+    // loses the link to the first and starts a new thread.
+    String parentReferences = emailBoxStorage.getMailReferencesByMailHeaderId(parentMessageId, username);
+    String referencesHeader = EmailThreadingUtils.buildReferencesHeader(parentReferences, parentMessageId);
+    if (!StringUtils.isEmpty(referencesHeader)) {
+      message.setHeader("References", referencesHeader);
     }
   }
 
@@ -4616,6 +4693,91 @@ public class EmailBoxService {
       }
     }
     return null;
+  }
+
+  /**
+   * The mailbox's Drafts folder: the SPECIAL-USE {@code \Drafts} attribute
+   * (RFC 6154) first, then a name match for the servers that never learned
+   * SPECIAL-USE. If neither finds one, server-side drafts are simply OFF for that
+   * account — we never CREATE a Drafts folder. Creating folders in someone's
+   * mailbox is a visible, permanent change to a store the user shares with every
+   * other client they own, and it is not ours to make on the strength of them
+   * having typed two words into a compose window.
+   * <p>
+   * The name match is deliberately STRICTER than {@link #findSentFolder}'s: it
+   * compares the last path segment for EQUALITY against a known token list, rather
+   * than asking whether the full name merely {@code contains} one. The two folders
+   * carry different risk. Guessing Sent wrong loses a copy of a mail that was
+   * already delivered; guessing Drafts wrong means we APPEND the user's unsent
+   * words into a folder of their own making — "Draft ideas", "Drafts of the
+   * contract" — and then, once slice 2 lands, delete the previous copy out of it.
+   * Last-segment equality still catches the one nested layout that matters,
+   * Gmail's {@code [Gmail]/Drafts}, because the segment after the separator is
+   * exactly {@code Drafts}.
+   * <p>
+   * Subscribed folders are scanned first (as everywhere else here), then ALL
+   * folders if that found nothing. Sent is auto-subscribed by practically every
+   * client that writes to it; Drafts much less reliably so, and a mailbox that
+   * plainly HAS a Drafts folder silently behaving as though it had none is a worse
+   * outcome than one extra {@code LIST *} on the accounts where the first pass
+   * misses.
+   *
+   * @param store the connected store
+   * @return the Drafts folder, or null when the mailbox has none
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder findDraftsFolder(Store store) throws MessagingException {
+    IMAPFolder subscribed = findDraftsFolderIn(store.getDefaultFolder().listSubscribed("*"));
+    return subscribed != null ? subscribed : findDraftsFolderIn(store.getDefaultFolder().list("*"));
+  }
+
+  /**
+   * Scans one folder listing for the Drafts folder — see {@link #findDraftsFolder}
+   * for the matching rules and why they are what they are. Split out so the
+   * subscribed listing and the full listing run the exact same test.
+   *
+   * @param folders the folder listing to scan
+   * @return the first matching folder, or null when the listing holds none
+   * @throws MessagingException if a folder's attributes cannot be read
+   */
+  private IMAPFolder findDraftsFolderIn(Folder[] folders) throws MessagingException {
+    IMAPFolder nameMatch = null;
+    for (Folder folder : folders) {
+      if (!(folder instanceof IMAPFolder imapFolder) || !imapFolder.exists()) {
+        continue;
+      }
+      for (String attribute : imapFolder.getAttributes()) {
+        if (attribute.equalsIgnoreCase(DRAFTS_SPECIAL_USE_ATTRIBUTE)) {
+          return imapFolder;
+        }
+      }
+      // Remembered, not returned: a SPECIAL-USE match found later in the listing must
+      // still win over a name match found earlier. The attribute is the server telling
+      // us which folder this is; the name is us guessing.
+      if (nameMatch == null && isDraftsFolderName(imapFolder.getFullName())) {
+        nameMatch = imapFolder;
+      }
+    }
+    return nameMatch;
+  }
+
+  /**
+   * Whether a folder's full name is one of the well-known Drafts names, judged on
+   * its LAST path segment only and by equality — so {@code [Gmail]/Drafts} and
+   * {@code INBOX.Drafts} match while a user's own "Draft ideas" does not.
+   *
+   * @param fullName the folder's full name, hierarchy separators included
+   * @return true when the last segment is a known Drafts name
+   */
+  private boolean isDraftsFolderName(String fullName) {
+    if (StringUtils.isBlank(fullName)) {
+      return false;
+    }
+    // Split on both separators actually seen in the wild ('/' on Gmail and Dovecot's
+    // default, '.' on the Maildir++ layouts) rather than asking the folder for its
+    // own: this is a pure string test, kept free of an IMAP round-trip.
+    String lastSegment = fullName.substring(Math.max(fullName.lastIndexOf('/'), fullName.lastIndexOf('.')) + 1);
+    return DRAFTS_FOLDER_NAMES.contains(lastSegment.trim().toLowerCase());
   }
 
   private void copyToSentFolder(Message message, String username, UserEmailSetting userEmailSetting) {
