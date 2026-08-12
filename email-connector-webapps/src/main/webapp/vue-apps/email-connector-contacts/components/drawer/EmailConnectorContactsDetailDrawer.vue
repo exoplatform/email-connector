@@ -112,7 +112,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-icon>
         </v-btn>
         <v-btn
-          :title="deleteLabel"
+          :title="contactDeleteLabel(contact)"
           :loading="deleting"
           icon
           @click="removeContact">
@@ -129,13 +129,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import contactActionsMixin from '../../js/EmailConnectorContactActionsMixin.js';
+
 export default {
+  // The card's actions are the list row's actions — one set of handlers, one
+  // set of words, whichever surface the click came from. `publishing` and
+  // `deleting` come from there too.
+  mixins: [contactActionsMixin],
   data() {
     return {
       detailDrawer: false,
       loading: false,
-      deleting: false,
-      publishing: false,
       addressBookPublishable: false,
       contact: null,
     };
@@ -178,19 +182,6 @@ export default {
       return this.addressBookPublishable
         && ['MANUAL', 'COLLECTED'].includes(this.contact?.source);
     },
-    /**
-     * The delete icon's honest tooltip. A manual or directory-linked contact deletes
-     * for real, both existing by an explicit act; a collected one is only removed
-     * from the list, because the next mail from that person would bring it straight
-     * back.
-     *
-     * @returns {string} the localized tooltip
-     */
-    deleteLabel() {
-      return (this.contact?.source === 'MANUAL' || this.contact?.source === 'DIRECTORY')
-        && this.$t('emailConnector.contacts.detail.delete')
-        || this.$t('emailConnector.contacts.detail.remove');
-    },
   },
   created() {
     this.$root.$on('open-email-contact-detail', this.open);
@@ -225,25 +216,22 @@ export default {
         .then(available => this.addressBookPublishable = available);
     },
     /**
-     * Opens the composer with this contact's vCard already attached and nobody
-     * addressed — sharing the person is this click, choosing who gets them is
-     * the user's next one. The card stays open underneath, like under the QR.
+     * Shares this contact as a vCard attachment. The card stays open
+     * underneath, like under the QR.
      *
      * @returns {void}
      */
     sendByEmail() {
-      this.$emailConnectorContactsService.sendByEmail(this.contact);
+      this.sendContactByEmail(this.contact);
     },
     /**
-     * Hands this contact's card to the chat, which asks the user which
-     * conversation it goes into. The card stays open underneath: the pick
-     * happens in the chat's own drawer.
+     * Shares this contact into a chat conversation. The card stays open
+     * underneath: the pick happens in the chat's own drawer.
      *
      * @returns {void}
      */
     sendByChat() {
-      this.$emailConnectorContactsService.sendByChat(this.contact)
-        .catch(() => document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: this.$t('emailConnector.contacts.detail.sendByChat.error')}})));
+      this.sendContactByChat(this.contact);
     },
     /**
      * Opens the take-away QR on this contact — the dialog overlays the drawer,
@@ -272,51 +260,24 @@ export default {
      * @returns {void}
      */
     publishContact() {
-      this.publishing = true;
-      this.$emailConnectorContactsService.publishContact(this.contact.id)
-        .then(published => {
-          if (published?.queued) {
-            // The server was away, so the publish waits in the queue and goes
-            // out after the next successful sync. The contact is unchanged --
-            // still local, still here -- so nothing re-renders; only the words
-            // change: "will be saved", never an error asking to retry what no
-            // longer needs retrying.
-            document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'info', alertMessage: this.$t('emailConnector.contacts.detail.publish.queued')}}));
-            return;
-          }
+      this.publishContactCard(this.contact).then(published => {
+        if (published) {
           this.contact = published;
-          this.$root.$emit('email-contacts-refresh');
-          document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'success', alertMessage: this.$t('emailConnector.contacts.detail.publish.success')}}));
-        })
-        .catch(error => {
-          // 409 is the server refusing to create over an existing entry - the
-          // one refusal worth its own words, because the fix (sync, then look
-          // again) is different from "try later".
-          const key = error?.status === 409
-            && 'emailConnector.contacts.detail.publish.exists'
-            || 'emailConnector.contacts.detail.publish.error';
-          document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: this.$t(key)}}));
-        })
-        .finally(() => this.publishing = false);
+        }
+      });
     },
     /**
-     * Deletes or suppresses the contact, per its source, and reports which of the two
-     * happened so the app can offer undo after a suppression.
+     * Deletes or suppresses the contact, per its source, and closes the card
+     * the contact it was showing has left.
      *
      * @returns {void}
      */
     removeContact() {
-      this.deleting = true;
-      this.$emailConnectorContactsService.deleteContact(this.contact.id)
-        .then(result => {
-          if (result.suppressed) {
-            this.$root.$emit('email-contact-suppressed', result.id);
-          }
-          this.$root.$emit('email-contacts-refresh');
+      this.removeContactCard(this.contact).then(removed => {
+        if (removed) {
           this.close();
-        })
-        .catch(() => document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: this.$t('emailConnector.contacts.delete.error')}})))
-        .finally(() => this.deleting = false);
+        }
+      });
     },
     /**
      * Closes and clears the drawer.
