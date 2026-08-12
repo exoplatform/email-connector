@@ -183,6 +183,165 @@ public class EmailContactCardDavSyncServiceTest {
     verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
   }
 
+  // -------------------------------------------------------------------------
+  // Which version is this? -- the comparison the cheap half of a run turns on.
+  // A server is free to word the same version differently in two answers, and
+  // this store holds etags from three of them (the listing, the multiget, the
+  // PUT). Getting this wrong is not a data bug: it is a whole address book
+  // re-read and re-written on every run, for ever, with the log line saying
+  // "all written" so loudly that a real change -- or a duplicate -- can no
+  // longer be told from the noise.
+  // -------------------------------------------------------------------------
+
+  @Test
+  void aVersionTheServerNowCallsWeakIsStillTheVersionWeHold() {
+    // The measured BlueMind shape: the listing and the read disagree about the
+    // decoration, never about the version. W/"x" and "x" are one card.
+    givenServerHas(Map.of("/dav/jane.vcf", "W/\"v1\""));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(storedAt("/dav/jane.vcf", "\"v1\"")));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  void quotingIsNotAVersionDifferenceEitherWayRound() {
+    // Both directions, because both happen: a server that quotes its listing
+    // and not its read, and one that does the opposite.
+    givenServerHas(Map.of("/dav/jane.vcf", "v1"));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(storedAt("/dav/jane.vcf", "\"v1\"")));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  void whitespaceAroundAVersionIsNotAVersionEither() {
+    givenServerHas(Map.of("/dav/jane.vcf", "  W/\"v1\" "));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(storedAt("/dav/jane.vcf", "v1")));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  void aGenuinelyDifferentVersionIsStillARead() {
+    // The half of the rule that matters most: leniency about the WORDING must
+    // never become leniency about the VERSION, or an edited card stops
+    // arriving. An entity-tag is opaque, so a different one is a changed card,
+    // and a case difference is a different one.
+    givenServerHas(Map.of("/dav/jane.vcf", "\"v2\""));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(storedAt("/dav/jane.vcf", "\"v1\"")));
+    givenServerReturns(resource("/dav/jane.vcf", "\"v2\""), card("Jane Doe", "jane@example.com"));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), anyString(), anyString());
+  }
+
+  @Test
+  void aVersionThatDiffersOnlyInCaseIsADifferentVersion() {
+    givenServerHas(Map.of("/dav/jane.vcf", "\"AB\""));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(storedAt("/dav/jane.vcf", "\"ab\"")));
+    givenServerReturns(resource("/dav/jane.vcf", "\"AB\""), card("Jane Doe", "jane@example.com"));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), anyString(), anyString());
+  }
+
+  @Test
+  void aRowWithNoVersionAtAllIsAlwaysReRead() {
+    // Not knowable is not unchanged. One fetch, and it cannot be wrong.
+    givenServerHas(Map.of("/dav/jane.vcf", "\"v1\""));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(storedAt("/dav/jane.vcf", null)));
+    givenServerReturns(resource("/dav/jane.vcf", "\"v1\""), card("Jane Doe", "jane@example.com"));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), anyString(), anyString());
+  }
+
+  @Test
+  void theVersionRecordedIsTheOneTheNextListingWillAnswer() {
+    // Like for like. The stored etag is only ever asked "does the next PROPFIND
+    // still say this?", so it is written in the voice that will ask it -- the
+    // listing's -- and not in the multiget's, which on some servers is a
+    // different string for the same card and made the row re-read for ever.
+    givenServerHas(Map.of("/dav/jane.vcf", "\"listing-v1\""));
+    givenServerReturns(resource("/dav/jane.vcf", "\"multiget-v1\""), card("Jane Doe", "jane@example.com"));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
+                                                   any(),
+                                                   eq(CONNECTOR_ID),
+                                                   eq("/dav/jane.vcf"),
+                                                   eq("\"listing-v1\""),
+                                                   any(CardDavContactData.class),
+                                                   any(),
+                                                   anyBoolean());
+  }
+
+  @Test
+  void aCardTheListingNeverNamedKeepsItsOwnVersion() {
+    // The fallback for an entry the server hands back under an href its listing
+    // did not carry: versioned by something rather than by nothing, and the run
+    // says so in its own log line rather than storing a null quietly.
+    givenServerHas(Map.of("/dav/jane.vcf", "\"listing-v1\""));
+    givenServerReturns(resource("/dav/renamed.vcf", "\"multiget-v1\""), card("Jane Doe", "jane@example.com"));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
+                                                   any(),
+                                                   eq(CONNECTOR_ID),
+                                                   eq("/dav/renamed.vcf"),
+                                                   eq("\"multiget-v1\""),
+                                                   any(CardDavContactData.class),
+                                                   any(),
+                                                   anyBoolean());
+  }
+
+  @Test
+  void aSettledBookWritesNothingAtAll() {
+    // What the fix is FOR, stated as a whole run rather than as a comparison:
+    // a book nobody touched costs one listing and no writes, whatever shapes
+    // the server words its versions in.
+    givenServerHas(Map.of("/dav/jane.vcf", "W/\"v1\"", "/dav/bob.vcf", "v2"));
+    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of(storedAt("/dav/jane.vcf", "\"v1\""),
+                                                                                        storedAt("/dav/bob.vcf", "\"v2\"")));
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+    verify(emailContactStorage, never()).saveCardDavContact(anyString(),
+                                                            any(),
+                                                            anyLong(),
+                                                            anyString(),
+                                                            anyString(),
+                                                            any(),
+                                                            any(),
+                                                            anyBoolean());
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean(), anyString());
+  }
+
+  /**
+   * A stored address-book row, seen by the sync only as "this entry, at this
+   * version" — every other column is what the reconciliation rules above pin.
+   *
+   * @param href the entry the row belongs to
+   * @param etag the version it was last stored at, or null for none
+   * @return the row
+   */
+  private CardDavRow storedAt(String href, String etag) {
+    return row(3L, "jane@example.com", EmailContactSource.CARDDAV, false, 2, href, etag, null, PhotoOrigin.USER);
+  }
+
   @Test
   void aCollectedContactIsClaimedInPlaceAndKeepsItsHistory() {
     // The rule the compose autocomplete depends on: claiming must not reset the
@@ -1106,6 +1265,40 @@ public class EmailContactCardDavSyncServiceTest {
                                                    eq(CONNECTOR_ID),
                                                    eq("/dav/alice/default/bob.vcf"),
                                                    eq("\"after\""),
+                                                   any(),
+                                                   isNull(),
+                                                   eq(false));
+  }
+
+  @Test
+  void theEtagSentAsIfMatchIsTheServersOwnBytes() {
+    // The invariant the sync's tolerant comparison must never leak into. The
+    // sync may read W/"weak one" and "weak one" as the same version; a
+    // precondition may not. RFC 9110 compares an If-Match strongly, so an etag
+    // this code tidied on the way out could let a conditional write through
+    // that the server meant to refuse -- somebody else's edit silently
+    // overwritten, which is precisely what the precondition exists to prevent.
+    when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
+    givenADiscoveredBook();
+    givenABoundRow();
+    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+                      .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "W/\"weak one\"", "RAW-CARD"));
+    when(vCardParser.merge(eq("RAW-CARD"), any())).thenReturn("MERGED-CARD");
+    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+                      .thenReturn(new PutResult(204, "W/\"weak two\"", null));
+    when(vCardParser.parse("MERGED-CARD")).thenReturn(card("Bobby", "bob@example.org"));
+
+    syncService.updateAddressBookContact(USERNAME, 5L, editedBody());
+
+    // Weak marker, quotes and inner space, all of it, exactly as received.
+    verify(cardDavClient).updateVCard(anyString(), anyString(), eq("W/\"weak one\""), anyString(), anyString());
+    // And the row records what the PUT answered, equally untouched: the version
+    // the sync compares is normalised WHEN COMPARED, never when stored.
+    verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
+                                                   eq(5L),
+                                                   eq(CONNECTOR_ID),
+                                                   anyString(),
+                                                   eq("W/\"weak two\""),
                                                    any(),
                                                    isNull(),
                                                    eq(false));
