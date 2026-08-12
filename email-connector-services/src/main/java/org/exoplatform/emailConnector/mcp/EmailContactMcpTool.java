@@ -178,6 +178,13 @@ public class EmailContactMcpTool implements McpToolPlugin {
    * and the revive-a-removed-contact behavior are shared rather than
    * reimplemented. Approval-gated: the user confirms before their store is
    * written.
+   * <p>
+   * It takes the origin-less create on purpose, so a contact made through an
+   * agent never publishes itself to the user's address book. The approval
+   * dialog says a contact will be created here; it does not say a card will be
+   * written to a third-party server, and a tool call must not do more than what
+   * was approved. Publishing it stays one click on the contact, exactly as for
+   * a collected or imported row.
    *
    * @param email the contact's address, required
    * @param givenName the first name, optional

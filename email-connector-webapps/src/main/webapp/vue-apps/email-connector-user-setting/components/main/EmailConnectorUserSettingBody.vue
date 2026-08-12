@@ -164,6 +164,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @change="saveAddressBook" />
           </v-list-item-action>
         </v-list-item>
+        <!-- The outbound direction, and only once the inbound one is on: there
+             is nowhere to publish TO until an address book is bound, so the
+             switch would be a promise the connector cannot keep. Indented
+             under it, like the notification categories under their own switch,
+             because it is that setting's detail rather than a setting of its
+             own. Off by default and left off by an upgrade -- turning writing
+             on for everybody is a decision somebody takes, not one a release
+             takes for them. -->
+        <v-list-item v-if="carddavAvailable && carddavEnabled">
+          <v-list-item-content class="ps-4">
+            <v-list-item-subtitle>
+              {{ $t('UserSettings.emailConnector.addressBook.autoPublish') }}
+            </v-list-item-subtitle>
+            <v-list-item-subtitle class="mt-1">
+              {{ $t('UserSettings.emailConnector.addressBook.autoPublish.description') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+          <v-list-item-action>
+            <v-switch
+              v-model="carddavAutoPublish"
+              :loading="savingAutoPublish"
+              @change="saveAutoPublish" />
+          </v-list-item-action>
+        </v-list-item>
         <v-divider class="mx-4" />
         <v-list-item>
           <v-list-item-content>
@@ -212,7 +236,9 @@ export default {
     notifyAll: true,
     carddavAvailable: false,
     carddavEnabled: false,
+    carddavAutoPublish: false,
     savingAddressBook: false,
+    savingAutoPublish: false,
     syncingAddressBook: false,
     addressBookSyncState: null,
     publishQueue: null,
@@ -299,6 +325,10 @@ export default {
       this.notifyCategoryIds = setting.notifyCategories || [];
       this.carddavAvailable = !!setting.carddavAvailable;
       this.carddavEnabled = !!setting.carddavEnabled;
+      // Unset reads as off, exactly as the server resolves it: a settings
+      // document written before this preference existed says nothing about it,
+      // and "nothing" must never read as yes on a switch that writes outwards.
+      this.carddavAutoPublish = !!setting.carddavAutoPublish;
       if (this.carddavEnabled) {
         this.readAddressBookStatus();
       }
@@ -360,6 +390,21 @@ export default {
         .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
         .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
         .finally(() => this.savingAddressBook = false);
+    },
+    /**
+     * Stores whether contacts added through the form should reach the address
+     * book on their own. Its own call, not folded into the binding above: that
+     * one releases the contacts of the book being left, and a preference about
+     * future saves must not set that in motion.
+     *
+     * @returns {void}
+     */
+    saveAutoPublish() {
+      this.savingAutoPublish = true;
+      this.$emailConnectorCommonService.updateAddressBookAutoPublish({carddavAutoPublish: this.carddavAutoPublish})
+        .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
+        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
+        .finally(() => this.savingAutoPublish = false);
     },
     save() {
       this.saving = true;

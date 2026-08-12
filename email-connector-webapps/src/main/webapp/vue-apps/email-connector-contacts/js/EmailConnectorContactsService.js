@@ -308,6 +308,35 @@ export function queuePublishes(contactIds) {
   });
 }
 
+/**
+ * Whether one saved contact is worth offering to publish — the question behind
+ * the "Also add them to your address book?" line on the save confirmation.
+ * <p>
+ * Asked of the server rather than worked out here from the contact's source:
+ * the rule is the publish endpoint's own (is publishing possible at all, is
+ * this row one it would accept, is a publish of it already on its way), and a
+ * second copy of it in JavaScript would drift. Not cached, unlike
+ * {@link isAddressBookPublishable}: this one is about one row, and the answer
+ * changes the moment that row is published.
+ *
+ * @param {number} id - the contact just saved
+ * @returns {Promise<boolean>} true when the nudge is worth showing; false on
+ *          any failure, since an unanswered question is not a reason to ask
+ *          the user something that may not work
+ */
+export function isPublishOffered(id) {
+  return fetch(`/email-connector/rest/contacts/${id}/publish-offer`, {
+    credentials: 'include',
+    method: 'GET'
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when asking whether this contact can be published');
+    }
+    return resp.json();
+  }).then(answer => !!answer?.offered)
+    .catch(() => false);
+}
+
 /** The one in-flight or settled answer of {@link isAddressBookPublishable}. */
 let publishablePromise = null;
 

@@ -386,6 +386,121 @@ public class EmailContactCardDavSyncService {
   }
 
   /**
+   * Publishes a contact the user just authored, if they asked for that to
+   * happen by itself — the whole of the automatic push, and deliberately
+   * nothing but a routing decision on top of the click's own path.
+   * <p>
+   * Called from {@code ContactAutoPublishListener} on
+   * {@code ContactAuthoredEvent}, which the store raises only for a
+   * {@code ContactOrigin.USER_FORM} create. So the caller has already answered
+   * "was this one contact, deliberately?"; what is answered here is "and does
+   * this user want it published?". Two switches, both of which must be on:
+   * the user's own {@code carddavAutoPublish} (off by default — an upgrade
+   * turns nothing on), and, inside {@link #isPublishAvailable}, the
+   * administrator's kill switch plus a bound, discovered address book. With no
+   * book there is nothing to publish TO, and queueing for one that may never
+   * exist would only grow a list nobody asked for.
+   * <p>
+   * It goes through {@link #publishContact} rather than around it, which is
+   * what makes an unreachable server a parked card instead of a lost one: the
+   * click's fallback queue is the automatic push's fallback queue, drained by
+   * the same sync, with the same three attempts and the same visible outcome
+   * on the settings screen.
+   * <p>
+   * And it never throws. The contact is already stored — locally, visibly,
+   * the user's save is done — and a push that could not happen must not undo
+   * it, nor turn a successful save into an error the user cannot act on. A
+   * refusal is a log line and a contact that stayed local, which is exactly
+   * what the address book being off looks like anyway.
+   *
+   * @param username the mailbox owner
+   * @param contactId the contact they just authored
+   */
+  public void autoPublishContact(String username, long contactId) {
+    try {
+      // The two questions are asked INSIDE the guard, not before it: both read
+      // the user's stored settings, which decodes their mail password, and a
+      // codec that cannot read it throws. Outside, that exception would leave
+      // this method by the one door the Javadoc above promises does not exist
+      // -- and since the listener runs after the commit, in the request's own
+      // thread, it would fail a POST whose contact is already saved.
+      if (!isAutoPublishOn(username) || !isPublishAvailable(username)) {
+        return;
+      }
+      publishContact(username, contactId);
+    } catch (CardDavPublishQueuedException e) {
+      // The promise the queue exists for, kept without a word to the user: the
+      // card goes out after the next successful sync, and the settings screen
+      // already counts what is waiting.
+      LOG.debug("The automatic publish of contact {} for user {} was queued", contactId, username, e);
+    } catch (Exception e) {
+      // Every other outcome, refusals included -- warn rather than error: the
+      // contact is saved and nothing is lost, the user simply has one more row
+      // that is local-only, and their publish button is still there.
+      LOG.warn("The automatic publish of contact {} for user {} did not happen; the contact stays local",
+               contactId,
+               username,
+               e);
+    }
+  }
+
+  /**
+   * Whether this user asked for contacts they author to publish by themselves.
+   * <p>
+   * Null reads as false, which is the setting's whole safety story: every user
+   * whose settings document predates this field — that is, every user at
+   * upgrade — answers no here without anything having to migrate them.
+   *
+   * @param username the mailbox owner
+   * @return true only when the user explicitly turned the automatic push on
+   */
+  public boolean isAutoPublishOn(String username) {
+    if (StringUtils.isBlank(username)) {
+      return false;
+    }
+    UserEmailSetting setting = userEmailSettingService.getUserEmailSetting(username);
+    return setting != null && Boolean.TRUE.equals(setting.getCarddavAutoPublish());
+  }
+
+  /**
+   * Whether it is worth ASKING this user to publish one particular contact —
+   * what the form consults after saving an edit, to decide between "Contact
+   * saved" and "Contact saved. Also add them to your address book?".
+   * <p>
+   * The rule lives here rather than in the client for the same reason the bulk
+   * checklist's candidate list does: it is the publish endpoint's own rule, and
+   * a second copy in JavaScript would drift from it — offering a nudge that can
+   * only fail teaches people to ignore nudges. So: publishing has to be
+   * possible at all ({@link #isPublishAvailable}), the row has to be one the
+   * publish would accept (visible, and MANUAL or COLLECTED — an address-book
+   * row is already there and a directory colleague is never publishable), and
+   * nothing must already be on its way.
+   * <p>
+   * That last one is the part only the server can answer: a contact with a
+   * pending queue entry is already going out at the next sync, and asking
+   * again would be asking for something that is already happening. A PARKED
+   * entry is the opposite — it gave up, and re-asking is precisely how it gets
+   * retried — so a parked contact is still offered.
+   *
+   * @param username the mailbox owner
+   * @param contactId the contact just saved
+   * @return true when the nudge is worth showing
+   */
+  public boolean isPublishOffered(String username, long contactId) {
+    if (!isPublishAvailable(username)) {
+      return false;
+    }
+    EmailContact contact = emailContactService.getContact(contactId, username);
+    if (contact == null || (!EmailContactSource.MANUAL.equals(contact.getSource())
+        && !EmailContactSource.COLLECTED.equals(contact.getSource()))) {
+      return false;
+    }
+    return getPublishQueue(username).getEntries()
+                                    .stream()
+                                    .noneMatch(entry -> entry.getContactId() == contactId && !entry.isParked());
+  }
+
+  /**
    * Publishes one of the caller's contacts into their CardDAV address book —
    * the write-back's first and deliberately least destructive shape: it can
    * only CREATE. The card is stored under {@code If-None-Match: *}, so an
