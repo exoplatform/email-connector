@@ -3059,14 +3059,15 @@ public class EmailBoxService {
   }
 
   /**
-   * Discards a draft: the local row goes, and with it the composer's handle on it.
+   * Discards a draft: the copy on the mail server first, then the local row.
    * <p>
-   * Slice-scoped on purpose: removing the copy sitting in the server's Drafts
-   * folder is the job of the same code that puts copies there and takes the
-   * previous one away, and until that exists a discarded draft can leave one
-   * behind. Losing a draft the user asked to discard is not the failure worth
-   * guarding against; showing them one they thought they had thrown away is, and
-   * the local row going is what the user sees.
+   * That order is the opposite of the upload's, and for the same underlying reason.
+   * Uploading appends before deleting because a visible duplicate beats lost
+   * content; discarding removes the server copy first because the failure to avoid
+   * here is the mirror image — a draft the user has thrown away reappearing in
+   * their other mail client. If the server removal fails the local row stays too,
+   * so the two never disagree about whether the draft exists, and the user can try
+   * again.
    *
    * @param draftLocalId the composer's handle on the draft
    * @param username the mailbox owner
@@ -3086,6 +3087,12 @@ public class EmailBoxService {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       if (stored == null) {
         return false;
+      }
+      if (stored.getMailRemoteId() != null && !DraftState.LOCAL_ONLY.equals(stored.getDraftState())
+          && isServerDraftsEnabled() && !removeServerDraftCopy(stored.getMailRemoteId(), username, userEmailSetting)) {
+        // The server still has it. Keeping the local row is what stops the two from
+        // disagreeing, and what lets the user simply try again.
+        throw new IllegalStateException("emailConnector.drafts.discard.serverCopyRemains");
       }
       deleteEmails(List.of(stored));
       return true;
@@ -3223,6 +3230,13 @@ public class EmailBoxService {
   private Email uploadDraft(Email saved, String username, UserEmailSetting userEmailSetting) {
     Store store = null;
     IMAPFolder draftsFolder = null;
+    // A previous copy exists only if the row has been uploaded before. LOCAL_ONLY
+    // means it never was, and that distinction is the whole reason the state is
+    // stored rather than inferred from the UID being set.
+    long previousUid = DraftState.DIRTY.equals(saved.getDraftState()) && saved.getMailRemoteId() != null ?
+                                                                                                        saved.getMailRemoteId() :
+                                                                                                        -1;
+    boolean expungeOnClose = false;
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
@@ -3250,6 +3264,18 @@ public class EmailBoxService {
                                                          saved.getDraftLocalId(),
                                                          appendedUid,
                                                          saved.getDraftRevision());
+      // Only now, with the new copy safely on the server and the row pointing at it,
+      // does the previous one go. Never the other way round.
+      if (previousUid > 0 && previousUid != appendedUid) {
+        try {
+          expungeOnClose = removePreviousDraftCopy(draftsFolder, previousUid, username);
+        } catch (Exception e) {
+          // The new copy is up and the row points at it, so the user's draft is
+          // correct. What is left behind is a duplicate — the failure we deliberately
+          // chose over losing content — and the next push tries to remove it again.
+          LOG.warn("Could not remove the previous draft copy (uid {}) of user {}", previousUid, username, e);
+        }
+      }
       return uploaded != null ? uploaded : saved;
     } catch (Exception e) {
       LOG.warn("Could not upload the draft of user {} to the Drafts folder; it stays saved locally", username, e);
@@ -3258,7 +3284,122 @@ public class EmailBoxService {
       // Persisted so the discovered Drafts folder name survives: without it every push
       // re-walks the whole folder list, and pushes happen far more often than syncs.
       saveMailboxSyncState(username, syncState, originalSyncStateJson);
-      closeQuietly(draftsFolder, store, username);
+      closeDraftsFolderQuietly(draftsFolder, expungeOnClose, username);
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * Removes the copy of a draft that the APPEND just superseded, so the user's other
+   * mail clients show one draft rather than a growing pile of them.
+   * <p>
+   * Two ways to do it, and the difference matters. With UIDPLUS (RFC 4315) the
+   * message can be expunged BY UID — precisely the one message, nothing else. JavaMail
+   * exposes that as {@code expunge(Message[])} and refuses it when the server does not
+   * advertise the extension.
+   * <p>
+   * Without UIDPLUS the only expunge IMAP offers is the whole-folder one, reached here
+   * through {@code close(true)}. Its limitation is worth stating plainly rather than
+   * discovering later: it removes EVERY message in the Drafts folder currently flagged
+   * {@code \Deleted}, including ones some other client of the user's flagged and has
+   * not yet expunged itself. We do it anyway, for two reasons. The blast radius is one
+   * folder, and it is the folder whose entire purpose is to hold superseded copies of
+   * unfinished messages. And the alternative — leaving the flag set and never
+   * expunging — is not "safe", it is a Drafts folder that fills up with struck-through
+   * copies of the same half-written mail, which is the visible failure this step exists
+   * to prevent.
+   * <p>
+   * A previous copy that is simply not there any more (another client removed it) is
+   * not a failure: there is nothing left to do, and saying so at debug level is enough.
+   *
+   * @param draftsFolder the open Drafts folder
+   * @param previousUid the UID of the copy being superseded
+   * @param username the mailbox owner
+   * Throws rather than swallowing, because the two callers want opposite things
+   * from a failure: the upload has already put the new copy up and must not fail
+   * over a leftover duplicate, while the discard must not claim the draft is gone
+   * when it is not.
+   *
+   * @param draftsFolder the open Drafts folder
+   * @param previousUid the UID of the copy being superseded
+   * @param username the mailbox owner
+   * @return true when the caller must close the folder with expunge, because the
+   *         server offered no way to remove just this one message
+   * @throws MessagingException if the message could not be flagged for removal
+   */
+  private boolean removePreviousDraftCopy(IMAPFolder draftsFolder,
+                                          long previousUid,
+                                          String username) throws MessagingException {
+    Message previous = draftsFolder.getMessageByUID(previousUid);
+    if (previous == null) {
+      LOG.debug("The previous draft copy of user {} (uid {}) is already gone", username, previousUid);
+      return false;
+    }
+    previous.setFlag(Flags.Flag.DELETED, true);
+    try {
+      // UID EXPUNGE: this message and no other. JavaMail throws when the server has
+      // not advertised UIDPLUS, which is exactly the signal we want.
+      draftsFolder.expunge(new Message[] { previous });
+      return false;
+    } catch (MessagingException e) {
+      LOG.debug("No UID EXPUNGE for user {}; the previous draft copy goes on close instead", username, e);
+      return true;
+    }
+  }
+
+  /**
+   * Removes one copy of a draft from the mail server's Drafts folder, on its own
+   * connection — the discard path's counterpart to the removal the upload does
+   * inline while it already has the folder open.
+   *
+   * @param mailRemoteId the UID of the copy to remove
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @return true when the copy is gone (or was already gone, or there is no Drafts
+   *         folder to hold one), false when the server still has it
+   */
+  private boolean removeServerDraftCopy(long mailRemoteId, String username, UserEmailSetting userEmailSetting) {
+    Store store = null;
+    IMAPFolder draftsFolder = null;
+    boolean expungeOnClose = false;
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      draftsFolder = resolveDraftsFolder(store, syncState);
+      if (draftsFolder == null) {
+        // No Drafts folder means no copy up there to disagree with the local row.
+        return true;
+      }
+      draftsFolder.open(Folder.READ_WRITE);
+      expungeOnClose = removePreviousDraftCopy(draftsFolder, mailRemoteId, username);
+      return true;
+    } catch (Exception e) {
+      LOG.warn("Could not remove the server copy (uid {}) of a discarded draft of user {}", mailRemoteId, username, e);
+      return false;
+    } finally {
+      saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      closeDraftsFolderQuietly(draftsFolder, expungeOnClose, username);
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * Closes the Drafts folder, expunging it only when {@link #removePreviousDraftCopy}
+   * had no way to remove one message on its own — see there for what that costs.
+   *
+   * @param draftsFolder the folder to close, may be null or already closed
+   * @param expunge whether the close must expunge the folder
+   * @param username the mailbox owner, for the log
+   */
+  private void closeDraftsFolderQuietly(IMAPFolder draftsFolder, boolean expunge, String username) {
+    if (draftsFolder == null || !draftsFolder.isOpen()) {
+      return;
+    }
+    try {
+      draftsFolder.close(expunge);
+    } catch (MessagingException e) {
+      LOG.warn("Error when closing the Drafts folder of user {}", username, e);
     }
   }
 

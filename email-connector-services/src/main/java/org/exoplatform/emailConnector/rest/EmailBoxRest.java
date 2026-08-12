@@ -581,10 +581,11 @@ public class EmailBoxRest {
   @DeleteMapping("/drafts/{draftLocalId}")
   @Secured("users")
   @Operation(summary = "Discards a draft", method = "DELETE",
-             description = "Removes the locally-stored draft. Answers 404 for an id the caller has no draft under, so a draft id never reveals whether it exists.")
+             description = "Removes the draft: the copy on the mail server first, then the local row. Answers 404 for an id the caller has no draft under, so a draft id never reveals whether it exists, and 500 when the server copy could not be removed — in which case the local row is deliberately kept, so the two never disagree about whether the draft still exists.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
-      @ApiResponse(responseCode = "404", description = "Not found"), })
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "500", description = "The copy on the mail server could not be removed"), })
   public ResponseEntity<String> deleteDraft(HttpServletRequest request,
                                             @Parameter(description = "The draft's local id", required = true)
                                             @PathVariable("draftLocalId")
@@ -596,6 +597,8 @@ public class EmailBoxRest {
       return ResponseEntity.ok().build();
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 

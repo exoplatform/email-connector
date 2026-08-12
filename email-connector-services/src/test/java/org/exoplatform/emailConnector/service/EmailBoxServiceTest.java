@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -101,6 +102,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -2861,6 +2863,121 @@ public class EmailBoxServiceTest {
     when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
     assertTrue(emailBoxService.deleteDraft("draft-1", TEST_USER));
     verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    // Never uploaded, so there is nothing up there to remove and no connection to make
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  @Test
+  void aPushRemovesThePreviousCopyOnlyAfterTheNewOneIsUp() throws Exception {
+    // Append before delete, always. If everything after the append fails the user sees
+    // the same draft twice in another client; the other way round they see it nowhere.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4243L) });
+    Message previous = mock(Message.class);
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(previous);
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.DIRTY);
+    stored.setDraftRevision(2L);
+    stored.setMailRemoteId(4242L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> {
+      Email written = invocation.getArgument(0);
+      written.setMailRemoteId(4242L);
+      return written;
+    });
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(3L);
+    emailBoxService.saveDraft(incoming, TEST_USER, true);
+    InOrder inOrder = inOrder(draftsFolder, previous);
+    inOrder.verify(draftsFolder).appendUIDMessages(any(Message[].class));
+    inOrder.verify(previous).setFlag(Flags.Flag.DELETED, true);
+    // UID EXPUNGE: this message and no other, so the folder closes WITHOUT expunging
+    verify(draftsFolder).expunge(new Message[] { previous });
+    verify(draftsFolder).close(false);
+  }
+
+  @Test
+  void aServerWithoutUidplusHasThePreviousCopyExpungedOnClose() throws Exception {
+    // Without UIDPLUS the only expunge IMAP offers is the whole-folder one. See
+    // removePreviousDraftCopy for why we still take it.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4243L) });
+    Message previous = mock(Message.class);
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(previous);
+    when(draftsFolder.isOpen()).thenReturn(true);
+    doThrow(new MessagingException("EXPUNGE not supported")).when(draftsFolder).expunge(any(Message[].class));
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.DIRTY);
+    stored.setDraftRevision(2L);
+    stored.setMailRemoteId(4242L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> {
+      Email written = invocation.getArgument(0);
+      written.setMailRemoteId(4242L);
+      return written;
+    });
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(3L);
+    emailBoxService.saveDraft(incoming, TEST_USER, true);
+    verify(previous).setFlag(Flags.Flag.DELETED, true);
+    verify(draftsFolder).close(true);
+  }
+
+  @Test
+  void aFirstPushHasNoPreviousCopyToRemove() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4242L) });
+    when(draftsFolder.isOpen()).thenReturn(true);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    emailBoxService.saveDraft(draft(null), TEST_USER, true);
+    verify(draftsFolder, never()).getMessageByUID(anyLong());
+    verify(draftsFolder).close(false);
+  }
+
+  @Test
+  void discardingAnUploadedDraftTakesTheServerCopyFirst() throws Exception {
+    // The mirror image of the upload's order: a draft the user threw away must not
+    // reappear in their other mail client.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    Message serverCopy = mock(Message.class);
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Email stored = draft("draft-1");
+    stored.setId(9L);
+    stored.setDraftState(DraftState.SYNCED);
+    stored.setMailRemoteId(4242L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    assertTrue(emailBoxService.deleteDraft("draft-1", TEST_USER));
+    verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
+  @Test
+  void aDiscardThatCannotReachTheServerKeepsTheLocalRow() throws Exception {
+    // Keeping the row is what stops the two copies from disagreeing about whether the
+    // draft exists, and what lets the user simply try again.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    doThrow(new MessagingException("no")).when(draftsFolder).open(Folder.READ_WRITE);
+    Email stored = draft("draft-1");
+    stored.setId(9L);
+    stored.setDraftState(DraftState.SYNCED);
+    stored.setMailRemoteId(4242L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    assertThrows(IllegalStateException.class, () -> emailBoxService.deleteDraft("draft-1", TEST_USER));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
   }
 
   @Test
