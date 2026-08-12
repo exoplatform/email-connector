@@ -519,8 +519,9 @@ export default {
         // confirm step. The stored primary is always the first row.
         emails: [contact.primaryEmail || '', ...(contact.secondaryEmails || [])].map(value => ({value})),
         primaryIndex: 0,
-        givenName: contact.givenName || '',
-        familyName: contact.familyName || '',
+        // The two halves of the name, read from the whole one when the contact
+        // has no halves of its own -- see nameParts.
+        ...this.nameParts(contact),
         // EVERY number becomes a row, not just the first: the one-field form
         // is what silently deleted the others on the next save. A vCard
         // prefill's numbers arrive here too, types included.
@@ -538,6 +539,41 @@ export default {
       } : this.emptyForm();
       this.formDrawer = true;
       this.$refs.emailContactFormDrawer.open();
+    },
+    /**
+     * The first and last name the form opens on.
+     * <p>
+     * A contact stores both a whole name and, when its source gave one, the two
+     * halves. Mail headers and plenty of real vCards carry only the whole one --
+     * a card with FN and no N -- and the form used to open on two empty fields
+     * for a contact the list was quite happily showing by name. Worse than
+     * looking wrong: the name is rebuilt from these two fields on save, so
+     * filling in one half of a blank pair renamed the person to that half.
+     * <p>
+     * So when the halves are missing they are read from the whole name: the
+     * first word leads, the rest follows, which is the convention this form's
+     * own layout already assumes. Stored halves are never second-guessed -- if
+     * the source gave them, they are what the card says, and re-deriving them
+     * would overwrite a real answer with a guess.
+     *
+     * @param {object} contact - the contact being opened
+     * @returns {object} the givenName and familyName the form starts with
+     */
+    nameParts(contact) {
+      if (contact.givenName || contact.familyName) {
+        return {givenName: contact.givenName || '', familyName: contact.familyName || ''};
+      }
+      const whole = (contact.displayName || '').trim();
+      // A contact with no name at all is shown by its address, and an address
+      // is not a name: splitting it would put half a mailbox in each field.
+      if (!whole || whole.includes('@')) {
+        return {givenName: '', familyName: ''};
+      }
+      const words = whole.split(/\s+/);
+      return {
+        givenName: words[0],
+        familyName: words.slice(1).join(' '),
+      };
     },
     /**
      * Adds an empty address row for the user to fill.
