@@ -50,12 +50,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactPublishQueueEntry;
 import org.exoplatform.emailConnector.model.EmailConnector;
@@ -157,6 +159,59 @@ public class UserEmailSettingServiceTest {
     userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
 
     verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /**
+   * The automatic-push preference rides the settings document, and its writer
+   * must not do anything ELSE. Turning the binding on or off releases the
+   * contacts of the book being left; a preference about future saves has no
+   * business setting that in motion, which is why it has its own method and
+   * its own endpoint rather than a second field on the binding.
+   */
+  @Test
+  @SneakyThrows
+  void theAutoPublishPreferenceIsStoredWithoutReleasingAnything() {
+    // The publisher mock is pinned in by hand: for ApplicationEventPublisher the
+    // context registers ITSELF as a resolvable dependency and can win the
+    // @Autowired resolution, which would make the "never published" assertion
+    // below pass without ever having watched the real one.
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+    SettingValue storedSetting = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+                       .thenReturn(storedSetting);
+    when(storedSetting.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"carddavEnabled\":true}");
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+
+    userEmailSettingService.updateAddressBookAutoPublish(TEST_USER, true);
+
+    ArgumentCaptor<SettingValue> written = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                               written.capture());
+    assertTrue(written.getValue().getValue().toString().contains("\"carddavAutoPublish\":true"));
+    // The binding itself is untouched, so nothing lets go of any contacts.
+    assertTrue(written.getValue().getValue().toString().contains("\"carddavEnabled\":true"));
+    verify(eventPublisher, never()).publishEvent(any(ContactBookReleaseEvent.class));
+  }
+
+  /**
+   * With no connected mailbox there is no settings document to write into, and
+   * inventing one would store a preference about an account that does not
+   * exist.
+   */
+  @Test
+  void theAutoPublishPreferenceIsNotStoredWithoutAMailbox() {
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+                       .thenReturn(null);
+
+    userEmailSettingService.updateAddressBookAutoPublish(TEST_USER, true);
+
+    verify(settingService, never()).set(any(Context.class),
+                                        any(Scope.class),
+                                        eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                                        any(SettingValue.class));
   }
 
   @Test
