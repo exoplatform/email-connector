@@ -437,20 +437,119 @@ export function getImportStatus() {
 }
 
 /**
- * Downloads the caller's whole store as one .vcf file — always the whole
- * store, never the filtered view, which is why this takes no parameters. The
- * browser handles the download itself: the endpoint answers an attachment,
- * and the session cookie is all the authentication it needs.
+ * The most contacts one scoped export may name, mirroring the server's own cap.
+ * The ids ride in the query string — the export is a download link and an
+ * attachment URL, both of which can only be GETs — so past this the request
+ * line itself is the limit, and the whole-store export is the right tool.
+ */
+export const MAX_EXPORT_IDS = 500;
+
+/**
+ * The export endpoint's URL, whole-store or narrowed to named contacts.
  *
+ * @param {Array<Number>} contactIds - the contacts to export, or nothing for
+ *          the whole store
+ * @returns {string} the URL, ready for a download link, a fetch or an
+ *          attachment descriptor
+ */
+export function exportUrl(contactIds) {
+  const base = '/email-connector/rest/contacts/export';
+  return contactIds?.length ? `${base}?ids=${contactIds.join(',')}` : base;
+}
+
+/**
+ * Downloads the caller's contacts as one .vcf file: the whole store by
+ * default — never the filtered view, which is what the menu entry promises —
+ * or exactly the named ones, which is what a selection exports. The browser
+ * handles the download itself: the endpoint answers an attachment, and the
+ * session cookie is all the authentication it needs.
+ *
+ * @param {Array<Number>} contactIds - the selected contacts, or nothing for the
+ *          whole store
  * @returns {void}
  */
-export function downloadExport() {
+export function downloadExport(contactIds) {
   const link = document.createElement('a');
-  link.href = '/email-connector/rest/contacts/export';
-  link.download = 'contacts.vcf';
+  link.href = exportUrl(contactIds);
+  link.download = contactIds?.length ? 'contacts-selection.vcf' : 'contacts.vcf';
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+/**
+ * Stars or unstars several contacts at once, through the platform's own
+ * favorites REST — the very endpoint the shared star button calls, so a
+ * contact starred in bulk is indistinguishable from one starred by hand and
+ * shows up in the global Favorites drawer the same way.
+ * <p>
+ * Sent in small waves rather than all at once: a selection can hold thousands
+ * of rows, and a thousand parallel writes would be a self-inflicted flood.
+ * Failures are counted, not thrown, so one refused row does not hide the
+ * hundred that worked.
+ *
+ * @param {Array<Number>} contactIds - the contacts to star or unstar
+ * @param {boolean} favorite - true to star, false to unstar
+ * @returns {Promise<object>} {done, failed} — how many changed and how many
+ *          could not
+ */
+export function setFavorites(contactIds, favorite) {
+  // The object type the add-on's own ACL plugin registers, which is what the
+  // star button on a contact card already sends.
+  const base = `${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/social/favorites/contact`;
+  return runInWaves(contactIds, id => fetch(
+    // ignoreNotExisting: unstarring something already unstarred is the caller
+    // getting what they asked for, not a 404 worth reporting.
+    favorite ? `${base}/${encodeURIComponent(id)}` : `${base}/${encodeURIComponent(id)}?ignoreNotExisting=true`,
+    {
+      credentials: 'include',
+      method: favorite ? 'POST' : 'DELETE',
+    }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when changing the favorite');
+    }
+  }));
+}
+
+/**
+ * Deletes several contacts at once, each through the same endpoint one row's
+ * own delete uses — so the server keeps deciding, per row, between a real
+ * delete and a suppression.
+ *
+ * @param {Array<Number>} contactIds - the contacts to remove
+ * @returns {Promise<object>} {done, failed}
+ */
+export function deleteContacts(contactIds) {
+  return runInWaves(contactIds, id => deleteContact(id));
+}
+
+/** How many of a bulk action's calls are in flight at once. */
+const BULK_WAVE_SIZE = 10;
+
+/**
+ * Runs one call per id, ten at a time, and reports what got through.
+ * <p>
+ * Sequential waves rather than one Promise.all over the whole selection: the
+ * selection is as big as the user made it, and the browser would queue the
+ * excess anyway — badly, ahead of everything else the page needs.
+ *
+ * @param {Array<Number>} ids - what to act on
+ * @param {Function} call - id => Promise, rejecting on failure
+ * @returns {Promise<object>} {done, failed}
+ */
+async function runInWaves(ids, call) {
+  const all = ids || [];
+  let done = 0;
+  let failed = 0;
+  for (let index = 0; index < all.length; index += BULK_WAVE_SIZE) {
+    const wave = all.slice(index, index + BULK_WAVE_SIZE);
+    // eslint-disable-next-line no-await-in-loop
+    const outcomes = await Promise.allSettled(wave.map(id => call(id)));
+    const succeeded = outcomes.filter(outcome => outcome.status === 'fulfilled').length;
+    done += succeeded;
+    failed += outcomes.length - succeeded;
+  }
+  return {done, failed};
 }
 
 // How many of the contact's addresses correspondence covers, and how many mails
@@ -595,13 +694,25 @@ export function openMailboxSearch(term) {
  * @returns {void}
  */
 export function composeTo(recipient) {
+  composeToMany([recipient]);
+}
+
+/**
+ * The same composer, addressed to several people at once — what a selection
+ * writes to. One implementation for both: the composer has always taken a list
+ * of recipients, and the single case is that list with one entry in it.
+ *
+ * @param {Array} recipients - [{name, address}]
+ * @returns {void}
+ */
+export function composeToMany(recipients) {
   window.require([
     'SHARED/eXoVueI18n',
     'PORTLET/email-connector/EmailConnectorUserSetting',
     'SHARED/emailConnectorQuickActionExtension',
   ], exoi18n => bootstrapMailApp(exoi18n).then(() =>
     document.dispatchEvent(new CustomEvent('open-email-composer', {
-      detail: {to: [recipient]},
+      detail: {to: recipients},
     }))));
 }
 
@@ -629,6 +740,91 @@ export function sendByEmail(contact) {
     document.dispatchEvent(new CustomEvent('open-email-compose-with-attachment', {
       detail: {attachment: toVCardAttachment(contact)},
     }))));
+}
+
+/**
+ * Opens the composer with SEVERAL contacts attached — as one multi-card .vcf,
+ * not as one file each.
+ * <p>
+ * Which is what a .vcf is: cards concatenate, and that is exactly the file the
+ * export already produces, so the scoped export URL is the attachment. One file
+ * is also what every address book on the receiving end wants — Gmail, Outlook
+ * and iCloud all import a multi-card file in one go, where twenty attachments
+ * would be twenty imports.
+ * <p>
+ * The stored pictures travel, as they do in an export: an attachment has none
+ * of the QR code's byte budget, and a card somebody keeps should look like the
+ * person.
+ *
+ * @param {Array} contacts - the contacts to share, each with its id
+ * @returns {void}
+ */
+export function sendManyByEmail(contacts) {
+  window.require([
+    'SHARED/eXoVueI18n',
+    'PORTLET/email-connector/EmailConnectorUserSetting',
+    'SHARED/emailConnectorQuickActionExtension',
+  ], exoi18n => bootstrapMailApp(exoi18n).then(() =>
+    document.dispatchEvent(new CustomEvent('open-email-compose-with-attachment', {
+      detail: {attachment: toSelectionAttachment(contacts)},
+    }))));
+}
+
+/**
+ * Sends SEVERAL contacts into a chat conversation, as one multi-card .vcf file
+ * message.
+ * <p>
+ * One file, again for the format's own reason, and here for a second: the chat
+ * asks which conversation a share goes into, so one file per contact would mean
+ * one picker per contact.
+ *
+ * @param {Array} contacts - the contacts to share, each with its id
+ * @returns {Promise<void>} resolves once the chat has been handed the file
+ */
+export function sendManyByChat(contacts) {
+  const ids = (contacts || []).map(contact => contact.id);
+  return fetch(exportUrl(ids), {credentials: 'include'}).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when reading the selected contacts as vCards');
+    }
+    return resp.text();
+  }).then(vcard => {
+    const file = new File([vcard], selectionFileName(contacts), {type: 'text/vcard'});
+    document.dispatchEvent(new CustomEvent('meeds-chat-share', {detail: {file}}));
+  });
+}
+
+/**
+ * The composer-shaped attachment descriptor of a whole selection: the scoped
+ * export URL, which the composer materialises exactly as it does a document's.
+ *
+ * @param {Array} contacts - the contacts to share
+ * @returns {object} the attachment descriptor
+ */
+function toSelectionAttachment(contacts) {
+  const name = selectionFileName(contacts);
+  return {
+    id: null,
+    name,
+    title: name,
+    mimeType: 'text/vcard',
+    mimetype: 'text/vcard',
+    // Unknown until the composer fetches it, and an unknown size simply shows
+    // no size — the same deal the single card's descriptor makes.
+    size: 0,
+    downloadUrl: exportUrl((contacts || []).map(contact => contact.id)),
+  };
+}
+
+/**
+ * What a multi-card file is called: its count, so the recipient can see how
+ * many people are in it before opening it.
+ *
+ * @param {Array} contacts - the contacts in the file
+ * @returns {string} the file name
+ */
+function selectionFileName(contacts) {
+  return `${(contacts || []).length} contacts.vcf`;
 }
 
 /**
