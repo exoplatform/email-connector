@@ -54,11 +54,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.event.ContactAuthoredEvent;
+import org.exoplatform.emailConnector.model.ContactOrigin;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -109,12 +113,21 @@ public class EmailContactServiceTest {
   @MockBean
   private ProfilePropertyService  profilePropertyService;
 
+  @MockBean
+  private ApplicationEventPublisher eventPublisher;
+
   @Autowired
   private EmailContactService     emailContactService;
 
   @BeforeEach
   void setUp() {
     lenient().when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(userEmailSetting());
+    // The publisher mock is pinned into the service by hand, as EmailBoxServiceTest
+    // already has to do: for ApplicationEventPublisher the context registers ITSELF
+    // as a resolvable dependency, and that candidate can win the @Autowired
+    // resolution over the @MockBean -- leaving the mock unobserved and every
+    // "this path announces nothing" assertion passing for the wrong reason.
+    ReflectionTestUtils.setField(emailContactService, "eventPublisher", eventPublisher);
   }
 
   // ---------------------------------------------------------------- collection rules
@@ -413,6 +426,176 @@ public class EmailContactServiceTest {
 
     verifyNoInteractions(emailBoxStorage);
     verify(settingService, never()).set(any(), any(), anyString(), any());
+  }
+
+  // ---------------------------------------------------------------- who may publish by itself
+
+  // The routing rule of the automatic address-book push, pinned at the only
+  // place it can be pinned: what the store ANNOUNCES. A contact whose creation
+  // raises ContactAuthoredEvent may leave for the user's address book by
+  // itself; one that does not, cannot, whatever any switch says downstream. So
+  // these tests are about a single question asked six ways -- who is allowed to
+  // be deliberate -- and the expensive mistake they exist to catch is the
+  // opposite of a missing feature: a bulk path that starts announcing, and
+  // silently publishes five hundred people's cards to a third-party server.
+
+  @Test
+  void aContactAuthoredThroughTheFormIsAnnounced() {
+    when(emailContactStorage.getContactByAddress(USERNAME, "carol@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> {
+      EmailContact stored = invocation.getArgument(0);
+      stored.setId(42L);
+      return stored;
+    });
+
+    emailContactService.createContact(manualInput("Carol", "Carol@Example.org"), USERNAME, ContactOrigin.USER_FORM);
+
+    ArgumentCaptor<ContactAuthoredEvent> announced = ArgumentCaptor.forClass(ContactAuthoredEvent.class);
+    verify(eventPublisher).publishEvent(announced.capture());
+    assertEquals(USERNAME, announced.getValue().getUsername());
+    assertEquals(42L, announced.getValue().getContactId());
+  }
+
+  /**
+   * Reviving a tombstone through the form is a create as far as the user is
+   * concerned — they typed an address and pressed Save — so it is announced
+   * like one. Anything else would make "add someone you once removed" the one
+   * add that quietly does not reach the phone.
+   */
+  @Test
+  void aRevivedContactAuthoredThroughTheFormIsAnnouncedToo() {
+    EmailContact suppressed = collectedContact(5L, "bob@example.org", "Old Name");
+    suppressed.setSuppressed(true);
+    when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(suppressed);
+    when(emailContactStorage.updateContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    emailContactService.createContact(manualInput("Bob", "bob@example.org"), USERNAME, ContactOrigin.USER_FORM);
+
+    ArgumentCaptor<ContactAuthoredEvent> announced = ArgumentCaptor.forClass(ContactAuthoredEvent.class);
+    verify(eventPublisher).publishEvent(announced.capture());
+    assertEquals(5L, announced.getValue().getContactId());
+  }
+
+  /**
+   * When the push lands during the save, the create's own answer says so. The
+   * announcement runs before this method returns, and it can bind the row to a
+   * server entry and flip it to CARDDAV; answering the pre-announcement object
+   * would tell the client the contact is local while the store disagrees.
+   */
+  @Test
+  void theAnswerReflectsAPushThatLandedDuringTheSave() {
+    when(emailContactStorage.getContactByAddress(USERNAME, "carol@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> {
+      EmailContact stored = invocation.getArgument(0);
+      stored.setId(42L);
+      return stored;
+    });
+    // What the listener leaves behind when the card reached the address book.
+    EmailContact published = new EmailContact();
+    published.setId(42L);
+    published.setUserId(USERNAME);
+    published.setSource(EmailContactSource.CARDDAV);
+    published.setPrimaryEmail("carol@example.org");
+    when(emailContactStorage.getContactById(42L)).thenReturn(published);
+
+    EmailContact answered = emailContactService.createContact(manualInput("Carol", "Carol@Example.org"),
+                                                              USERNAME,
+                                                              ContactOrigin.USER_FORM);
+
+    assertEquals(EmailContactSource.CARDDAV, answered.getSource());
+  }
+
+  /**
+   * The safe-by-omission contract: a caller that says nothing about the origin
+   * gets silence, not the benefit of the doubt. This is what makes an importer
+   * written next year quiet by construction rather than by remembering to be.
+   */
+  @Test
+  void aCreateWithNoStatedOriginIsNotAnnounced() {
+    when(emailContactStorage.getContactByAddress(USERNAME, "carol@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    emailContactService.createContact(manualInput("Carol", "Carol@Example.org"), USERNAME);
+
+    verify(eventPublisher, never()).publishEvent(any(ContactAuthoredEvent.class));
+  }
+
+  @Test
+  void anExplicitlyUnattendedCreateIsNotAnnounced() {
+    when(emailContactStorage.getContactByAddress(USERNAME, "carol@example.org")).thenReturn(null);
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    emailContactService.createContact(manualInput("Carol", "Carol@Example.org"), USERNAME, ContactOrigin.UNATTENDED);
+
+    verify(eventPublisher, never()).publishEvent(any(ContactAuthoredEvent.class));
+  }
+
+  /**
+   * Collection from mail: the bulk path par excellence, and the one whose rows
+   * a user never asked for at all.
+   */
+  @Test
+  void collectedContactsAreNotAnnounced() {
+    givenBackfillDone();
+    givenWrittenTo("bob@example.org");
+    givenInboxMessages(inboxEmail("Bob", "bob@example.org", email -> {
+    }));
+
+    emailContactService.collectFromSyncedEmails(USERNAME, List.of(1L));
+
+    verify(emailContactStorage).createContact(any());
+    verify(eventPublisher, never()).publishEvent(any(ContactAuthoredEvent.class));
+  }
+
+  /**
+   * The one-time backfill: hundreds of rows at once, from mail already in the
+   * cache, with nobody watching. The exact shape of "publishing them silently
+   * would be a privacy event".
+   */
+  @Test
+  void backfilledContactsAreNotAnnounced() {
+    givenBackfillNotDone();
+    when(emailBoxStorage.getContactSourceEmails(USERNAME, MailFolder.INBOX, null))
+                                                                                  .thenReturn(List.of(inboxEmail("Bob",
+                                                                                                                 "bob@example.org",
+                                                                                                                 email -> {
+                                                                                                                 })));
+    Email sent = new Email();
+    sent.setTo(List.of(new EmailRecipient("Carol", "carol@example.org", null, false)));
+    when(emailBoxStorage.getContactSourceEmails(USERNAME, MailFolder.SENT, null)).thenReturn(List.of(sent));
+
+    emailContactService.backfillFromCacheIfNeeded(USERNAME);
+
+    verify(emailContactStorage, times(2)).createContact(any());
+    verify(eventPublisher, never()).publishEvent(any(ContactAuthoredEvent.class));
+  }
+
+  /**
+   * A directory colleague is the platform's person, not a card to copy onto a
+   * third-party server — the publish endpoint refuses the source outright, and
+   * the store never announces one either.
+   */
+  @Test
+  void importedDirectoryColleaguesAreNotAnnounced() {
+    givenDirectoryProfile("jdoe", "Jane Doe", "Jane.Doe@Example.com", "avatar", "profile-url");
+    when(emailContactStorage.createContact(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    emailContactService.importDirectoryContact(USERNAME, "jdoe");
+
+    verify(eventPublisher, never()).publishEvent(any(ContactAuthoredEvent.class));
+  }
+
+  /**
+   * The rebind hand-over rewrites rows wholesale when a mailbox goes away.
+   * Nothing is created, and nothing may be announced.
+   */
+  @Test
+  void theRebindHandoverAnnouncesNothing() {
+    when(emailContactStorage.releaseCollectedContacts(USERNAME)).thenReturn(3);
+
+    emailContactService.releaseCollectedContacts(USERNAME);
+
+    verify(eventPublisher, never()).publishEvent(any(ContactAuthoredEvent.class));
   }
 
   // ---------------------------------------------------------------- manual CRUD
