@@ -254,12 +254,15 @@ export function publishContact(id) {
 /**
  * The contacts the bulk checklist may offer.
  * <p>
- * MANUAL is the whole rule, and it is the server's: a collected row is a
- * by-product of mail traffic the user never chose to keep and a directory
- * colleague already lives in the platform, so the publish endpoint refuses
- * both, while an address-book row is skipped as already there. Asking for that
- * one source is how this list stays exactly what the server would accept
- * instead of a second copy of the rule that can drift from it.
+ * MANUAL is the whole rule, and it is the server's — the QUEUE endpoint's,
+ * which is stricter than the one-contact publish on purpose and must not be
+ * read as its rule: {@link queuePublishes} refuses a collected row where
+ * {@link publishContact} takes it, because a bulk queue is answered once for
+ * names the user is not looking at, and a collected row was inferred from mail
+ * traffic rather than chosen. A directory colleague is refused by both, and an
+ * address-book row is skipped as already there. Asking for that one source is
+ * how this list stays exactly what the queue would accept instead of a second
+ * copy of the rule that can drift from it.
  * <p>
  * Read fresh every time the drawer opens rather than filtered from the list in
  * memory: that list is paged and narrowed by whatever the user was browsing,
