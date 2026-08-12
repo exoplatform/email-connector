@@ -67,6 +67,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-contacts-drawer-actions
           :select-mode="selectMode"
           :ticked-count="tickedIds.length"
+        :selection-publishable="selectionPublishable"
           :publishing="publishing"
           :importing="importing"
           :publishable="publishable"
@@ -82,6 +83,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-if="!hasFullAppLeft"
         :select-mode="selectMode"
         :ticked-count="tickedIds.length"
+        :selection-publishable="selectionPublishable"
         :publishing="publishing"
         :importing="importing"
         :publishable="publishable"
@@ -97,7 +99,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :counts="sourceCounts" />
       <email-connector-contacts-drawer-content
         :contacts="contacts"
-        :selectable-contacts="selectableContacts"
         :letter-index="letterIndex"
         :rail-visible="railVisible"
         :selected-id="selectedContact?.id"
@@ -116,7 +117,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :counts="sourceCounts" />
         <email-connector-contacts-drawer-content
           :contacts="contacts"
-          :selectable-contacts="selectableContacts"
           :letter-index="letterIndex"
           :rail-visible="railVisible"
           :empty-label="emptyLabel"
@@ -245,6 +245,22 @@ export default {
      *
      * @returns {Array} the selectable contacts
      */
+    /**
+     * Whether every ticked contact can be published.
+     * <p>
+     * All of them, not some: the server refuses a selection containing a
+     * collected or directory contact rather than publishing the rest, so the
+     * header must offer the action on exactly the same terms.
+     *
+     * @returns {boolean} true when the whole selection is publishable
+     */
+    selectionPublishable() {
+      if (!this.tickedIds.length) {
+        return false;
+      }
+      const publishableIds = this.selectableContacts.map(contact => contact.id);
+      return this.tickedIds.every(id => publishableIds.includes(id));
+    },
     selectableContacts() {
       return (this.contacts || []).filter(contact => contact.source === 'MANUAL');
     },

@@ -52,11 +52,6 @@ export default {
     },
     // The subset "all" is allowed to mean: the loaded rows the server would
     // accept. Ticking the others is a promise the next screen breaks, so the
-    // box never reaches them.
-    selectableContacts: {
-      type: Array,
-      default: () => [],
-    },
     // Whether the list is picking contacts rather than browsing them.
     selectMode: {
       type: Boolean,
@@ -96,14 +91,18 @@ export default {
   },
   computed: {
     /**
-     * Ticks or clears every selectable row.
+     * Ticks or clears every loaded row.
+     * <p>
+     * Every row, not only the ones a given action accepts: selecting is not
+     * publishing, and what a selection can do is decided in the header, per
+     * action, once it exists.
      */
     selectedAll: {
       get() {
-        return this.selectableContacts.length > 0 && this.tickedIds.length === this.selectableContacts.length;
+        return this.contacts.length > 0 && this.tickedIds.length === this.contacts.length;
       },
       set(value) {
-        this.$emit('update:ticked-ids', value ? this.selectableContacts.map(contact => contact.id) : []);
+        this.$emit('update:ticked-ids', value ? this.contacts.map(contact => contact.id) : []);
       },
     },
   },

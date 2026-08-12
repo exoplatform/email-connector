@@ -36,14 +36,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       @export="$emit('export')"
       @bulk-publish="$emit('bulk-publish')" />
   </div>
-  <!-- Nothing ticked yet, nothing to offer: an enabled-looking action that
-       would refuse the press is worse than an empty header, and the count in
-       the title already says the mode is on. -->
+  <!-- The actions a selection can take, which is what every ticked contact has
+       in common -- not what some of them could manage. Publishing refuses a
+       mixed selection whole on the server, so offering it half-lit here would
+       promise something the next screen refuses; disabled with the reason on
+       hover is the honest shape, and it generalises to the actions that come
+       after this one. -->
   <div v-else-if="tickedCount" class="d-flex align-center">
     <v-btn
-      :title="$t('emailConnector.contacts.select.publish')"
+      :title="selectionPublishable
+        ? $t('emailConnector.contacts.select.publish')
+        : $t('emailConnector.contacts.select.notPublishable')"
       :loading="publishing"
-      :disabled="publishing"
+      :disabled="publishing || !selectionPublishable"
       icon
       @click="$emit('publish')">
       <v-icon size="18" class="icon-default-color">
@@ -75,6 +80,13 @@ export default {
     },
     // Whether this user has a reachable address book; passed through to the
     // menu, which hides its bulk-publish entry without one.
+    // Whether EVERY ticked contact can be published, which is what decides the
+    // action -- the server refuses a mixed selection whole, so a half-offered
+    // action here would be a promise it breaks.
+    selectionPublishable: {
+      type: Boolean,
+      default: false,
+    },
     publishable: {
       type: Boolean,
       default: false,
