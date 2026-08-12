@@ -64,6 +64,7 @@ import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.emailConnector.carddav.EzVCardParser;
 import org.exoplatform.emailConnector.carddav.VCardParser;
 import org.exoplatform.emailConnector.model.ContactImportState;
+import org.exoplatform.emailConnector.model.ContactOrigin;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -173,6 +174,31 @@ public class EmailContactVCardServiceTest {
     assertEquals(0, state.getAlreadyKnown());
     assertNull(state.getMessageCode());
     verify(uploadService).removeUploadResource(UPLOAD_ID);
+  }
+
+  /**
+   * The import writes its rows straight to the store, and never through the
+   * create that can announce a contact as authored — which is what keeps a
+   * 500-card file from becoming 500 cards published to a third-party address
+   * book. Pinned here rather than left to the reading of one method, because
+   * "route the import through the service create for consistency" is an
+   * entirely reasonable-looking change to make by mistake.
+   */
+  @Test
+  void anImportNeverTakesTheDoorThatCanPublish() throws Exception {
+    givenUpload("""
+        BEGIN:VCARD
+        VERSION:3.0
+        FN:Jane Doe
+        EMAIL:jane@example.com
+        END:VCARD""");
+    when(emailContactStorage.getContactByAddress(eq(USERNAME), anyString())).thenReturn(null);
+
+    service.startImport(USERNAME, UPLOAD_ID);
+
+    verify(emailContactStorage).createContact(any());
+    verify(emailContactService, never()).createContact(any(), anyString());
+    verify(emailContactService, never()).createContact(any(), anyString(), any(ContactOrigin.class));
   }
 
   @Test

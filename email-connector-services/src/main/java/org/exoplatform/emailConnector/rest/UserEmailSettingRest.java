@@ -115,6 +115,20 @@ public class UserEmailSettingRest {
     userEmailSettingService.updateAddressBookBinding(request.getRemoteUser(), userEmailSetting.getCarddavEnabled());
   }
 
+  @PutMapping("/address-book/auto-publish")
+  @Secured("users")
+  @Operation(summary = "Turns the automatic address-book push on or off for the caller",
+             method = "PUT",
+             description = "Stores whether a contact the caller authors through the contact form should be published to their CardDAV address book on its own, with no second click. Off by default, and off for every user whose settings predate it. It never covers the bulk or unattended paths - a .vcf import, the automatic collection from mail, the hand-over of a rebound mailbox, a directory colleague - which stay publishable only by an explicit click. Its own endpoint rather than a field of the address-book binding, because changing the binding releases the contacts of the book being left and a preference about future saves must not.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"), })
+  public void updateAddressBookAutoPublish(HttpServletRequest request,
+                                           @RequestBody
+                                           UserEmailSetting userEmailSetting) {
+    userEmailSettingService.updateAddressBookAutoPublish(request.getRemoteUser(), userEmailSetting.getCarddavAutoPublish());
+  }
+
   @DeleteMapping()
   @Secured("users")
   @Operation(summary = "Deletes user email setting", method = "DELETE", description = "This will delete user email setting")

@@ -65,6 +65,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.carddav.CardDavException;
 import org.exoplatform.emailConnector.carddav.CardDavPublishQueuedException;
+import org.exoplatform.emailConnector.model.ContactOrigin;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactPublishQueueEntry;
 import org.exoplatform.emailConnector.model.EmailContact;
@@ -339,7 +340,7 @@ public class EmailContactRestTest {
 
   @Test
   void createAnswersOk() throws Exception {
-    when(emailContactService.createContact(any(EmailContact.class), anyString())).thenReturn(contact(12L));
+    when(emailContactService.createContact(any(EmailContact.class), anyString(), any(ContactOrigin.class))).thenReturn(contact(12L));
     mockMvc.perform(post(CONTACTS_PATH).with(testSimpleUser())
                                        .content(asJsonString(contact(null)))
                                        .contentType(MediaType.APPLICATION_JSON)
@@ -347,9 +348,28 @@ public class EmailContactRestTest {
            .andExpect(status().isOk());
   }
 
+  /**
+   * The origin is the whole of slice 5's safety at this layer: this endpoint —
+   * and only this one — witnesses a person pressing Save on one contact, so it
+   * is the only one allowed to say so. If this ever stopped naming USER_FORM
+   * the automatic push would go quiet; if anything else started naming it,
+   * imports would publish.
+   */
+  @Test
+  void createNamesTheFormAsTheOrigin() throws Exception {
+    when(emailContactService.createContact(any(EmailContact.class), anyString(), any(ContactOrigin.class))).thenReturn(contact(12L));
+    mockMvc.perform(post(CONTACTS_PATH).with(testSimpleUser())
+                                       .content(asJsonString(contact(null)))
+                                       .contentType(MediaType.APPLICATION_JSON)
+                                       .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+
+    verify(emailContactService).createContact(any(EmailContact.class), eq(SIMPLE_USER), eq(ContactOrigin.USER_FORM));
+  }
+
   @Test
   void createWithAnInvalidAddressAnswersBadRequest() throws Exception {
-    when(emailContactService.createContact(any(EmailContact.class), anyString()))
+    when(emailContactService.createContact(any(EmailContact.class), anyString(), any(ContactOrigin.class)))
                                                                                  .thenThrow(new IllegalArgumentException(EmailContactService.CONTACT_INVALID_EMAIL));
     mockMvc.perform(post(CONTACTS_PATH).with(testSimpleUser())
                                        .content(asJsonString(contact(null)))
@@ -359,7 +379,7 @@ public class EmailContactRestTest {
 
   @Test
   void createOfAnExistingVisibleAddressAnswersConflict() throws Exception {
-    when(emailContactService.createContact(any(EmailContact.class), anyString()))
+    when(emailContactService.createContact(any(EmailContact.class), anyString(), any(ContactOrigin.class)))
                                                                                  .thenThrow(new IllegalStateException(EmailContactService.CONTACT_ALREADY_EXISTS));
     mockMvc.perform(post(CONTACTS_PATH).with(testSimpleUser())
                                        .content(asJsonString(contact(null)))
@@ -569,6 +589,28 @@ public class EmailContactRestTest {
     mockMvc.perform(get(CONTACTS_PATH + "/carddav/publishable").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.available").value(true));
+  }
+
+  @Test
+  void publishOfferAnswersTheServersOwnRule() throws Exception {
+    when(emailContactCardDavSyncService.isPublishOffered(SIMPLE_USER, 12L)).thenReturn(true);
+
+    mockMvc.perform(get(CONTACTS_PATH + "/12/publish-offer").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.offered").value(true));
+  }
+
+  /**
+   * A contact that is not the caller's answers false rather than 404 — the
+   * nudge question is not a way to learn that somebody else's contact exists.
+   */
+  @Test
+  void publishOfferOfAForeignContactAnswersFalse() throws Exception {
+    when(emailContactCardDavSyncService.isPublishOffered(anyString(), anyLong())).thenReturn(false);
+
+    mockMvc.perform(get(CONTACTS_PATH + "/12/publish-offer").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.offered").value(false));
   }
 
   /**

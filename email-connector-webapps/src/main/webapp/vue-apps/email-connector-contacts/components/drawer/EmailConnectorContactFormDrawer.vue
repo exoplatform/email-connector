@@ -367,7 +367,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import contactActionsMixin from '../../js/EmailConnectorContactActionsMixin.js';
+
 export default {
+  // For its publish action alone: the nudge shown after saving an edit must do
+  // exactly what the contact card's own "Save to my address book" does, three
+  // outcomes and three sentences included. A second publish call written here
+  // would be the same call with worse words.
+  mixins: [contactActionsMixin],
   data() {
     return {
       formDrawer: false,
@@ -717,18 +724,21 @@ export default {
           ? this.$emailConnectorContactsService.updateAddressBookContact(contact)
           : this.$emailConnectorContactsService.updateContact(contact))
         : this.$emailConnectorContactsService.createContact(contact);
-      call.then(() => {
+      // Read before close() resets them: an edit of a LOCAL row is the one save
+      // that never publishes anything -- a new contact may go out by itself
+      // when the user asked for that, and a CardDAV row's edit has just been
+      // pushed by definition -- so it is the one save worth asking about.
+      const editedLocalRow = !!this.editedId && this.editedSource !== 'CARDDAV' && this.editedSource !== 'DIRECTORY';
+      call.then(saved => {
         this.$root.$emit('email-contacts-refresh');
-        // Say so. The drawer closing is not an answer: it closes on cancel too,
-        // the edited field is often invisible in the list behind it, and for an
-        // address-book row the save travelled to a server the user cannot see.
-        // One message covers create, edit and push alike -- what matters is that
-        // the change was kept, not which of the three calls carried it.
-        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-          alertType: 'success',
-          alertMessage: this.$t('emailConnector.contacts.form.save.success'),
-        }}));
+        const savedId = saved?.id || this.editedId;
         this.close();
+        if (!editedLocalRow) {
+          this.notifySaved();
+          return;
+        }
+        return this.$emailConnectorContactsService.isPublishOffered(savedId)
+          .then(offered => this.notifySaved(offered && savedId || null));
       }).catch(error => {
         let message;
         if (error?.message?.includes('update.conflict') || error?.message?.includes('update.entryGone')) {
@@ -759,6 +769,43 @@ export default {
         // save just looks like it did nothing.
         document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType: 'error', alertMessage: message}}));
       }).finally(() => this.saving = false);
+    },
+    /**
+     * Says the contact was kept, and — when the server says it is worth asking
+     * — offers to put it in the address book too, as one click on the same
+     * toast.
+     * <p>
+     * Say so at all, because the drawer closing is not an answer: it closes on
+     * cancel too, the edited field is often invisible in the list behind it,
+     * and for an address-book row the save travelled to a server the user
+     * cannot see. One message covers create, edit and push alike — what matters
+     * is that the change was kept, not which of the three calls carried it.
+     * <p>
+     * And the nudge is an OFFER, never a second silent write: editing a contact
+     * that lives only here does not send it anywhere, on purpose, because
+     * nobody asked for that when they typed a phone number. The one click is
+     * the asking. It rides the toast rather than a dialog for the same reason
+     * the rest of this app's outcomes do — an ignored toast leaves the world
+     * exactly as the user left it.
+     *
+     * @param {number} publishableId - the contact to offer publishing, or
+     *          nothing for the plain confirmation
+     * @returns {void}
+     */
+    notifySaved(publishableId) {
+      const detail = {
+        alertType: 'success',
+        alertMessage: this.$t(publishableId ? 'emailConnector.contacts.form.save.successPublishable'
+          : 'emailConnector.contacts.form.save.success'),
+      };
+      if (publishableId) {
+        detail.alertLinkText = this.$t('emailConnector.contacts.form.save.publish');
+        // The card's own publish, mixed in rather than re-written: its queued
+        // and refused outcomes have their own words, and this toast is gone by
+        // the time the server answers anyway.
+        detail.alertLinkCallback = () => this.publishContactCard({id: publishableId});
+      }
+      document.dispatchEvent(new CustomEvent('alert-message', {detail}));
     },
     /**
      * Closes and resets the drawer.
