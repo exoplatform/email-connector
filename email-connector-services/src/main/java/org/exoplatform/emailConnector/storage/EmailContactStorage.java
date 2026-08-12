@@ -592,18 +592,6 @@ public class EmailContactStorage {
   }
 
   /**
-   * Turns a row the address book no longer has back into a collected contact:
-   * the server bookkeeping goes, the person stays.
-   * <p>
-   * For a contact with correspondence behind it, deleting would throw away
-   * history the mailbox earned; the address book losing an entry says nothing
-   * about whether the user still writes to them.
-   *
-   * @param id the row id
-   * @param deletePhoto whether the stored picture came from the address book and
-   *          should go with it
-   */
-  /**
    * Turns every collected contact of a user into one they hold themselves,
    * forgetting the correspondence the old mailbox earned.
    * <p>
@@ -642,9 +630,25 @@ public class EmailContactStorage {
     return released;
   }
 
+  /**
+   * Turns a row an address book no longer accounts for into an ordinary local
+   * contact: the server bookkeeping goes, the person stays, under whichever
+   * source the caller says is still true of them — COLLECTED when the mailbox
+   * vouches for the person, MANUAL when nothing but the user does.
+   * <p>
+   * A row handed over as MANUAL also loses its correspondence counters, the
+   * rule {@link #releaseCollectedContacts} already applies: they rank
+   * autocomplete, and a MANUAL row claims no correspondence to rank by.
+   *
+   * @param id the row id
+   * @param deletePhoto whether the stored picture came from the address book
+   *          and should go with it
+   * @param targetSource the source the row becomes — the caller's business
+   *          rule, carried here verbatim
+   */
   @SneakyThrows
   @Transactional
-  public void demoteCardDavRow(long id, boolean deletePhoto) {
+  public void demoteCardDavRow(long id, boolean deletePhoto, String targetSource) {
     EmailContactEntity entity = emailContactDAO.findById(id).orElse(null);
     if (entity == null) {
       return;
@@ -654,13 +658,50 @@ public class EmailContactStorage {
       entity.setPhotoFileId(null);
       entity.setPhotoOrigin(null);
     }
-    entity.setSource(EmailContactSource.COLLECTED);
+    entity.setSource(targetSource);
+    if (EmailContactSource.MANUAL.equals(targetSource)) {
+      entity.setSeenCount(0);
+      entity.setLastSeenDate(null);
+    }
     entity.setHref(null);
     entity.setEtag(null);
     entity.setVcardUid(null);
     entity.setConnectorId(null);
     entity.setUpdatedDate(new Date());
     emailContactDAO.save(entity);
+  }
+
+  /**
+   * Hard-deletes EVERY row this user holds — all sources, suppressed
+   * tombstones included — with the pictures and address rows filed under them.
+   * <p>
+   * This is the start-fresh wipe behind switching providers, and it only ever
+   * runs AFTER the whole store left as a .vcf in the user's hands: the
+   * export-then-delete ordering is the service layer's contract
+   * ({@code EmailContactVCardService#exportContactsThenStartFresh}), and this
+   * method stays a dumb sweep on purpose — one method, no partial modes, so
+   * there is no way to call "delete some of it" by accident. Tombstones go
+   * too: they are decisions about people of the account being left, and
+   * carrying them into a fresh start would silently hide whoever the next
+   * account legitimately collects at the same address.
+   *
+   * @param userId the store owner
+   * @return the ids of the deleted rows — what the caller needs to drop the
+   *         bookkeeping (favorites) that lives outside this table
+   */
+  @Transactional
+  public List<Long> deleteAllContacts(String userId) {
+    List<EmailContactEntity> rows = emailContactDAO.findByUserId(userId);
+    List<Long> ids = new ArrayList<>();
+    for (EmailContactEntity entity : rows) {
+      if (entity.getPhotoFileId() != null) {
+        deletePhotoFile(entity.getPhotoFileId());
+      }
+      emailContactAddressDAO.deleteByContactId(entity.getId());
+      emailContactDAO.delete(entity);
+      ids.add(entity.getId());
+    }
+    return ids;
   }
 
   /**

@@ -375,7 +375,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(emailContactStorage).demoteCardDavRow(4L, true);
+    verify(emailContactStorage).demoteCardDavRow(4L, true, EmailContactSource.COLLECTED);
     verify(emailContactStorage, never()).deleteContact(anyLong());
   }
 
@@ -395,7 +395,7 @@ public class EmailContactCardDavSyncServiceTest {
     syncService.syncAddressBook(USERNAME);
 
     verify(emailContactStorage).deleteContact(4L);
-    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean());
+    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean(), anyString());
     // The row is gone for real, so its favorite goes with it; a demoted row keeps
     // its favorite on purpose, the person being still there.
     verify(emailContactFavoriteService).removeFavorite(4L, USERNAME);
@@ -450,7 +450,7 @@ public class EmailContactCardDavSyncServiceTest {
     // ...and that row survives the run, whatever the pre-apply snapshot
     // remembers its href to have been.
     verify(emailContactStorage, never()).deleteContact(anyLong());
-    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean());
+    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean(), anyString());
     verify(emailContactFavoriteService, never()).removeFavorite(anyLong(), anyString());
   }
 
@@ -550,7 +550,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(emailContactStorage).demoteCardDavRow(4L, true);
+    verify(emailContactStorage).demoteCardDavRow(4L, true, EmailContactSource.COLLECTED);
     verify(emailContactStorage, never()).deleteContact(anyLong());
   }
 
@@ -610,26 +610,30 @@ public class EmailContactCardDavSyncServiceTest {
   }
 
   @Test
-  void rebindingToAnotherProviderLetsGoOfTheBookLeftBehind() {
-    // The rows the old provider wrote answer to a connector this user no longer has.
-    // Nothing else would ever look at them again: a sync only reads the rows of its
-    // own connector, so without this they stay in the store for good.
-    CardDavRow written = row(1L, "someone@old.example", EmailContactSource.CARDDAV, false, 0, "/old/1.vcf", "e1", null, PhotoOrigin.VCARD);
+  void rebindingToAnotherProviderKeepsEveryContactOfTheBookLeftBehind() {
+    // The rows the old provider wrote answer to a connector this user no longer
+    // has, so their bookkeeping must go -- but the PEOPLE all stay. This release
+    // used to delete the rows nothing but the old book vouched for, which is how
+    // one rebind silently removed 489 contacts: a listener cannot ask, so it may
+    // not assume the destructive answer. Deleting is now exclusively the
+    // start-fresh choice, made by the user with the backup already downloaded.
+    CardDavRow bookOnly = row(1L, "someone@old.example", EmailContactSource.CARDDAV, false, 0, "/old/1.vcf", "e1", null, PhotoOrigin.VCARD);
     CardDavRow corresponded = row(2L, "colleague@old.example", EmailContactSource.CARDDAV, false, 12, "/old/2.vcf", "e2", null, PhotoOrigin.VCARD);
-    when(emailContactStorage.getAllCardDavRows(USERNAME)).thenReturn(List.of(written, corresponded));
+    when(emailContactStorage.getAllCardDavRows(USERNAME)).thenReturn(List.of(bookOnly, corresponded));
     when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
 
     syncService.releaseUnboundBooks(USERNAME);
 
-    // Only the old book ever vouched for the first one, so leaving the provider takes
-    // it along. The second is someone the user actually writes to.
-    verify(emailContactStorage).deleteContact(1L);
-    verify(emailContactStorage).demoteCardDavRow(2L, true);
-    verify(emailContactStorage, never()).deleteContact(2L);
-    // And the favorite follows its row: dropped with the deleted one, kept with
-    // the demoted one.
-    verify(emailContactFavoriteService).removeFavorite(1L, USERNAME);
-    verify(emailContactFavoriteService, never()).removeFavorite(2L, USERNAME);
+    // Nothing but the old book vouches for the first: it becomes the user's own
+    // MANUAL contact -- "collected" would claim a mail history that never
+    // existed. The second is someone the user actually writes to, so the
+    // mailbox's own label fits until the ordered cleanup listener hands it over.
+    verify(emailContactStorage).demoteCardDavRow(1L, false, EmailContactSource.MANUAL);
+    verify(emailContactStorage).demoteCardDavRow(2L, false, EmailContactSource.COLLECTED);
+    // The keep path removes NOTHING: no rows, no favorites, and -- deletePhoto
+    // false above -- no pictures either; the person kept keeps their face.
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+    verify(emailContactFavoriteService, never()).removeFavorite(anyLong(), anyString());
   }
 
   @Test
@@ -643,7 +647,7 @@ public class EmailContactCardDavSyncServiceTest {
     // Saving settings raises this too. It must cost nothing when the binding has not
     // actually changed, or every save would throw away a book and re-download it.
     verify(emailContactStorage, never()).deleteContact(anyLong());
-    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean());
+    verify(emailContactStorage, never()).demoteCardDavRow(anyLong(), anyBoolean(), anyString());
     verify(userEmailSettingService, never()).setContactSyncState(any(), anyString());
   }
 
@@ -658,7 +662,33 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.releaseUnboundBooks(USERNAME);
 
-    verify(emailContactStorage).deleteContact(1L);
+    // Released, but kept: switching the book off is not an instruction to
+    // delete the people that came from it.
+    verify(emailContactStorage).demoteCardDavRow(1L, false, EmailContactSource.MANUAL);
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+  }
+
+  @Test
+  void anAccountWithNoAddressBookAtAllStillKeepsTheContacts() {
+    // The "keep my contacts" promise must not depend on the NEW account having
+    // CardDAV: a user leaving a DAV provider for a plain-IMAP one keeps
+    // everybody, with no book bound, no sync coming, and nothing deleted.
+    UserEmailSetting plainImap = new UserEmailSetting();
+    plainImap.setEmailConnectorId("99");
+    plainImap.setCarddavEnabled(false);
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(plainImap);
+    CardDavRow bookOnly = row(1L, "someone@old.example", EmailContactSource.CARDDAV, false, 0, "/old/1.vcf", "e1", null, PhotoOrigin.VCARD);
+    CardDavRow corresponded = row(2L, "colleague@old.example", EmailContactSource.CARDDAV, false, 3, "/old/2.vcf", "e2", null, PhotoOrigin.VCARD);
+    when(emailContactStorage.getAllCardDavRows(USERNAME)).thenReturn(List.of(bookOnly, corresponded));
+
+    syncService.releaseUnboundBooks(USERNAME);
+
+    verify(emailContactStorage).demoteCardDavRow(1L, false, EmailContactSource.MANUAL);
+    verify(emailContactStorage).demoteCardDavRow(2L, false, EmailContactSource.COLLECTED);
+    verify(emailContactStorage, never()).deleteContact(anyLong());
+    verify(emailContactFavoriteService, never()).removeFavorite(anyLong(), anyString());
+    // The old book's bookkeeping still goes: sync state forgotten, queue cleared.
+    verify(userEmailSettingService).clearContactPublishQueue(USERNAME);
   }
 
   @Test
