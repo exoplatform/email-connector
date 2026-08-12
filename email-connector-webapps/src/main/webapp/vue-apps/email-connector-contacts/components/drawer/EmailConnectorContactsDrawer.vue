@@ -71,11 +71,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :publishing="publishing"
           :importing="importing"
           :publishable="publishable"
+          :selection-composable="selectionComposable"
+          :selection-exportable="selectionExportable"
+          :selection-shareable="selectionShareable"
+          :selection-deletable="selectionDeletable"
+          :selection-favorite-state="selectionFavoriteState"
+          :chat-deployed="chatDeployed"
+          :working="selectionWorking"
+          :deleting="deleting"
           @add="openForm()"
           @import="onImportFile"
           @export="onExport"
           @bulk-publish="startSelectMode"
-          @publish="publishTicked" />
+          @publish="publishTicked"
+          @compose-selection="composeToSelection"
+          @export-selection="exportSelection"
+          @send-selection-email="sendSelectionByEmail"
+          @send-selection-chat="sendSelectionByChat"
+          @toggle-selection-favorite="toggleSelectionFavorite"
+          @delete-selection="deleteSelection" />
       </div>
     </template>
     <template #titleIcons>
@@ -87,11 +101,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :publishing="publishing"
         :importing="importing"
         :publishable="publishable"
+        :selection-composable="selectionComposable"
+        :selection-exportable="selectionExportable"
+        :selection-shareable="selectionShareable"
+        :selection-deletable="selectionDeletable"
+        :selection-favorite-state="selectionFavoriteState"
+        :chat-deployed="chatDeployed"
+        :working="selectionWorking"
+        :deleting="deleting"
         @add="openForm()"
         @import="onImportFile"
         @export="onExport"
         @bulk-publish="startSelectMode"
-        @publish="publishTicked" />
+        @publish="publishTicked"
+        @compose-selection="composeToSelection"
+        @export-selection="exportSelection"
+        @send-selection-email="sendSelectionByEmail"
+        @send-selection-chat="sendSelectionByChat"
+        @toggle-selection-favorite="toggleSelectionFavorite"
+        @delete-selection="deleteSelection" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <email-connector-contacts-source-filter
@@ -158,10 +186,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :ok-label="$t('emailConnector.contacts.select.publish')"
       :cancel-label="$t('emailConnector.contacts.form.cancel')"
       @ok="doPublishTicked" />
+    <!-- The other checkpoint, and the only other action here that cannot be
+         taken back. The message names the count AND what happens to each kind
+         of row, because "delete" means two different things in one list: a
+         contact added by hand goes, a collected one stops showing until its
+         next mail brings it back. -->
+    <exo-confirm-dialog
+      ref="deleteConfirmDialog"
+      :title="$t('emailConnector.contacts.select.delete.confirm.title')"
+      :message="$t('emailConnector.contacts.select.delete.confirm.message', [tickedIds.length])"
+      :ok-label="$t('emailConnector.contacts.detail.delete')"
+      :cancel-label="$t('emailConnector.contacts.form.cancel')"
+      @ok="doDeleteSelection" />
   </exo-drawer>
 </template>
 
 <script>
+import contactActionsMixin from '../../js/EmailConnectorContactActionsMixin.js';
+import {MAX_EXPORT_IDS} from '../../js/EmailConnectorContactsService.js';
+
 const PAGE_SIZE = 200;
 const SOURCES = ['collected', 'manual', 'directory', 'addressBook'];
 const MAX_ROWS = 5000;
@@ -172,6 +215,10 @@ const IMPORT_MAX_FILE_BYTES = 20 * 1024 * 1024;
 const IMPORT_POLL_MS = 1500;
 
 export default {
+  // The card's and the row menu's handlers, plural forms included: what a
+  // selection does is what one contact does, done to several, so it must not
+  // be a second implementation that can drift from theirs.
+  mixins: [contactActionsMixin],
   data() {
     return {
       contactsDrawer: false,
@@ -203,7 +250,6 @@ export default {
       // is filtered and searched exactly like what is being looked at.
       selectMode: false,
       tickedIds: [],
-      publishing: false,
       importPollTimeout: null,
       // True from the moment a file is chosen until the server's answer or the
       // poll says the run ended — the window the menu greys Import out for.
@@ -265,6 +311,110 @@ export default {
     },
     selectableContacts() {
       return (this.contacts || []).filter(contact => contact.source === 'MANUAL');
+    },
+    /**
+     * The ticked rows themselves, in the order the list shows them — which is
+     * what every rule below is decided on, and the order a selection leaves in
+     * (an exported file reads alphabetically, not in click order).
+     *
+     * @returns {Array} the ticked contacts
+     */
+    tickedContacts() {
+      const ticked = new Set(this.tickedIds);
+      return (this.contacts || []).filter(contact => ticked.has(contact.id));
+    },
+    /**
+     * Whether every ticked id resolved to a loaded row.
+     * <p>
+     * It normally does — ticking happens in the list. But a reload can drop a
+     * row a filter no longer matches, and a rule decided on rows we no longer
+     * hold would be a guess. An unresolved tick means no action is offered
+     * rather than one offered on incomplete evidence.
+     *
+     * @returns {boolean} true when the whole selection is accounted for
+     */
+    selectionKnown() {
+      return this.tickedContacts.length === this.tickedIds.length;
+    },
+    /**
+     * Whether the selection can be written to: every ticked contact needs an
+     * address, since a composer opened with three of five recipients would
+     * quietly drop two people the user meant to write to.
+     *
+     * @returns {boolean} true when everybody has an address
+     */
+    selectionComposable() {
+      return this.selectionKnown && !!this.tickedContacts.length
+        && this.tickedContacts.every(contact => !!contact.primaryEmail);
+    },
+    /**
+     * Whether the selection can be handed over whole — exported, mailed or sent
+     * to the chat. All of those build one file out of the rows we hold, so an
+     * unresolved tick would quietly produce a file with somebody missing from
+     * it, which is the one outcome none of these actions may have.
+     *
+     * @returns {boolean} true when every ticked row is accounted for
+     */
+    selectionShareable() {
+      return this.selectionKnown && !!this.tickedContacts.length;
+    },
+    /**
+     * Whether the selection can be exported: the ids ride in the export URL's
+     * query string, so past the server's cap the request line itself is the
+     * limit — and the whole-store export is the right tool anyway.
+     *
+     * @returns {boolean} true when the selection fits one export
+     */
+    selectionExportable() {
+      return !!this.tickedIds.length && this.tickedIds.length <= MAX_EXPORT_IDS;
+    },
+    /**
+     * Whether the selection can be deleted, which it can only be when NO ticked
+     * contact is an address-book row.
+     * <p>
+     * Removing a published card from the address-book server is deliberately not
+     * built. Deleting such a row here would delete it locally while it lives on
+     * at the provider, and the next sync would pull it straight back — which
+     * reads exactly like a bug, and is worse than not offering the action.
+     *
+     * @returns {boolean} true when nothing ticked lives on somebody's server
+     */
+    selectionDeletable() {
+      return this.selectionKnown && !!this.tickedContacts.length
+        && this.tickedContacts.every(contact => contact.source !== 'CARDDAV');
+    },
+    /**
+     * What the selection's stars have in common: 'all', 'none', or 'mixed' when
+     * they disagree — in which case neither "add" nor "remove" is the action
+     * the user asked for, so neither is offered.
+     *
+     * @returns {string} 'all', 'none', 'mixed', or 'unknown' for no usable
+     *          selection
+     */
+    selectionFavoriteState() {
+      if (!this.selectionKnown || !this.tickedContacts.length) {
+        return 'unknown';
+      }
+      const starred = this.tickedContacts.filter(contact => contact.favorite).length;
+      return starred === 0 && 'none' || starred === this.tickedContacts.length && 'all' || 'mixed';
+    },
+    /**
+     * Whether the chat is on this platform, hence whether a selection can be
+     * sent into a conversation at all.
+     *
+     * @returns {boolean} true when the chat add-on is deployed
+     */
+    chatDeployed() {
+      return this.$emailConnectorContactsService.isChatDeployed();
+    },
+    /**
+     * Whether a bulk call is in flight, so the header says so rather than
+     * inviting a second press that would run the same writes twice.
+     *
+     * @returns {boolean} true while a selection action is running
+     */
+    selectionWorking() {
+      return this.bulkWorking || this.deleting;
     },
     /**
      * What the header says the drawer is doing: its name while browsing, the
@@ -460,6 +610,74 @@ export default {
           alertMessage: this.$t('emailConnector.contacts.select.error'),
         }})))
         .finally(() => this.publishing = false);
+    },
+    /**
+     * Writes to everybody ticked. Picking ends here: the composer takes over
+     * the screen, and a checklist waiting underneath it is a selection nobody
+     * comes back to.
+     *
+     * @returns {void}
+     */
+    composeToSelection() {
+      this.composeToContacts(this.tickedContacts);
+      this.cancelSelectMode();
+    },
+    /**
+     * Downloads what was ticked as one .vcf.
+     *
+     * @returns {void}
+     */
+    exportSelection() {
+      this.$emailConnectorContactsService.downloadExport(this.tickedContacts.map(contact => contact.id));
+      this.cancelSelectMode();
+    },
+    /**
+     * Shares what was ticked by email, as one multi-card file.
+     *
+     * @returns {void}
+     */
+    sendSelectionByEmail() {
+      this.sendContactsByEmail(this.tickedContacts);
+      this.cancelSelectMode();
+    },
+    /**
+     * Shares what was ticked into a chat conversation.
+     *
+     * @returns {void}
+     */
+    sendSelectionByChat() {
+      this.sendContactsByChat(this.tickedContacts);
+      this.cancelSelectMode();
+    },
+    /**
+     * Stars or unstars what was ticked — whichever the selection is not
+     * already, which is the only unambiguous answer when they all agree.
+     *
+     * @returns {void}
+     */
+    toggleSelectionFavorite() {
+      const favorite = this.selectionFavoriteState === 'none';
+      this.setContactsFavorite(this.tickedContacts, favorite).then(() => this.cancelSelectMode());
+    },
+    /**
+     * Removes what was ticked, after saying how many — the same checkpoint
+     * publishing keeps, for the same reason: this is the last point at which
+     * the number can still be wrong and the user can still say no.
+     *
+     * @returns {void}
+     */
+    deleteSelection() {
+      if (this.tickedIds.length) {
+        this.$refs.deleteConfirmDialog.open();
+      }
+    },
+    /**
+     * Removes what was ticked, once the count has been confirmed.
+     *
+     * @returns {void}
+     */
+    doDeleteSelection() {
+      this.removeContactCards(this.tickedContacts).then(() => this.cancelSelectMode());
     },
     /**
      * Opens the drawer and loads the store on the way in. A caller may name a

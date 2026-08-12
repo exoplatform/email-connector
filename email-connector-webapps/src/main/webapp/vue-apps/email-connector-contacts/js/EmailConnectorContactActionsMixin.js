@@ -36,6 +36,10 @@ export default {
     return {
       publishing: false,
       deleting: false,
+      // A bulk call is in flight. Its own flag rather than a shared one: a
+      // selection's actions are several, and greying the wrong one out is the
+      // bug this avoids.
+      bulkWorking: false,
     };
   },
   methods: {
@@ -139,6 +143,109 @@ export default {
         .finally(() => this.deleting = false);
     },
     /**
+     * Writes to everybody in a selection at once — the composer opens with all
+     * of them as recipients.
+     *
+     * @param {Array} contacts - the contacts to write to
+     * @returns {void}
+     */
+    composeToContacts(contacts) {
+      this.$emailConnectorContactsService.composeToMany(contacts.map(contact => ({
+        name: contact.displayName || '',
+        address: contact.primaryEmail,
+      })));
+    },
+    /**
+     * Shares a selection by email: the composer opens with the people attached
+     * and nobody addressed, exactly as sharing one contact does.
+     * <p>
+     * One contact takes the single-card path rather than the multi-card one, so
+     * sharing the row you happened to tick sends the very file its own menu
+     * would have sent, named after the person rather than "1 contacts.vcf".
+     *
+     * @param {Array} contacts - the contacts to share
+     * @returns {void}
+     */
+    sendContactsByEmail(contacts) {
+      if (contacts.length === 1) {
+        this.sendContactByEmail(contacts[0]);
+        return;
+      }
+      this.$emailConnectorContactsService.sendManyByEmail(contacts);
+    },
+    /**
+     * Shares a selection into a chat conversation, as one file the chat asks a
+     * destination for. One contact takes the single-card path, for the same
+     * reason as by email.
+     *
+     * @param {Array} contacts - the contacts to share
+     * @returns {void}
+     */
+    sendContactsByChat(contacts) {
+      if (contacts.length === 1) {
+        this.sendContactByChat(contacts[0]);
+        return;
+      }
+      this.$emailConnectorContactsService.sendManyByChat(contacts)
+        .catch(() => this.notifyContactAction('error', 'emailConnector.contacts.select.sendByChat.error'));
+    },
+    /**
+     * Stars or unstars a whole selection.
+     * <p>
+     * Reported by the numbers rather than by a thrown failure: a hundred rows
+     * are a hundred calls, and "eleven could not be starred" is the only honest
+     * sentence when eleven of them refused.
+     *
+     * @param {Array} contacts - the contacts to star or unstar
+     * @param {boolean} favorite - true to star, false to unstar
+     * @returns {Promise<void>} resolves once every call has been answered
+     */
+    setContactsFavorite(contacts, favorite) {
+      this.bulkWorking = true;
+      return this.$emailConnectorContactsService.setFavorites(contacts.map(contact => contact.id), favorite)
+        .then(outcome => {
+          if (outcome.failed) {
+            this.notifyContactAction('error', favorite ? 'emailConnector.contacts.select.favorite.error'
+              : 'emailConnector.contacts.select.unfavorite.error');
+          } else {
+            this.notifyContactCount(favorite ? 'emailConnector.contacts.select.favorite.done'
+              : 'emailConnector.contacts.select.unfavorite.done', outcome.done);
+          }
+          this.$root.$emit('email-contacts-refresh');
+        })
+        .finally(() => this.bulkWorking = false);
+    },
+    /**
+     * Deletes or suppresses a whole selection, per each row's own source — the
+     * server decides that per contact, exactly as it does for one.
+     * <p>
+     * No per-row undo is offered here, unlike the single delete: a selection of
+     * fifty collected rows would raise fifty undo toasts, each about a contact
+     * the user can no longer point at. The confirmation named the count before
+     * anything happened, which is where this action's safety lives.
+     *
+     * @param {Array} contacts - the contacts to remove
+     * @returns {Promise} resolves once every call has been answered
+     */
+    removeContactCards(contacts) {
+      if (contacts.length === 1) {
+        // One row takes the single delete, undo included: a suppression the
+        // user can still point at is worth offering back.
+        return this.removeContactCard(contacts[0]);
+      }
+      this.deleting = true;
+      return this.$emailConnectorContactsService.deleteContacts(contacts.map(contact => contact.id))
+        .then(outcome => {
+          if (outcome.failed) {
+            this.notifyContactAction('error', 'emailConnector.contacts.select.delete.error');
+          } else {
+            this.notifyContactCount('emailConnector.contacts.select.delete.done', outcome.done);
+          }
+          this.$root.$emit('email-contacts-refresh');
+        })
+        .finally(() => this.deleting = false);
+    },
+    /**
      * The honest label of the delete action. A manual or directory-linked
      * contact deletes for real, both existing by an explicit act; a collected
      * one is only removed from the list, because the next mail from that person
@@ -164,6 +271,20 @@ export default {
      */
     notifyContactAction(alertType, messageCode) {
       document.dispatchEvent(new CustomEvent('alert-message', {detail: {alertType, alertMessage: this.$t(messageCode)}}));
+    },
+    /**
+     * Says how a bulk action went, with the number it acted on — which is the
+     * only part of "done" a selection's outcome can be checked against.
+     *
+     * @param {string} messageCode - the bundle key, taking the count as {0}
+     * @param {number} count - how many contacts were acted on
+     * @returns {void}
+     */
+    notifyContactCount(messageCode, count) {
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'success',
+        alertMessage: this.$t(messageCode, [count]),
+      }}));
     },
   },
 };
