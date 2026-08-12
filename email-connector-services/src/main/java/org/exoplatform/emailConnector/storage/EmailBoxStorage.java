@@ -34,6 +34,7 @@ import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
@@ -118,10 +119,117 @@ public class EmailBoxStorage {
       email.setRead(Boolean.TRUE.equals(row[4]));
       email.setRecent(Boolean.TRUE.equals(row[5]));
       email.setStarred(Boolean.TRUE.equals(row[6]));
+      // Carried by the light view because the sync's cleanup has to be able to tell a
+      // draft the user is still writing from a message the server no longer has — and
+      // "not in the server window" looks identical for the two. See
+      // EmailBoxService#cleanupObsoleteEmails.
+      email.setDraftState((DraftState) row[7]);
       email.setUserId(userId);
       email.setFolder(folder);
       return email;
     }).toList();
+  }
+
+  /**
+   * A draft by the composer's own handle on it, loaded in full (body and
+   * recipients) because every caller either resumes it in the composer or rebuilds
+   * the MIME message from it.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @return the draft, or null when the user has no draft under that id
+   */
+  public Email getDraftByLocalId(String userId, String draftLocalId) {
+    if (StringUtils.isBlank(draftLocalId)) {
+      return null;
+    }
+    List<EmailBoxEntity> entities = emailBoxDao.findByUserIdAndDraftLocalId(userId, draftLocalId);
+    return entities.isEmpty() ? null : fromEntity(entities.get(0), true, false, userId, null, true, false);
+  }
+
+  /**
+   * Writes a draft: a new row the first time, an in-place update of the same row
+   * every time after. This is deliberately NOT {@link #createEmail(Email)} with an
+   * id set. createEmail builds a whole entity out of a DTO and hands it to
+   * {@code save}, which on an existing id becomes a merge that overwrites every
+   * column with whatever the DTO happened to carry — fine for the sync, which owns
+   * the entire row it just built from a server message, and wrong for a draft,
+   * whose row also carries columns the composer knows nothing about (the thread it
+   * was merged into, its Message-ID, the IMAP UID of the copy on the server). So
+   * the existing row is loaded and only the fields a draft edit can legitimately
+   * change are applied.
+   * <p>
+   * The revision guard lives here rather than in the service because it is a
+   * property of the row, not of the caller: an autosave that arrives carrying a
+   * revision the row has already reached is a request from a moment the user has
+   * typed past, and applying it would revert their newest sentence. It is dropped,
+   * and the row as it stands is returned so the caller can see what won.
+   * <p>
+   * This method is the EDIT path only. Recording where an uploaded copy landed is
+   * {@link #markDraftUploaded}, and it is deliberately not the same call: that write
+   * carries no new text and must not look like an edit that has arrived too late.
+   *
+   * @param draft the draft to write; no matching row means a first save
+   * @return the row as it now stands — the incoming draft when it was applied, the
+   *         stored one when an out-of-order save was dropped
+   */
+  public Email saveDraft(Email draft) {
+    if (draft == null || StringUtils.isBlank(draft.getDraftLocalId())) {
+      throw new IllegalArgumentException("draftLocalId is mandatory");
+    }
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalId(draft.getUserId(), draft.getDraftLocalId());
+    if (existing.isEmpty()) {
+      return createEmail(draft);
+    }
+    EmailBoxEntity entity = existing.get(0);
+    Long storedRevision = entity.getDraftRevision();
+    Long incomingRevision = draft.getDraftRevision();
+    if (storedRevision != null && incomingRevision != null && incomingRevision <= storedRevision) {
+      return fromEntity(entity, true, false, draft.getUserId(), null, true, false);
+    }
+    entity.setSubject(draft.getSubject());
+    entity.setBody(draft.getContent() != null ? draft.getContent().getBody() : null);
+    entity.setTo(toRecipientsString(draft.getTo()));
+    entity.setCc(toRecipientsString(draft.getCc()));
+    entity.setBcc(toRecipientsString(draft.getBcc()));
+    entity.setReceivedDate(draft.getReceivedDate());
+    entity.setDraftState(draft.getDraftState());
+    entity.setDraftRevision(incomingRevision);
+    entity.setDraftUpdatedDate(draft.getDraftUpdatedDate());
+    return fromEntity(emailBoxDao.save(entity), true, false, draft.getUserId(), null, true, false);
+  }
+
+  /**
+   * Records that a draft's text now also lives on the server, under a given IMAP
+   * UID — the upload path's bookkeeping, and the only place a draft becomes
+   * {@link DraftState#SYNCED}.
+   * <p>
+   * It applies only if the row is still at the revision that was uploaded. The
+   * service holds the draft's lock across the whole upload, so in practice nothing
+   * can have moved; the check is here anyway because the consequence of being wrong
+   * is precisely the failure this feature exists to prevent — a row marked as
+   * safely on the server while carrying a sentence that was never sent up. If the
+   * revision has moved, the UID is still worth keeping (it is where the previous
+   * copy lives, which is what a later slice needs in order to remove it) but the
+   * state stays whatever it was, so the next push still runs.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param mailRemoteId the IMAP UID of the copy just appended
+   * @param uploadedRevision the revision whose text was uploaded
+   * @return the row as it now stands, or null when there is no such draft
+   */
+  public Email markDraftUploaded(String userId, String draftLocalId, long mailRemoteId, Long uploadedRevision) {
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalId(userId, draftLocalId);
+    if (existing.isEmpty()) {
+      return null;
+    }
+    EmailBoxEntity entity = existing.get(0);
+    entity.setMailRemoteId(mailRemoteId);
+    if (Objects.equals(entity.getDraftRevision(), uploadedRevision)) {
+      entity.setDraftState(DraftState.SYNCED);
+    }
+    return fromEntity(emailBoxDao.save(entity), true, false, userId, null, true, false);
   }
 
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
@@ -471,7 +579,11 @@ public class EmailBoxStorage {
                                                          email.isHasListPost(),
                                                          email.isHasListUnsubscribe(),
                                                          email.getOriginalSender(),
-                                                         email.isStarred());
+                                                         email.isStarred(),
+                                                         email.getDraftLocalId(),
+                                                         email.getDraftState(),
+                                                         email.getDraftRevision(),
+                                                         email.getDraftUpdatedDate());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -530,7 +642,11 @@ public class EmailBoxStorage {
                               emailBoxEntity.isHasListPost(),
                               emailBoxEntity.isHasListUnsubscribe(),
                               emailBoxEntity.getOriginalSender(),
-                              emailBoxEntity.isStarred());
+                              emailBoxEntity.isStarred(),
+                              emailBoxEntity.getDraftLocalId(),
+                              emailBoxEntity.getDraftState(),
+                              emailBoxEntity.getDraftRevision(),
+                              emailBoxEntity.getDraftUpdatedDate());
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());

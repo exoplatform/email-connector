@@ -552,6 +552,53 @@ public class EmailBoxRest {
     }
   }
 
+  @PostMapping("/drafts")
+  @Secured("users")
+  @Operation(summary = "Saves a draft", method = "POST",
+             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public Email saveDraft(HttpServletRequest request,
+                         @Parameter(description = "The composed draft", required = true)
+                         @RequestBody
+                         Email draft,
+                         @Parameter(description = "When true, also upload the draft to the mail server's Drafts folder")
+                         @RequestParam(value = "push", required = false, defaultValue = "false")
+                         boolean push) {
+    try {
+      if (draft == null) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+      }
+      return emailBoxService.saveDraft(draft, request.getRemoteUser(), push);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  @DeleteMapping("/drafts/{draftLocalId}")
+  @Secured("users")
+  @Operation(summary = "Discards a draft", method = "DELETE",
+             description = "Removes the locally-stored draft. Answers 404 for an id the caller has no draft under, so a draft id never reveals whether it exists.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public ResponseEntity<String> deleteDraft(HttpServletRequest request,
+                                            @Parameter(description = "The draft's local id", required = true)
+                                            @PathVariable("draftLocalId")
+                                            String draftLocalId) {
+    try {
+      if (!emailBoxService.deleteDraft(draftLocalId, request.getRemoteUser())) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return ResponseEntity.ok().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
   @GetMapping("/attachments/{mailRemoteId}/{attachmentId}")
   @Secured("users")
   @Operation(summary = "Gets attachment by mail remote id and attachment id", method = "GET", description = "This will get attachment by mail remote id and attachment id")

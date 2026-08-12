@@ -50,6 +50,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import javax.activation.DataHandler;
@@ -78,6 +80,7 @@ import javax.mail.search.AndTerm;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
 import javax.mail.search.FromStringTerm;
+import javax.mail.search.HeaderTerm;
 import javax.mail.search.MessageIDTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
@@ -95,6 +98,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.sun.mail.imap.AppendUID;
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
@@ -116,6 +120,7 @@ import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
+import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -372,6 +377,23 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE                  =
                                                                              "User %s is not allowed to archive email";
 
+  /**
+   * The administrator's kill switch for the server-side half of drafts, in the
+   * style of {@code email.connector.contacts.publish.enabled}: a JVM property read
+   * on every call, so flipping it needs no restart. Default ON. Turning it off
+   * leaves drafts working entirely — they are still saved, listed, resumed and sent
+   * — and only stops them being uploaded to the mail server, which is the half that
+   * writes into a store shared with the user's other clients. That is the half an
+   * administrator might want to withdraw in a hurry, and the reason the switch
+   * exists at all: an APPEND loop against a misbehaving server is the one failure
+   * mode here that is visible outside this application.
+   */
+  public static final String      DRAFTS_SERVER_ENABLED_PROPERTY                              =
+                                                                                              "email.connector.drafts.server.enabled";
+
+  private static final String     USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE                     =
+                                                                                              "User %s is not allowed to save a draft";
+
   private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE                     =
                                                                           "User %s is not allowed to send email";
 
@@ -387,6 +409,18 @@ public class EmailBoxService {
   // Mailboxes with a synchronization running right now, so two can never overlap and cache
   // the same message twice.
   private final Set<String>                      syncingUsers          = ConcurrentHashMap.newKeySet();
+
+  // One lock per draft, keyed "user/draftLocalId". Every write to a draft goes
+  // through it, INCLUDING the upload, which is why it is a lock and not a
+  // compare-and-set: the upload spans an IMAP round-trip, and its final act is to
+  // stamp the row SYNCED. Without holding the lock across the whole thing, an
+  // autosave landing mid-upload would be marked as already on the server, and the
+  // sentence the user typed while the upload was in flight would never be uploaded
+  // at all. Entries are removed when the draft is discarded or sent; a draft the
+  // user simply abandons leaves one unused lock object behind per draft per JVM
+  // lifetime, which is the cheaper of the two mistakes available here (the other
+  // being to remove a lock somebody is about to acquire).
+  private final Map<String, ReentrantLock>       draftLocks            = new ConcurrentHashMap<>();
 
   // Notifications waiting for their messages to be classified, keyed by mailbox owner.
   private final Map<String, PendingNotification> pendingNotifications = new ConcurrentHashMap<>();
@@ -2024,8 +2058,12 @@ public class EmailBoxService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
     // Only the folders a user can browse as a list; ALL_MAIL is an internal on-demand
-    // completion store, never a browsable list.
-    if (!MailFolder.INBOX.equals(folder) && !MailFolder.SENT.equals(folder) && !MailFolder.ARCHIVE.equals(folder)) {
+    // completion store, never a browsable list. This list and availableFolders in
+    // EmailConnectorMailBoxDrawer.vue are the same list expressed twice, with no
+    // shared constant between them — change one and the other has to change with it,
+    // or the client offers a folder this refuses (or hides one it would serve).
+    if (!MailFolder.INBOX.equals(folder) && !MailFolder.SENT.equals(folder) && !MailFolder.ARCHIVE.equals(folder)
+        && !MailFolder.DRAFTS.equals(folder)) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
     List<Email> emails = starredOnly ? emailBoxStorage.getStarredEmails(username, folder)
@@ -2038,7 +2076,18 @@ public class EmailBoxService {
   }
 
   /**
-   * Delete user emails
+   * Delete user emails — every folder, drafts included.
+   * <p>
+   * Drafts are not exempted here, and that is deliberate rather than an oversight
+   * inherited from before they existed. The only caller is the cleanup that runs
+   * when a mailbox is disconnected or rebound to a different account, and a draft
+   * belongs to the account it was written from: it carries that account's address
+   * as its sender, a Message-ID minted in that account's domain, and a place in a
+   * conversation cached from that account's server. Carrying it over to whatever
+   * mailbox the user binds next would produce a draft that cannot be sent as what
+   * it claims to be. A draft that only ever lived here does go with it — which is
+   * why the composer pushes to the server on close, so that anything the user
+   * cared to finish already exists somewhere the disconnect cannot reach.
    *
    * @param username user whose emails will be deleted
    */
@@ -2954,6 +3003,444 @@ public class EmailBoxService {
   }
 
   /**
+   * Saves a draft: always locally, and — when {@code pushToServer} is asked for and
+   * the account can take it — up to the mail server's Drafts folder as well.
+   * <p>
+   * The two halves are deliberately unequal. The local write is what protects the
+   * user's words: it is instant, it costs nothing, and the composer asks for it on
+   * every pause in typing. The server copy exists so the user's OTHER mail clients
+   * can see the draft, and those do not need it within thirty seconds — so the
+   * composer only asks for a push when the drawer closes, before a send, and after
+   * a couple of minutes of genuine inactivity. The asymmetry is not caution, it is
+   * arithmetic: IMAP has no update, so every push re-uploads the entire message,
+   * attachments included, and a push per keystroke-pause would mean megabytes an
+   * hour for a draft nobody but the author is reading.
+   * <p>
+   * A push whose row is already {@link DraftState#SYNCED} does nothing at all —
+   * that is the whole reason the state is stored.
+   * <p>
+   * What the caller may change and what it may not: subject, body, recipients and
+   * the revision, yes. The draft's identity — its local id, its Message-ID, the
+   * conversation it belongs to, the parent it replies to — is settled at the FIRST
+   * save and owned by this service from then on. In particular the incoming
+   * {@code mailHeaderId} is read as the PARENT's Message-ID (the same meaning
+   * {@link #sendEmail} gives it) on the first save only; on every later save it is
+   * ignored, because a resumed draft carries its OWN minted id in that field and
+   * threading it against itself is exactly the loop that would follow.
+   *
+   * @param draft the composed draft; a blank {@code draftLocalId} means a first save
+   * @param username the mailbox owner
+   * @param pushToServer whether to also upload the draft to the mail server
+   * @return the draft as it now stands, carrying its local id, state and revision
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public Email saveDraft(Email draft, String username, boolean pushToServer) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    String draftLocalId = StringUtils.isNotBlank(draft.getDraftLocalId()) ? draft.getDraftLocalId()
+                                                                         : UUID.randomUUID().toString();
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      Email toStore = stored == null ? buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting)
+                                     : buildNextDraftRevision(draft, stored);
+      Email saved = emailBoxStorage.saveDraft(toStore);
+      if (!pushToServer || !isServerDraftsEnabled() || DraftState.SYNCED.equals(saved.getDraftState())) {
+        return saved;
+      }
+      return uploadDraft(saved, username, userEmailSetting);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Discards a draft: the local row goes, and with it the composer's handle on it.
+   * <p>
+   * Slice-scoped on purpose: removing the copy sitting in the server's Drafts
+   * folder is the job of the same code that puts copies there and takes the
+   * previous one away, and until that exists a discarded draft can leave one
+   * behind. Losing a draft the user asked to discard is not the failure worth
+   * guarding against; showing them one they thought they had thrown away is, and
+   * the local row going is what the user sees.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @return true when a draft was found and removed
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public boolean deleteDraft(String draftLocalId, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE, username));
+    }
+    String lockKey = draftLockKey(username, draftLocalId);
+    ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        return false;
+      }
+      deleteEmails(List.of(stored));
+      return true;
+    } finally {
+      lock.unlock();
+      // The draft is gone, so nobody can be about to take this lock for it. Removing
+      // it here is what keeps the map bounded by the drafts that actually exist
+      // rather than by every draft ever written in this JVM's lifetime.
+      draftLocks.remove(lockKey);
+    }
+  }
+
+  /**
+   * The first stored revision of a draft: everything the composer sent, plus the
+   * identity this service mints once and never changes — the local id, our own
+   * Message-ID, the parent linkage, and the conversation the draft belongs to.
+   * <p>
+   * Threading is settled HERE rather than at send time, and that is the point of
+   * the whole feature: a reply that only joins its conversation once it is sent is
+   * a reply the author cannot see in context during the entire time they are
+   * writing it. It resolves through the same {@link #computeThreadId} every synced
+   * message goes through, so a draft merges and collapses threads exactly as real
+   * mail does.
+   *
+   * @param draft the composed draft as the client sent it
+   * @param draftLocalId the local id, minted by the caller
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding, for their own address
+   * @return the row to store
+   */
+  private Email buildFirstDraftRevision(Email draft, String draftLocalId, String username, UserEmailSetting userEmailSetting) {
+    Date now = new Date();
+    Email toStore = new Email();
+    toStore.setUserId(username);
+    toStore.setFolder(MailFolder.DRAFTS);
+    toStore.setDraftLocalId(draftLocalId);
+    toStore.setDraftState(DraftState.LOCAL_ONLY);
+    toStore.setDraftRevision(draft.getDraftRevision() != null ? draft.getDraftRevision() : 1L);
+    toStore.setDraftUpdatedDate(now);
+    toStore.setReceivedDate(now);
+    // A draft is never unread and never "recent": it is the user's own text, and the
+    // new-mail notification must not be able to see it.
+    toStore.setRead(true);
+    toStore.setRecent(false);
+    toStore.setSubject(draft.getSubject());
+    toStore.setContent(draft.getContent() != null ? draft.getContent() : new EmailContent(null, null, null));
+    toStore.setTo(draft.getTo());
+    toStore.setCc(draft.getCc());
+    toStore.setBcc(draft.getBcc());
+    toStore.setSender(ownSender(userEmailSetting));
+    // Our own Message-ID, minted now and reused when the draft is finally sent. It is
+    // also, on a server without UIDPLUS, the only handle we have on a message we just
+    // appended -- so it cannot be deferred to send time even if threading did not
+    // already require it. NOT EmailThreadingUtils#synthesizeMessageId: that mints an
+    // @email-connector.local id for messages whose sender omitted one, and such an id
+    // is a local placeholder that must never leave this box. This one goes out on the
+    // wire, so it carries the user's own domain, as RFC 5322 §3.6.4 intends.
+    toStore.setMailHeaderId(mintMessageId(userEmailSetting.getEmailAddress()));
+    String parentMessageId = draft.getMailHeaderId();
+    if (StringUtils.isNotBlank(parentMessageId)) {
+      toStore.setInReplyTo(parentMessageId);
+      String parentReferences = emailBoxStorage.getMailReferencesByMailHeaderId(parentMessageId, username);
+      toStore.setMailReferences(EmailThreadingUtils.buildReferencesHeader(parentReferences, parentMessageId));
+    }
+    toStore.setThreadId(computeThreadId(username,
+                                        toStore.getMailHeaderId(),
+                                        0L,
+                                        toStore.getInReplyTo(),
+                                        toStore.getMailReferences(),
+                                        null));
+    return toStore;
+  }
+
+  /**
+   * A later revision of an existing draft: the composer's new text over the stored
+   * row's settled identity. The revision is taken from the client when it sent one
+   * (the storage layer is what decides whether it is new enough to apply) and
+   * otherwise stepped here, so a caller that does not track revisions still cannot
+   * write a row that looks unchanged.
+   *
+   * @param draft the composed draft as the client sent it
+   * @param stored the row as it currently stands
+   * @return the row to store
+   */
+  private Email buildNextDraftRevision(Email draft, Email stored) {
+    Date now = new Date();
+    Email toStore = new Email();
+    toStore.setUserId(stored.getUserId());
+    toStore.setFolder(MailFolder.DRAFTS);
+    toStore.setDraftLocalId(stored.getDraftLocalId());
+    toStore.setDraftRevision(draft.getDraftRevision() != null ? draft.getDraftRevision()
+                                                              : (stored.getDraftRevision() == null ? 1L
+                                                                                                   : stored.getDraftRevision()
+                                                                                                       + 1));
+    toStore.setDraftUpdatedDate(now);
+    toStore.setReceivedDate(now);
+    toStore.setSubject(draft.getSubject());
+    toStore.setContent(draft.getContent() != null ? draft.getContent() : new EmailContent(null, null, null));
+    toStore.setTo(draft.getTo());
+    toStore.setCc(draft.getCc());
+    toStore.setBcc(draft.getBcc());
+    // Whatever was on the server is now stale. A draft that had never reached it stays
+    // LOCAL_ONLY, so the upload path can tell "there is a copy to replace" from "there
+    // has never been one" without asking the server.
+    toStore.setDraftState(DraftState.LOCAL_ONLY.equals(stored.getDraftState()) ? DraftState.LOCAL_ONLY : DraftState.DIRTY);
+    return toStore;
+  }
+
+  /**
+   * Uploads a draft to the mail server's Drafts folder by APPENDing the whole
+   * message, and records the UID of the copy it created.
+   * <p>
+   * Append BEFORE anything else is removed, always — the previous copy's removal is
+   * a separate step and a later slice. If this method appends and then everything
+   * afterwards fails, the user sees the same draft twice in their other mail client;
+   * if it were the other way round, they would see it nowhere. A visible duplicate
+   * beats lost content, every time.
+   * <p>
+   * Getting the UID back is the awkward part. With UIDPLUS (RFC 4315) the server
+   * returns it in the APPENDUID response and JavaMail hands it over as an
+   * {@link AppendUID}. Without it there is no way to ask "what UID did the message I
+   * just wrote get" — hence the fallback: search the folder for our own minted
+   * Message-ID, which is a header we control precisely so that this is possible.
+   * <p>
+   * Failure here is never fatal to the save. The row stays whatever it was
+   * ({@link DraftState#LOCAL_ONLY} or {@link DraftState#DIRTY}), the user's words
+   * are already safely stored locally, and the next push tries again.
+   *
+   * @param saved the draft as just stored locally
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @return the draft, marked {@link DraftState#SYNCED} and carrying the new UID when
+   *         the upload worked, unchanged when it did not
+   */
+  private Email uploadDraft(Email saved, String username, UserEmailSetting userEmailSetting) {
+    Store store = null;
+    IMAPFolder draftsFolder = null;
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      draftsFolder = resolveDraftsFolder(store, syncState);
+      if (draftsFolder == null) {
+        // Not an error, and deliberately not a folder we create. The account simply has
+        // no Drafts folder, so it gets no server-side drafts; the composer reads the
+        // state back and tells the user their draft lives only here.
+        LOG.info("No Drafts folder found for user {}; the draft stays local only", username);
+        return saved;
+      }
+      MimeMessage message = buildDraftMessage(saved, userEmailSetting);
+      draftsFolder.open(Folder.READ_WRITE);
+      long appendedUid = appendDraftMessage(draftsFolder, message, saved.getMailHeaderId(), username);
+      if (appendedUid <= 0) {
+        LOG.warn("Appended the draft of user {} but could not resolve its UID; it stays unsynced", username);
+        return saved;
+      }
+      // Bookkeeping, not an edit: this write carries no new text, only where the text
+      // that is already stored now also lives. It goes through its own storage call for
+      // exactly that reason — routed through the edit path it would look like a save
+      // arriving at a revision the row has already reached, and be dropped.
+      Email uploaded = emailBoxStorage.markDraftUploaded(username,
+                                                         saved.getDraftLocalId(),
+                                                         appendedUid,
+                                                         saved.getDraftRevision());
+      return uploaded != null ? uploaded : saved;
+    } catch (Exception e) {
+      LOG.warn("Could not upload the draft of user {} to the Drafts folder; it stays saved locally", username, e);
+      return saved;
+    } finally {
+      // Persisted so the discovered Drafts folder name survives: without it every push
+      // re-walks the whole folder list, and pushes happen far more often than syncs.
+      saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      closeQuietly(draftsFolder, store, username);
+    }
+  }
+
+  /**
+   * APPENDs a draft and answers with the UID the server gave it.
+   * <p>
+   * {@code appendUIDMessages} is JavaMail's UIDPLUS-aware append: on a server that
+   * advertises UIDPLUS it returns the APPENDUID the server reported, and on one that
+   * does not it appends fine and returns nulls. That is what the Message-ID search
+   * underneath is for — our own minted id, searched for in the folder we just wrote
+   * to. It is not free (a SEARCH round-trip) but it only runs on servers that left us
+   * no alternative.
+   *
+   * @param draftsFolder the open Drafts folder
+   * @param message the message to append
+   * @param messageId our own minted Message-ID, the fallback search key
+   * @param username the mailbox owner, for the log
+   * @return the UID of the appended copy, or -1 when it could not be established
+   * @throws MessagingException if the append itself fails
+   */
+  private long appendDraftMessage(IMAPFolder draftsFolder,
+                                  MimeMessage message,
+                                  String messageId,
+                                  String username) throws MessagingException {
+    AppendUID[] appendUids = draftsFolder.appendUIDMessages(new Message[] { message });
+    if (appendUids != null && appendUids.length > 0 && appendUids[0] != null) {
+      return appendUids[0].uid;
+    }
+    LOG.debug("Server gave no APPENDUID for the draft of user {}; falling back to a Message-ID search", username);
+    if (StringUtils.isBlank(messageId)) {
+      return -1;
+    }
+    Message[] found = draftsFolder.search(new HeaderTerm("Message-ID", messageId));
+    if (found == null || found.length == 0) {
+      return -1;
+    }
+    return draftsFolder.getUID(found[found.length - 1]);
+  }
+
+  /**
+   * Builds the MIME message a draft is appended as: the user's own address as From,
+   * the recipients they have typed so far, the body, and the threading headers that
+   * put it in its conversation.
+   * <p>
+   * The Message-ID is set AFTER {@code saveChanges}, and that ordering is load-bearing
+   * rather than stylistic. {@code MimeMessage#writeTo} — which is what an APPEND ends
+   * up calling — invokes {@code saveChanges} when the message has not been saved yet,
+   * and {@code saveChanges} regenerates the Message-ID from scratch. Setting our own
+   * id before that call means the server stores a message with a DIFFERENT id from the
+   * one we recorded: the fallback UID search would find nothing, the sent message would
+   * not match the draft, and the conversation would split. Saving first and stamping
+   * afterwards is the standard way round it.
+   * <p>
+   * The message is flagged {@code \Draft} (which is what makes other mail clients open
+   * it in a composer instead of a reader) and {@code \Seen} (the author has, by
+   * definition, read their own unfinished sentence).
+   *
+   * @param draft the stored draft
+   * @param userEmailSetting the user's connector binding, for their own address
+   * @return the message to append
+   * @throws MessagingException if the message cannot be built
+   * @throws UnsupportedEncodingException if the user's display name cannot be encoded
+   */
+  private MimeMessage buildDraftMessage(Email draft,
+                                        UserEmailSetting userEmailSetting) throws MessagingException,
+                                                                          UnsupportedEncodingException {
+    String emailAddress = userEmailSetting.getEmailAddress();
+    // A draft is never transmitted, so this session needs no transport properties at
+    // all -- it exists only to give the MimeMessage a context to be built in.
+    MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+    Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
+    message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+    setDraftRecipients(message, Message.RecipientType.TO, draft.getTo());
+    setDraftRecipients(message, Message.RecipientType.CC, draft.getCc());
+    setDraftRecipients(message, Message.RecipientType.BCC, draft.getBcc());
+    message.setSubject(draft.getSubject());
+    message.setSentDate(draft.getDraftUpdatedDate() != null ? draft.getDraftUpdatedDate() : new Date());
+    String body = draft.getContent() != null && draft.getContent().getBody() != null ? draft.getContent().getBody() : "";
+    message.setContent(body, "text/html; charset=UTF-8");
+    if (StringUtils.isNotBlank(draft.getInReplyTo())) {
+      message.setHeader("In-Reply-To", draft.getInReplyTo());
+    }
+    if (StringUtils.isNotBlank(draft.getMailReferences())) {
+      message.setHeader("References", draft.getMailReferences());
+    }
+    message.setFlag(Flags.Flag.DRAFT, true);
+    message.setFlag(Flags.Flag.SEEN, true);
+    message.saveChanges();
+    if (StringUtils.isNotBlank(draft.getMailHeaderId())) {
+      message.setHeader("Message-ID", draft.getMailHeaderId());
+    }
+    return message;
+  }
+
+  /**
+   * Sets one recipient field of a draft message, tolerating the half-typed state a
+   * draft is normally in — a blank list, or entries with no address yet, simply
+   * leave the header off rather than failing the save.
+   *
+   * @param message the message being built
+   * @param type the recipient field to set
+   * @param recipients the recipients as stored, may be null or partly blank
+   * @throws MessagingException if the addresses cannot be parsed
+   */
+  private void setDraftRecipients(MimeMessage message,
+                                  Message.RecipientType type,
+                                  List<EmailRecipient> recipients) throws MessagingException {
+    if (CollectionUtils.isEmpty(recipients)) {
+      return;
+    }
+    String addresses = recipients.stream()
+                                 .map(EmailRecipient::getAddress)
+                                 .filter(Objects::nonNull)
+                                 .filter(address -> !address.isBlank())
+                                 .collect(Collectors.joining(","));
+    if (StringUtils.isNotBlank(addresses)) {
+      message.setRecipients(type, InternetAddress.parse(addresses));
+    }
+  }
+
+  /**
+   * The user themselves, as the sender of their own draft. Stored on the row because
+   * the reader renders every message from its sender, and because
+   * {@code EmailBoxStorage} splits that column on a comma and would fail on a blank
+   * one.
+   *
+   * @param userEmailSetting the user's connector binding
+   * @return the sender to stamp on a draft row
+   */
+  private EmailSender ownSender(UserEmailSetting userEmailSetting) {
+    String emailAddress = userEmailSetting.getEmailAddress();
+    Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
+    String name = userProfile != null && StringUtils.isNotBlank(userProfile.getFullName()) ? userProfile.getFullName()
+                                                                                           : emailAddress;
+    return new EmailSender(name, emailAddress, null, null);
+  }
+
+  /**
+   * A Message-ID of our own for a draft, minted at its first save and reused when it
+   * is eventually sent — so the sent message IS the draft, as far as every other mail
+   * client's threading is concerned.
+   * <p>
+   * The domain is the user's own, taken from their address, because that is what RFC
+   * 5322 §3.6.4 asks for and what makes the id look like what it is: a real message
+   * from a real mailbox. It is emphatically not the {@code @email-connector.local}
+   * form {@code EmailThreadingUtils#synthesizeMessageId} produces — that one exists to
+   * give a LOCAL anchor to a message whose sender omitted an id, and it must never
+   * leave this box.
+   *
+   * @param emailAddress the user's own address
+   * @return an angle-bracketed, globally unique Message-ID
+   */
+  private String mintMessageId(String emailAddress) {
+    String domain = StringUtils.substringAfterLast(StringUtils.defaultString(emailAddress), "@");
+    return "<" + UUID.randomUUID() + "@" + (StringUtils.isNotBlank(domain) ? domain : "email-connector") + ">";
+  }
+
+  /**
+   * The key a draft's lock lives under. Scoped by user as well as by draft id
+   * because the id is minted per draft, not per installation, and two users must
+   * never be able to serialize each other by guessing one.
+   *
+   * @param username the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @return the lock key
+   */
+  private String draftLockKey(String username, String draftLocalId) {
+    return username + "/" + draftLocalId;
+  }
+
+  /**
+   * Whether the server-side half of drafts is switched on — see
+   * {@link #DRAFTS_SERVER_ENABLED_PROPERTY}. Read on every call rather than cached,
+   * so an administrator can withdraw it without a restart.
+   *
+   * @return true when drafts may be uploaded to the mail server
+   */
+  private boolean isServerDraftsEnabled() {
+    return Boolean.parseBoolean(System.getProperty(DRAFTS_SERVER_ENABLED_PROPERTY, "true"));
+  }
+
+  /**
    * Stamps a composed message with the RFC 5322 headers that put it back into its
    * conversation. Extracted from {@link #sendEmail} unchanged so that the draft
    * upload path can write the SAME headers — a draft has to carry them from its
@@ -3200,7 +3687,17 @@ public class EmailBoxService {
                                                 firstHeader(message, "X-Original-Sender"),
                                                 // \Flagged comes off the same prefetched FLAGS as SEEN
                                                 // (buildSyncFetchProfile), so this read costs no round-trip.
-                                                message.isSet(Flags.Flag.FLAGGED)));
+                                                message.isSet(Flags.Flag.FLAGGED),
+                                                // The four draft columns. A message pulled from the server
+                                                // is never a draft as far as this path is concerned: even
+                                                // once the Drafts folder joins the sync, a draft that
+                                                // arrives here is one another client wrote, and it takes
+                                                // its local id and state from the draft sync path, not
+                                                // from this one.
+                                                null,
+                                                null,
+                                                null,
+                                                null));
           newEmailIds.add(messageUid);
 
         }
@@ -4229,6 +4726,32 @@ public class EmailBoxService {
     return true;
   }
 
+  /**
+   * Drops the cached rows the server no longer has, then trims the cache back to
+   * its configured size.
+   * <p>
+   * Both halves rest on the same assumption, and it is the assumption drafts break:
+   * that the server is the truth and a local row is a copy of something up there,
+   * so a row the server does not have is a row nobody wants. A draft inverts that.
+   * It is AUTHORED here and pushed up afterwards, so between the moment the user
+   * types and the moment the push lands, "not on the server" is the normal state of
+   * the newest thing they have written — and a rule that deletes it is silent data
+   * loss on the user's own words, which is the worst failure this feature can have.
+   * The same goes for the size trim: a cache overflow may evict any amount of mail
+   * that still exists on the server and can be fetched again, but an unpushed draft
+   * exists nowhere else.
+   * <p>
+   * So an unsaved or dirty draft is never touched by either half, and the exclusion
+   * is written HERE rather than left to the fact that the Drafts folder does not
+   * currently join the sync: the whole hazard is that it will, and by then this
+   * method has to already be safe.
+   *
+   * @param uidFolder the open remote folder, to resolve each server message's UID
+   * @param userEmails the folder's cached rows, newest first
+   * @param serverMessages the server window this sync read
+   * @param username the mailbox owner
+   * @param emailBoxCacheSize the number of most recent messages to keep
+   */
   private void cleanupObsoleteEmails(UIDFolder uidFolder,
                                      List<Email> userEmails,
                                      Message[] serverMessages,
@@ -4243,15 +4766,37 @@ public class EmailBoxService {
       }
     }).collect(Collectors.toSet());
     List<Email> obsoleteEmails = userEmails.stream()
+                                           .filter(email -> !isProtectedDraft(email))
                                            .filter(email -> !serverMessagesUids.contains(email.getMailRemoteId()))
                                            .toList();
     if (!obsoleteEmails.isEmpty()) {
       deleteEmails(obsoleteEmails);
     }
     if (userEmails.size() > emailBoxCacheSize) {
-      List<Email> oldUserEmailsToCleanup = userEmails.subList(emailBoxCacheSize, userEmails.size());
-      deleteEmails(oldUserEmailsToCleanup);
+      List<Email> oldUserEmailsToCleanup = userEmails.subList(emailBoxCacheSize, userEmails.size())
+                                                     .stream()
+                                                     .filter(email -> !isProtectedDraft(email))
+                                                     .toList();
+      if (!oldUserEmailsToCleanup.isEmpty()) {
+        deleteEmails(oldUserEmailsToCleanup);
+      }
     }
+  }
+
+  /**
+   * Whether a cached row is a draft whose text is not (or no longer) safely on the
+   * server, and which the sync must therefore leave alone.
+   * <p>
+   * {@link DraftState#SYNCED} is deliberately NOT protected: its text does exist on
+   * the server, so the ordinary rules apply to it and a draft genuinely deleted from
+   * another client can still disappear from here. A null state is not a draft at all
+   * — every other row in the table carries one — and takes the ordinary path too.
+   *
+   * @param email the cached row, from the light sync view
+   * @return true when the row is a draft that only exists locally, in whole or in part
+   */
+  private boolean isProtectedDraft(Email email) {
+    return DraftState.LOCAL_ONLY.equals(email.getDraftState()) || DraftState.DIRTY.equals(email.getDraftState());
   }
 
   /**

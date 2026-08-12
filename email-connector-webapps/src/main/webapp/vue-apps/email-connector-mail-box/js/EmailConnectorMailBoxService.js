@@ -463,6 +463,55 @@ export function sendEmail(email) {
   });
 }
 
+/**
+ * Saves a draft.
+ *
+ * The `push` flag is the whole rhythm of the feature in one boolean. Without it
+ * the call only writes the row here, which is instant and free and is what the
+ * composer asks for on every pause in typing — that is what protects the user's
+ * words. With it, the draft also goes up to the mail server's Drafts folder, so
+ * the user's other mail clients can see it; that costs a full re-upload of the
+ * message (IMAP has no update), so the composer only asks for it on close, before
+ * a send, and after a couple of minutes of real inactivity.
+ *
+ * @param {Object} draft the composed draft; a blank draftLocalId starts a new one
+ * @param {boolean} push whether to also upload it to the mail server
+ * @returns {Promise} resolves with the draft as stored, carrying its local id,
+ *          revision and state
+ */
+export function saveDraft(draft, push) {
+  return fetch(`/email-connector/rest/email-box/drafts?push=${!!push}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(draft)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when saving draft');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Discards a draft.
+ *
+ * @param {string} draftLocalId the draft's local id
+ * @returns {Promise} resolves once the draft is gone
+ */
+export function deleteDraft(draftLocalId) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}`, {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when deleting draft');
+    }
+  });
+}
+
 export function broadcastAccessWebmail() {
   return fetch('/email-connector/rest/email-box/webmail/broadcast', {
     headers: {

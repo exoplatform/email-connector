@@ -166,10 +166,27 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read, recent, starred]},
    *         newest first
    */
-  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
+  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred, email.draftState FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
   List<Object[]> findSyncViewByUserIdAndFolder(@Param("userId")
   String userId, @Param("folder")
   String folder);
+
+  /**
+   * A draft by the composer's own handle on it. Returns a list rather than a single
+   * row on purpose: the local id is not a database-level unique key (it is null on
+   * every non-draft row, and vendors disagree about whether repeated nulls collide
+   * in a unique index), so the query must not be the thing that throws when the
+   * unexpected happens. The caller takes the first and the save path's per-draft
+   * lock is what actually keeps there being only one.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @return the matching rows, normally exactly one, never null
+   */
+  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId")
+  List<EmailBoxEntity> findByUserIdAndDraftLocalId(@Param("userId")
+  String userId, @Param("draftLocalId")
+  String draftLocalId);
 
   @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")

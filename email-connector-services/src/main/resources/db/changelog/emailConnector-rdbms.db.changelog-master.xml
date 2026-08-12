@@ -521,5 +521,58 @@
       <param name="tableName" value="EMAIL_CONTACT_ADDRESS"/>
     </customChange>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-39">
+    <comment>
+      Drafts. A draft is a row of EMAIL_BOX like any other message, with FOLDER =
+      'DRAFTS' — not a table of its own. A conversation has to stay ONE query: the
+      whole point of showing a draft is showing it at the bottom of the thread it
+      belongs to, and a second table would mean every thread read became a join or
+      a merge in Java, for the one row that matters most to the person reading.
+
+      Four columns is all the difference amounts to, and all four are null on every
+      row that is not a draft.
+
+      DRAFT_LOCAL_ID is the handle the composer holds. It has to be OURS and it has
+      to never change, because the only other candidate is the IMAP UID and that is
+      not stable for a draft: IMAP cannot update a message, so saving a draft twice
+      means appending a new message and deleting the old one, and the UID changes
+      under the user mid-sentence. A UUID minted here survives that.
+
+      DRAFT_STATE is where the row stands against the server copy (see DraftState):
+      it is what lets a save that changed nothing skip re-uploading the entire
+      message, attachments included.
+
+      DRAFT_REVISION counts local edits. Autosaves are fired by a typing pause and
+      travel over the network, so they can and do arrive out of order; the save
+      path drops any that carries a revision the row has already passed. Without it
+      a slow request carrying older text lands last and silently reverts the user's
+      most recent sentence.
+
+      DRAFT_UPDATED_DATE is the local edit time, kept apart from RECEIVED_DATE on
+      purpose even though the two are equal today. RECEIVED_DATE is what every
+      ORDER BY in this schema sorts on, and once drafts join the sync it will hold
+      the INTERNALDATE of the copy on the server; the moment the user last typed is
+      a different fact and it is the one the reader should show.
+    </comment>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="DRAFT_LOCAL_ID" type="NVARCHAR(64)"/>
+      <column name="DRAFT_STATE" type="NVARCHAR(20)"/>
+      <column name="DRAFT_REVISION" type="BIGINT"/>
+      <column name="DRAFT_UPDATED_DATE" type="TIMESTAMP"/>
+    </addColumn>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-40">
+    <comment>
+      Every draft read is "this user's draft with this local id" — the composer
+      knows nothing else about the row. Not declared unique: uniqueness here would
+      be enforced across a column that is null on every non-draft row, and vendors
+      disagree about whether repeated nulls collide. The save path holds a per-draft
+      lock instead, which is what actually serialises the writes.
+    </comment>
+    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_DRAFT">
+      <column name="USER_ID"/>
+      <column name="DRAFT_LOCAL_ID"/>
+    </createIndex>
+  </changeSet>
 
 </databaseChangeLog>

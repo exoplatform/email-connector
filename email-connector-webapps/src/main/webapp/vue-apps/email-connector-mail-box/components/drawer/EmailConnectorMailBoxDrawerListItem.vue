@@ -283,6 +283,12 @@ export default {
       if (this.selectMode) {
         this.emitSelect(!this.selected);
       }
+      // A draft has no reader: opening it means going back to writing it. It also has
+      // no IMAP UID until it has been uploaded, so the detail path — which addresses
+      // messages by UID — has nothing to open it with.
+      else if (this.email.draftLocalId) {
+        this.$root.$emit('resume-draft', this.email);
+      }
       else {
         if (this.expanded) {
           this.$root.$emit('open-email-detail-content', this.email.mailRemoteId);

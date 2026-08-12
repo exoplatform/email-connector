@@ -49,10 +49,12 @@ import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.MailFolder;
 
 import io.meeds.social.category.service.CategoryLinkService;
 
@@ -178,13 +180,14 @@ public class EmailBoxStorageTest {
   @Test
   void getSyncEmailsMapsTheLightViewWithoutBodiesOrCategories() {
     // The sync view must carry exactly what the reconcile reads -- ids, flags
-    // (including the starred mirror of \Flagged), threading state -- and nothing
-    // that costs a CLOB read or a category lookup, because loading those for 5000
-    // rows per sync was the point of removing it.
+    // (including the starred mirror of \Flagged), threading state, and the draft
+    // state the cleanup needs to spare an unpushed draft -- and nothing that costs a
+    // CLOB read or a category lookup, because loading those for 5000 rows per sync
+    // was the point of removing it.
     when(emailBoxDAO.findSyncViewByUserIdAndFolder("root", "INBOX"))
                                                                    .thenReturn(List.<Object[]> of(new Object[] { 7L, 1212L,
                                                                        "<t@host>", "", Boolean.TRUE, Boolean.FALSE,
-                                                                       Boolean.TRUE }));
+                                                                       Boolean.TRUE, null }));
     List<Email> emails = emailBoxStorage.getSyncEmails("root", "INBOX");
     assertEquals(1, emails.size());
     Email email = emails.get(0);
@@ -262,6 +265,70 @@ public class EmailBoxStorageTest {
   }
 
   @Test
+  void saveDraftInsertsTheFirstTimeAndUpdatesInPlaceAfterwards() {
+    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(Collections.emptyList());
+    Email first = draft("draft-1", 1L, "first sentence");
+    Email created = emailBoxStorage.saveDraft(first);
+    assertNotNull(created.getId());
+    // second save: the SAME row, with the new text
+    EmailBoxEntity stored = draftEntity("draft-1", 1L, "first sentence");
+    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    Email updated = emailBoxStorage.saveDraft(draft("draft-1", 2L, "second sentence"));
+    assertEquals("second sentence", updated.getContent().getBody());
+    assertEquals(2L, updated.getDraftRevision());
+  }
+
+  @Test
+  void saveDraftDropsASaveThatArrivesOutOfOrder() {
+    // Autosaves are fired by a typing pause and travel over the network, so a slow
+    // request carrying older text can land after a newer one. Applying it would
+    // silently revert the sentence the user just finished, which is the one failure
+    // this whole feature exists to prevent.
+    EmailBoxEntity stored = draftEntity("draft-1", 5L, "the newest sentence");
+    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    Email late = emailBoxStorage.saveDraft(draft("draft-1", 4L, "a sentence from before"));
+    assertEquals("the newest sentence", late.getContent().getBody());
+    assertEquals(5L, late.getDraftRevision());
+    verify(emailBoxDAO, never()).save(any());
+  }
+
+  @Test
+  void markDraftUploadedRecordsTheUidAndMarksTheRowSynced() {
+    // The upload's bookkeeping goes through its own call, not through the edit path:
+    // it carries no new text, and routed through saveDraft it would look like a save
+    // arriving at a revision the row has already reached, and be dropped.
+    EmailBoxEntity stored = draftEntity("draft-1", 5L, "the newest sentence");
+    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    Email saved = emailBoxStorage.markDraftUploaded("root", "draft-1", 4242L, 5L);
+    assertEquals(4242L, saved.getMailRemoteId());
+    assertEquals(DraftState.SYNCED, saved.getDraftState());
+  }
+
+  @Test
+  void markDraftUploadedLeavesARowThatWasTypedIntoMidUploadUnsynced() {
+    // Marking a row as safely on the server while it carries a sentence that was never
+    // sent up is exactly the failure this feature exists to prevent. The UID is still
+    // kept -- it is where the previous copy lives -- but the state does not move, so
+    // the next push still runs.
+    EmailBoxEntity stored = draftEntity("draft-1", 6L, "a sentence typed during the upload");
+    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    Email saved = emailBoxStorage.markDraftUploaded("root", "draft-1", 4242L, 5L);
+    assertEquals(4242L, saved.getMailRemoteId());
+    assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
+  }
+
+  @Test
+  void markDraftUploadedIgnoresADraftThatIsNoLongerThere() {
+    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "gone")).thenReturn(Collections.emptyList());
+    assertNull(emailBoxStorage.markDraftUploaded("root", "gone", 1L, 1L));
+  }
+
+  @Test
+  void saveDraftRefusesADraftWithNoLocalId() {
+    assertThrows(IllegalArgumentException.class, () -> emailBoxStorage.saveDraft(draft(null, 1L, "orphan")));
+  }
+
+  @Test
   void deleteEmailsByIds() {
     Email email1 = email("root");
     Email storedEmail = emailBoxStorage.createEmail(email1);
@@ -303,7 +370,11 @@ public class EmailBoxStorageTest {
                                                        false,
                                                        false,
                                                        null,
-                                                       false);
+                                                       false,
+                                                       null,
+                                                       null,
+                                                       null,
+                                                       null);
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
                                                                                                           "2",
@@ -348,7 +419,58 @@ public class EmailBoxStorageTest {
                      false,
                      false,
                      null,
-                     false);
+                     false,
+                     null,
+                     null,
+                     null,
+                     null);
+  }
+
+  /**
+   * A draft as the service hands it to the storage layer.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param revision the local edit counter this save carries
+   * @param body the text
+   * @return the draft DTO
+   */
+  private Email draft(String draftLocalId, Long revision, String body) {
+    Email draft = new Email();
+    draft.setUserId("root");
+    draft.setFolder(MailFolder.DRAFTS);
+    draft.setDraftLocalId(draftLocalId);
+    draft.setDraftState(DraftState.LOCAL_ONLY);
+    draft.setDraftRevision(revision);
+    draft.setDraftUpdatedDate(new Date());
+    draft.setReceivedDate(new Date());
+    draft.setSubject("subject");
+    draft.setContent(new EmailContent(body, null, null));
+    draft.setSender(new EmailSender("sender", "sender@example.org", null, null));
+    return draft;
+  }
+
+  /**
+   * A draft row as it already stands in the database.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param revision the revision the stored row holds
+   * @param body the stored text
+   * @return the stored entity
+   */
+  private EmailBoxEntity draftEntity(String draftLocalId, Long revision, String body) {
+    EmailBoxEntity entity = new EmailBoxEntity();
+    entity.setId(ID);
+    entity.setUserId("root");
+    entity.setFolder(MailFolder.DRAFTS);
+    entity.setSubject("subject");
+    entity.setBody(body);
+    entity.setSender("sender,sender@example.org");
+    entity.setReceivedDate(new Date());
+    entity.setDraftLocalId(draftLocalId);
+    entity.setDraftState(DraftState.LOCAL_ONLY);
+    entity.setDraftRevision(revision);
+    entity.setDraftUpdatedDate(new Date());
+    return entity;
   }
 
   private EmailAttachment emailAttachment() {
