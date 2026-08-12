@@ -630,10 +630,35 @@ public class EmailContactCardDavSyncService {
     long now = new Date().getTime();
     toQueue.forEach(contactId -> entries.add(new ContactPublishQueueEntry(contactId, now, 0, false, null, null, null)));
     userEmailSettingService.setContactPublishQueue(queue, username);
-    LOG.info("{} reviewed contact(s) of user {} queued to publish after the next successful address book sync",
-             toQueue.size(),
-             username);
-    return queue;
+    LOG.info("{} reviewed contact(s) of user {} queued to publish", toQueue.size(), username);
+    // And then publish them, now. The queue's rule -- drain only after a
+    // successful inbound run -- was written for the fallback case, where the
+    // user's click has already failed and the book is known to be unreachable.
+    // A reviewed selection is the opposite: a deliberate act on a book nothing
+    // suggests is down. Making it wait for an unrelated sync left the user
+    // watching a list that never changed, with the toast the only evidence
+    // anything had happened.
+    //
+    // The sync is what drains, not a second code path: the queue keeps its one
+    // precondition (a reachable, discovered book proven by a run that just
+    // succeeded), and a run that fails simply leaves the entries where they
+    // are, to be drained by the next one exactly as before.
+    //
+    // Only where there is a book to sync, though. This same enqueue answers the
+    // checklist right after a provider switch, when the new account may have no
+    // address book at all or none yet discovered: syncing there would do no
+    // work and could count a failure against a user who has done nothing wrong.
+    // Those selections wait for the book, which is what the queue is for.
+    if (isPublishAvailable(username)) {
+      try {
+        syncAddressBook(username);
+      } catch (Exception e) {
+        // The queue is the point of the queue: whatever went wrong, the
+        // selection is stored and the next successful sync carries it.
+        LOG.debug("Publishing the reviewed selection of user {} now did not succeed; it stays queued", username, e);
+      }
+    }
+    return userEmailSettingService.getContactPublishQueue(username);
   }
 
   /**

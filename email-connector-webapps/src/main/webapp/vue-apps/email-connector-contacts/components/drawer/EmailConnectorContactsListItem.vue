@@ -18,7 +18,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-list-item
     :input-value="selected"
     class="px-4"
-    @click="$emit('select')">
+    @click="onClick">
+    <!-- In select mode the tick replaces nothing and hides nothing: a row that
+         cannot be published shows a disabled box rather than no box, so the
+         rule is visible where the user is already looking instead of being
+         enforced by a list they cannot see.
+
+         Both the box and the row toggle it. The box stops the press from
+         reaching the row, exactly as the mailbox list does; without that it
+         reached the row's own handler as well and the two cancelled out. -->
+    <v-checkbox
+      v-if="selectMode"
+      :input-value="ticked"
+      :disabled="!selectable"
+      :title="selectable ? '' : $t('emailConnector.contacts.select.notPublishable')"
+      class="mt-0 pt-0 me-2 align-self-center"
+      color="#707070"
+      background-color="transparent"
+      hide-details
+      dense
+      @click.stop
+      @change="$emit('tick')" />
     <v-list-item-avatar
       size="36"
       class="my-1 me-3">
@@ -83,8 +103,51 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Whether the list is picking contacts rather than browsing them.
+    selectMode: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether this row is ticked.
+    ticked: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  methods: {
+    /**
+     * What a press on the row means, which depends on what the list is for.
+     * <p>
+     * Browsing, it opens the contact. Picking, it ticks — and on a row that
+     * cannot be published it does nothing at all, rather than opening a card
+     * the user did not ask for in the middle of making a selection.
+     *
+     * @returns {void}
+     */
+    onClick() {
+      if (!this.selectMode) {
+        this.$emit('select');
+        return;
+      }
+      if (this.selectable) {
+        this.$emit('tick');
+      }
+    },
   },
   computed: {
+    /**
+     * Whether this contact may be published at all.
+     * <p>
+     * The server's rule, shown rather than hidden: a collected row is a
+     * by-product of mail traffic nobody chose to keep and a directory colleague
+     * already lives in the platform, so neither is publishable, and an
+     * address-book row is already there.
+     *
+     * @returns {boolean} true when ticking this row would do something
+     */
+    selectable() {
+      return this.contact?.source === 'MANUAL';
+    },
     /**
      * The line the row leads with: the name, falling back to the address.
      *

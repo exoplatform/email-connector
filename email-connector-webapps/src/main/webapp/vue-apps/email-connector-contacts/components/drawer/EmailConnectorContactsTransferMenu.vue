@@ -65,7 +65,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <v-list-item-icon class="me-2 my-auto">
             <v-icon size="16">fas fa-address-book</v-icon>
           </v-list-item-icon>
-          <v-list-item-title>{{ $t('emailConnector.contacts.menu.bulkPublish') }}</v-list-item-title>
+          <v-list-item-title>{{ $t('emailConnector.contacts.menu.selectSeveral') }}</v-list-item-title>
         </v-list-item>
       </v-list>
     </v-menu>

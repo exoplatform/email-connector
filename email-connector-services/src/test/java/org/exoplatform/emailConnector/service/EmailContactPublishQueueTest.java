@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -384,17 +385,17 @@ public class EmailContactPublishQueueTest {
   // -------------------------------------------------------------------------
 
   @Test
-  void aReviewedSelectionIsQueuedWholeWithoutTouchingTheServer() {
+  void aReviewedSelectionIsQueuedWholeAndDeDuplicated() {
+    // Asserted with no book, so the enqueue is all that happens: with one, the
+    // selection publishes immediately and an empty queue is the right answer,
+    // which would say nothing about what was queued.
+    withoutAnAddressBook();
     lenient().when(emailContactService.getContact(6L, USERNAME)).thenReturn(ownContact(6L, EmailContactSource.MANUAL));
 
     ContactPublishQueue stored = syncService.queuePublishes(USERNAME, java.util.List.of(CONTACT_ID, 6L, CONTACT_ID));
 
-    // De-duplicated, all pending, none parked -- and NOTHING published here:
-    // the enqueue is bookkeeping, the drain after the next successful sync is
-    // the publisher.
     assertEquals(2, stored.getEntries().size());
     assertTrue(stored.getEntries().stream().noneMatch(ContactPublishQueueEntry::isParked));
-    verify(userEmailSettingService).setContactPublishQueue(any(), eq(USERNAME));
     verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
   }
 
@@ -479,6 +480,7 @@ public class EmailContactPublishQueueTest {
   void reSelectingAQueuedContactResetsItsEntry() {
     // Same rule as the single publish's fallback: asking again is the retry
     // that un-parks a parked entry and gives a tired one a fresh count.
+    withoutAnAddressBook();
     queue.getEntries().add(entry(CONTACT_ID, 3, true));
 
     ContactPublishQueue stored = syncService.queuePublishes(USERNAME, java.util.List.of(CONTACT_ID));
@@ -487,6 +489,31 @@ public class EmailContactPublishQueueTest {
     ContactPublishQueueEntry entry = stored.getEntries().get(0);
     assertFalse(entry.isParked());
     assertEquals(0, entry.getAttempts());
+  }
+
+  @Test
+  void aReviewedSelectionPublishesStraightAwayWhenTheBookIsThere() {
+    // The point of the change: a deliberate selection on a reachable book does
+    // not wait for an unrelated sync. Waiting was right for the fallback, where
+    // the click had already failed; here it left the user watching a list that
+    // never changed. The card reaching the server is the evidence.
+    syncService.queuePublishes(USERNAME, java.util.List.of(CONTACT_ID));
+
+    // The card on the server is the assertion. What the queue holds afterwards
+    // is the drain's business, pinned by its own tests above.
+    verify(cardDavClient).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * Puts this user on a plain IMAP account with no address book, where the
+   * enqueue is the whole story because there is nothing to publish to.
+   */
+  private void withoutAnAddressBook() {
+    UserEmailSetting plainImap = new UserEmailSetting();
+    plainImap.setEmailConnectorId("99");
+    plainImap.setCarddavEnabled(false);
+    when(userEmailSettingService.getUserEmailSetting(USERNAME)).thenReturn(plainImap);
+    lenient().when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(new ContactSyncState());
   }
 
   @Test

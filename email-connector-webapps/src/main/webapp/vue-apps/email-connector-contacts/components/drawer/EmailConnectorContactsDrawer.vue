@@ -64,7 +64,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :publishable="publishable"
             @import="onImportFile"
             @export="onExport"
-            @bulk-publish="$root.$emit('email-contacts-bulk-publish')" />
+            @bulk-publish="startSelectMode" />
         </div>
       </div>
     </template>
@@ -83,32 +83,112 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :publishable="publishable"
           @import="onImportFile"
           @export="onExport"
-          @bulk-publish="$root.$emit('email-contacts-bulk-publish')" />
+          @bulk-publish="startSelectMode" />
       </div>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <email-connector-contacts-source-filter
         v-model="filterChips"
         :counts="sourceCounts" />
+      <!-- The action bar of select mode: it counts what is ticked, because
+           publishing writes cards to a server we do not own and there is no
+           undo. The count IS the review the bespoke checklist drawer used to
+           be -- kept, but where the user already is. -->
+      <div
+        v-if="selectMode"
+        class="d-flex align-center px-4 py-2 border-box-sizing">
+        <!-- Scoped to what can actually be published: "all" ticking rows the
+             server would refuse would be a promise the next screen breaks. -->
+        <v-checkbox
+          v-model="allTicked"
+          :indeterminate="someTicked"
+          :label="$t('emailConnector.contacts.select.all')"
+          class="mt-0 pt-0 me-4"
+          color="#707070"
+          hide-details
+          dense
+          @click.stop />
+        <span class="text-subtitle-color">
+          {{ $t('emailConnector.contacts.select.count', [tickedIds.length]) }}
+        </span>
+        <v-spacer />
+        <v-btn
+          class="btn me-2"
+          small
+          @click="cancelSelectMode">
+          {{ $t('emailConnector.contacts.form.cancel') }}
+        </v-btn>
+        <v-btn
+          :disabled="!tickedIds.length || publishing"
+          :loading="publishing"
+          class="btn btn-primary"
+          small
+          @click="publishTicked">
+          {{ $t('emailConnector.contacts.select.publish') }}
+        </v-btn>
+      </div>
       <email-connector-contacts-list
         :contacts="contacts"
         :letter-index="letterIndex"
         :rail-visible="railVisible"
         :selected-id="selectedContact?.id"
         :empty-label="emptyLabel"
-        @select="selectContact" />
+        :select-mode="selectMode"
+        :ticked-ids="tickedIds"
+        @select="selectContact"
+        @tick="toggleTick" />
     </template>
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
         <email-connector-contacts-source-filter
           v-model="filterChips"
           :counts="sourceCounts" />
+        <!-- The action bar of select mode: it counts what is ticked, because
+             publishing writes cards to a server we do not own and there is no
+             undo. The count IS the review the bespoke checklist drawer used to
+             be -- kept, but where the user already is. -->
+        <div
+          v-if="selectMode"
+          class="d-flex align-center px-4 py-2 border-box-sizing">
+          <!-- Scoped to what can actually be published: "all" ticking rows the
+               server would refuse would be a promise the next screen breaks. -->
+          <v-checkbox
+            v-model="allTicked"
+            :indeterminate="someTicked"
+            :label="$t('emailConnector.contacts.select.all')"
+            class="mt-0 pt-0 me-4"
+            color="#707070"
+            hide-details
+            dense
+            @click.stop />
+          <span class="text-subtitle-color">
+            {{ $t('emailConnector.contacts.select.count', [tickedIds.length]) }}
+          </span>
+          <v-spacer />
+          <v-btn
+            class="btn me-2"
+            small
+            @click="cancelSelectMode">
+            {{ $t('emailConnector.contacts.form.cancel') }}
+          </v-btn>
+          <v-btn
+            :disabled="!tickedIds.length || publishing"
+            :loading="publishing"
+            class="btn btn-primary"
+            small
+            @click="publishTicked">
+            {{ $t('emailConnector.contacts.select.publish') }}
+          </v-btn>
+        </div>
         <email-connector-contacts-list
           :contacts="contacts"
           :letter-index="letterIndex"
           :rail-visible="railVisible"
           :empty-label="emptyLabel"
-          @select="selectContact" />
+          :select-mode="selectMode"
+          :ticked-ids="tickedIds"
+          @select="selectContact"
+          @tick="toggleTick" />
       </template>
       <template v-else>
         <email-connector-contacts-detail
@@ -128,6 +208,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </div>
       </template>
     </template>
+    <!-- The last checkpoint, and named as one: these cards are created on the
+         mail provider's server, and removing them again is deliberately not
+         built. The count is in the message because that is the number the user
+         is actually agreeing to. -->
+    <exo-confirm-dialog
+      ref="publishConfirmDialog"
+      :title="$t('emailConnector.contacts.select.confirm.title')"
+      :message="$t('emailConnector.contacts.select.confirm.message', [tickedIds.length])"
+      :ok-label="$t('emailConnector.contacts.select.publish')"
+      :cancel-label="$t('emailConnector.contacts.form.cancel')"
+      @ok="doPublishTicked" />
   </exo-drawer>
 </template>
 
@@ -168,6 +259,12 @@ export default {
       // that the bulk-publish entry is worth offering. Answered once and
       // cached by the service, so both menu instances cost one call.
       publishable: false,
+      // Picking contacts rather than browsing them. Selecting happens in the
+      // list itself, the way the mailbox already does it, so what is offered
+      // is filtered and searched exactly like what is being looked at.
+      selectMode: false,
+      tickedIds: [],
+      publishing: false,
       importPollTimeout: null,
       // True from the moment a file is chosen until the server's answer or the
       // poll says the run ended — the window the menu greys Import out for.
@@ -200,6 +297,36 @@ export default {
     window.clearTimeout(this.importPollTimeout);
   },
   computed: {
+    /**
+     * The loaded contacts this user could publish, which is what "all" means
+     * here: the list is filtered and searched, so all means all of what is on
+     * screen, never a hidden thousand.
+     *
+     * @returns {Array} the selectable contacts
+     */
+    selectableContacts() {
+      return (this.contacts || []).filter(contact => contact.source === 'MANUAL');
+    },
+    /**
+     * Ticks or clears every selectable row.
+     */
+    allTicked: {
+      get() {
+        return this.selectableContacts.length > 0 && this.tickedIds.length === this.selectableContacts.length;
+      },
+      set(value) {
+        this.tickedIds = value ? this.selectableContacts.map(contact => contact.id) : [];
+      },
+    },
+    /**
+     * Whether some but not all are ticked, which is the box's third state --
+     * without it, a partial selection reads as "none selected".
+     *
+     * @returns {boolean} true when the selection is partial
+     */
+    someTicked() {
+      return this.tickedIds.length > 0 && this.tickedIds.length < this.selectableContacts.length;
+    },
     /**
      * Whether the Favorites chip is on — the restriction half of the chip bar,
      * split from the sources so each travels as its own REST parameter.
@@ -268,6 +395,80 @@ export default {
     },
   },
   methods: {
+    /**
+     * Turns picking on, from the menu.
+     *
+     * @returns {void}
+     */
+    startSelectMode() {
+      this.tickedIds = [];
+      this.selectMode = true;
+    },
+    /**
+     * Leaves picking, dropping whatever was ticked: a selection the user
+     * cannot see is not a selection worth keeping.
+     *
+     * @returns {void}
+     */
+    cancelSelectMode() {
+      this.selectMode = false;
+      this.tickedIds = [];
+    },
+    /**
+     * Ticks or unticks one contact.
+     *
+     * @param {Object} contact the row that was ticked
+     * @returns {void}
+     */
+    toggleTick(contact) {
+      if (!contact?.id) {
+        return;
+      }
+      const index = this.tickedIds.indexOf(contact.id);
+      if (index >= 0) {
+        this.tickedIds.splice(index, 1);
+      } else {
+        this.tickedIds.push(contact.id);
+      }
+    },
+    /**
+     * Publishes what was ticked, after saying how many.
+     * <p>
+     * The confirmation is not ceremony: these cards are created on somebody
+     * else's server and deleting them again is deliberately not built, so this
+     * is the last point at which the number can still be wrong and the user
+     * can still say no.
+     *
+     * @returns {void}
+     */
+    publishTicked() {
+      if (this.tickedIds.length) {
+        this.$refs.publishConfirmDialog.open();
+      }
+    },
+    /**
+     * Publishes what was ticked, once the count has been confirmed.
+     *
+     * @returns {void}
+     */
+    doPublishTicked() {
+      const count = this.tickedIds.length;
+      this.publishing = true;
+      this.$emailConnectorContactsService.queuePublishes(this.tickedIds)
+        .then(() => {
+          document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+            alertType: 'success',
+            alertMessage: this.$t('emailConnector.contacts.select.done', [count]),
+          }}));
+          this.cancelSelectMode();
+          this.refresh();
+        })
+        .catch(() => document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: 'error',
+          alertMessage: this.$t('emailConnector.contacts.select.error'),
+        }})))
+        .finally(() => this.publishing = false);
+    },
     /**
      * Opens the drawer and loads the store on the way in. A caller may name a
      * contact to land on — the global Favorites drawer does — and it opens in
