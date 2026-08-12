@@ -50,7 +50,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :select-mode="selectMode"
           :ticked="tickedIds.includes(contact.id)"
           @select="$emit('select', contact)"
-          @tick="$emit('tick', contact)" />
+          @tick="$emit('tick', contact)"
+          @start-select="$emit('start-select', contact)" />
       </template>
     </v-list>
     <email-connector-contacts-alphabet-rail

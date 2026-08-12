@@ -38,7 +38,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :select-mode="selectMode"
       :ticked-ids="tickedIds"
       @select="$emit('select', $event)"
-      @tick="$emit('tick', $event)" />
+      @tick="$emit('tick', $event)"
+      @start-select="$emit('start-select', $event)" />
   </div>
 </template>
 
