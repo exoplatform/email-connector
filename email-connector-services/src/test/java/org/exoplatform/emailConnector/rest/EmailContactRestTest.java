@@ -408,7 +408,7 @@ public class EmailContactRestTest {
     org.mockito.Mockito.doAnswer(invocation -> {
       ((java.io.Writer) invocation.getArgument(1)).write("BEGIN:VCARD\r\n");
       return null;
-    }).when(emailContactVCardService).exportContacts(anyString(), any());
+    }).when(emailContactVCardService).exportContacts(anyString(), any(), any());
 
     mockMvc.perform(get(CONTACTS_PATH + "/export").with(testSimpleUser()))
            .andExpect(status().isOk())
@@ -416,6 +416,36 @@ public class EmailContactRestTest {
                                                                                        .string("Content-Disposition",
                                                                                                "attachment; filename=\"contacts.vcf\""))
            .andExpect(content().string("BEGIN:VCARD\r\n"));
+    // No ids, no selection: the service is asked for the whole store.
+    verify(emailContactVCardService).exportContacts(anyString(), any(), org.mockito.ArgumentMatchers.isNull());
+  }
+
+  @Test
+  void exportOfASelectionCarriesTheIdsAndItsOwnFilename() throws Exception {
+    org.mockito.Mockito.doAnswer(invocation -> {
+      ((java.io.Writer) invocation.getArgument(1)).write("BEGIN:VCARD\r\n");
+      return null;
+    }).when(emailContactVCardService).exportContacts(anyString(), any(), any());
+
+    mockMvc.perform(get(CONTACTS_PATH + "/export?ids=7,3").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           // A distinct name: a Downloads folder cannot tell a partial file from
+           // a full one otherwise.
+           .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                                                                                       .string("Content-Disposition",
+                                                                                               "attachment; filename=\"contacts-selection.vcf\""));
+    // The order the caller ticked in survives the binding.
+    verify(emailContactVCardService).exportContacts(anyString(), any(), eq(List.of(7L, 3L)));
+  }
+
+  @Test
+  void exportOfATooBigSelectionAnswersBadRequest() throws Exception {
+    org.mockito.Mockito.doThrow(new IllegalArgumentException(EmailContactVCardService.EXPORT_TOO_MANY_IDS))
+                       .when(emailContactVCardService)
+                       .exportContacts(anyString(), any(), any());
+
+    mockMvc.perform(get(CONTACTS_PATH + "/export?ids=1,2").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
   }
 
   @Test
