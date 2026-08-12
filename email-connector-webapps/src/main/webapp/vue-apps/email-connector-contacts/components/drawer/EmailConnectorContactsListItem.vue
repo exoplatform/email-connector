@@ -18,7 +18,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-list-item
     :input-value="selected"
     class="px-4"
-    @click="onClick">
+    @click="onClick"
+    @mouseenter="revealed = true"
+    @mouseleave="revealed = false"
+    @focusin="revealed = true"
+    @focusout="onFocusOut">
     <!-- Any contact can be ticked. Selecting is not publishing: it will serve
          deleting, exporting and whatever comes next, and a row locked by the
          rules of one action would be the wrong shape for all the others. What
@@ -61,7 +65,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-list-item-content>
     <!-- A static star, deliberately not a button: the list streams up to
          thousands of rows, and one listener per row is a real cost for an
-         action the detail card already offers. Toggling lives there. -->
+         action the detail card already offers. Toggling lives there.
+         Still true next to the actions menu below, which reads as the opposite
+         but is not: what the row pays for it is four plain DOM listeners, and
+         a component only for the one row being pointed at. A favorite toggle
+         would be a v-btn per row — five hundred component instances for a
+         click most rows never get. -->
     <v-list-item-icon
       v-if="contact.favorite"
       class="my-auto ms-2">
@@ -81,6 +90,37 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ sourceIcon }}
       </v-icon>
     </v-list-item-icon>
+    <!-- The row's own actions, and the one place this file spends anything per
+         row. What is always here is this empty 28px box: a plain div, no
+         listeners, no component. The menu itself is mounted only while the row
+         is hovered or focused, so a list of five hundred rows holds ONE menu at
+         a time instead of five hundred activators, five hundred v-menus and
+         five hundred detached content nodes waiting to be opened.
+
+         The mailbox solves this the other way — it keeps every row's menu
+         mounted and only fades it to opacity 0 — and it is right to, for a list
+         of at most a hundred heavy rows where the menu is a fraction of what a
+         row already costs. Here the row is deliberately thin and the list runs
+         to thousands, so the menu would be the row's biggest expense, and paid
+         for rows nobody will ever point at.
+
+         The empty box is what makes mounting on hover safe. Left to v-if alone
+         the icon appears from nothing, the row's content shifts as the pointer
+         arrives, the pointer ends up over different content, the hover drops,
+         and the row flickers as long as the cursor rests — the very trap the
+         mailbox's opacity avoids. Reserving the width up front costs 28px of
+         every row and buys a row whose layout never moves. -->
+    <div
+      v-if="!selectMode"
+      class="ms-2 d-flex align-center"
+      style="width: 28px; min-width: 28px;">
+      <email-connector-contacts-list-item-action-menu
+        v-if="revealed || menuOpen"
+        :contact="contact"
+        @start-select="$emit('start-select')"
+        @open="menuOpen = true"
+        @close="menuOpen = false" />
+    </div>
   </v-list-item>
 </template>
 
@@ -91,6 +131,18 @@ const INITIALS_COLORS = ['#ef5350', '#1976d2', '#ab47bc', '#00897b', '#9e9d24', 
   '#00bfa5', '#757575', '#f44336', '#2196f3', '#7cb342', '#303f9f', '#4527a0', '#8d6e63', '#ff6f00'];
 
 export default {
+  data() {
+    return {
+      // Whether the pointer is on this row, or the keyboard is in it — the two
+      // ways of asking for the row's actions, and what decides the menu is
+      // worth building at all.
+      revealed: false,
+      // Whether this row's menu is open. Kept apart from the hover, because a
+      // detached menu is not inside the row: the pointer reaching it leaves the
+      // row, and unmounting on that would close the menu the user just opened.
+      menuOpen: false,
+    };
+  },
   props: {
     // The contact to render.
     contact: {
@@ -127,6 +179,23 @@ export default {
         return;
       }
       this.$emit('tick');
+    },
+    /**
+     * Whether the keyboard has really left this row.
+     * <p>
+     * Tabbing from the row to its own menu button fires a focusout on the row
+     * before the button's focusin: taken at face value it unmounts the menu the
+     * user is tabbing to, and the button vanishes under the focus. The event
+     * says where focus went, so the row only stops revealing when it went
+     * somewhere outside.
+     *
+     * @param {FocusEvent} event - the row losing focus
+     * @returns {void}
+     */
+    onFocusOut(event) {
+      if (!this.$el.contains(event.relatedTarget)) {
+        this.revealed = false;
+      }
     },
   },
   computed: {
