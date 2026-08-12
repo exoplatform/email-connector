@@ -27,12 +27,15 @@ import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.file.model.FileItem;
+import org.exoplatform.emailConnector.event.ContactAuthoredEvent;
+import org.exoplatform.emailConnector.model.ContactOrigin;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -185,6 +188,14 @@ public class EmailContactService {
   // read does not. Directory resolution asks it before showing an address.
   @Autowired
   private ProfilePropertyService  profilePropertyService;
+
+  // Announces that a person authored a contact, for whoever cares -- today the
+  // address-book write-back. Injected rather than the write-back service itself
+  // because that service already depends on THIS one, and a direct call back
+  // would close a bean cycle; it also keeps the store honestly ignorant of what
+  // an address book is.
+  @Autowired
+  private ApplicationEventPublisher eventPublisher;
 
   // The platform's name for the email profile property, as hidden-property ids
   // are keyed by the property SETTING, not by the field name.
@@ -546,6 +557,13 @@ public class EmailContactService {
    * {@link #claimAddress(String, Long, String)} for what happens when one of
    * them already belongs to somebody. The phone numbers ride the same
    * three-state contract — {@link #resolvePhones(EmailContact, EmailContact)}.
+   * <p>
+   * This overload never publishes anything to an address book: it is the quiet
+   * one, kept as the default so a caller that has not thought about the
+   * question — an importer, an agent, a backfill — cannot answer it by
+   * accident. Saying otherwise takes
+   * {@link #createContact(EmailContact, String, ContactOrigin)} and naming the
+   * origin out loud.
    *
    * @param contact what the user typed (names, addresses, phone, organization)
    * @param username the store owner
@@ -556,6 +574,70 @@ public class EmailContactService {
    *           visible row already carries any of the addresses
    */
   public EmailContact createContact(EmailContact contact, String username) {
+    return createContact(contact, username, ContactOrigin.UNATTENDED);
+  }
+
+  /**
+   * Creates a manual contact, saying HOW it was created — everything
+   * {@link #createContact(EmailContact, String)} does, plus the one bit that
+   * decides whether the new contact may leave for the user's address book on
+   * its own.
+   * <p>
+   * The origin is a parameter and not something read off the stored row on
+   * purpose: a contact typed into the form and a contact read out of a
+   * 500-card import both land as {@link EmailContactSource#MANUAL}, so no
+   * property of the result can tell a deliberate create from a bulk one — only
+   * the caller knows, and only the caller can say. See {@link ContactOrigin}
+   * for why silence has to mean "do not publish".
+   * <p>
+   * What this method does with a {@link ContactOrigin#USER_FORM} create is
+   * raise {@link ContactAuthoredEvent} and nothing more. The store stays
+   * unaware of address books: whether that event turns into a card on a CardDAV
+   * server depends on the user's own switch and the administrator's, neither of
+   * which is this class's business — and a push that fails never reaches back
+   * here, so it can never fail the save.
+   *
+   * @param contact what the user typed (names, addresses, phone, organization)
+   * @param username the store owner
+   * @param origin how the contact came to be created; {@code null} reads as
+   *          {@link ContactOrigin#UNATTENDED}, the quiet answer
+   * @return the created (or revived) contact
+   * @throws IllegalArgumentException with {@link #CONTACT_INVALID_EMAIL} for an
+   *           unusable address, primary or secondary
+   * @throws IllegalStateException with {@link #CONTACT_ALREADY_EXISTS} when a
+   *           visible row already carries any of the addresses
+   */
+  public EmailContact createContact(EmailContact contact, String username, ContactOrigin origin) {
+    EmailContact stored = doCreateContact(contact, username);
+    if (!ContactOrigin.USER_FORM.equals(origin) || stored == null || stored.getId() == null) {
+      return stored;
+    }
+    eventPublisher.publishEvent(new ContactAuthoredEvent(username, stored.getId()));
+    // Re-read, because the announcement may have changed the row underneath
+    // this answer: a push that landed binds the contact to its new server entry
+    // and flips it to CARDDAV. Answering the pre-announcement object would tell
+    // the client the contact is local while the store says otherwise -- the kind
+    // of disagreement that shows up later as a card refusing an edit it looks
+    // like it should accept. When nothing published (either switch off, no book,
+    // the push queued) the re-read is simply the same row again.
+    EmailContact answered = getContact(stored.getId(), username);
+    return answered == null ? stored : answered;
+  }
+
+  /**
+   * The create itself, origin-blind: validation, the tombstone revival, the
+   * address claims and the row. Split out so the two public entry points share
+   * one body and the origin question is asked in exactly one place.
+   *
+   * @param contact what the user typed
+   * @param username the store owner
+   * @return the created (or revived) contact
+   * @throws IllegalArgumentException with {@link #CONTACT_INVALID_EMAIL} for an
+   *           unusable address, primary or secondary
+   * @throws IllegalStateException with {@link #CONTACT_ALREADY_EXISTS} when a
+   *           visible row already carries any of the addresses
+   */
+  private EmailContact doCreateContact(EmailContact contact, String username) {
     String address = EmailContactUtils.normalizeAddress(contact == null ? null : contact.getPrimaryEmail());
     if (address == null) {
       throw new IllegalArgumentException(CONTACT_INVALID_EMAIL);

@@ -53,6 +53,33 @@ export function updateAddressBookBinding(binding) {
   });
 }
 
+/**
+ * Turns the automatic address-book push on or off for the caller: whether a
+ * contact they add through the contact form goes to their address book by
+ * itself.
+ * <p>
+ * Its own endpoint, not a second field on the binding above: changing the
+ * binding releases the contacts of the book being left, which a preference
+ * about future saves must never trigger.
+ *
+ * @param {object} preference - {carddavAutoPublish}
+ * @returns {Promise} resolves once stored
+ */
+export function updateAddressBookAutoPublish(preference) {
+  return fetch('/email-connector/rest/user-email-setting/address-book/auto-publish', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify(preference)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the automatic address book publishing');
+    }
+  });
+}
+
 export function updateEmailPreferences(preferences) {
   return fetch('/email-connector/rest/user-email-setting/preferences', {
     headers: {
