@@ -297,4 +297,15 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
    * @return the row count
    */
   long countByUserIdAndSourceIn(String userId, List<String> sources);
+
+  /**
+   * Every row this user holds, whatever its source or state — suppressed
+   * included. The one deliberate exception to the take-a-Pageable rule: its
+   * only caller is the start-fresh wipe, which by definition must see the
+   * whole store, tombstones and all, to empty it.
+   *
+   * @param userId the store owner
+   * @return the rows, in no particular order
+   */
+  List<EmailContactEntity> findByUserId(String userId);
 }

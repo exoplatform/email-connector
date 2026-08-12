@@ -488,6 +488,84 @@ public class EmailContactVCardServiceTest {
     assertEquals(201, out.toString().split("BEGIN:VCARD", -1).length - 1);
   }
 
+  // -------------------------------------------------------------------------
+  // Export-then-start-fresh -- the provider switch's destructive half. The
+  // ordering IS the feature: no deletion until the backup left, a failed
+  // backup deletes nothing, and there is no undo past a delivered one.
+  // -------------------------------------------------------------------------
+
+  @Test
+  void nothingIsDeletedUntilTheWholeBackupWasWritten() throws Exception {
+    EmailContact contact = visibleContact(1L);
+    when(emailContactService.getContacts(USERNAME, null, null, false, 0, 200))
+        .thenReturn(new EmailContactPage(List.of(contact), Map.of(), 1, 0, 200));
+    when(emailContactStorage.getVcardUids(USERNAME)).thenReturn(Map.of());
+    StringWriter out = new StringWriter();
+    // Captured AT THE MOMENT of deletion, not after the call returns: the
+    // assertion is about the order inside the operation, and only what the
+    // writer already held when startFresh ran can prove it.
+    StringBuilder backupWhenDeleted = new StringBuilder();
+    when(emailContactService.startFresh(USERNAME)).thenAnswer(invocation -> {
+      backupWhenDeleted.append(out);
+      return 1;
+    });
+
+    int deleted = service.exportContactsThenStartFresh(USERNAME, out);
+
+    assertEquals(1, deleted);
+    verify(emailContactService).startFresh(USERNAME);
+    assertTrue(backupWhenDeleted.toString().contains("BEGIN:VCARD"),
+               "the row being deleted was already in the user's backup when the deletion ran");
+    assertEquals(out.toString(), backupWhenDeleted.toString(), "not one byte was written after the deletion started");
+  }
+
+  @Test
+  void aFailedBackupDeletesNothing() {
+    EmailContact contact = visibleContact(1L);
+    when(emailContactService.getContacts(USERNAME, null, null, false, 0, 200))
+        .thenReturn(new EmailContactPage(List.of(contact), Map.of(), 1, 0, 200));
+    when(emailContactStorage.getVcardUids(USERNAME)).thenReturn(Map.of());
+    // The writer is the HTTP response: an abandoned download or a dead
+    // connection is exactly a write that throws.
+    java.io.Writer abandoned = new java.io.Writer() {
+      /** Fails like a connection the browser closed mid-download. */
+      @Override
+      public void write(char[] cbuf, int off, int len) throws java.io.IOException {
+        throw new java.io.IOException("connection reset by peer");
+      }
+
+      /** Never reached before the write failed. */
+      @Override
+      public void flush() {
+      }
+
+      /** Closed by the caller, not this test. */
+      @Override
+      public void close() {
+      }
+    };
+
+    assertThrows(java.io.IOException.class, () -> service.exportContactsThenStartFresh(USERNAME, abandoned));
+
+    // The whole point of the ordering: a backup that never reached the user
+    // leaves the store exactly as it was.
+    verify(emailContactService, never()).startFresh(anyString());
+  }
+
+  @Test
+  void aStoreThatCannotBeReadDeletesNothingEither() {
+    // Not only the writer: any failure inside the export -- a page read
+    // included -- must leave the store untouched, because the backup the user
+    // was promised does not exist.
+    when(emailContactStorage.getVcardUids(USERNAME)).thenReturn(Map.of());
+    when(emailContactService.getContacts(USERNAME, null, null, false, 0, 200))
+        .thenThrow(new RuntimeException("database gone"));
+
+    assertThrows(RuntimeException.class, () -> service.exportContactsThenStartFresh(USERNAME, new StringWriter()));
+
+    verify(emailContactService, never()).startFresh(anyString());
+  }
+
   @Test
   void parsingAnswersTheFirstCardsFieldsAndStoresNothing() throws Exception {
     // Two cards on purpose: the parse is defined as "the FIRST card", and the

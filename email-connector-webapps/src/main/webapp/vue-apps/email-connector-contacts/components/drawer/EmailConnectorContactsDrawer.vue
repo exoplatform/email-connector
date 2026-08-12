@@ -26,85 +26,106 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-model="contactsDrawer"
     right
     :loading="loading"
-    use-filter
+    :use-filter="canSearch"
     :filter-placeholder="$t('emailConnector.contacts.filter.placeholder')"
+    :go-back-button="canGoBack"
     @filter-updated="onFilterUpdated"
+    @go-back="cancelSelectMode"
     @closed="close"
     class="no-box-shadow">
     <template #title>
       <!-- The count follows whatever is filtered, so it doubles as the answer to
            "did my search find anything". It is also the cheapest possible alarm:
            an address book sync that quietly removed everything shows up here the
-           moment the drawer opens, instead of in a log line nobody reads. -->
-      <span v-if="!hasFullAppLeft">
-        {{ $t('emailConnector.contacts.drawer.title') }}
+           moment the drawer opens, instead of in a log line nobody reads.
+           While picking, the same line counts what is ticked instead: one place
+           says what the drawer is doing, and it is the place already read. -->
+      <span v-if="!hasFullAppLeft" :class="{ 'text-body': selectMode }">
+        {{ title }}
         <span
-          v-if="size"
+          v-if="size && !selectMode"
           class="text-sub-title ms-1">· {{ size }}</span>
       </span>
       <span v-else></span>
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftTitle>
+      <!-- The way out of picking, in the wide layout: the drawer's own go-back
+           button belongs to the narrow header, which this slot replaces. -->
+      <v-btn
+        v-if="selectMode"
+        icon
+        @click="cancelSelectMode">
+        <v-icon size="20">
+          {{ $vuetify.rtl && 'fa fa-arrow-right' || 'fa fa-arrow-left' }}
+        </v-icon>
+      </v-btn>
+      <!-- A flex line, so the title and the actions are centred against each
+           other. Left to inline layout they align on baselines a button and a
+           menu compute differently, and the menu sat low. -->
       <div class="d-flex align-center justify-space-between width-full">
-        <span>{{ $t('emailConnector.contacts.drawer.title') }}</span>
-        <!-- A flex line, so the add button and the overflow menu are centred
-             against each other. Left to inline layout they align on baselines a
-             button and a menu compute differently, and the menu sat low. -->
-        <div class="d-flex align-center">
-          <v-btn
-            :title="$t('emailConnector.contacts.add')"
-            icon
-            @click="openForm()">
-            <v-icon size="18">
-              fas fa-user-plus
-            </v-icon>
-          </v-btn>
-          <email-connector-contacts-transfer-menu
-            :importing="importing"
-            @import="onImportFile"
-            @export="onExport" />
-        </div>
+        <span :class="{ 'text-body': selectMode }">{{ title }}</span>
+        <email-connector-contacts-drawer-actions
+          :select-mode="selectMode"
+          :ticked-count="tickedIds.length"
+        :selection-publishable="selectionPublishable"
+          :publishing="publishing"
+          :importing="importing"
+          :publishable="publishable"
+          @add="openForm()"
+          @import="onImportFile"
+          @export="onExport"
+          @bulk-publish="startSelectMode"
+          @publish="publishTicked" />
       </div>
     </template>
     <template #titleIcons>
-      <div v-if="!hasFullAppLeft" class="d-flex align-center">
-        <v-btn
-          :title="$t('emailConnector.contacts.add')"
-          icon
-          @click="openForm()">
-          <v-icon size="18">
-            fas fa-user-plus
-          </v-icon>
-        </v-btn>
-        <email-connector-contacts-transfer-menu
-          :importing="importing"
-          @import="onImportFile"
-          @export="onExport" />
-      </div>
+      <email-connector-contacts-drawer-actions
+        v-if="!hasFullAppLeft"
+        :select-mode="selectMode"
+        :ticked-count="tickedIds.length"
+        :selection-publishable="selectionPublishable"
+        :publishing="publishing"
+        :importing="importing"
+        :publishable="publishable"
+        @add="openForm()"
+        @import="onImportFile"
+        @export="onExport"
+        @bulk-publish="startSelectMode"
+        @publish="publishTicked" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <email-connector-contacts-source-filter
         v-model="filterChips"
         :counts="sourceCounts" />
-      <email-connector-contacts-list
+      <email-connector-contacts-drawer-content
         :contacts="contacts"
         :letter-index="letterIndex"
         :rail-visible="railVisible"
         :selected-id="selectedContact?.id"
         :empty-label="emptyLabel"
-        @select="selectContact" />
+        :select-mode="selectMode"
+        :ticked-ids="tickedIds"
+        :indeterminate="someTicked"
+        @update:ticked-ids="tickedIds = $event"
+        @select="selectContact"
+        @tick="toggleTick" />
     </template>
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
         <email-connector-contacts-source-filter
           v-model="filterChips"
           :counts="sourceCounts" />
-        <email-connector-contacts-list
+        <email-connector-contacts-drawer-content
           :contacts="contacts"
           :letter-index="letterIndex"
           :rail-visible="railVisible"
           :empty-label="emptyLabel"
-          @select="selectContact" />
+          :select-mode="selectMode"
+          :ticked-ids="tickedIds"
+          :indeterminate="someTicked"
+          @update:ticked-ids="tickedIds = $event"
+          @select="selectContact"
+          @tick="toggleTick" />
       </template>
       <template v-else>
         <email-connector-contacts-detail
@@ -124,6 +145,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </div>
       </template>
     </template>
+    <!-- The last checkpoint, and named as one: these cards are created on the
+         mail provider's server, and removing them again is deliberately not
+         built. The count is in the message because that is the number the user
+         is actually agreeing to. -->
+    <exo-confirm-dialog
+      ref="publishConfirmDialog"
+      :title="$t('emailConnector.contacts.select.confirm.title')"
+      :message="$t('emailConnector.contacts.select.confirm.message', [tickedIds.length])"
+      :ok-label="$t('emailConnector.contacts.select.publish')"
+      :cancel-label="$t('emailConnector.contacts.form.cancel')"
+      @ok="doPublishTicked" />
   </exo-drawer>
 </template>
 
@@ -160,6 +192,16 @@ export default {
       // than in the menu because the menu unmounts when the drawer expands,
       // and an import must survive that.
       importState: null,
+      // Whether this user has an address book at all, which is what decides
+      // that the bulk-publish entry is worth offering. Answered once and
+      // cached by the service, so both menu instances cost one call.
+      publishable: false,
+      // Picking contacts rather than browsing them. Selecting happens in the
+      // list itself, the way the mailbox already does it, so what is offered
+      // is filtered and searched exactly like what is being looked at.
+      selectMode: false,
+      tickedIds: [],
+      publishing: false,
       importPollTimeout: null,
       // True from the moment a file is chosen until the server's answer or the
       // poll says the run ended — the window the menu greys Import out for.
@@ -168,6 +210,10 @@ export default {
   },
   watch: {
     filterChips() {
+      // A chip narrows the list, and a ticked row it hides would still be
+      // published — invisibly, on somebody else's server, with no undo. The
+      // selection dies with the view it was made in.
+      this.cancelSelectMode();
       this.reload();
     },
   },
@@ -180,6 +226,9 @@ export default {
     // on, drops the row that just lost its own.
     document.addEventListener('favorite-added', this.onFavoriteToggled);
     document.addEventListener('favorite-removed', this.onFavoriteToggled);
+    this.$emailConnectorContactsService.isAddressBookPublishable()
+      .then(available => this.publishable = available)
+      .catch(() => this.publishable = false);
   },
   beforeDestroy() {
     this.$root.$off('open-email-contacts-drawer', this.open);
@@ -189,6 +238,70 @@ export default {
     window.clearTimeout(this.importPollTimeout);
   },
   computed: {
+    /**
+     * The loaded contacts this user could publish, which is what "all" means
+     * here: the list is filtered and searched, so all means all of what is on
+     * screen, never a hidden thousand.
+     *
+     * @returns {Array} the selectable contacts
+     */
+    /**
+     * Whether every ticked contact can be published.
+     * <p>
+     * All of them, not some: the server refuses a selection containing a
+     * collected or directory contact rather than publishing the rest, so the
+     * header must offer the action on exactly the same terms.
+     *
+     * @returns {boolean} true when the whole selection is publishable
+     */
+    selectionPublishable() {
+      if (!this.tickedIds.length) {
+        return false;
+      }
+      const publishableIds = this.selectableContacts.map(contact => contact.id);
+      return this.tickedIds.every(id => publishableIds.includes(id));
+    },
+    selectableContacts() {
+      return (this.contacts || []).filter(contact => contact.source === 'MANUAL');
+    },
+    /**
+     * What the header says the drawer is doing: its name while browsing, the
+     * count of what is ticked while picking.
+     *
+     * @returns {string} the localized title
+     */
+    title() {
+      return this.selectMode ? this.$t('emailConnector.contacts.select.count', [this.tickedIds.length])
+        : this.$t('emailConnector.contacts.drawer.title');
+    },
+    /**
+     * Whether the header's filter field is offered. It is the platform's own
+     * (exo-drawer), and it hides the go-back button, so it steps aside while
+     * picking needs that button — the same trade the mailbox makes.
+     *
+     * @returns {boolean} true when the field should show
+     */
+    canSearch() {
+      return !this.selectMode;
+    },
+    /**
+     * Whether the drawer's own back arrow shows: the way out of picking in the
+     * narrow layout. The wide one replaces this header, and carries its own.
+     *
+     * @returns {boolean} true when the back arrow should show
+     */
+    canGoBack() {
+      return this.selectMode && !this.expanded;
+    },
+    /**
+     * Whether some but not all are ticked, which is the box's third state --
+     * without it, a partial selection reads as "none selected".
+     *
+     * @returns {boolean} true when the selection is partial
+     */
+    someTicked() {
+      return this.tickedIds.length > 0 && this.tickedIds.length < this.selectableContacts.length;
+    },
     /**
      * Whether the Favorites chip is on — the restriction half of the chip bar,
      * split from the sources so each travels as its own REST parameter.
@@ -257,6 +370,80 @@ export default {
     },
   },
   methods: {
+    /**
+     * Turns picking on, from the menu.
+     *
+     * @returns {void}
+     */
+    startSelectMode() {
+      this.tickedIds = [];
+      this.selectMode = true;
+    },
+    /**
+     * Leaves picking, dropping whatever was ticked: a selection the user
+     * cannot see is not a selection worth keeping.
+     *
+     * @returns {void}
+     */
+    cancelSelectMode() {
+      this.selectMode = false;
+      this.tickedIds = [];
+    },
+    /**
+     * Ticks or unticks one contact.
+     *
+     * @param {Object} contact the row that was ticked
+     * @returns {void}
+     */
+    toggleTick(contact) {
+      if (!contact?.id) {
+        return;
+      }
+      const index = this.tickedIds.indexOf(contact.id);
+      if (index >= 0) {
+        this.tickedIds.splice(index, 1);
+      } else {
+        this.tickedIds.push(contact.id);
+      }
+    },
+    /**
+     * Publishes what was ticked, after saying how many.
+     * <p>
+     * The confirmation is not ceremony: these cards are created on somebody
+     * else's server and deleting them again is deliberately not built, so this
+     * is the last point at which the number can still be wrong and the user
+     * can still say no.
+     *
+     * @returns {void}
+     */
+    publishTicked() {
+      if (this.tickedIds.length) {
+        this.$refs.publishConfirmDialog.open();
+      }
+    },
+    /**
+     * Publishes what was ticked, once the count has been confirmed.
+     *
+     * @returns {void}
+     */
+    doPublishTicked() {
+      const count = this.tickedIds.length;
+      this.publishing = true;
+      this.$emailConnectorContactsService.queuePublishes(this.tickedIds)
+        .then(() => {
+          document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+            alertType: 'success',
+            alertMessage: this.$t('emailConnector.contacts.select.done', [count]),
+          }}));
+          this.cancelSelectMode();
+          this.refresh();
+        })
+        .catch(() => document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: 'error',
+          alertMessage: this.$t('emailConnector.contacts.select.error'),
+        }})))
+        .finally(() => this.publishing = false);
+    },
     /**
      * Opens the drawer and loads the store on the way in. A caller may name a
      * contact to land on — the global Favorites drawer does — and it opens in
@@ -434,6 +621,9 @@ export default {
     close() {
       this.selectedContact = null;
       this.term = null;
+      // Before the chips, whose watcher would otherwise cancel picking on a
+      // drawer already closed — harmless, but it hides where this belongs.
+      this.cancelSelectMode();
       this.filterChips = [];
       this.contactsDrawer = false;
       // The poll dies with the drawer; the run itself does not need it, and

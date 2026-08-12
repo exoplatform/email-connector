@@ -25,6 +25,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.core.annotation.Order;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
@@ -72,5 +73,28 @@ public class EmailBoxCleanupListenerTest {
 
     assertNotNull(annotation);
     assertTrue(annotation.fallbackExecution(), "the handler must run outside a transaction, or a rebind skips it");
+  }
+
+  @Test
+  void theAddressBookReleaseRunsBeforeThisCleanup_byConstructionNotByLuck() throws Exception {
+    // Both listeners handle the same EmailBoxCleanupEvent, and their relative
+    // order is load-bearing: the release reads each address-book row's
+    // seenCount to decide COLLECTED vs MANUAL, and demotes rows to COLLECTED
+    // expecting THIS listener's collected-release to hand them over to MANUAL
+    // (zeroing those very counters) in the same rebind. Before the @Order pair
+    // the order held only by the accident of bean registration -- a class
+    // rename could have flipped it silently. Read via reflection so removing
+    // either annotation fails a test rather than a user.
+    Order release = ContactBookReleaseListener.class
+        .getMethod("handleEmailBoxCleanup", EmailBoxCleanupEvent.class)
+        .getAnnotation(Order.class);
+    Order cleanup = EmailBoxCleanupListener.class
+        .getMethod("handleEmailBoxCleanup", EmailBoxCleanupEvent.class)
+        .getAnnotation(Order.class);
+
+    assertNotNull(release, "the release handler must carry an explicit @Order — the ordering may not be implicit");
+    assertNotNull(cleanup, "the cleanup handler must carry an explicit @Order — the ordering may not be implicit");
+    assertTrue(release.value() < cleanup.value(),
+               "the address-book release must run before the cleanup's collected-release");
   }
 }
