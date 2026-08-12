@@ -30,43 +30,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- Switching account used to release the address book and relabel the
            collected contacts without a word: on one real mailbox that silently
            removed 489 people. So when there is something to lose, the binding
-           does not move until the user has said what should happen to it.
-
-           The two options are not symmetric and are not presented as if they
-           were. Keeping is the safe one and comes first. Starting fresh is
-           destructive and irreversible, so it is spelled out, and its button
-           downloads the backup FIRST -- the wipe is what happens after the file
-           lands, never before. -->
-      <div
+           does not move until the user has said what should happen to it. The
+           same question is asked on disconnect, from the same component. -->
+      <email-connector-contacts-choice-step
         v-if="choiceStep"
-        class="mx-4 mt-4">
-        <div class="mb-4">
-          {{ $t('UserSettings.emailConnector.userSetting.switch.intro', [contactsCount]) }}
-        </div>
-        <v-radio-group v-model="contactsChoice" class="mt-0">
-          <v-radio value="keep">
-            <template #label>
-              <div class="d-flex flex-column">
-                <span class="font-weight-bold">{{ $t('UserSettings.emailConnector.userSetting.switch.keep') }}</span>
-                <span class="caption text-subtitle-color">{{ $t('UserSettings.emailConnector.userSetting.switch.keep.hint') }}</span>
-              </div>
-            </template>
-          </v-radio>
-          <v-radio value="fresh" class="mt-3">
-            <template #label>
-              <div class="d-flex flex-column">
-                <span class="font-weight-bold">{{ $t('UserSettings.emailConnector.userSetting.switch.fresh') }}</span>
-                <span class="caption text-subtitle-color">{{ $t('UserSettings.emailConnector.userSetting.switch.fresh.hint') }}</span>
-              </div>
-            </template>
-          </v-radio>
-        </v-radio-group>
-        <div
-          v-if="contactsChoice === 'fresh'"
-          class="error--text caption">
-          {{ $t('UserSettings.emailConnector.userSetting.switch.fresh.warning') }}
-        </div>
-      </div>
+        v-model="contactsChoice"
+        :count="contactsCount" />
       <form
         v-else
         ref="userSettingForm"
