@@ -25,6 +25,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.model.DraftState;
 
 public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
@@ -160,13 +161,22 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * starred flag rides in this projection because the reconcile diffs it exactly
    * like the read flag; loading it any other way would mean a second per-folder
    * query every sync.
+   * <p>
+   * The two draft columns ride along for the same "the sync itself needs them"
+   * reason. The state is what tells a draft the user is still writing from a
+   * message the server no longer has — the two look identical from the UID alone.
+   * The local id joined it when the Drafts folder started syncing: a draft whose
+   * server copy vanished has to be put back to a state that will re-upload, and
+   * every write to a draft is addressed by its local id (never by its row id or
+   * its UID, both of which move under a draft), so without it here the reconcile
+   * would have to re-read every draft row in full just to learn the handle.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator
-   * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read, recent, starred]},
-   *         newest first
+   * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read,
+   *         recent, starred, draftState, draftLocalId]}, newest first
    */
-  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred, email.draftState FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
+  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred, email.draftState, email.draftLocalId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
   List<Object[]> findSyncViewByUserIdAndFolder(@Param("userId")
   String userId, @Param("folder")
   String folder);
@@ -192,6 +202,56 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")
   String mailHeaderId, @Param("userId")
   String userId);
+
+  /**
+   * How many cached messages of a folder carry a given Message-ID. A count rather
+   * than {@link #findByMailHeaderIdAndUserId} filtered in Java: the one caller only
+   * asks "does this exist", and the full lookup drags the body CLOB of every
+   * matching row through the persistence layer to answer a yes/no.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the Message-ID to look for
+   * @param folder the folder discriminator to look in
+   * @return the number of matching cached rows
+   */
+  @Query("SELECT COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId AND email.folder = :folder")
+  long countByMailHeaderIdAndUserIdAndFolder(@Param("mailHeaderId")
+  String mailHeaderId, @Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
+   * Cuts a draft's row loose from the copy it had on the mail server: the state
+   * goes back to {@link org.exoplatform.emailConnector.model.DraftState#LOCAL_ONLY}
+   * and the UID is cleared. Used by the Drafts sync when the copy this row pointed
+   * at is no longer on the server — another mail client deleted it — while the row
+   * still carries text that never reached it.
+   * <p>
+   * Clearing the UID is not tidiness. It is what stops the next upload from
+   * flagging a stranger's message for deletion: IMAP UIDs are unique within one
+   * UIDVALIDITY, and a folder that changed its UIDVALIDITY (a rebuilt mailbox) is
+   * seen from here as every UID having vanished at once — precisely this case, at
+   * which point the remembered numbers mean nothing at all.
+   * <p>
+   * Neither the revision nor the text is touched: the row's words are unchanged,
+   * only where they also live.
+   *
+   * The state is bound as a parameter rather than written as a JPQL enum literal:
+   * the value is always {@code LOCAL_ONLY} (the storage layer is what says so), and
+   * a bound parameter goes through the same enum conversion as every other write to
+   * this column instead of relying on how a given dialect renders a literal.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param draftState the state to put the row back to
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.draftState = :draftState, email.mailRemoteId = null WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId")
+  void detachDraftFromServerCopy(@Param("userId")
+  String userId, @Param("draftLocalId")
+  String draftLocalId, @Param("draftState")
+  DraftState draftState);
 
   @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds AND email.threadId IS NOT NULL")
   List<String> findDistinctThreadIdsByMailHeaderIds(@Param("userId")

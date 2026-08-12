@@ -124,6 +124,12 @@ public class EmailBoxStorage {
       // "not in the server window" looks identical for the two. See
       // EmailBoxService#cleanupObsoleteEmails.
       email.setDraftState((DraftState) row[7]);
+      // And the handle every write to a draft is addressed by, since the Drafts folder
+      // joined the sync: a draft whose server copy vanished has to be put back to a
+      // state that will re-upload, and the row id and the UID are both unusable for
+      // that (the UID moves whenever a draft is re-appended, and the storage layer's
+      // draft writes deliberately go by local id).
+      email.setDraftLocalId((String) row[8]);
       email.setUserId(userId);
       email.setFolder(folder);
       return email;
@@ -259,6 +265,49 @@ public class EmailBoxStorage {
     EmailBoxEntity entity = existing.get(0);
     entity.setDraftState(draftState);
     return fromEntity(emailBoxDao.save(entity), true, false, userId, null, true, false);
+  }
+
+  /**
+   * Cuts a draft loose from a server copy that is no longer there: back to
+   * {@link DraftState#LOCAL_ONLY}, with the UID cleared.
+   * <p>
+   * Its own call for the same reason {@link #markDraftUploaded} and
+   * {@link #updateDraftState} are: it carries no text, so routing it through
+   * {@link #saveDraft} would put it under the revision guard and let it be dropped
+   * as a late save — and this write is precisely the one that must not be lost, or
+   * the next upload would try to remove a copy that does not exist and leave the
+   * user's unsaved words on this side of a mailbox that no longer knows about them.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   */
+  public void detachDraftFromServerCopy(String userId, String draftLocalId) {
+    if (StringUtils.isBlank(draftLocalId)) {
+      return;
+    }
+    emailBoxDao.detachDraftFromServerCopy(userId, draftLocalId, DraftState.LOCAL_ONLY);
+  }
+
+  /**
+   * Whether a folder's cache already holds a message under a given Message-ID —
+   * the identity test behind the stray-draft janitor, which removes a Drafts entry
+   * whose Message-ID is already in Sent.
+   * <p>
+   * Message-ID equality and nothing else. It is the only cross-folder identity a
+   * message actually has, and it is exact: subject, recipients or date would each
+   * be a guess about two different messages being "the same one", which is the kind
+   * of guess that deletes somebody's unsent words.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the Message-ID to look for
+   * @param folder the folder discriminator to look in
+   * @return true when the folder's cache holds a message under that Message-ID
+   */
+  public boolean isMessageCachedInFolder(String userId, String mailHeaderId, String folder) {
+    if (StringUtils.isBlank(mailHeaderId)) {
+      return false;
+    }
+    return emailBoxDao.countByMailHeaderIdAndUserIdAndFolder(mailHeaderId, userId, folder) > 0;
   }
 
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {

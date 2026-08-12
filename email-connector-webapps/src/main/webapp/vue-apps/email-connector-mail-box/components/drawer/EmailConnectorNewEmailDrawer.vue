@@ -165,6 +165,10 @@ export default {
       // Said once per composer session, not once per save: an account with no Drafts
       // folder would otherwise repeat it on every pause in typing.
       localOnlyNotified: false,
+      // Same discipline for the "your other mail client removed the copy of this
+      // draft" notice: it is true until the next push puts a new copy up, so an
+      // unthrottled version would repeat on every autosave in between.
+      serverCopyGoneNotified: false,
     };
   },
   created() {
@@ -526,18 +530,28 @@ export default {
       };
       this.savedSignature = signature;
       this.draftSaving = true;
+      // Captured before the request: the answer is judged against what this composer
+      // believed a moment ago, and the assignment below is what replaces it.
+      const previousState = this.draftState;
       this.$emailConnectorMailBoxService.saveDraft(payload, push).then((saved) => {
         if (!saved) {
-          // The draft this composer was writing has been sent or discarded while the
-          // save was in flight. Forgetting the id is the whole reaction: what is still
-          // on screen belongs to nothing now, and the next save starts a fresh draft
-          // rather than resurrecting one the user has finished with.
+          // The draft this composer was writing is gone: sent or discarded from
+          // another tab, or deleted in another mail client and reconciled away by the
+          // sync. Forgetting the id is most of the reaction — what is still on screen
+          // belongs to nothing now — but the saved signature has to be forgotten with
+          // it, or a composer the user does not type into again would close believing
+          // it had nothing to save, and the words in front of them would go. Cleared,
+          // the very next save writes them as a new draft of their own, which is the
+          // only honest answer when the two versions can no longer be reconciled.
           this.draftLocalId = null;
           this.draftState = null;
+          this.savedSignature = null;
+          this.notifyDraftGone();
           return;
         }
         this.draftLocalId = saved.draftLocalId;
         this.draftState = saved.draftState;
+        this.notifyIfServerCopyGone(previousState, saved);
         if (saved.draftRevision) {
           this.draftRevision = Math.max(this.draftRevision, saved.draftRevision);
         }
@@ -568,6 +582,53 @@ export default {
       document.dispatchEvent(new CustomEvent('alert-message', {detail: {
         alertType: 'info',
         alertMessage: this.$t('emailConnector.mailBox.newEmail.drawer.draft.localOnly'),
+      }}));
+    },
+    /**
+     * Tells the user their draft no longer exists — and, by saying so while their
+     * text is still on screen, that nothing of theirs has been lost.
+     *
+     * Only while the composer is actually open on something. The same answer comes
+     * back for an autosave that was in flight when the user pressed Send, and
+     * congratulating someone on a mail they have just sent with a notice about a
+     * missing draft would be noise about a non-event.
+     *
+     * @returns {void}
+     */
+    notifyDraftGone() {
+      if (!this.newEmailDrawer || !this.hasContent) {
+        return;
+      }
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'info',
+        alertMessage: this.$t('emailConnector.mailBox.newEmail.drawer.draft.goneElsewhere'),
+      }}));
+    },
+    /**
+     * Tells the user that the copy of this draft in their mailbox has been removed
+     * somewhere else, while what they are typing is untouched.
+     *
+     * The signal is a state the composer cannot reach on its own: a draft it has
+     * seen on the server (SYNCED, or DIRTY — uploaded once and typed into since)
+     * answering LOCAL_ONLY. An ordinary edit of either keeps DIRTY, and a failed
+     * push leaves the state alone, so this transition means one thing only — the
+     * sync found the server copy gone and put the row back to "never uploaded" so
+     * the next save re-uploads it. The user's version is not overwritten by any of
+     * that; it wins, and the notice is how they learn their phone no longer has it.
+     *
+     * @param {string} previousState - what the composer believed before this save
+     * @param {object} saved - the draft as the server stored it
+     * @returns {void}
+     */
+    notifyIfServerCopyGone(previousState, saved) {
+      if (saved.draftState !== 'LOCAL_ONLY' || (previousState !== 'SYNCED' && previousState !== 'DIRTY')
+          || this.serverCopyGoneNotified) {
+        return;
+      }
+      this.serverCopyGoneNotified = true;
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'info',
+        alertMessage: this.$t('emailConnector.mailBox.newEmail.drawer.draft.serverCopyGone'),
       }}));
     },
     /**
@@ -606,6 +667,7 @@ export default {
       this.draftState = null;
       this.savedSignature = null;
       this.localOnlyNotified = false;
+      this.serverCopyGoneNotified = false;
     },
     /**
      * Stops the pending local save and the pending server push.

@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -180,14 +181,15 @@ public class EmailBoxStorageTest {
   @Test
   void getSyncEmailsMapsTheLightViewWithoutBodiesOrCategories() {
     // The sync view must carry exactly what the reconcile reads -- ids, flags
-    // (including the starred mirror of \Flagged), threading state, and the draft
-    // state the cleanup needs to spare an unpushed draft -- and nothing that costs a
-    // CLOB read or a category lookup, because loading those for 5000 rows per sync
-    // was the point of removing it.
+    // (including the starred mirror of \Flagged), threading state, and the two draft
+    // columns: the state the cleanup needs to spare an unpushed draft, and the local
+    // id every write to a draft is addressed by -- and nothing that costs a CLOB read
+    // or a category lookup, because loading those for 5000 rows per sync was the
+    // point of removing it.
     when(emailBoxDAO.findSyncViewByUserIdAndFolder("root", "INBOX"))
                                                                    .thenReturn(List.<Object[]> of(new Object[] { 7L, 1212L,
                                                                        "<t@host>", "", Boolean.TRUE, Boolean.FALSE,
-                                                                       Boolean.TRUE, null }));
+                                                                       Boolean.TRUE, null, null }));
     List<Email> emails = emailBoxStorage.getSyncEmails("root", "INBOX");
     assertEquals(1, emails.size());
     Email email = emails.get(0);
@@ -202,6 +204,49 @@ public class EmailBoxStorageTest {
     assertEquals("INBOX", email.getFolder());
     assertNull(email.getContent());
     assertNull(email.getCategoryIds());
+  }
+
+  @Test
+  void getSyncEmailsCarriesTheDraftHandleTheReconcileWritesBy() {
+    // A draft whose server copy vanished has to be put back to a state that will
+    // re-upload, and every draft write is addressed by its local id -- never by the
+    // row id or the UID, both of which move under a draft. Without it in the light
+    // view the reconcile would have to re-read every draft row in full to learn it.
+    when(emailBoxDAO.findSyncViewByUserIdAndFolder("root", "DRAFTS"))
+                                                                    .thenReturn(List.<Object[]> of(new Object[] { 9L, 4242L,
+                                                                        "<t@host>", "", Boolean.TRUE, Boolean.FALSE,
+                                                                        Boolean.FALSE, DraftState.DIRTY, "draft-1" }));
+    Email draft = emailBoxStorage.getSyncEmails("root", "DRAFTS").get(0);
+    assertEquals(DraftState.DIRTY, draft.getDraftState());
+    assertEquals("draft-1", draft.getDraftLocalId());
+  }
+
+  @Test
+  void detachDraftFromServerCopyPutsTheRowBackToNeverUploaded() {
+    // Its own call rather than the edit path: it carries no text, so the revision
+    // guard would be entitled to drop it -- and this is the one write that must not
+    // be lost, or the next upload would try to remove a copy that does not exist.
+    emailBoxStorage.detachDraftFromServerCopy("root", "draft-1");
+    verify(emailBoxDAO).detachDraftFromServerCopy("root", "draft-1", DraftState.LOCAL_ONLY);
+    // A blank handle names no row, and an unbounded UPDATE over a draft table is not
+    // the way to find that out.
+    emailBoxStorage.detachDraftFromServerCopy("root", " ");
+    verify(emailBoxDAO, never()).detachDraftFromServerCopy(anyString(), eq(" "), any());
+  }
+
+  @Test
+  void isMessageCachedInFolderAsksOnlyAboutMessageIdIdentity() {
+    // The janitor's whole test. Message-ID equality and nothing else: subject,
+    // recipients or date would each be a guess about two different messages being
+    // "the same one", and that guess deletes somebody's unsent words.
+    when(emailBoxDAO.countByMailHeaderIdAndUserIdAndFolder("<sent@host>", "root", "SENT")).thenReturn(1L);
+    assertTrue(emailBoxStorage.isMessageCachedInFolder("root", "<sent@host>", "SENT"));
+    when(emailBoxDAO.countByMailHeaderIdAndUserIdAndFolder("<other@host>", "root", "SENT")).thenReturn(0L);
+    assertFalse(emailBoxStorage.isMessageCachedInFolder("root", "<other@host>", "SENT"));
+    // A draft whose client left no Message-ID has no identity to match on, so it is
+    // never anybody's already-sent copy.
+    assertFalse(emailBoxStorage.isMessageCachedInFolder("root", null, "SENT"));
+    verify(emailBoxDAO, never()).countByMailHeaderIdAndUserIdAndFolder(null, "root", "SENT");
   }
 
   @Test
