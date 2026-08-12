@@ -287,17 +287,10 @@ export default {
   },
   computed: {
     /**
-     * The loaded contacts this user could publish, which is what "all" means
-     * here: the list is filtered and searched, so all means all of what is on
-     * screen, never a hidden thousand.
-     *
-     * @returns {Array} the selectable contacts
-     */
-    /**
      * Whether every ticked contact can be published.
      * <p>
-     * All of them, not some: the server refuses a selection containing a
-     * collected or directory contact rather than publishing the rest, so the
+     * All of them, not some: the queue endpoint refuses a selection containing
+     * a collected or directory contact rather than publishing the rest, so the
      * header must offer the action on exactly the same terms.
      *
      * @returns {boolean} true when the whole selection is publishable
@@ -309,6 +302,21 @@ export default {
       const publishableIds = this.selectableContacts.map(contact => contact.id);
       return this.tickedIds.every(id => publishableIds.includes(id));
     },
+    /**
+     * The loaded contacts this user could publish IN BULK, which is what "all"
+     * means here: the list is filtered and searched, so all means all of what
+     * is on screen, never a hidden thousand.
+     * <p>
+     * MANUAL only, and deliberately narrower than a row's own publish entry,
+     * which also takes a collected contact: the two go to different endpoints
+     * with different rules. A single publish is one person the user is looking
+     * at; the queue is answered once for a batch, so it asks that every card in
+     * it be one somebody deliberately wrote. Widening this to match the row
+     * would only light the header up for selections {@link queuePublishes}
+     * refuses whole.
+     *
+     * @returns {Array} the selectable contacts
+     */
     selectableContacts() {
       return (this.contacts || []).filter(contact => contact.source === 'MANUAL');
     },
