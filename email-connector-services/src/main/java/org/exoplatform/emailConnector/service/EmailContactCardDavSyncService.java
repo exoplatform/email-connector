@@ -1263,6 +1263,13 @@ public class EmailContactCardDavSyncService {
    * the inbound sync uses — so a pushed edit and a synced entry are
    * indistinguishable afterwards. The photo is deliberately left untouched:
    * the merge never writes PHOTO, so the card's picture is not news.
+   * <p>
+   * The etag recorded here is the PUT's, which is the only version this code
+   * has at this point and may not be worded the way the collection listing will
+   * word it. That costs at most one redundant re-read on the next run, after
+   * which {@code apply} records the listing's own etag and the row settles —
+   * and {@link #isSameVersion} usually absorbs even that, since the difference
+   * is normally quoting or a weak marker rather than a different version.
    *
    * @param username the store owner
    * @param row the row to write onto
@@ -1450,7 +1457,7 @@ public class EmailContactCardDavSyncService {
     List<String> toFetch = new ArrayList<>();
     serverEtags.forEach((href, etag) -> {
       CardDavRow stored = storedByHref.get(href);
-      if (stored == null || !StringUtils.equals(etag, stored.etag())) {
+      if (stored == null || !isSameVersion(etag, stored.etag())) {
         toFetch.add(href);
       }
     });
@@ -1458,6 +1465,14 @@ public class EmailContactCardDavSyncService {
     boolean complete = true;
     int written = 0;
     int skipped = 0;
+    // Entries the server handed back that its own listing never named. Counted
+    // rather than logged one by one, because if it happens at all it happens to
+    // every entry of the book, every run -- and it is the one fact that tells a
+    // reader which half of the bookkeeping is out of step: an etag that will not
+    // match is a version problem, an href the listing does not know is an
+    // identity problem, and only the second makes this counter move.
+    int unlisted = 0;
+    String firstUnlistedHref = null;
     // Every row the apply loop writes onto, whichever href it was found under.
     // The vanished check below judges rows by the storedRows SNAPSHOT taken
     // before this loop ran, and a row an entry just claimed through its address
@@ -1473,7 +1488,29 @@ public class EmailContactCardDavSyncService {
                                                                batch,
                                                                setting.getEmailAddress(),
                                                                setting.getEmailPassword())) {
-          Long appliedId = apply(username, connector, resource, storedByHref.get(resource.href()));
+          // The version RECORDED is the one the listing answered, not the one
+          // that came back with the card. They are the same string on most
+          // servers, and deliberately the listing's when they are not: the only
+          // question the stored etag is ever asked is "does the next PROPFIND
+          // still say this?", so the answer has to be written in the same voice
+          // that will ask it. A server whose listing and whose multiget word the
+          // same version differently -- two code paths, two shapes, or two
+          // values -- otherwise re-reads and re-writes the whole book on every
+          // single run, for good.
+          String listedEtag = serverEtags.get(resource.href());
+          if (listedEtag == null) {
+            unlisted++;
+            firstUnlistedHref = firstUnlistedHref == null ? resource.href() : firstUnlistedHref;
+          }
+          Long appliedId = apply(username,
+                                 connector,
+                                 resource,
+                                 storedByHref.get(resource.href()),
+                                 // Falling back to the card's own etag keeps the
+                                 // row versioned by something rather than by
+                                 // nothing; an entry the listing did not name is
+                                 // already an oddity the warning below reports.
+                                 listedEtag != null ? listedEtag : resource.etag());
           written += appliedId != null ? 1 : 0;
           skipped += appliedId != null ? 0 : 1;
           if (appliedId != null) {
@@ -1489,17 +1526,95 @@ public class EmailContactCardDavSyncService {
       }
     }
     int removed = removeVanished(username, serverEtags.keySet(), storedRows, bookChanged, appliedRowIds);
+    if (unlisted > 0) {
+      LOG.warn("{} address book entries of user {} came back under an href their own listing never named, starting with {}; "
+          + "their rows are stored under a name the next listing will not match, so they will be re-read on every run",
+               unlisted,
+               username,
+               firstUnlistedHref);
+    }
     // The skipped count matters as much as the written one: an address book full of
     // phone-only entries produces far fewer contacts than it has entries, and
     // without this number that gap looks like a bug rather than the store being
     // keyed on an address.
-    LOG.info("Address book sync for user {}: {} entries on the server, {} written, {} skipped (no address, or not ours to claim), {} no longer there",
+    //
+    // And the unchanged count is what makes the line a SIGNAL rather than a
+    // tally. A settled book reads "N unchanged, 0 written"; anything else is the
+    // book having moved, or this bookkeeping having lost track of it. Without
+    // that number "everything written" and "nothing written" look alike from the
+    // log, which is how a whole book quietly rewriting itself every six hours
+    // went unnoticed -- and how a duplicate would.
+    LOG.info("Address book sync for user {}: {} entries on the server, {} unchanged, {} written, {} skipped (no address, or not ours to claim), {} no longer there",
              username,
              serverEtags.size(),
+             serverEtags.size() - toFetch.size(),
              written,
              skipped,
              removed);
     return complete;
+  }
+
+  /**
+   * Whether the entry the server has just listed is the very version this store
+   * already holds — the question the whole cheap half of a sync run turns on.
+   * <p>
+   * Both sides are reduced to the opaque string inside the entity-tag before
+   * they are compared: a weak {@code W/} prefix is dropped, surrounding quotes
+   * are dropped, and the ends are trimmed. Not pedantry — a server is free to
+   * word the same version differently in two answers, and this store holds
+   * etags from three of them: the collection listing, the multiget that reads a
+   * card, and the PUT that published one. Comparing those raw made a book whose
+   * listing says {@code W/"x"} and whose multiget says {@code "x"} re-read and
+   * re-write every entry it has, on every run, for ever — idempotent, harmless,
+   * and quietly making "nothing changed" indistinguishable from "everything
+   * did".
+   * <p>
+   * The leniency stops at the comparison. What is STORED stays exactly what the
+   * server sent, and what goes back out as {@code If-Match} is never this value
+   * at all but the etag of the edit's own fetch, sent verbatim — RFC 9110 wants
+   * a strong comparison there, and a tag we tidied up could let a conditional
+   * write through that the server meant to refuse.
+   * <p>
+   * A missing version on either side answers false: not "unchanged", simply not
+   * knowable, and the entry is re-read. That costs one fetch and cannot be
+   * wrong, which is the trade every unknown in this sync takes.
+   *
+   * @param listed the version the collection listing just answered
+   * @param stored the version this store recorded for that entry
+   * @return true when the two name the same version of the entry
+   */
+  private boolean isSameVersion(String listed, String stored) {
+    if (StringUtils.isBlank(listed) || StringUtils.isBlank(stored)) {
+      return false;
+    }
+    return StringUtils.equals(opaqueTag(listed), opaqueTag(stored));
+  }
+
+  /**
+   * An entity-tag reduced to the opaque string a server actually versions with.
+   * <p>
+   * Deliberately only the two decorations HTTP defines — the weak
+   * {@code W/} marker and the quoting — and nothing else. The remainder is
+   * compared byte for byte, case included, because an entity-tag is opaque:
+   * {@code "AB"} and {@code "ab"} are different versions, and a comparison
+   * clever enough to think otherwise would skip a card that really had changed.
+   *
+   * @param etag the entity-tag as some server worded it
+   * @return the opaque part of it
+   */
+  private String opaqueTag(String etag) {
+    String value = StringUtils.trim(etag);
+    if (StringUtils.startsWith(value, "W/")) {
+      // Weak or strong is a statement about how equal two representations have
+      // to be to share a tag. For "did this card move since we read it?" the
+      // distinction says nothing, and a server that marks one answer weak and
+      // the other strong is describing the same version twice.
+      value = StringUtils.trim(StringUtils.removeStart(value, "W/"));
+    }
+    if (value.length() > 1 && value.startsWith("\"") && value.endsWith("\"")) {
+      value = value.substring(1, value.length() - 1);
+    }
+    return value;
   }
 
   /**
@@ -1510,11 +1625,17 @@ public class EmailContactCardDavSyncService {
    * @param connector the provider preset
    * @param resource the entry as the server returned it
    * @param sameHref the row already known to be this entry, if any
+   * @param listedEtag the version to record — the collection listing's own, so
+   *          that the next run compares like with like; see the caller
    * @return the id of the row written, or null when the entry was skipped —
    *         the caller needs the id, not a boolean, because a written row must
    *         be shielded from the vanished check's pre-apply snapshot
    */
-  private Long apply(String username, EmailConnector connector, ContactResource resource, CardDavRow sameHref) {
+  private Long apply(String username,
+                     EmailConnector connector,
+                     ContactResource resource,
+                     CardDavRow sameHref,
+                     String listedEtag) {
     ParsedVCard card = vCardParser.parse(resource.vcard());
     if (card == null) {
       // Unreadable, which the parser has already logged. One entry skipped, never a
@@ -1547,7 +1668,7 @@ public class EmailContactCardDavSyncService {
                                                   target == null ? null : target.id(),
                                                   connector.getId(),
                                                   resource.href(),
-                                                  resource.etag(),
+                                                  listedEtag,
                                                   data,
                                                   target == null ? null : target.photoFileId(),
                                                   writePhoto);
