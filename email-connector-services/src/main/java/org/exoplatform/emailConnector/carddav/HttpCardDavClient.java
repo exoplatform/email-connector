@@ -216,7 +216,9 @@ public class HttpCardDavClient implements CardDavClient {
       }
       // The etag exactly as sent, quotes and all, like everywhere else in this
       // client: it goes straight back out as an If-Match, which only works
-      // verbatim.
+      // verbatim. RFC 9110 compares an If-Match strongly, so a tag this client
+      // tidied up on the way in could let a conditional write through that the
+      // server meant to refuse -- the one place where being helpful is unsafe.
       return new ContactResource(url,
                                  StringUtils.trimToNull(response.headers().firstValue("ETag").orElse(null)),
                                  response.body());
@@ -284,8 +286,16 @@ public class HttpCardDavClient implements CardDavClient {
                                                  request.method(),
                                                  request.uri()));
       }
-      // The etag exactly as sent, quotes and all -- the same raw shape the
-      // PROPFIND listing answers, so the sync's etag comparison stays honest.
+      // The etag exactly as sent, quotes and all. This client deliberately
+      // never tidies an etag: whatever it hands back may travel out again as a
+      // precondition, and a precondition only means what the server said if it
+      // is byte for byte what the server said.
+      //
+      // What it does NOT promise -- and the sync used to assume it did -- is
+      // that this shape matches the one the PROPFIND listing answers. A server
+      // may word the same version differently in a PUT header and in a
+      // collection listing, so reconciling the two is the sync's job, not this
+      // client's: see EmailContactCardDavSyncService#isSameVersion.
       //
       // The Location matters as much as the etag: BlueMind stores the card
       // under a path of its own choosing, not the one that was PUT, and this
