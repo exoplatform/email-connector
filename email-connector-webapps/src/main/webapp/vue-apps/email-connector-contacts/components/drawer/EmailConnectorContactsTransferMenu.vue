@@ -25,7 +25,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        header row is the flex line, and this is one of its items -- centred by
        that row, so it needs no display class of its own. -->
   <div>
-      <v-menu
+    <v-menu
       content-class="no-min-width border-radius z-index-modal overflow-hidden"
       close-on-content-click
       offset-y
@@ -42,30 +42,40 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-icon>
         </v-btn>
       </template>
-        <v-list dense>
-          <v-list-item
-            :disabled="importing"
-            @click="chooseFile">
-            <v-list-item-icon class="me-2 my-auto">
-              <v-icon size="16">fas fa-file-import</v-icon>
-            </v-list-item-icon>
-            <v-list-item-title>{{ $t('emailConnector.contacts.menu.import') }}</v-list-item-title>
-          </v-list-item>
-          <v-list-item @click="$emit('export')">
-            <v-list-item-icon class="me-2 my-auto">
-              <v-icon size="16">fas fa-file-export</v-icon>
-            </v-list-item-icon>
-            <v-list-item-title>{{ $t('emailConnector.contacts.menu.export') }}</v-list-item-title>
-          </v-list-item>
-        </v-list>
-      </v-menu>
-      <input
-        ref="fileInput"
-        type="file"
-        accept=".vcf,text/vcard,text/x-vcard"
-        :aria-label="$t('emailConnector.contacts.menu.import')"
-        class="d-none"
-        @change="onFileChosen">
+      <v-list dense>
+        <v-list-item
+          :disabled="importing"
+          @click="chooseFile">
+          <v-list-item-icon class="me-2 my-auto">
+            <v-icon size="16">fas fa-file-import</v-icon>
+          </v-list-item-icon>
+          <v-list-item-title>{{ $t('emailConnector.contacts.menu.import') }}</v-list-item-title>
+        </v-list-item>
+        <v-list-item @click="$emit('export')">
+          <v-list-item-icon class="me-2 my-auto">
+            <v-icon size="16">fas fa-file-export</v-icon>
+          </v-list-item-icon>
+          <v-list-item-title>{{ $t('emailConnector.contacts.menu.export') }}</v-list-item-title>
+        </v-list-item>
+        <!-- Only where there is a book to publish to: without one the entry
+               would open a checklist whose every tick ends in a refusal. -->
+        <v-list-item
+          v-if="publishable"
+          @click="$emit('bulk-publish')">
+          <v-list-item-icon class="me-2 my-auto">
+            <v-icon size="16">fas fa-address-book</v-icon>
+          </v-list-item-icon>
+          <v-list-item-title>{{ $t('emailConnector.contacts.menu.selectSeveral') }}</v-list-item-title>
+        </v-list-item>
+      </v-list>
+    </v-menu>
+    <input
+      ref="fileInput"
+      type="file"
+      accept=".vcf,text/vcard,text/x-vcard"
+      :aria-label="$t('emailConnector.contacts.menu.import')"
+      class="d-none"
+      @change="onFileChosen">
   </div>
 </template>
 
@@ -74,6 +84,12 @@ export default {
   props: {
     // Greys the import entry out while a run is going: the server would answer
     // 409 anyway, but a disabled item says so before the click.
+    // Whether this user has a reachable address book at all; the bulk-publish
+    // entry is hidden without one.
+    publishable: {
+      type: Boolean,
+      default: false,
+    },
     importing: {
       type: Boolean,
       default: false,
