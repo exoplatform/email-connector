@@ -64,6 +64,24 @@ public class UserEmailSettingEntity {
    */
   private Boolean      carddavEnabled;
 
+  /**
+   * Whether a contact this user authors through the form should be pushed to
+   * their address book by itself, with no second click.
+   * <p>
+   * Opt-in, and stored as a {@link Boolean} on purpose: the users who bound an
+   * address book before this setting existed have a settings document without
+   * the field, which reads back null, and null must mean OFF. A primitive
+   * would have read false and looked the same today, but it would have made
+   * "never answered" and "answered no" indistinguishable the day a default is
+   * flipped — and the whole point of shipping this off is that turning it on
+   * for everybody is a decision somebody takes, not one an upgrade takes.
+   * <p>
+   * It is only ever half of the answer: the administrator's
+   * {@code email.connector.contacts.publish.enabled} still gates every write,
+   * and there is nothing to push to until an address book is bound and
+   * discovered.
+   */
+  private Boolean      carddavAutoPublish;
 
   public UserEmailSettingEntity(String emailConnectorId,
                                 String emailAddress,

@@ -172,6 +172,10 @@ public class UserEmailSettingService {
     // Only the switch: the sync signs in with the mailbox's own credentials, so
     // there is no second secret to store.
     userEmailSettingEntity.setCarddavEnabled(userEmailSetting.getCarddavEnabled());
+    // Carried across like every other field here: this method rewrites the whole
+    // settings document from the model it was handed, so a field left out of the
+    // copy is a field silently dropped on the next save of anything else.
+    userEmailSettingEntity.setCarddavAutoPublish(userEmailSetting.getCarddavAutoPublish());
     settingService.set(Context.USER.id(username),
                        EMAIL_CONNECTOR_SCOPE,
                        USER_EMAIL_SETTING_KEY,
@@ -228,6 +232,34 @@ public class UserEmailSettingService {
     // contacts, and turning it on releases whatever an earlier binding left behind
     // before the first sync of the new one runs.
     eventPublisher.publishEvent(new ContactBookReleaseEvent(username));
+  }
+
+  /**
+   * Turns the automatic address-book push on or off for one user: whether a
+   * contact they author through the form is published to their address book by
+   * itself, with no second click.
+   * <p>
+   * Deliberately NOT folded into {@link #updateAddressBookBinding}, though the
+   * two switches sit side by side on the settings screen. That one raises
+   * {@link ContactBookReleaseEvent}, which lets go of the contacts of a book
+   * the user is no longer bound to — the right thing when the binding moves,
+   * and a heavy, contact-rewriting no-op to fire because somebody toggled a
+   * preference about future saves. One endpoint, one meaning.
+   *
+   * @param username the mailbox owner
+   * @param autoPublish whether newly authored contacts should publish on their
+   *          own; null reads as off, exactly as an absent field does
+   */
+  public void updateAddressBookAutoPublish(String username, Boolean autoPublish) {
+    UserEmailSetting userEmailSetting = getUserEmailSetting(username);
+    if (StringUtils.isBlank(userEmailSetting.getEmailConnectorId())) {
+      // Same guard as the other preference writers: with no connected mailbox
+      // there is no settings document to write into, and creating one here
+      // would store a preference about an account that does not exist.
+      return;
+    }
+    userEmailSetting.setCarddavAutoPublish(autoPublish);
+    setUserEmailSetting(userEmailSetting, username, false);
   }
 
   /**
