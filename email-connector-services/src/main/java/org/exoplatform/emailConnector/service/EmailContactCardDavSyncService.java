@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -147,11 +148,23 @@ public class EmailContactCardDavSyncService {
   private static final int         MAX_PUBLISH_ATTEMPTS      = 3;
 
   /**
-   * Entries a user's queue may hold. Far above what clicking during an outage
-   * can produce — the cap is not a working limit but a stop against a future
-   * bulk caller quietly turning "a small queue in settings" into a table.
+   * Entries a user's queue may hold. Slice 4's reviewed bulk publish is now a
+   * sanctioned bulk caller — a user keeping a whole address book through a
+   * provider switch may tick hundreds of contacts at once — so the cap is no
+   * longer sized for "clicking during an outage" but for the store itself: 500
+   * matches the browse page's own clamp, and an entry is a handful of numbers
+   * in a settings document, so even full this stays kilobytes. The cap's job
+   * is unchanged in kind: a stop against unbounded growth, never a working
+   * limit — and {@link #queuePublishes} refuses a selection that will not fit
+   * rather than quietly dropping part of what the user reviewed.
    */
-  private static final int         MAX_QUEUE_SIZE            = 50;
+  private static final int         MAX_QUEUE_SIZE            = 500;
+
+  /** Message code: the queue cannot take the whole reviewed selection. */
+  public static final String       PUBLISH_QUEUE_FULL        = "emailConnector.contacts.publish.queueFull";
+
+  /** Message code: a selected id is not one of the caller's visible contacts. */
+  public static final String       PUBLISH_UNKNOWN_CONTACT   = "emailConnector.contacts.publish.unknownContact";
 
   /** Message code: the edited contact is not an address-book row at all. */
   public static final String       UPDATE_NOT_ADDRESS_BOOK   = "emailConnector.contacts.update.notAddressBook";
@@ -536,6 +549,115 @@ public class EmailContactCardDavSyncService {
    * @return the stored queue
    */
   public ContactPublishQueue getPublishQueue(String username) {
+    return userEmailSettingService.getContactPublishQueue(username);
+  }
+
+  /**
+   * Queues a REVIEWED selection of the caller's own contacts to be published
+   * to their address book — the bulk half of the write-back, and deliberately
+   * nothing more than bookkeeping: no card leaves this method. The entries go
+   * out through {@link #drainPublishQueue} after the next successful sync,
+   * which is also what lets the selection be made BEFORE the new account's
+   * book has ever been reached — the queue is target-agnostic, publishing to
+   * whatever book the binding proves out to. That is why no bound or
+   * discovered book is required here, unlike the single publish: refusing
+   * would break the provider-switch flow this exists for, where the checklist
+   * is answered right after a rebind and the first sync has not run yet.
+   * <p>
+   * The guards are the checklist's own rules, re-checked server-side because
+   * there is no undo past this point but the drain's own guards: only MANUAL
+   * contacts may travel — a COLLECTED row was inferred, not vouched for, and a
+   * DIRECTORY row is the platform's person, not the user's to copy out; the
+   * human ticking a box IS the provenance this slice runs on, so what was not
+   * tickable must not be enqueuable either. The whole selection is validated
+   * before one entry is written, and any refusal refuses ALL of it: a
+   * selection the user reviewed either happens as reviewed or not at all —
+   * partially honoring it would mean silently dropping names out of the one
+   * checkpoint that exists. A selected contact that turns out already
+   * published is the lone exception, skipped as satisfied: the state the user
+   * asked for already holds.
+   * <p>
+   * Re-selecting an already-queued contact resets its entry — same rule as
+   * {@link #enqueuePublish}: asking again is the retry that un-parks a parked
+   * entry.
+   *
+   * @param username the mailbox owner
+   * @param contactIds the reviewed selection; ids are de-duplicated
+   * @return the queue as stored after the selection joined it
+   * @throws IllegalArgumentException with {@link #PUBLISH_DISABLED},
+   *           {@link #PUBLISH_UNKNOWN_CONTACT} or
+   *           {@link #PUBLISH_SOURCE_NOT_ALLOWED} — nothing was enqueued
+   * @throws IllegalStateException with {@link #PUBLISH_QUEUE_FULL} when the
+   *           selection cannot fit whole — nothing was enqueued
+   */
+  public ContactPublishQueue queuePublishes(String username, List<Long> contactIds) {
+    if (!isPublishEnabled()) {
+      throw new IllegalArgumentException(PUBLISH_DISABLED);
+    }
+    Set<Long> selection = new LinkedHashSet<>();
+    if (contactIds != null) {
+      contactIds.stream().filter(Objects::nonNull).forEach(selection::add);
+    }
+    // Validated whole before anything is written: past this loop every id is a
+    // visible MANUAL contact of the caller's, or the call has already refused.
+    List<Long> toQueue = new ArrayList<>();
+    for (Long contactId : selection) {
+      EmailContact contact = emailContactService.getContact(contactId, username);
+      if (contact == null) {
+        // A stranger's id and an absent one answer the same, as everywhere on
+        // this surface: the refusal proves nothing about whose it was.
+        throw new IllegalArgumentException(PUBLISH_UNKNOWN_CONTACT);
+      }
+      if (EmailContactSource.CARDDAV.equals(contact.getSource())) {
+        // Already an address-book row: what the user asked for already holds,
+        // so the entry is skipped rather than the review refused over a race.
+        continue;
+      }
+      if (!EmailContactSource.MANUAL.equals(contact.getSource())) {
+        throw new IllegalArgumentException(PUBLISH_SOURCE_NOT_ALLOWED);
+      }
+      toQueue.add(contactId);
+    }
+    ContactPublishQueue queue = userEmailSettingService.getContactPublishQueue(username);
+    if (toQueue.isEmpty()) {
+      return queue;
+    }
+    List<ContactPublishQueueEntry> entries = queue.getEntries();
+    entries.removeIf(entry -> toQueue.contains(entry.getContactId()));
+    if (entries.size() + toQueue.size() > MAX_QUEUE_SIZE) {
+      throw new IllegalStateException(PUBLISH_QUEUE_FULL);
+    }
+    long now = new Date().getTime();
+    toQueue.forEach(contactId -> entries.add(new ContactPublishQueueEntry(contactId, now, 0, false, null, null, null)));
+    userEmailSettingService.setContactPublishQueue(queue, username);
+    LOG.info("{} reviewed contact(s) of user {} queued to publish", toQueue.size(), username);
+    // And then publish them, now. The queue's rule -- drain only after a
+    // successful inbound run -- was written for the fallback case, where the
+    // user's click has already failed and the book is known to be unreachable.
+    // A reviewed selection is the opposite: a deliberate act on a book nothing
+    // suggests is down. Making it wait for an unrelated sync left the user
+    // watching a list that never changed, with the toast the only evidence
+    // anything had happened.
+    //
+    // The sync is what drains, not a second code path: the queue keeps its one
+    // precondition (a reachable, discovered book proven by a run that just
+    // succeeded), and a run that fails simply leaves the entries where they
+    // are, to be drained by the next one exactly as before.
+    //
+    // Only where there is a book to sync, though. This same enqueue answers the
+    // checklist right after a provider switch, when the new account may have no
+    // address book at all or none yet discovered: syncing there would do no
+    // work and could count a failure against a user who has done nothing wrong.
+    // Those selections wait for the book, which is what the queue is for.
+    if (isPublishAvailable(username)) {
+      try {
+        syncAddressBook(username);
+      } catch (Exception e) {
+        // The queue is the point of the queue: whatever went wrong, the
+        // selection is stored and the next successful sync carries it.
+        LOG.debug("Publishing the reviewed selection of user {} now did not succeed; it stays queued", username, e);
+      }
+    }
     return userEmailSettingService.getContactPublishQueue(username);
   }
 
@@ -1368,12 +1490,23 @@ public class EmailContactCardDavSyncService {
    * OWN connector wrote, so contacts from the provider the user has just left would
    * stay in the store for good, with nothing able to reach them again.
    * <p>
-   * What happens to a row depends on what else vouches for it. A person the user has
-   * actually exchanged mail with is kept and demoted to collected — the mailbox
-   * earned that, and the address book was only ever one of the reasons to know them.
-   * A row nothing but the old book vouches for is deleted, because leaving a provider
-   * should take its address book with it rather than leave hundreds of entries behind
-   * as though they had been collected.
+   * Every row is KEPT — this method deletes nobody, by design. It used to
+   * delete the rows nothing but the old book vouched for, which is how one
+   * rebind silently removed 489 contacts with no prompt: an event listener has
+   * no way to ask, so it must not be the place a destructive answer is
+   * assumed. Deletion now belongs exclusively to the provider-switch
+   * start-fresh path, where the user chose it and holds the .vcf backup first
+   * ({@link EmailContactVCardService#exportContactsThenStartFresh}). Here a
+   * row only changes what it claims to be: one with correspondence behind it
+   * becomes COLLECTED — the mailbox earned that — and one with none becomes
+   * MANUAL, because "collected" would claim a mail history that never existed,
+   * and the one thing still true is that the user has this person. Photos
+   * stay with their rows: the person is being kept, and their picture is part
+   * of them. On a rebind the cleanup listener's collected-release then runs
+   * (its ordering against this one is pinned, see
+   * {@code ContactBookReleaseListener}) and hands the COLLECTED rows over to
+   * MANUAL too, since the mailbox their history came from is gone with the
+   * binding.
    *
    * @param username the mailbox owner
    */
@@ -1395,16 +1528,15 @@ public class EmailContactCardDavSyncService {
       return;
     }
 
-    int demoted = 0;
-    int deleted = 0;
+    int toCollected = 0;
+    int toManual = 0;
     for (CardDavRow row : rows) {
       if (row.seenCount() > 0) {
-        emailContactStorage.demoteCardDavRow(row.id(), row.photoOrigin() == PhotoOrigin.VCARD);
-        demoted++;
+        emailContactStorage.demoteCardDavRow(row.id(), false, EmailContactSource.COLLECTED);
+        toCollected++;
       } else {
-        emailContactStorage.deleteContact(row.id());
-        dropFavorite(row.id(), username);
-        deleted++;
+        emailContactStorage.demoteCardDavRow(row.id(), false, EmailContactSource.MANUAL);
+        toManual++;
       }
     }
     // The discovered book belonged to the binding that has just gone, so a later sync
@@ -1414,7 +1546,10 @@ public class EmailContactCardDavSyncService {
     // longer exists -- but the contacts they pointed at are rows of the store and
     // stay exactly as local, visible and publishable as before the queue knew them.
     userEmailSettingService.clearContactPublishQueue(username);
-    LOG.info("Address book released for user {}: {} kept as collected, {} removed", username, demoted, deleted);
+    LOG.info("Address book released for user {}: {} kept as collected, {} kept as manual, none removed",
+             username,
+             toCollected,
+             toManual);
   }
 
   /**
@@ -1481,7 +1616,7 @@ public class EmailContactCardDavSyncService {
       // bookkeeping and never the people. Only a row missing from the book it
       // actually came from is a real deletion.
       if (bookChanged || row.seenCount() > 0) {
-        emailContactStorage.demoteCardDavRow(row.id(), fromVCard);
+        emailContactStorage.demoteCardDavRow(row.id(), fromVCard, EmailContactSource.COLLECTED);
       } else {
         emailContactStorage.deleteContact(row.id());
         dropFavorite(row.id(), username);

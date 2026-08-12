@@ -27,7 +27,48 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span>{{ drawerTitle }}</span>
     </template>
     <template v-if="userSettingDrawer" #content>
+      <!-- Switching account used to release the address book and relabel the
+           collected contacts without a word: on one real mailbox that silently
+           removed 489 people. So when there is something to lose, the binding
+           does not move until the user has said what should happen to it.
+
+           The two options are not symmetric and are not presented as if they
+           were. Keeping is the safe one and comes first. Starting fresh is
+           destructive and irreversible, so it is spelled out, and its button
+           downloads the backup FIRST -- the wipe is what happens after the file
+           lands, never before. -->
+      <div
+        v-if="choiceStep"
+        class="mx-4 mt-4">
+        <div class="mb-4">
+          {{ $t('UserSettings.emailConnector.userSetting.switch.intro', [contactsCount]) }}
+        </div>
+        <v-radio-group v-model="contactsChoice" class="mt-0">
+          <v-radio value="keep">
+            <template #label>
+              <div class="d-flex flex-column">
+                <span class="font-weight-bold">{{ $t('UserSettings.emailConnector.userSetting.switch.keep') }}</span>
+                <span class="caption text-subtitle-color">{{ $t('UserSettings.emailConnector.userSetting.switch.keep.hint') }}</span>
+              </div>
+            </template>
+          </v-radio>
+          <v-radio value="fresh" class="mt-3">
+            <template #label>
+              <div class="d-flex flex-column">
+                <span class="font-weight-bold">{{ $t('UserSettings.emailConnector.userSetting.switch.fresh') }}</span>
+                <span class="caption text-subtitle-color">{{ $t('UserSettings.emailConnector.userSetting.switch.fresh.hint') }}</span>
+              </div>
+            </template>
+          </v-radio>
+        </v-radio-group>
+        <div
+          v-if="contactsChoice === 'fresh'"
+          class="error--text caption">
+          {{ $t('UserSettings.emailConnector.userSetting.switch.fresh.warning') }}
+        </div>
+      </div>
       <form
+        v-else
         ref="userSettingForm"
         class="mx-4 mt-4"
         @submit.stop.prevent="0">
@@ -89,6 +130,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $t('UserSettings.emailConnector.userSetting.drawer.cancel') }}
         </v-btn>
         <v-btn
+          v-if="choiceStep"
+          :disabled="!contactsChoice"
+          :loading="loading"
+          class="btn btn-primary ms-5"
+          @click="applyChoiceThenConnect">
+          {{ contactsChoice === 'fresh'
+            ? $t('UserSettings.emailConnector.userSetting.switch.fresh.confirm')
+            : $t('UserSettings.emailConnector.userSetting.drawer.save') }}
+        </v-btn>
+        <v-btn
+          v-else
           :disabled="disabled"
           @click="connect"
           :loading="loading"
@@ -113,6 +165,11 @@ export default {
     userSettingDrawer: false,
     drawerTitle: '',
     showPassword: false,
+    // The provider-switch question: shown instead of the credentials form once
+    // we know the switch would cost the user contacts.
+    choiceStep: false,
+    contactsChoice: 'keep',
+    contactsCount: 0,
     emailSetting: {
       emailConnectorId: '',
       emailAddress: '',
@@ -141,6 +198,9 @@ export default {
       this.$refs.userSettingDrawer.open();
     },
     close() {
+      this.choiceStep = false;
+      this.contactsChoice = 'keep';
+      this.contactsCount = 0;
       this.emailSetting.emailConnectorId = '';
       this.emailSetting.emailAddress = '';
       this.emailSetting.emailPassword = '';
@@ -149,7 +209,69 @@ export default {
     togglePasswordVisibility() {
       this.showPassword = !this.showPassword;
     },
+    /**
+     * Saves the binding, or first asks what should happen to the contacts.
+     * <p>
+     * The question is only worth asking when switching to a different mailbox
+     * and there is something to lose: re-entering a password for the same
+     * address changes nothing about who is in the store.
+     *
+     * @returns {void}
+     */
     connect() {
+      if (!this.choiceStep && this.emailAddressModified && this.userEmailSetting?.emailAddress) {
+        this.loading = true;
+        this.$emailConnectorUserSettingService.getContactsCount()
+          .then(count => {
+            this.contactsCount = count;
+            // Nothing stored means nothing to decide about; the question would
+            // be noise on a first connection, which is most of them.
+            if (count > 0) {
+              this.choiceStep = true;
+            } else {
+              this.saveBinding();
+            }
+          })
+          .catch(() => this.saveBinding())
+          .finally(() => this.loading = false);
+        return;
+      }
+      this.saveBinding();
+    },
+    /**
+     * Carries out the chosen handling, then saves the binding.
+     * <p>
+     * The ordering is the whole point and is enforced by the promise chain: on
+     * "start fresh" the backup download must resolve before the binding moves,
+     * so a failed or refused download leaves both the contacts and the current
+     * account exactly as they were. The server enforces the same order on its
+     * side -- it deletes nothing until the last byte is flushed -- and this is
+     * the half of that promise the user can actually see.
+     *
+     * @returns {void}
+     */
+    applyChoiceThenConnect() {
+      if (this.contactsChoice !== 'fresh') {
+        // Keeping is the absence of an action: the contacts stay, and the
+        // publishing that may follow is a consequence of the new account
+        // having an address book, never a second question.
+        this.saveBinding();
+        return;
+      }
+      this.loading = true;
+      this.$emailConnectorUserSettingService.downloadContactsBackupThenStartFresh()
+        .then(() => this.saveBinding())
+        .catch(() => {
+          this.loading = false;
+          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.userSetting.switch.fresh.error'), 'error');
+        });
+    },
+    /**
+     * Writes the binding and closes, the original behaviour untouched.
+     *
+     * @returns {void}
+     */
+    saveBinding() {
       this.loading = true;
       this.$emailConnectorUserSettingService.setUserEmailSetting(this.emailSetting, this.emailAddressModified).then(() =>
       {

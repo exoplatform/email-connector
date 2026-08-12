@@ -18,7 +18,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-list-item
     :input-value="selected"
     class="px-4"
-    @click="$emit('select')">
+    @click="onClick">
+    <!-- Any contact can be ticked. Selecting is not publishing: it will serve
+         deleting, exporting and whatever comes next, and a row locked by the
+         rules of one action would be the wrong shape for all the others. What
+         a selection can DO is answered in the header, where an action is
+         offered only when every ticked contact supports it.
+
+         Both the box and the row toggle it. The box stops the press from
+         reaching the row, exactly as the mailbox list does; without that it
+         reached the row's own handler as well and the two cancelled out. -->
+    <v-checkbox
+      v-if="selectMode"
+      :input-value="ticked"
+      class="mt-0 pt-0 me-2 align-self-center"
+      color="#707070"
+      background-color="transparent"
+      hide-details
+      dense
+      @click.stop
+      @change="$emit('tick')" />
     <v-list-item-avatar
       size="36"
       class="my-1 me-3">
@@ -82,6 +101,32 @@ export default {
     selected: {
       type: Boolean,
       default: false,
+    },
+    // Whether the list is picking contacts rather than browsing them.
+    selectMode: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether this row is ticked.
+    ticked: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  methods: {
+    /**
+     * What a press on the row means, which depends on what the list is for.
+     * <p>
+     * Browsing, it opens the contact. Picking, it ticks.
+     *
+     * @returns {void}
+     */
+    onClick() {
+      if (!this.selectMode) {
+        this.$emit('select');
+        return;
+      }
+      this.$emit('tick');
     },
   },
   computed: {
