@@ -1727,23 +1727,6 @@ public class EmailContactService {
   }
 
   /**
-   * Lets the whole-cache backfill run again for this user.
-   * <p>
-   * Called when the mailbox behind the collection changes: rebound to another
-   * account, disconnected, or reset. Incremental collection cannot bootstrap a
-   * fresh cache on its own -- it judges an inbox sender against the organisations
-   * the user has written to, read from cached sent mail, and a sync caches the
-   * inbox before the sent folder. So every sender of the first sync is judged
-   * against nothing and collected nobody, and without this the marker from the
-   * previous mailbox meant that never got a second chance.
-   * <p>
-   * The backfill reads sent mail first for precisely that reason, so re-running it
-   * is what makes a rebound mailbox collect at all. It upserts, so a needless run
-   * costs reads and changes nothing.
-   *
-   * @param username the mailbox owner
-   */
-  /**
    * Hands the contacts collected from a mailbox over to the user, when that
    * mailbox is rebound or disconnected.
    * <p>
@@ -1772,6 +1755,52 @@ public class EmailContactService {
     }
   }
 
+  /**
+   * Empties the caller's whole contact store — every source, suppressed
+   * tombstones included — with the favorites and the publish queue that
+   * pointed into it. The "start fresh" half of switching providers, and the
+   * ONLY path in this add-on that deletes contacts wholesale.
+   * <p>
+   * Never call this directly from a user action: the contract of the feature
+   * is that the store leaves as a .vcf BEFORE it is emptied, and that ordering
+   * is owned by {@link EmailContactVCardService#exportContactsThenStartFresh},
+   * which is the one caller this method is meant to have. It carries no
+   * export logic itself so the export cannot be skipped by accident here —
+   * a caller that reaches this method without going through the exporting
+   * front door is visible in review as exactly that.
+   * <p>
+   * Tombstones go too: they are decisions about the account being left, and
+   * carried forward they would silently hide whoever the next account
+   * legitimately collects at the same addresses — a fresh start that still
+   * remembers old grudges is not fresh.
+   *
+   * @param username the store owner
+   * @return how many contacts were deleted
+   */
+  public int startFresh(String username) {
+    if (StringUtils.isBlank(username)) {
+      return 0;
+    }
+    List<Long> deletedIds = emailContactStorage.deleteAllContacts(username);
+    deletedIds.forEach(id -> dropFavorite(id, username));
+    // The queue's entries named rows that no longer exist; left behind they
+    // would make the next drain read absent contacts one by one.
+    userEmailSettingService.clearContactPublishQueue(username);
+    LOG.info("Contact store of user {} emptied on their start-fresh choice: {} contact(s) deleted, backup already exported",
+             username,
+             deletedIds.size());
+    return deletedIds.size();
+  }
+
+  /**
+   * Lets the whole-cache backfill run again for this user — called when the
+   * mailbox behind the collection changes (rebound, disconnected, reset), for
+   * the reasons the class comment on collection explains: the backfill reads
+   * sent mail first, and re-running it is what makes a rebound mailbox collect
+   * at all.
+   *
+   * @param username the mailbox owner
+   */
   public void resetCollectionBackfill(String username) {
     if (StringUtils.isBlank(username)) {
       return;
