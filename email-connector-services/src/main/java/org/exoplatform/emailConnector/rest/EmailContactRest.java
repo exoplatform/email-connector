@@ -48,6 +48,7 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.carddav.CardDavException;
 import org.exoplatform.emailConnector.carddav.CardDavPublishQueuedException;
 import org.exoplatform.emailConnector.model.ContactImportState;
+import org.exoplatform.emailConnector.model.ContactOrigin;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
@@ -261,7 +262,7 @@ public class EmailContactRest {
   @PostMapping
   @Secured("users")
   @Operation(summary = "Creates a manual contact", method = "POST",
-             description = "Adds a contact by hand. If the address belongs to a previously removed (suppressed) collected contact, that row is revived and updated from this body - the caller sees a normal create, never a conflict about a row it cannot see. A visible row with the same address answers 409, and so does one holding any of the body's secondaryEmails - the contact is filed under every address the body lists. A 'photoUploadId' on the body gives the new contact its picture in the same round-trip.")
+             description = "Adds a contact by hand. If the address belongs to a previously removed (suppressed) collected contact, that row is revived and updated from this body - the caller sees a normal create, never a conflict about a row it cannot see. A visible row with the same address answers 409, and so does one holding any of the body's secondaryEmails - the contact is filed under every address the body lists. A 'photoUploadId' on the body gives the new contact its picture in the same round-trip. This is the contact FORM's endpoint - one contact, deliberately, with a person watching - so a contact created here is also published to the caller's CardDAV address book when they turned the automatic push on (off by default, and never for imports or collected contacts). A push that cannot happen is queued or simply skipped; it never fails the create.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Unusable email address"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
@@ -271,7 +272,12 @@ public class EmailContactRest {
                                     @RequestBody
                                     EmailContact contact) {
     try {
-      return emailContactService.createContact(contact, request.getRemoteUser());
+      // The one call site that names USER_FORM, because it is the one the form
+      // reaches: whatever prefilled it -- a typed address, a .vcf somebody sent,
+      // a click on a sender -- a person saw this contact and pressed Save. Every
+      // other creator (import, collection, backfill, hand-over, directory, MCP)
+      // takes the origin-less overload and stays quiet.
+      return emailContactService.createContact(contact, request.getRemoteUser(), ContactOrigin.USER_FORM);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     } catch (IllegalStateException e) {
@@ -431,6 +437,21 @@ public class EmailContactRest {
   public Map<String, Object> isPublishAvailable(HttpServletRequest request) {
     Map<String, Object> response = new HashMap<>();
     response.put("available", emailContactCardDavSyncService.isPublishAvailable(request.getRemoteUser()));
+    return response;
+  }
+
+  @GetMapping("/{id}/publish-offer")
+  @Secured("users")
+  @Operation(summary = "Whether one contact is worth offering to publish", method = "GET",
+             description = "What the contact form asks after saving an edit, to decide whether to add 'Also add them to your address book?' to the confirmation. True when publishing works for the caller at all, this contact is one the publish endpoint would accept (a visible manual or collected row - an address-book row is already there, a directory colleague is never publishable), and no publish of it is already on its way. A contact whose queued publish was PARKED is still offered: re-asking is how a parked entry gets retried. Answers from stored state only, no server round trip, and holds no secret - a contact that is not the caller's simply answers false, never 404, so it cannot be probed.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public Map<String, Object> isPublishOffered(HttpServletRequest request,
+                                              @Parameter(description = "Contact id", required = true)
+                                              @PathVariable("id")
+                                              long id) {
+    Map<String, Object> response = new HashMap<>();
+    response.put("offered", emailContactCardDavSyncService.isPublishOffered(request.getRemoteUser(), id));
     return response;
   }
 
