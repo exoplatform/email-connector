@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -57,7 +58,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.CompletionService;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
@@ -139,6 +145,19 @@ import lombok.SneakyThrows;
 public class EmailBoxServiceTest {
 
   private static final String     TEST_USER = "testuser";
+
+  // A fixed, readable origin for the body-prefetch timing tests: the rule is a pure
+  // function of instants, so it is exercised at chosen instants rather than by really
+  // waiting out its windows.
+  private static final long       SUBMITTED_AT = 1_000_000L;
+
+  // The documented bounds, spelled out rather than read back from the service, so the
+  // tests pin the behaviour instead of restating whatever the constants happen to say.
+  private static final long       CONNECT_BOUND_MS = 3 * 60_000L;
+
+  private static final long       SILENCE_BOUND_MS = 90_000L;
+
+  private static final long       FAR_DEADLINE = SUBMITTED_AT + 10 * 60_000L;
 
   @MockBean
   private UserEmailSettingService userEmailSettingService;
@@ -819,6 +838,152 @@ public class EmailBoxServiceTest {
     assertArrayEquals(new long[] { 9L }, chunks.get(1));
     assertTrue(EmailBoxService.partitionUids(List.of(), 5).isEmpty());
     assertTrue(EmailBoxService.partitionUids(List.of(1L), 0).isEmpty());
+  }
+
+  @Test
+  void bodyPrefetchWaitBoundWaitsOutTheLoginsBeforeJudgingSilence() {
+    // The regression this fixes: workers submitted at t=0 have not fetched a byte yet --
+    // they are still handshaking, logging in and SELECTing -- so the drain must not judge
+    // them silent at the 90s slice window. Until one of them reports itself fetching, the
+    // only bound that applies is the connect bound, three minutes from submission.
+    assertEquals(SUBMITTED_AT + CONNECT_BOUND_MS,
+                 EmailBoxService.bodyPrefetchWaitBound(SUBMITTED_AT,
+                                                       SUBMITTED_AT,
+                                                       EmailBoxService.BODY_PREFETCH_NOT_FETCHING,
+                                                       FAR_DEADLINE));
+    // A fleet slow to authenticate but healthy: the first worker gets in at t=85s, i.e.
+    // after the old window would already have cancelled it. The wait now runs to 85s+90s,
+    // so the slices it goes on to deliver are still drained in parallel.
+    long slowLoginAt = SUBMITTED_AT + 85_000L;
+    assertEquals(slowLoginAt + SILENCE_BOUND_MS,
+                 EmailBoxService.bodyPrefetchWaitBound(SUBMITTED_AT, SUBMITTED_AT, slowLoginAt, FAR_DEADLINE));
+  }
+
+  @Test
+  void bodyPrefetchWaitBoundAbandonsAFleetThatNeverConnects() {
+    // The other side of the same rule: waiting on logins is not waiting forever. A fleet
+    // that never gets a single connection in is given up on at the connect bound, and the
+    // sync falls back to its own already-authenticated connection.
+    long waitBound = EmailBoxService.bodyPrefetchWaitBound(SUBMITTED_AT,
+                                                           SUBMITTED_AT,
+                                                           EmailBoxService.BODY_PREFETCH_NOT_FETCHING,
+                                                           FAR_DEADLINE);
+    assertEquals(SUBMITTED_AT + CONNECT_BOUND_MS, waitBound);
+    assertTrue(waitBound - SUBMITTED_AT <= 3 * 60_000L, "a fleet that never connects must be abandoned promptly");
+  }
+
+  @Test
+  void bodyPrefetchWaitBoundRestartsTheSilenceWindowOnEveryWait() {
+    // Connect-awareness only moves the FIRST wait. Later waits start after slices have
+    // been arriving, so they measure silence from their own start -- a fleet that
+    // connected long ago and then went quiet is still abandoned one window later, not
+    // ninety seconds after a login that happened half an hour ago.
+    long connectedAt = SUBMITTED_AT + 20_000L;
+    long laterWaitStart = SUBMITTED_AT + 30 * 60_000L;
+    // The folder deadline is refreshed on every slice that arrives, so by this wait it
+    // has moved with the download rather than staying pinned to submission.
+    long refreshedDeadline = laterWaitStart + 10 * 60_000L;
+    assertEquals(laterWaitStart + SILENCE_BOUND_MS,
+                 EmailBoxService.bodyPrefetchWaitBound(laterWaitStart, SUBMITTED_AT, connectedAt, refreshedDeadline));
+  }
+
+  @Test
+  void bodyPrefetchWaitBoundNeverOutlivesTheFolderDeadline() {
+    long deadline = SUBMITTED_AT + 5_000L;
+    assertEquals(deadline,
+                 EmailBoxService.bodyPrefetchWaitBound(SUBMITTED_AT,
+                                                       SUBMITTED_AT,
+                                                       EmailBoxService.BODY_PREFETCH_NOT_FETCHING,
+                                                       deadline));
+    assertEquals(deadline, EmailBoxService.bodyPrefetchWaitBound(SUBMITTED_AT, SUBMITTED_AT, SUBMITTED_AT, deadline));
+  }
+
+  @Test
+  void bodyPrefetchFleetOpensTheSilenceWindowOnTheFirstConnection() {
+    EmailBoxService.BodyPrefetchFleet fleet = new EmailBoxService.BodyPrefetchFleet(System.currentTimeMillis());
+    assertEquals(EmailBoxService.BODY_PREFETCH_NOT_FETCHING, fleet.fetchingSince());
+    assertEquals(0, fleet.connectedWorkers());
+    fleet.markFetching();
+    long firstConnection = fleet.fetchingSince();
+    assertTrue(firstConnection > EmailBoxService.BODY_PREFETCH_NOT_FETCHING);
+    // A straggler logging in later counts, but must not push the window back: the fleet
+    // has been capable of delivering since the first connection.
+    fleet.markFetching();
+    assertEquals(firstConnection, fleet.fetchingSince());
+    assertEquals(2, fleet.connectedWorkers());
+  }
+
+  @Test
+  @SneakyThrows
+  void pollCompletedSliceReturnsTheFirstCompletedSlice() {
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      CompletionService<Map<Long, EmailContent>> completedSlices = new ExecutorCompletionService<>(pool);
+      EmailContent content = new EmailContent("body", null, null);
+      completedSlices.submit(() -> Map.of(1L, content));
+      EmailBoxService.BodyPrefetchFleet fleet = new EmailBoxService.BodyPrefetchFleet(System.currentTimeMillis());
+      Future<Map<Long, EmailContent>> completed = emailBoxService.pollCompletedSlice(completedSlices,
+                                                                                     System.currentTimeMillis() + 30_000L,
+                                                                                     fleet,
+                                                                                     TEST_USER);
+      assertNotNull(completed);
+      assertEquals(Map.of(1L, content), completed.get());
+      // Nothing was given up on, so neither log path was taken.
+      assertNull(fleet.givenUp());
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void pollCompletedSliceReportsLoginsNeverCompleted() {
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      CompletionService<Map<Long, EmailContent>> completedSlices = new ExecutorCompletionService<>(pool);
+      CountDownLatch neverCompletes = new CountDownLatch(1);
+      completedSlices.submit(() -> {
+        neverCompletes.await();
+        return Map.of();
+      });
+      // Submitted four minutes ago and not one worker ever reported itself fetching: the
+      // connect bound has elapsed, so the drain gives up -- and names the provider's
+      // logins, not the transfers.
+      EmailBoxService.BodyPrefetchFleet fleet =
+                                             new EmailBoxService.BodyPrefetchFleet(System.currentTimeMillis() - 4 * 60_000L);
+      assertNull(emailBoxService.pollCompletedSlice(completedSlices,
+                                                    System.currentTimeMillis() + 10 * 60_000L,
+                                                    fleet,
+                                                    TEST_USER));
+      assertEquals(EmailBoxService.BodyPrefetchGiveUp.LOGINS_NEVER_COMPLETED, fleet.givenUp());
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void pollCompletedSliceReportsFetchingWentSilent() {
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      CompletionService<Map<Long, EmailContent>> completedSlices = new ExecutorCompletionService<>(pool);
+      CountDownLatch neverCompletes = new CountDownLatch(1);
+      completedSlices.submit(() -> {
+        neverCompletes.await();
+        return Map.of();
+      });
+      EmailBoxService.BodyPrefetchFleet fleet = new EmailBoxService.BodyPrefetchFleet(System.currentTimeMillis());
+      // This fleet did get in: a connection reached the folder and started fetching. The
+      // wait is cut short by an already-elapsed folder deadline rather than by really
+      // sitting out ninety seconds -- what is asserted is which failure the drain names
+      // once it gives up, and that is decided by the fleet's state, not by which bound
+      // expired. The window's own timing is covered by the bodyPrefetchWaitBound tests.
+      fleet.markFetching();
+      assertNull(emailBoxService.pollCompletedSlice(completedSlices, System.currentTimeMillis() - 1L, fleet, TEST_USER));
+      assertEquals(EmailBoxService.BodyPrefetchGiveUp.FETCHING_WENT_SILENT, fleet.givenUp());
+    } finally {
+      pool.shutdownNow();
+    }
   }
 
   @Test
