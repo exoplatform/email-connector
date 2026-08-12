@@ -308,6 +308,51 @@ public class EmailContactVCardService {
   }
 
   /**
+   * The provider-switch "download a backup, then start fresh" choice, as ONE
+   * operation whose order is the whole point: the caller's entire store is
+   * written onto the given writer — the very same {@link #exportContacts} the
+   * 3-dots export runs, so the backup holds every row about to go, address-book
+   * rows with their server UIDs included — and ONLY once every card has been
+   * written and flushed without error does {@link EmailContactService#startFresh}
+   * empty the store. The two live in one method precisely so no caller can
+   * reorder them or run the second without the first.
+   * <p>
+   * A failed export deletes nothing, by construction, not by handling: the
+   * export writes straight onto the HTTP response, so an abandoned download or
+   * a dead connection surfaces as the {@link IOException} of a write or flush
+   * — and the deletion sits AFTER that code, unreachable past a throw. There
+   * is deliberately no catch here: nothing this method could do with the
+   * failure beats leaving the store exactly as it was, which is what falling
+   * out does.
+   * <p>
+   * The honest limit, stated rather than hidden: "in the user's hands" can
+   * only mean "the last byte was flushed to them without error". A response
+   * fully sent but discarded by the browser is beyond what any server can
+   * see. That residual window is why the UI names the file a backup and
+   * downloads it BEFORE the binding moves — the user watches the file land,
+   * and cancelling the download cancels the wipe with it.
+   * <p>
+   * There is no undo past this method. The deletion is deliberate, chosen by
+   * the user against the alternative of keeping everything, and their backup
+   * is the recovery path — re-importable through the ordinary contacts
+   * import.
+   *
+   * @param username the store owner
+   * @param out where the backup goes, typically the HTTP response; flushed
+   *          fully before anything is deleted, closed by the caller
+   * @return how many contacts were deleted after the export completed
+   * @throws IOException when the export could not be fully delivered — the
+   *           store is untouched
+   */
+  public int exportContactsThenStartFresh(String username, Writer out) throws IOException {
+    exportContacts(username, out);
+    // Belt on braces: exportContacts flushes per page, but the deletion below
+    // must only ever run after an explicit, successful flush of the LAST byte.
+    out.flush();
+    return emailContactService.startFresh(username);
+  }
+
+  /**
    * One contact of the caller's store as vCard 3.0 text WITHOUT its photo —
    * what the contact card's QR code encodes.
    * <p>

@@ -24,7 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-if="groups.length"
     class="d-flex flex-row"
     style="position: relative; overflow-x: hidden;">
-      <!-- min-width:0 is what lets this column shrink. A flex item defaults to
+    <!-- min-width:0 is what lets this column shrink. A flex item defaults to
            min-width:auto, so it refuses to be narrower than its widest content: one
            long address then made every row wider than the drawer, the list scrolled
            sideways, and the names and avatars slid off the start edge instead of
@@ -47,7 +47,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :key="`${group.letter}-${contact.id || contact.primaryEmail}`"
           :contact="contact"
           :selected="!!selectedId && contact.id === selectedId"
-          @select="$emit('select', contact)" />
+          :select-mode="selectMode"
+          :ticked="tickedIds.includes(contact.id)"
+          @select="$emit('select', contact)"
+          @tick="$emit('tick', contact)" />
       </template>
     </v-list>
     <email-connector-contacts-alphabet-rail
@@ -70,6 +73,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
+    // Whether the list is picking contacts rather than browsing them.
+    selectMode: {
+      type: Boolean,
+      default: false,
+    },
+    // The ids ticked so far, so a row knows its own state.
+    tickedIds: {
+      type: Array,
+      default: () => [],
+    },
     // The rows to render, already in server order.
     contacts: {
       type: Array,
