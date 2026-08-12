@@ -67,7 +67,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-contacts-drawer-actions
           :select-mode="selectMode"
           :ticked-count="tickedIds.length"
-        :selection-publishable="selectionPublishable"
+          :selection-publishable="selectionPublishable"
           :publishing="publishing"
           :importing="importing"
           :publishable="publishable"
@@ -108,7 +108,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :indeterminate="someTicked"
         @update:ticked-ids="tickedIds = $event"
         @select="selectContact"
-        @tick="toggleTick" />
+        @tick="toggleTick"
+        @start-select="startSelectOn" />
     </template>
     <template v-if="contactsDrawer" #content>
       <template v-if="!expanded">
@@ -125,7 +126,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :indeterminate="someTicked"
           @update:ticked-ids="tickedIds = $event"
           @select="selectContact"
-          @tick="toggleTick" />
+          @tick="toggleTick"
+          @start-select="startSelectOn" />
       </template>
       <template v-else>
         <email-connector-contacts-detail
@@ -378,6 +380,21 @@ export default {
     startSelectMode() {
       this.tickedIds = [];
       this.selectMode = true;
+    },
+    /**
+     * Turns picking on from one row's own menu, with that row already ticked.
+     * <p>
+     * Which is how most people will ever find the mode: the header entry offers
+     * "several contacts", and nobody looks there while looking at the one
+     * contact they meant to start from. Starting on an empty checklist would
+     * make the row that was clicked the only one not selected.
+     *
+     * @param {Object} contact the row the menu was opened on
+     * @returns {void}
+     */
+    startSelectOn(contact) {
+      this.startSelectMode();
+      this.toggleTick(contact);
     },
     /**
      * Leaves picking, dropping whatever was ticked: a selection the user
