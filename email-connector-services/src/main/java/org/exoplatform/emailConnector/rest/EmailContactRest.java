@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.InputStreamResource;
@@ -476,17 +477,32 @@ public class EmailContactRest {
 
   @GetMapping(value = "/export", produces = "text/vcard")
   @Secured("users")
-  @Operation(summary = "Exports the caller's whole contact store as a .vcf file", method = "GET",
-             description = "Streams every visible contact of the caller's own store - all sources, suppressed rows excluded - as one vCard 3.0 file, the dialect Gmail, Outlook and iCloud all accept. Always the whole store, never a filtered view. Directory-linked colleagues leave with their live-resolved name; CardDAV rows keep their server UID.")
+  @Operation(summary = "Exports the caller's contact store, whole or by selection, as a .vcf file", method = "GET",
+             description = "Streams the caller's own contacts - suppressed rows excluded - as one vCard 3.0 file, the dialect Gmail, Outlook and iCloud all accept. Without ids that is the WHOLE store, never a filtered view; with ids it is exactly those contacts, in the order given, which is what the drawer's selection exports. An id that is not one of the caller's visible contacts is skipped silently - a selection is never a way to probe another store. Directory-linked colleagues leave with their live-resolved name; CardDAV rows keep their server UID.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "More ids than one export may name; nothing was written"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
-  public void exportContacts(HttpServletRequest request, HttpServletResponse response) throws IOException {
+  public void exportContacts(HttpServletRequest request,
+                             HttpServletResponse response,
+                             @Parameter(description = "The contacts to export; the whole store when absent")
+                             @RequestParam(name = "ids", required = false)
+                             List<Long> ids)
+                                             throws IOException {
     response.setContentType("text/vcard");
+    // Two constants, neither with anything to escape, so no RFC 5987 encoding
+    // dance. The selection gets its own name because a Downloads folder six
+    // months later cannot tell a partial file from a full one otherwise.
+    boolean selection = CollectionUtils.isNotEmpty(ids);
     response.setCharacterEncoding("UTF-8");
-    // The filename needs no RFC 5987 encoding dance: it is a constant, and a
-    // constant with nothing to escape.
-    response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"contacts.vcf\"");
-    emailContactVCardService.exportContacts(request.getRemoteUser(), response.getWriter());
+    response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
+                       selection ? "attachment; filename=\"contacts-selection.vcf\"" : "attachment; filename=\"contacts.vcf\"");
+    try {
+      emailContactVCardService.exportContacts(request.getRemoteUser(), response.getWriter(), ids);
+    } catch (IllegalArgumentException e) {
+      // Thrown before a byte was written, so the response is still uncommitted
+      // and can carry the status instead of a truncated file.
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
   }
 
   @PostMapping(value = "/export-then-start-fresh", produces = "text/vcard")
