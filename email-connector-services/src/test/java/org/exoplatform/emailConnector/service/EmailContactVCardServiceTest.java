@@ -21,6 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
@@ -486,6 +489,75 @@ public class EmailContactVCardServiceTest {
 
     verify(emailContactService).getContacts(USERNAME, null, null, false, 200, 200);
     assertEquals(201, out.toString().split("BEGIN:VCARD", -1).length - 1);
+  }
+
+  @Test
+  void aScopedExportWritesOnlyTheNamedContactsInTheGivenOrder() throws Exception {
+    EmailContact first = visibleContact(7L);
+    first.setDisplayName("Ada Lovelace");
+    EmailContact second = visibleContact(3L);
+    second.setPrimaryEmail("grace@example.com");
+    second.setDisplayName("Grace Hopper");
+    when(emailContactService.getContact(7L, USERNAME)).thenReturn(first);
+    when(emailContactService.getContact(3L, USERNAME)).thenReturn(second);
+    when(emailContactStorage.getVcardUids(USERNAME)).thenReturn(Map.of(3L, "server-uid-3"));
+    StringWriter out = new StringWriter();
+
+    service.exportContacts(USERNAME, out, List.of(7L, 3L));
+
+    String vcf = out.toString();
+    assertEquals(2, vcf.split("BEGIN:VCARD", -1).length - 1);
+    assertTrue(vcf.indexOf("Ada Lovelace") < vcf.indexOf("Grace Hopper"));
+    assertTrue(vcf.contains("UID:server-uid-3"));
+    // The whole-store walk is never taken when ids were named: a selection must
+    // not cost a full scan of a five-thousand-row store.
+    verify(emailContactService, never()).getContacts(anyString(), any(), any(), anyBoolean(), anyInt(), anyInt());
+  }
+
+  @Test
+  void aScopedExportSkipsWhatTheCallerCannotSee() throws Exception {
+    when(emailContactService.getContact(1L, USERNAME)).thenReturn(visibleContact(1L));
+    // Somebody else's row, a suppressed row and a missing one are one answer:
+    // null. The file is shorter and says nothing about why.
+    when(emailContactService.getContact(2L, USERNAME)).thenReturn(null);
+    when(emailContactStorage.getVcardUids(USERNAME)).thenReturn(Map.of());
+    StringWriter out = new StringWriter();
+
+    service.exportContacts(USERNAME, out, java.util.Arrays.asList(1L, 2L, null, 1L));
+
+    // One card: the null and the duplicate are dropped, the foreign id skipped.
+    assertEquals(1, out.toString().split("BEGIN:VCARD", -1).length - 1);
+    verify(emailContactService, times(1)).getContact(1L, USERNAME);
+  }
+
+  @Test
+  void aSelectionPastTheCapIsRefusedBeforeAnythingIsWritten() {
+    when(emailContactStorage.getVcardUids(USERNAME)).thenReturn(Map.of());
+    List<Long> tooMany = java.util.stream.LongStream.rangeClosed(1, EmailContactVCardService.MAX_EXPORT_IDS + 1L)
+                                                    .boxed()
+                                                    .toList();
+    StringWriter out = new StringWriter();
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.exportContacts(USERNAME, out, tooMany));
+
+    assertEquals(EmailContactVCardService.EXPORT_TOO_MANY_IDS, refused.getMessage());
+    // Nothing written: the refusal must still be answerable as a 400, which a
+    // response already carrying half a file no longer can be.
+    assertEquals("", out.toString());
+    verify(emailContactService, never()).getContact(anyLong(), anyString());
+  }
+
+  @Test
+  void anEmptyIdListStillMeansTheWholeStore() throws Exception {
+    when(emailContactService.getContacts(USERNAME, null, null, false, 0, 200))
+        .thenReturn(new EmailContactPage(List.of(visibleContact(1L)), Map.of(), 1, 0, 200));
+    when(emailContactStorage.getVcardUids(USERNAME)).thenReturn(Map.of());
+    StringWriter out = new StringWriter();
+
+    service.exportContacts(USERNAME, out, List.of());
+
+    assertEquals(1, out.toString().split("BEGIN:VCARD", -1).length - 1);
   }
 
   // -------------------------------------------------------------------------
