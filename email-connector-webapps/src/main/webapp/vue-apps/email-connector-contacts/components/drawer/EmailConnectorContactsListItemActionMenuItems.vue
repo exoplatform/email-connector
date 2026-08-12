@@ -72,9 +72,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $t('emailConnector.contacts.detail.sendByChat') }}
         </v-list-item-title>
       </v-list-item>
-      <!-- Shown only when publishing can work at all: a contact the user added
-           themselves, a bound and already-discovered address book, and the
-           admin switch on — the server re-checks every one of these. -->
+      <!-- Shown only when publishing can work at all: a row this mailbox alone
+           holds — added by hand or collected from its own traffic — plus a
+           bound and already-discovered address book and the admin switch on;
+           the server re-checks every one of these. -->
       <v-list-item
         v-if="publishable"
         :disabled="publishing"
@@ -140,14 +141,23 @@ export default {
       return this.$emailConnectorContactsService.isChatDeployed();
     },
     /**
-     * Whether the publish entry shows. MANUAL is the whole source rule, and it
-     * is the server's: the publish endpoint refuses a collected row and a
-     * directory colleague, and an address-book row is already there.
+     * Whether the publish entry shows — the card's rule, because it is the same
+     * click on the same endpoint.
+     * <p>
+     * Manual OR collected, which is what that endpoint accepts: both are rows
+     * only this mailbox holds, so publishing them is the user keeping their
+     * own. What it refuses is a directory colleague — the platform's person,
+     * not theirs to copy out — and an address-book row, which is already there.
+     * Reading the rule as MANUAL alone hid the action on precisely the rows a
+     * collected-contacts list is mostly made of, while the card's menu and the
+     * save nudge still offered it and the server still took it: the same action
+     * behind a longer route is a bug, not a safeguard.
      *
      * @returns {boolean} true when the publish entry shows
      */
     publishable() {
-      return this.addressBookPublishable && this.contact?.source === 'MANUAL';
+      return this.addressBookPublishable
+        && ['MANUAL', 'COLLECTED'].includes(this.contact?.source);
     },
   },
   created() {
