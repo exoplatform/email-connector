@@ -475,32 +475,6 @@ export default {
       this.resetDraftTracking();
     },
     /**
-     * Removes the local draft of a message that has just been sent, and empties the
-     * composer's draft tracking so the close that follows cannot re-save it.
-     *
-     * The order is deliberately the reverse of the compensating re-insert that
-     * archive and delete use: the send has already happened and cannot be taken
-     * back, so if this cleanup fails there is nothing to restore and nothing worth
-     * restoring. The failure is swallowed rather than reported, because there is no
-     * action the user could take on it.
-     *
-     * Only the LOCAL row goes. A copy that was pushed to the mail server's Drafts
-     * folder stays there until the slice that owns sending a draft removes it.
-     *
-     * @returns {void}
-     */
-    dropDraftAfterSend() {
-      const draftLocalId = this.draftLocalId;
-      this.emptyComposer();
-      if (!draftLocalId) {
-        return;
-      }
-      this.$emailConnectorMailBoxService.deleteDraft(draftLocalId).catch(() => {
-        // Nothing to say and nothing to do: the mail is gone, the draft row is stale
-        // rather than wrong, and the next save path will not resurrect it.
-      });
-    },
-    /**
      * Reacts to the user typing: schedules the local save that protects the words,
      * and restarts the much longer idle countdown that eventually pushes the draft
      * to the mail server.
@@ -553,6 +527,15 @@ export default {
       this.savedSignature = signature;
       this.draftSaving = true;
       this.$emailConnectorMailBoxService.saveDraft(payload, push).then((saved) => {
+        if (!saved) {
+          // The draft this composer was writing has been sent or discarded while the
+          // save was in flight. Forgetting the id is the whole reaction: what is still
+          // on screen belongs to nothing now, and the next save starts a fresh draft
+          // rather than resurrecting one the user has finished with.
+          this.draftLocalId = null;
+          this.draftState = null;
+          return;
+        }
         this.draftLocalId = saved.draftLocalId;
         this.draftState = saved.draftState;
         if (saved.draftRevision) {
@@ -675,9 +658,21 @@ export default {
       // mail they have already sent — and inviting them to send it twice — is worse
       // than any of the alternatives.
       this.cancelDraftTimers();
-      this.$emailConnectorMailBoxService.sendEmail(this.email).then(() => {
+      // Two send endpoints, and which one applies is decided by whether there is a
+      // draft row behind this composer. There is one whenever the user paused for a
+      // second, so this is the common path for anything longer than a one-liner. It
+      // exists because sending a draft is not "send, then tidy up from the client":
+      // the save, the send and the two removals have to happen in one order, on the
+      // server, where a failure between them can be reasoned about.
+      const send = this.draftLocalId
+        ? this.$emailConnectorMailBoxService.sendDraft(this.draftLocalId, this.email)
+        : this.$emailConnectorMailBoxService.sendEmail(this.email);
+      send.then(() => {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
-        this.dropDraftAfterSend();
+        // The row and its server copy are already gone; all that is left here is to
+        // forget the draft so the close below cannot save it back.
+        this.emptyComposer();
+        this.$root.$emit('refresh-email-box');
         this.close();
       }).catch(() => {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');

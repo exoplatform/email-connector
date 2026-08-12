@@ -18,8 +18,10 @@
 
 package org.exoplatform.emailConnector.rest;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,6 +38,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -51,6 +54,8 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
+
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -217,6 +222,41 @@ public class EmailBoxRestTest {
                                                              .contentType(MediaType.APPLICATION_JSON)
                                                              .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
+  }
+
+  @Test
+  void sendDraft() throws Exception {
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    Email draft = new Email();
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send").with(testSimpleUser())
+                                                                           .content(asJsonString(draft))
+                                                                           .contentType(MediaType.APPLICATION_JSON)
+                                                                           .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isBadRequest());
+    draft.setTo(List.of(mock(EmailRecipient.class)));
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send").with(testSimpleUser())
+                                                                           .content(asJsonString(draft))
+                                                                           .contentType(MediaType.APPLICATION_JSON)
+                                                                           .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+    // The path names the draft, whatever the body claims.
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendDraft(sent.capture(), anyString());
+    org.junit.jupiter.api.Assertions.assertEquals("draft-1", sent.getValue().getDraftLocalId());
+  }
+
+  @Test
+  void sendDraftAnswersNotFoundForADraftThatIsGone() throws Exception {
+    Email draft = new Email();
+    draft.setTo(List.of(mock(EmailRecipient.class)));
+    doThrow(new ObjectNotFoundException("emailConnector.drafts.send.gone")).when(emailBoxService)
+                                                                          .sendDraft(any(Email.class), anyString());
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/gone/send").with(testSimpleUser())
+                                                                                      .content(asJsonString(draft))
+                                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                                      .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isNotFound());
   }
 
   @Test

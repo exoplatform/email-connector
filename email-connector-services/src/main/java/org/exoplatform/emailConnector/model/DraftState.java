@@ -51,5 +51,25 @@ public enum DraftState {
    * APPEND entirely, and an APPEND re-uploads the whole message, attachments
    * included.
    */
-  SYNCED
+  SYNCED,
+
+  /**
+   * The draft has been handed to the SMTP server and the send has not come back
+   * yet. Unlike the three above it says nothing about the server copy — it is a
+   * claim on the draft, and it exists so that a second send cannot start while the
+   * first is still in the air. Double-sending a mail is not a failure the user can
+   * undo.
+   * <p>
+   * The in-JVM lock already serialises two sends, so this state earns its keep in
+   * the case the lock cannot cover: a second request landing on another cluster
+   * node. It is also why the state is persisted rather than held in memory.
+   * <p>
+   * It is a transient state and every path out of the send restores or removes it —
+   * a successful send deletes the row outright, a refused one puts back the state
+   * the row had before. A JVM killed mid-send is the one case that can leave a row
+   * stuck here; such a draft can still be discarded, and that is the deliberate
+   * trade, because the alternative (letting a stale claim expire on its own) is a
+   * timeout that would eventually permit exactly the double send this prevents.
+   */
+  SENDING
 }

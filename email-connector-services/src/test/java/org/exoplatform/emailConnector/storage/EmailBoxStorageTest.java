@@ -324,6 +324,26 @@ public class EmailBoxStorageTest {
   }
 
   @Test
+  void updateDraftStateMovesTheStateAndTouchesNothingElse() {
+    // The send's claim on the row. It goes through its own call for the same reason
+    // the upload's bookkeeping does: it carries no text, and through the edit path the
+    // revision guard could drop it -- and a claim that can be silently dropped is not
+    // a claim.
+    EmailBoxEntity stored = draftEntity("draft-1", 5L, "the newest sentence");
+    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    Email claimed = emailBoxStorage.updateDraftState("root", "draft-1", DraftState.SENDING);
+    assertEquals(DraftState.SENDING, claimed.getDraftState());
+    assertEquals(5L, claimed.getDraftRevision());
+    assertEquals("the newest sentence", claimed.getContent().getBody());
+  }
+
+  @Test
+  void updateDraftStateIgnoresADraftThatIsNoLongerThere() {
+    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "gone")).thenReturn(Collections.emptyList());
+    assertNull(emailBoxStorage.updateDraftState("root", "gone", DraftState.SENDING));
+  }
+
+  @Test
   void saveDraftRefusesADraftWithNoLocalId() {
     assertThrows(IllegalArgumentException.class, () -> emailBoxStorage.saveDraft(draft(null, 1L, "orphan")));
   }

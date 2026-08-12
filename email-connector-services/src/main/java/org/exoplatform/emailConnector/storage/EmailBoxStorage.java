@@ -232,6 +232,35 @@ public class EmailBoxStorage {
     return fromEntity(emailBoxDao.save(entity), true, false, userId, null, true, false);
   }
 
+  /**
+   * Moves a draft's state and nothing else — the send path's claim on the row
+   * ({@link DraftState#SENDING}) and the release of that claim when the send comes
+   * back refused.
+   * <p>
+   * Deliberately not routed through {@link #saveDraft}: this write carries no text
+   * at all, so passing it through the edit path would make it subject to the
+   * revision guard and be dropped as an out-of-order save — and a send claim that
+   * can be silently dropped is not a claim. The same reasoning as
+   * {@link #markDraftUploaded}, for the same reason.
+   * <p>
+   * It writes no revision either, so a state change never makes an autosave the
+   * user has since typed look stale.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param draftState the state to move the row to
+   * @return the row as it now stands, or null when there is no such draft
+   */
+  public Email updateDraftState(String userId, String draftLocalId, DraftState draftState) {
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalId(userId, draftLocalId);
+    if (existing.isEmpty()) {
+      return null;
+    }
+    EmailBoxEntity entity = existing.get(0);
+    entity.setDraftState(draftState);
+    return fromEntity(emailBoxDao.save(entity), true, false, userId, null, true, false);
+  }
+
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
     emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus, folder);
   }

@@ -488,10 +488,44 @@ export function saveDraft(draft, push) {
     method: 'POST',
     body: JSON.stringify(draft)
   }).then((resp) => {
+    // 404 is not an error here, it is an answer: the draft this save was meant for
+    // has been sent or discarded since the request left. Resolving with null lets the
+    // composer forget it instead of retrying against an id that names nothing.
+    if (resp?.status === 404) {
+      return null;
+    }
     if (!resp?.ok) {
       throw new Error('Error when saving draft');
     }
     return resp.json();
+  });
+}
+
+/**
+ * Sends a draft.
+ *
+ * Not the ordinary send followed by a tidy-up from here: the save, the send and the
+ * removal of both copies happen on the server, in one order, because what has to be
+ * true if a step fails halfway is not something a browser can hold together. The
+ * body is what the composer is showing — that text is written to the draft before
+ * anything is transmitted.
+ *
+ * @param {string} draftLocalId the draft's local id
+ * @param {Object} draft the composed draft as the composer is showing it
+ * @returns {Promise} resolves once the mail is out and the draft is gone
+ */
+export function sendDraft(draftLocalId, draft) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(draft)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when sending draft');
+    }
   });
 }
 

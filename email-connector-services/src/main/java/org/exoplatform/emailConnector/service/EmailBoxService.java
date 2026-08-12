@@ -2907,99 +2907,195 @@ public class EmailBoxService {
     return null;
   }
 
+  /**
+   * Sends what the composer holds, over the user's own SMTP connector, and files a
+   * copy in their Sent folder.
+   * <p>
+   * This is the ordinary send: a message that has no draft row behind it. Sending a
+   * draft is {@link #sendDraft}, which needs a different order of operations and
+   * carries the draft's own Message-ID out onto the wire.
+   *
+   * @param email the composed email
+   * @param username the mailbox owner
+   * @throws IllegalAccessException if the user may not send from their mailbox
+   */
   public void sendEmail(Email email, String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE, username));
     }
-    String emailAddress = userEmailSetting.getEmailAddress();
-    String emailPassword = userEmailSetting.getEmailPassword();
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-    Properties props = new Properties();
-    props.put("mail.smtp.auth", "true");
-    props.put("mail.smtp." + emailConnector.getSmtpSecurityType() + ".enable", "true");
-    props.put("mail.smtp.host", emailConnector.getSmtpUrl());
-    props.put("mail.smtp.port", emailConnector.getSmtpPort());
-    Session session = Session.getInstance(props, new Authenticator() {
-      @Override
-      protected PasswordAuthentication getPasswordAuthentication() {
-        return new PasswordAuthentication(emailAddress, emailPassword);
-      }
-    });
     List<String> uploadIds = new ArrayList<>();
     try {
-      Message message = new MimeMessage(session);
-      Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-      message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
-      if (!CollectionUtils.isEmpty(email.getTo())) {
-        String toRecipients = email.getTo()
-                                   .stream()
-                                   .map(EmailRecipient::getAddress)
-                                   .filter(Objects::nonNull)
-                                   .filter(address -> !address.isBlank())
-                                   .collect(Collectors.joining(","));
-        message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(toRecipients));
-      }
-      if (!CollectionUtils.isEmpty(email.getCc())) {
-        String ccRecipients = email.getCc()
-                                   .stream()
-                                   .map(EmailRecipient::getAddress)
-                                   .filter(Objects::nonNull)
-                                   .filter(address -> !address.isBlank())
-                                   .collect(Collectors.joining(","));
-        message.setRecipients(Message.RecipientType.CC, InternetAddress.parse(ccRecipients));
-      }
-      if (!CollectionUtils.isEmpty(email.getBcc())) {
-        String bccRecipients = email.getBcc()
-                                    .stream()
-                                    .map(EmailRecipient::getAddress)
-                                    .filter(Objects::nonNull)
-                                    .filter(address -> !address.isBlank())
-                                    .collect(Collectors.joining(","));
-
-        message.setRecipients(Message.RecipientType.BCC, InternetAddress.parse(bccRecipients));
-      }
-      message.setSubject(email.getSubject());
-      String currentDomain = CommonsUtils.getCurrentDomain();
-      Document contentDoc = Jsoup.parseBodyFragment(HtmlUtils.transform(email.getContent().getBody(), null));
-      for (Element link : contentDoc.select("a[href^=/portal]")) {
-        link.select("i").remove();
-        String href = link.attr("href");
-        link.attr("href", currentDomain + href);
-      }
-      applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds);
+      MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds);
       applyThreadingHeaders(message, email, username);
-      Transport.send(message);
-      String emailType = StringUtils.isEmpty(email.getMailHeaderId()) ? "newEmail" : "reply";
-      listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL, username, emailType);
-      publishEmailSentEvent(username, email);
-      try {
-        copyToSentFolder(message, username, userEmailSetting);
-      } catch (IllegalStateException e) {
-        LOG.warn("Email sent but could not be copied to Sent folder for user {}", username, e);
-      }
+      deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
     } catch (MessagingException | UnsupportedEncodingException e) {
-      // The server, the port and the security mode belong in this line. A failure
-      // here says nothing about WHICH server refused: the exception names the
-      // condition ("451 4.3.2 Internal server error") and no more, so the same
-      // mailbox failing on one deployment and working on another is unanswerable
-      // from the log alone -- exactly the question that gets asked first. The
-      // connect-failure path already prints the host; the authentication path,
-      // which is the commoner failure, printed nothing.
-      LOG.error("Error when sending email for user {} through {}:{} ({})",
-                username,
-                emailConnector.getSmtpUrl(),
-                emailConnector.getSmtpPort(),
-                emailConnector.getSmtpSecurityType(),
-                e);
+      logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
     } finally {
       // Free the commons temporary upload resources only after the message (and its Sent-folder copy) has been built,
       // since the attachment body parts stream their bytes lazily from those temporary files.
       removeUploadResources(uploadIds);
     }
+  }
+
+  /**
+   * The SMTP session a send runs on, built from the user's connector and
+   * authenticated as the user themselves.
+   *
+   * @param emailConnector the connector the user is bound to
+   * @param userEmailSetting the user's credentials
+   * @return the session to build and transmit the message on
+   */
+  private Session smtpSession(EmailConnector emailConnector, UserEmailSetting userEmailSetting) {
+    String emailAddress = userEmailSetting.getEmailAddress();
+    String emailPassword = userEmailSetting.getEmailPassword();
+    Properties props = new Properties();
+    props.put("mail.smtp.auth", "true");
+    props.put("mail.smtp." + emailConnector.getSmtpSecurityType() + ".enable", "true");
+    props.put("mail.smtp.host", emailConnector.getSmtpUrl());
+    props.put("mail.smtp.port", emailConnector.getSmtpPort());
+    return Session.getInstance(props, new Authenticator() {
+      @Override
+      protected PasswordAuthentication getPasswordAuthentication() {
+        return new PasswordAuthentication(emailAddress, emailPassword);
+      }
+    });
+  }
+
+  /**
+   * Builds the message a send transmits: the user as From, the recipients they
+   * typed, the subject, the body with its portal links absolutized, and the
+   * attachments streamed from their upload ids.
+   * <p>
+   * Extracted out of {@link #sendEmail} so that {@link #sendDraft} composes exactly
+   * the same message rather than a second one that drifts from it. The threading
+   * headers are NOT applied here, because the two callers take them from different
+   * places: an ordinary send derives them from the parent it is replying to, while
+   * a draft has carried its own since its first save.
+   *
+   * @param email the composed email
+   * @param userEmailSetting the user's connector binding, for their own address
+   * @param emailConnector the connector the user is bound to
+   * @param pinnedMessageId the Message-ID this message must go out with, or null to
+   *          let JavaMail mint one — see {@link PinnedMessageIdMimeMessage}
+   * @param uploadIds mutable list populated with the upload ids that were attached
+   * @return the message, ready for its threading headers and the wire
+   * @throws MessagingException if the message cannot be built
+   * @throws UnsupportedEncodingException if the user's display name cannot be encoded
+   */
+  private MimeMessage buildOutgoingMessage(Email email,
+                                           UserEmailSetting userEmailSetting,
+                                           EmailConnector emailConnector,
+                                           String pinnedMessageId,
+                                           List<String> uploadIds) throws MessagingException, UnsupportedEncodingException {
+    String emailAddress = userEmailSetting.getEmailAddress();
+    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, userEmailSetting), pinnedMessageId);
+    Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
+    message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+    if (!CollectionUtils.isEmpty(email.getTo())) {
+      String toRecipients = email.getTo()
+                                 .stream()
+                                 .map(EmailRecipient::getAddress)
+                                 .filter(Objects::nonNull)
+                                 .filter(address -> !address.isBlank())
+                                 .collect(Collectors.joining(","));
+      message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(toRecipients));
+    }
+    if (!CollectionUtils.isEmpty(email.getCc())) {
+      String ccRecipients = email.getCc()
+                                 .stream()
+                                 .map(EmailRecipient::getAddress)
+                                 .filter(Objects::nonNull)
+                                 .filter(address -> !address.isBlank())
+                                 .collect(Collectors.joining(","));
+      message.setRecipients(Message.RecipientType.CC, InternetAddress.parse(ccRecipients));
+    }
+    if (!CollectionUtils.isEmpty(email.getBcc())) {
+      String bccRecipients = email.getBcc()
+                                  .stream()
+                                  .map(EmailRecipient::getAddress)
+                                  .filter(Objects::nonNull)
+                                  .filter(address -> !address.isBlank())
+                                  .collect(Collectors.joining(","));
+
+      message.setRecipients(Message.RecipientType.BCC, InternetAddress.parse(bccRecipients));
+    }
+    message.setSubject(email.getSubject());
+    String currentDomain = CommonsUtils.getCurrentDomain();
+    // Defaulted rather than dereferenced: a draft sent straight after being resumed
+    // can legitimately have an empty body, and an empty mail is a thing a user is
+    // allowed to send.
+    String body = email.getContent() != null ? StringUtils.defaultString(email.getContent().getBody()) : "";
+    Document contentDoc = Jsoup.parseBodyFragment(HtmlUtils.transform(body, null));
+    for (Element link : contentDoc.select("a[href^=/portal]")) {
+      link.select("i").remove();
+      String href = link.attr("href");
+      link.attr("href", currentDomain + href);
+    }
+    applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds);
+    return message;
+  }
+
+  /**
+   * Puts a built message on the wire and does everything a delivered mail entails:
+   * the {@code SEND_EMAIL} broadcast, the sent-recipients event contact collection
+   * feeds on, and the copy in the user's Sent folder.
+   * <p>
+   * The Sent copy is deliberately fenced: the mail is already delivered by then, and
+   * failing the whole call over a filing problem would tell the user their message
+   * did not go out when it did.
+   *
+   * @param message the message to transmit
+   * @param email the composed email behind it, for the sent-recipients event
+   * @param reply whether this message answers another one, which is all the
+   *          {@code SEND_EMAIL} broadcast wants to know. Passed in rather than
+   *          re-derived here because the two callers read it from different places:
+   *          an ordinary send from the parent id the composer sent, a draft from the
+   *          In-Reply-To settled on its row at its first save
+   * @param username the sender
+   * @param userEmailSetting the user's connector binding, for the Sent folder
+   * @throws MessagingException if the transmission fails
+   */
+  private void deliver(MimeMessage message,
+                       Email email,
+                       boolean reply,
+                       String username,
+                       UserEmailSetting userEmailSetting) throws MessagingException {
+    Transport.send(message);
+    listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL, username, reply ? "reply" : "newEmail");
+    publishEmailSentEvent(username, email);
+    try {
+      copyToSentFolder(message, username, userEmailSetting);
+    } catch (IllegalStateException e) {
+      LOG.warn("Email sent but could not be copied to Sent folder for user {}", username, e);
+    }
+  }
+
+  /**
+   * Logs a refused send with the connector that refused it.
+   * <p>
+   * The server, the port and the security mode belong in this line. A failure here
+   * says nothing about WHICH server refused: the exception names the condition ("451
+   * 4.3.2 Internal server error") and no more, so the same mailbox failing on one
+   * deployment and working on another is unanswerable from the log alone -- exactly
+   * the question that gets asked first. The connect-failure path already prints the
+   * host; the authentication path, which is the commoner failure, printed nothing.
+   *
+   * @param username the sender
+   * @param emailConnector the connector the send went through
+   * @param e the failure
+   */
+  private void logSendFailure(String username, EmailConnector emailConnector, Exception e) {
+    LOG.error("Error when sending email for user {} through {}:{} ({})",
+              username,
+              emailConnector.getSmtpUrl(),
+              emailConnector.getSmtpPort(),
+              emailConnector.getSmtpSecurityType(),
+              e);
   }
 
   /**
@@ -3031,7 +3127,9 @@ public class EmailBoxService {
    * @param draft the composed draft; a blank {@code draftLocalId} means a first save
    * @param username the mailbox owner
    * @param pushToServer whether to also upload the draft to the mail server
-   * @return the draft as it now stands, carrying its local id, state and revision
+   * @return the draft as it now stands, carrying its local id, state and revision, or
+   *         null when the save carried a local id the user has no draft under (the
+   *         draft has since been sent or discarded — see below)
    * @throws IllegalAccessException if the user may not use their mailbox
    */
   public Email saveDraft(Email draft, String username, boolean pushToServer) throws IllegalAccessException {
@@ -3046,6 +3144,16 @@ public class EmailBoxService {
     lock.lock();
     try {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null && StringUtils.isNotBlank(draft.getDraftLocalId())) {
+        // The client asked to save UNDER AN ID, and there is no row under it. A local
+        // id only ever comes from a previous answer of ours, so this is not a first
+        // save: it is an autosave that left the browser before the draft was sent or
+        // discarded and landed after. Re-creating the row here would put a draft of an
+        // already-sent mail back in front of the user and invite them to send it
+        // twice, which is the one outcome this feature must never produce. Answering
+        // "there is no such draft" lets the composer's existing catch shrug it off.
+        return null;
+      }
       Email toStore = stored == null ? buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting)
                                      : buildNextDraftRevision(draft, stored);
       Email saved = emailBoxStorage.saveDraft(toStore);
@@ -3055,6 +3163,231 @@ public class EmailBoxService {
       return uploadDraft(saved, username, userEmailSetting);
     } finally {
       lock.unlock();
+    }
+  }
+
+  /**
+   * Sends a draft, and only then takes it apart: save, send, remove the copy on the
+   * mail server, remove the local row — in that order, and the order is the whole
+   * method.
+   * <p>
+   * <b>Save first.</b> The composer sends the text it is showing, and that text is
+   * written to the row BEFORE anything is transmitted. Everything after this point
+   * is destructive, and the row is what the user gets back if any of it fails.
+   * <p>
+   * <b>Then the two removals, and never before the send.</b> This is deliberately
+   * the REVERSE of the compensating re-insert that {@link #deleteEmails delete} and
+   * archive use, and the asymmetry will read as an inconsistency to the next person
+   * through here, so: those two undo a local change when the server refuses, which
+   * is safe because their row is only a MIRROR of a message that still exists on the
+   * server — re-creating it costs nothing and loses nothing. For a draft the row IS
+   * the content. Nothing else holds the user's unsent words, so re-creating one
+   * through an exception path — from a DTO, in a catch block, hoping every column
+   * survived the round trip — is not a bet worth taking when simply not deleting it
+   * yet is available.
+   * <p>
+   * <b>Send succeeded, cleanup failed.</b> The local row still goes. The mail is out
+   * and cannot be recalled; showing someone a draft of a message they have already
+   * sent, and inviting them to send it a second time, is a worse outcome than a
+   * stray copy left in a Drafts folder. Both failures are logged at warn, in the
+   * same shape as "Email sent but could not be copied to Sent folder", and for the
+   * same reason: the user's action succeeded, so it must not be reported as an error.
+   * <p>
+   * <b>Send failed.</b> Nothing had been removed yet, so the draft is intact here
+   * and on the server. Its state goes back to what it was, and the failure travels
+   * up for the composer to report the way it already reports a failed send.
+   * <p>
+   * A second send of the same draft cannot start while the first is in flight: the
+   * row is claimed as {@link DraftState#SENDING} before the message goes out (see
+   * there for why the claim is persisted rather than left to the lock).
+   *
+   * @param draft the composed draft as the composer is showing it, carrying the
+   *          local id of the row it is editing
+   * @param username the mailbox owner
+   * @throws IllegalAccessException if the user may not send from their mailbox
+   * @throws ObjectNotFoundException if the user has no draft under that local id
+   * @throws IllegalArgumentException if the draft carries no local id, or a send of
+   *           it is already in flight
+   * @throws IllegalStateException if the send was refused
+   */
+  public void sendDraft(Email draft, String username) throws IllegalAccessException, ObjectNotFoundException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE, username));
+    }
+    if (draft == null || StringUtils.isBlank(draft.getDraftLocalId())) {
+      // A composer with nothing saved yet has no draft to send; it sends through
+      // sendEmail, which owns that path and does not have a row to take apart.
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    String draftLocalId = draft.getDraftLocalId();
+    String lockKey = draftLockKey(username, draftLocalId);
+    ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
+    lock.lock();
+    boolean sent = false;
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        // Discarded, or already sent — from another tab, or by a request that got here
+        // first. Either way there is nothing left to send, and saying so is the whole
+        // answer.
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      if (DraftState.SENDING.equals(stored.getDraftState())) {
+        // Not a server error and not something to retry as-is: the draft is in the
+        // middle of being sent, and the honest thing is to refuse rather than put a
+        // second copy of the same mail on the wire.
+        throw new IllegalArgumentException("emailConnector.drafts.send.alreadyInFlight");
+      }
+      DraftState stateBeforeSend = saveDraftBeforeSend(draft, stored);
+      emailBoxStorage.updateDraftState(username, draftLocalId, DraftState.SENDING);
+      try {
+        transmitDraft(draft, stored, username, userEmailSetting);
+      } catch (RuntimeException e) {
+        // Nothing has been removed, here or on the server. Put the claim back down at
+        // exactly the state the row was in and let the composer report the refusal.
+        emailBoxStorage.updateDraftState(username, draftLocalId, stateBeforeSend);
+        throw e;
+      }
+      sent = true;
+      cleanupSentDraft(stored, stateBeforeSend, username, userEmailSetting);
+    } finally {
+      lock.unlock();
+      if (sent) {
+        // Only once the draft is actually gone. A failed send leaves a row somebody is
+        // about to retry, and dropping its lock would let the retry run against a
+        // different lock object from the one a concurrent autosave is holding.
+        draftLocks.remove(lockKey);
+      }
+    }
+  }
+
+  /**
+   * Writes the text the composer is showing onto the draft's row, immediately before
+   * the send.
+   * <p>
+   * The revision is forced past the stored one when the client did not send a newer
+   * one. Everywhere else a save carrying a revision the row has already reached is
+   * dropped, and rightly so — it is a late autosave carrying text the user has typed
+   * past. A send is not that: it is an explicit act, it carries the text on screen at
+   * the moment the user pressed the button, and there is nothing newer it could be
+   * losing. Letting the guard drop it would mean sending one thing and keeping
+   * another, which is precisely what saving first exists to prevent.
+   *
+   * The row's identity — its id, its Message-ID, its IMAP UID, its threading — is
+   * untouched by this and stays where the caller already read it, so the send that
+   * follows never depends on what the storage layer chose to hand back.
+   *
+   * @param draft the composed draft as the composer is showing it
+   * @param stored the row as it currently stands
+   * @return the state the row now carries, which is also the state to put back if the
+   *         send is refused
+   */
+  private DraftState saveDraftBeforeSend(Email draft, Email stored) {
+    Email toStore = buildNextDraftRevision(draft, stored);
+    long storedRevision = stored.getDraftRevision() == null ? 0L : stored.getDraftRevision();
+    if (toStore.getDraftRevision() == null || toStore.getDraftRevision() <= storedRevision) {
+      toStore.setDraftRevision(storedRevision + 1);
+    }
+    emailBoxStorage.saveDraft(toStore);
+    return toStore.getDraftState();
+  }
+
+  /**
+   * Puts a draft on the wire, as the message it has been claiming to be since its
+   * first save.
+   * <p>
+   * Two things come from the STORED row rather than from what the composer sent, and
+   * both are the draft's settled identity: its own minted Message-ID, and the
+   * threading headers written when it was first saved. Pinning the Message-ID is
+   * what makes the sent message BE the draft as far as every mail client's threading
+   * is concerned — and what lets the reader recognise the arriving Sent copy as the
+   * same message the draft was, so it replaces it instead of appearing beside it.
+   * See {@link PinnedMessageIdMimeMessage} for why pinning it needs a subclass and
+   * cannot be a {@code setHeader} call.
+   * <p>
+   * Everything else — body, recipients, subject, attachments — comes from what the
+   * composer sent, because that is the text on screen. Attachments in particular
+   * only ever exist there: they are not persisted on the draft row (that is its own
+   * task), so they ride the send payload exactly as they do for an ordinary send.
+   *
+   * @param draft the composed draft as the composer is showing it
+   * @param stored the row, for the identity the composer does not own
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   */
+  private void transmitDraft(Email draft, Email stored, String username, UserEmailSetting userEmailSetting) {
+    EmailConnector emailConnector =
+                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    List<String> uploadIds = new ArrayList<>();
+    try {
+      MimeMessage message = buildOutgoingMessage(draft, userEmailSetting, emailConnector, stored.getMailHeaderId(), uploadIds);
+      applyStoredThreadingHeaders(message, stored);
+      deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
+    } catch (MessagingException | UnsupportedEncodingException e) {
+      logSendFailure(username, emailConnector, e);
+      throw new IllegalStateException(String.format("Error when sending email for user %s", username));
+    } finally {
+      // Same as the ordinary send: the attachment body parts stream lazily from the
+      // temporary upload files, so they cannot be freed before the message (and its
+      // Sent-folder copy) has been written.
+      removeUploadResources(uploadIds);
+    }
+  }
+
+  /**
+   * Stamps a draft's stored threading headers onto the message it is being sent as.
+   * <p>
+   * Not {@link #applyThreadingHeaders}: that one derives the headers from a PARENT
+   * Message-ID and looks its chain up in the cache, which is right for a mail
+   * composed and sent in one go. A draft settled its In-Reply-To and References at
+   * its first save, precisely so that it could sit inside its conversation while it
+   * was being written; re-deriving them now could only produce the same values, or
+   * different ones, and different ones would mean the sent mail lands in a different
+   * thread from the draft the user was looking at.
+   *
+   * @param message the message being sent
+   * @param storedDraft the draft's row
+   * @throws MessagingException if a header cannot be set
+   */
+  private void applyStoredThreadingHeaders(Message message, Email storedDraft) throws MessagingException {
+    if (StringUtils.isNotBlank(storedDraft.getInReplyTo())) {
+      message.setHeader("In-Reply-To", storedDraft.getInReplyTo());
+    }
+    if (StringUtils.isNotBlank(storedDraft.getMailReferences())) {
+      message.setHeader("References", storedDraft.getMailReferences());
+    }
+  }
+
+  /**
+   * Takes a sent draft apart: the copy on the mail server first, then the local row.
+   * <p>
+   * Neither failure stops the other, and neither is reported to the user. The send
+   * has already happened, so there is no error left to act on — only bookkeeping
+   * that did not complete, which is what the warn lines are for. Above all the local
+   * row goes either way: see {@link #sendDraft} for why a leftover server draft is
+   * the better of the two failures available here.
+   *
+   * @param sentDraft the row that was just sent, as it was read before the send —
+   *          which is where its technical id and the UID of its server copy live
+   * @param stateBeforeSend the state the row was in before it was claimed for
+   *          sending — which is what says whether there is a server copy at all
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   */
+  private void cleanupSentDraft(Email sentDraft,
+                                DraftState stateBeforeSend,
+                                String username,
+                                UserEmailSetting userEmailSetting) {
+    if (sentDraft.getMailRemoteId() != null && !DraftState.LOCAL_ONLY.equals(stateBeforeSend) && isServerDraftsEnabled()
+        && !removeServerDraftCopy(sentDraft.getMailRemoteId(), username, userEmailSetting)) {
+      LOG.warn("Email sent but its draft copy could not be removed from the Drafts folder for user {}", username);
+    }
+    try {
+      deleteEmails(List.of(sentDraft));
+    } catch (Exception e) {
+      LOG.warn("Email sent but its local draft row could not be removed for user {}", username, e);
     }
   }
 
@@ -3444,14 +3777,19 @@ public class EmailBoxService {
    * the recipients they have typed so far, the body, and the threading headers that
    * put it in its conversation.
    * <p>
-   * The Message-ID is set AFTER {@code saveChanges}, and that ordering is load-bearing
-   * rather than stylistic. {@code MimeMessage#writeTo} — which is what an APPEND ends
-   * up calling — invokes {@code saveChanges} when the message has not been saved yet,
-   * and {@code saveChanges} regenerates the Message-ID from scratch. Setting our own
-   * id before that call means the server stores a message with a DIFFERENT id from the
-   * one we recorded: the fallback UID search would find nothing, the sent message would
-   * not match the draft, and the conversation would split. Saving first and stamping
-   * afterwards is the standard way round it.
+   * The Message-ID is pinned through {@link PinnedMessageIdMimeMessage} rather than
+   * set as a header, and that is load-bearing rather than stylistic:
+   * {@code saveChanges} regenerates the Message-ID from scratch every time it runs,
+   * and {@code MimeMessage#writeTo} — which is what an APPEND ends up calling —
+   * invokes it when the message has not been saved yet. A message appended under a
+   * different id from the one we recorded would leave the fallback UID search finding
+   * nothing and the sent message not matching the draft, splitting the conversation.
+   * <p>
+   * Stamping the header after an explicit {@code saveChanges} also works HERE, and is
+   * what this method did when it was written; it stopped being good enough the moment
+   * the same problem turned up in the send path, where {@code Transport.send} calls
+   * {@code saveChanges} itself and undoes any such stamp. One mechanism, used by both
+   * paths, is worth more than two that differ only in how far they can be trusted.
    * <p>
    * The message is flagged {@code \Draft} (which is what makes other mail clients open
    * it in a composer instead of a reader) and {@code \Seen} (the author has, by
@@ -3469,7 +3807,7 @@ public class EmailBoxService {
     String emailAddress = userEmailSetting.getEmailAddress();
     // A draft is never transmitted, so this session needs no transport properties at
     // all -- it exists only to give the MimeMessage a context to be built in.
-    MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+    MimeMessage message = new PinnedMessageIdMimeMessage(Session.getInstance(new Properties()), draft.getMailHeaderId());
     Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
     message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
     setDraftRecipients(message, Message.RecipientType.TO, draft.getTo());
@@ -3487,10 +3825,6 @@ public class EmailBoxService {
     }
     message.setFlag(Flags.Flag.DRAFT, true);
     message.setFlag(Flags.Flag.SEEN, true);
-    message.saveChanges();
-    if (StringUtils.isNotBlank(draft.getMailHeaderId())) {
-      message.setHeader("Message-ID", draft.getMailHeaderId());
-    }
     return message;
   }
 
@@ -4932,12 +5266,19 @@ public class EmailBoxService {
    * the server, so the ordinary rules apply to it and a draft genuinely deleted from
    * another client can still disappear from here. A null state is not a draft at all
    * — every other row in the table carries one — and takes the ordinary path too.
+   * <p>
+   * {@link DraftState#SENDING} is protected for a different reason from the other
+   * two: not because its text exists nowhere else, but because the send that claimed
+   * it is going to take the row apart itself, in an order chosen for what happens
+   * when a step fails. A sync deleting the row from underneath that would turn the
+   * "send succeeded, cleanup failed" branch into a silent double outcome.
    *
    * @param email the cached row, from the light sync view
-   * @return true when the row is a draft that only exists locally, in whole or in part
+   * @return true when the row is a draft the sync must leave alone
    */
   private boolean isProtectedDraft(Email email) {
-    return DraftState.LOCAL_ONLY.equals(email.getDraftState()) || DraftState.DIRTY.equals(email.getDraftState());
+    return DraftState.LOCAL_ONLY.equals(email.getDraftState()) || DraftState.DIRTY.equals(email.getDraftState())
+        || DraftState.SENDING.equals(email.getDraftState());
   }
 
   /**
@@ -5496,6 +5837,60 @@ public class EmailBoxService {
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing store", messagingException);
       }
+    }
+  }
+
+  /**
+   * A {@link MimeMessage} that goes out under a Message-ID we chose, instead of one
+   * JavaMail invents.
+   * <p>
+   * This exists because {@code setHeader("Message-ID", ...)} does not survive.
+   * {@code MimeMessage#saveChanges} calls {@code updateHeaders}, which calls
+   * {@code updateMessageID}, which overwrites the header unconditionally — and
+   * {@code saveChanges} runs at every point a message reaches the outside world:
+   * {@code Transport.send(msg)} calls it as its first statement, and
+   * {@code writeTo} (what an IMAP APPEND ends up calling) calls it on any message
+   * not already saved. So there is no ordering of {@code setHeader} and
+   * {@code saveChanges} that holds for both paths: stamp before and it is discarded
+   * immediately, stamp after and the next {@code saveChanges} discards it. Overriding
+   * the method that does the overwriting is the only version that cannot be undone by
+   * a later call.
+   * <p>
+   * Why it matters enough to subclass for: the draft mints its own Message-ID at its
+   * first save, the APPENDed copy carries it, the sent message carries the same one,
+   * and that identity is what makes the arriving Sent copy recognisable as the draft
+   * it grew out of — which is what lets the reader show one message where there would
+   * otherwise be two, and what makes every other mail client thread the reply with
+   * the conversation it answers.
+   * <p>
+   * A blank id falls back to JavaMail's own generator, so the ordinary send path can
+   * use this class without behaving differently from a plain {@code MimeMessage}.
+   */
+  private static class PinnedMessageIdMimeMessage extends MimeMessage {
+
+    private final String messageId;
+
+    /**
+     * @param session the session the message is built in
+     * @param messageId the Message-ID to keep, or null/blank to let JavaMail mint one
+     */
+    PinnedMessageIdMimeMessage(Session session, String messageId) {
+      super(session);
+      this.messageId = messageId;
+    }
+
+    /**
+     * Keeps our own Message-ID where JavaMail would write a fresh one.
+     *
+     * @throws MessagingException if the header cannot be set
+     */
+    @Override
+    protected void updateMessageID() throws MessagingException {
+      if (StringUtils.isBlank(messageId)) {
+        super.updateMessageID();
+        return;
+      }
+      setHeader("Message-ID", messageId);
     }
   }
 }
