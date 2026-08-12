@@ -21,6 +21,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        through the card's handler and the card's words — the row saves the
        detour, it does not invent a second vocabulary. -->
   <v-list class="pa-0" dense>
+    <!-- Editing leads, because it is the commonest thing anyone does to a
+         contact and was the one action still costing the detour this menu
+         exists to remove. It also puts the two destructive entries as far as
+         possible from where the pointer lands.
+
+         No rule of its own: the form decides what may be changed — an
+         address-book row edits and pushes, a colleague's name and address stay
+         read-only because their profile owns them. Duplicating any of that
+         here would be a second opinion waiting to disagree. -->
+    <v-list-item
+      v-if="contact.id"
+      @click.stop="edit">
+      <v-list-item-icon class="me-2 my-2">
+        <v-icon size="16">fas fa-edit</v-icon>
+      </v-list-item-icon>
+      <v-list-item-title>
+        {{ $t('emailConnector.contacts.detail.edit') }}
+      </v-list-item-title>
+    </v-list-item>
     <v-list-item
       v-if="contact.primaryEmail"
       @click.stop="composeTo">
@@ -141,6 +160,19 @@ export default {
       .catch(() => this.addressBookPublishable = false);
   },
   methods: {
+    /**
+     * Opens this contact in the form, the same one the card opens.
+     * <p>
+     * The very event the card emits, so the form is opened once in the
+     * application and behaves identically however it was reached — including
+     * the fields it refuses to let anyone change.
+     *
+     * @returns {void}
+     */
+    edit() {
+      this.$emit('close');
+      this.$root.$emit('open-email-contact-form', this.contact);
+    },
     /**
      * Writes to this contact.
      *
