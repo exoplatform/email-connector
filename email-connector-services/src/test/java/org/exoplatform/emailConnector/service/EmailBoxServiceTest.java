@@ -23,8 +23,10 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -540,6 +542,97 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, times(3)).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER);
     verify(emailAtatchment).setName("attachment.pdf");
     verify(emailAtatchment).setMimeType("application/pdf");
+  }
+
+  /**
+   * The badge mirrors the inbox unread count, so every operation that changes
+   * it has to announce it — and none that does not change it may, or every
+   * online user pays an eviction, a frame and a re-fetch for nothing. These
+   * cases are what a later refactor of this service could silently break.
+   */
+  @Test
+  void readStatusChangeBroadcastsTheUnreadCountChange() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+
+    emailBoxService.updateEmailReadStatus(List.of(1212l), TEST_USER, true, false);
+
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  @Test
+  void aNoOpReadStatusCallBroadcastsNothing() throws Exception {
+    emailBoxService.updateEmailReadStatus(List.of(), TEST_USER, true, false);
+    emailBoxService.updateEmailReadStatus(null, TEST_USER, true, false);
+
+    // Nothing changed, so nothing to announce
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
+  @Test
+  void deletingEmailsBroadcastsTheUnreadCountChange() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false))
+                                                                                                            .thenReturn(email(TEST_USER));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    IMAPFolder trashFolder = mock(IMAPFolder.class);
+    when(trashFolder.getFullName()).thenReturn("trash");
+    when(folder.listSubscribed("*")).thenReturn(new Folder[] { trashFolder });
+    when(trashFolder.exists()).thenReturn(true);
+    when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(mock(Message.class));
+
+    emailBoxService.deleteEmail(List.of(1212l), TEST_USER);
+
+    // Removing rows the badge counts changes it just as reading them does
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  @Test
+  void syncStaysSilentWhenTheUnreadCountDidNotMove() throws Exception {
+    mockEmptySync();
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    // A cycle that changed nothing must stay silent: the badge cache would
+    // otherwise be defeated for every connected user on every sync period
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
+  @Test
+  void syncBroadcastsWhenTheUnreadCountMoved() throws Exception {
+    mockEmptySync();
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L, 5L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  /** A synchronisation that reaches its success path with no message to import. */
+  @SneakyThrows
+  private void mockEmptySync() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    lenient().when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new MimeMessage[0]);
+    lenient().when(emailBoxStorage.getEmails(anyString(), anyString())).thenReturn(new ArrayList<Email>());
+    Folder defaultFolder = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    lenient().when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
   }
 
   private UserEmailSetting userEmailSetting() {
