@@ -17,10 +17,14 @@
 package org.exoplatform.emailConnector.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
+import java.util.List;
 
+import org.hibernate.Hibernate;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -36,7 +40,7 @@ import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.MailFolder;
 
 /**
- * The thing about a draft row that only a real database can say, on
+ * The two things about a draft row that only a real database can say, on
  * in-memory HSQLDB — the dialect of the dev rig.
  * <p>
  * It runs the SHIPPED Liquibase changelog rather than a schema generated from
@@ -48,8 +52,8 @@ import org.exoplatform.emailConnector.model.MailFolder;
  * deployment has.
  * <p>
  * Nothing else in this module writes a row: every service and storage test mocks
- * the DAO, so the defect below lived under the mocks, where 724 green tests
- * could not see it.
+ * the DAO, so both of the defects below lived under the mocks, where 724 green
+ * tests could not see them.
  */
 @DataJpaTest(showSql = false)
 @EnableAutoConfiguration
@@ -96,6 +100,35 @@ public class EmailBoxDraftDAOTest {
     assertEquals(MailFolder.DRAFTS, reloaded.getFolder());
     assertEquals(DraftState.LOCAL_ONLY, reloaded.getDraftState());
     assertEquals("draft-1", reloaded.getDraftLocalId());
+  }
+
+  /**
+   * The same row read back the way every draft path reads it, with the session
+   * then gone — which is the state the REST layer serialises in, the platform
+   * having set {@code spring.jpa.open-in-view=false}.
+   * <p>
+   * The clear is what makes this a real test: it detaches everything, so the
+   * attachments collection is whatever the query left it, exactly as it is in a
+   * request whose transaction has already committed. Without the fetch join the
+   * collection comes back uninitialised and the first read of it throws "failed
+   * to lazily initialize a collection of role … no Session" — which is what the
+   * draft save and the draft read both did.
+   */
+  @Test
+  void aDraftIsReadBackWithItsAttachmentsAlreadyInitialised() {
+    emailBoxDAO.save(localOnlyDraft("draft-2"));
+    entityManager.flush();
+    entityManager.clear();
+
+    List<EmailBoxEntity> found = emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments(USERNAME, "draft-2");
+    assertEquals(1, found.size());
+    EmailBoxEntity draft = found.get(0);
+    assertTrue(Hibernate.isInitialized(draft.getAttachments()),
+               "the draft's attachments must be fetched inside the transaction, or nothing can read them afterwards");
+    // Drafts store no attachments today; the collection still has to be there to be
+    // read, and an empty lazy bag throws on being touched exactly as a full one does.
+    assertNotNull(draft.getAttachments());
+    assertEquals(0, draft.getAttachments().size());
   }
 
   /**

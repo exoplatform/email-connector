@@ -149,7 +149,7 @@ public class EmailBoxStorage {
     if (StringUtils.isBlank(draftLocalId)) {
       return null;
     }
-    List<EmailBoxEntity> entities = emailBoxDao.findByUserIdAndDraftLocalId(userId, draftLocalId);
+    List<EmailBoxEntity> entities = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
     return entities.isEmpty() ? null : fromEntity(entities.get(0), true, false, userId, null, true, false);
   }
 
@@ -183,7 +183,7 @@ public class EmailBoxStorage {
     if (draft == null || StringUtils.isBlank(draft.getDraftLocalId())) {
       throw new IllegalArgumentException("draftLocalId is mandatory");
     }
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalId(draft.getUserId(), draft.getDraftLocalId());
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(draft.getUserId(), draft.getDraftLocalId());
     if (existing.isEmpty()) {
       return createEmail(draft);
     }
@@ -233,7 +233,7 @@ public class EmailBoxStorage {
    * @return the row as it now stands, or null when there is no such draft
    */
   public Email markDraftUploaded(String userId, String draftLocalId, long mailRemoteId, Long uploadedRevision) {
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalId(userId, draftLocalId);
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
     if (existing.isEmpty()) {
       return null;
     }
@@ -265,7 +265,7 @@ public class EmailBoxStorage {
    * @return the row as it now stands, or null when there is no such draft
    */
   public Email updateDraftState(String userId, String draftLocalId, DraftState draftState) {
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalId(userId, draftLocalId);
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
     if (existing.isEmpty()) {
       return null;
     }

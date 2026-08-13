@@ -188,13 +188,26 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * in a unique index), so the query must not be the thing that throws when the
    * unexpected happens. The caller takes the first and the save path's per-draft
    * lock is what actually keeps there being only one.
+   * <p>
+   * It fetches the attachments, like every other query that returns whole rows the
+   * REST layer will answer with, and for the same reason: the platform sets
+   * {@code spring.jpa.open-in-view=false}, so a collection left uninitialised inside
+   * the transaction cannot be initialised at all by the time the row is serialised.
+   * Every caller of this query hands what it read to a mapper that reads the
+   * attachments ({@code EmailBoxStorage#fromEntity} with {@code withAttachments}),
+   * so leaving the join out made every draft save and every draft read fail with
+   * "no Session" rather than merely being slow. Drafts carry no attachments today —
+   * that is a separate, deliberate gap — but the collection is still TOUCHED, and
+   * touching an empty lazy bag outside a session throws exactly as touching a full
+   * one does.
    *
    * @param userId the mailbox owner
    * @param draftLocalId the composer's handle on the draft
-   * @return the matching rows, normally exactly one, never null
+   * @return the matching rows with their attachments, normally exactly one, never
+   *         null
    */
-  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId")
-  List<EmailBoxEntity> findByUserIdAndDraftLocalId(@Param("userId")
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId")
+  List<EmailBoxEntity> findByUserIdAndDraftLocalIdWithAttachments(@Param("userId")
   String userId, @Param("draftLocalId")
   String draftLocalId);
 

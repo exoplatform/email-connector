@@ -311,13 +311,13 @@ public class EmailBoxStorageTest {
 
   @Test
   void saveDraftInsertsTheFirstTimeAndUpdatesInPlaceAfterwards() {
-    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(Collections.emptyList());
+    when(emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments("root", "draft-1")).thenReturn(Collections.emptyList());
     Email first = draft("draft-1", 1L, "first sentence");
     Email created = emailBoxStorage.saveDraft(first);
     assertNotNull(created.getId());
     // second save: the SAME row, with the new text
     EmailBoxEntity stored = draftEntity("draft-1", 1L, "first sentence");
-    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    when(emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments("root", "draft-1")).thenReturn(List.of(stored));
     Email updated = emailBoxStorage.saveDraft(draft("draft-1", 2L, "second sentence"));
     assertEquals("second sentence", updated.getContent().getBody());
     assertEquals(2L, updated.getDraftRevision());
@@ -330,7 +330,7 @@ public class EmailBoxStorageTest {
     // silently revert the sentence the user just finished, which is the one failure
     // this whole feature exists to prevent.
     EmailBoxEntity stored = draftEntity("draft-1", 5L, "the newest sentence");
-    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    when(emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments("root", "draft-1")).thenReturn(List.of(stored));
     Email late = emailBoxStorage.saveDraft(draft("draft-1", 4L, "a sentence from before"));
     assertEquals("the newest sentence", late.getContent().getBody());
     assertEquals(5L, late.getDraftRevision());
@@ -343,7 +343,7 @@ public class EmailBoxStorageTest {
     // it carries no new text, and routed through saveDraft it would look like a save
     // arriving at a revision the row has already reached, and be dropped.
     EmailBoxEntity stored = draftEntity("draft-1", 5L, "the newest sentence");
-    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    when(emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments("root", "draft-1")).thenReturn(List.of(stored));
     Email saved = emailBoxStorage.markDraftUploaded("root", "draft-1", 4242L, 5L);
     assertEquals(4242L, saved.getMailRemoteId());
     assertEquals(DraftState.SYNCED, saved.getDraftState());
@@ -356,7 +356,7 @@ public class EmailBoxStorageTest {
     // kept -- it is where the previous copy lives -- but the state does not move, so
     // the next push still runs.
     EmailBoxEntity stored = draftEntity("draft-1", 6L, "a sentence typed during the upload");
-    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    when(emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments("root", "draft-1")).thenReturn(List.of(stored));
     Email saved = emailBoxStorage.markDraftUploaded("root", "draft-1", 4242L, 5L);
     assertEquals(4242L, saved.getMailRemoteId());
     assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
@@ -364,7 +364,7 @@ public class EmailBoxStorageTest {
 
   @Test
   void markDraftUploadedIgnoresADraftThatIsNoLongerThere() {
-    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "gone")).thenReturn(Collections.emptyList());
+    when(emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments("root", "gone")).thenReturn(Collections.emptyList());
     assertNull(emailBoxStorage.markDraftUploaded("root", "gone", 1L, 1L));
   }
 
@@ -375,7 +375,7 @@ public class EmailBoxStorageTest {
     // revision guard could drop it -- and a claim that can be silently dropped is not
     // a claim.
     EmailBoxEntity stored = draftEntity("draft-1", 5L, "the newest sentence");
-    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "draft-1")).thenReturn(List.of(stored));
+    when(emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments("root", "draft-1")).thenReturn(List.of(stored));
     Email claimed = emailBoxStorage.updateDraftState("root", "draft-1", DraftState.SENDING);
     assertEquals(DraftState.SENDING, claimed.getDraftState());
     assertEquals(5L, claimed.getDraftRevision());
@@ -384,7 +384,7 @@ public class EmailBoxStorageTest {
 
   @Test
   void updateDraftStateIgnoresADraftThatIsNoLongerThere() {
-    when(emailBoxDAO.findByUserIdAndDraftLocalId("root", "gone")).thenReturn(Collections.emptyList());
+    when(emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments("root", "gone")).thenReturn(Collections.emptyList());
     assertNull(emailBoxStorage.updateDraftState("root", "gone", DraftState.SENDING));
   }
 
