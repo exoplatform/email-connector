@@ -203,7 +203,58 @@ public class EmailBoxStorage {
     entity.setDraftState(draft.getDraftState());
     entity.setDraftRevision(incomingRevision);
     entity.setDraftUpdatedDate(draft.getDraftUpdatedDate());
-    return fromEntity(emailBoxDao.save(entity), true, false, draft.getUserId(), null, true, false);
+    return saveDraftRow(entity, draft.getUserId());
+  }
+
+  /**
+   * Writes a draft row that was loaded, mutated, and is being stored again — and
+   * maps the answer from the instance that was LOADED, deliberately not from the one
+   * {@code save} hands back.
+   * <p>
+   * The three draft writers below all have that shape, and all three used to map
+   * {@code save}'s return value. Doing so threw "failed to lazily initialize a
+   * collection of role: EmailBoxEntity.attachments - no Session" on every write to an
+   * existing draft — which is to say on every autosave after the very first, the first
+   * one going through {@link #createEmail} instead. The composer keeps the text on
+   * screen through a failed save, so this was a 500 that told the user their words
+   * were safe while nothing was being stored.
+   * <p>
+   * Why the returned instance cannot be mapped: nothing in this class is
+   * {@code @Transactional}, so each DAO call runs and commits in a transaction of its
+   * own. The entity the caller loaded is therefore detached by the time it gets here,
+   * and {@code save} on a detached instance that has an id is a MERGE — it returns a
+   * different, managed instance, whose attachments collection is a fresh uninitialised
+   * proxy, and whose session closes as {@code save} returns. The first touch of that
+   * collection, which is the first thing the mapper does, has no session left to load
+   * it in. This is also why the fetch join added to
+   * {@link EmailBoxDAO#findByUserIdAndDraftLocalIdWithAttachments} did not settle it:
+   * the join initialises the collection of the instance it returns, and that is not
+   * the instance the answer was being built from.
+   * <p>
+   * The instance passed in is that one, its collection initialised by the fetch join,
+   * and an already-initialised collection reads fine detached. What it maps is exactly
+   * what was written: the merge copies these very values into the row, and no column
+   * here is generated or defaulted on write (no {@code @Version}, no lifecycle
+   * callback), so there is nothing the database knows about this row that this
+   * instance does not.
+   * <p>
+   * The alternative was to make these writes {@code @Transactional}, which would also
+   * work — the fetch and the merge would then share a persistence context, and the
+   * merged instance would still be attached while it is mapped. It was not taken:
+   * {@link #fromEntity} calls out to {@link CategoryLinkService}, another domain's
+   * service against another schema, and that would put a foreign call inside our write
+   * transaction and hold the transaction open across it — to lazily re-load a
+   * collection this method is already holding. The revision guard's early return in
+   * {@link #saveDraft} has always mapped from the loaded instance, for the same reason;
+   * this makes the other paths agree with it.
+   *
+   * @param entity the loaded, mutated draft row
+   * @param userId the mailbox owner
+   * @return the row as it now stands
+   */
+  private Email saveDraftRow(EmailBoxEntity entity, String userId) {
+    emailBoxDao.save(entity);
+    return fromEntity(entity, true, false, userId, null, true, false);
   }
 
   /**
@@ -243,7 +294,7 @@ public class EmailBoxStorage {
     if (Objects.equals(entity.getDraftRevision(), uploadedRevision)) {
       entity.setDraftState(DraftState.SYNCED);
     }
-    return fromEntity(emailBoxDao.save(entity), true, false, userId, null, true, false);
+    return saveDraftRow(entity, userId);
   }
 
   /**
@@ -272,7 +323,7 @@ public class EmailBoxStorage {
     }
     EmailBoxEntity entity = existing.get(0);
     entity.setDraftState(draftState);
-    return fromEntity(emailBoxDao.save(entity), true, false, userId, null, true, false);
+    return saveDraftRow(entity, userId);
   }
 
   /**

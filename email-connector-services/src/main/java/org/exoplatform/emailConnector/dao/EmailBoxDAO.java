@@ -195,11 +195,18 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * the transaction cannot be initialised at all by the time the row is serialised.
    * Every caller of this query hands what it read to a mapper that reads the
    * attachments ({@code EmailBoxStorage#fromEntity} with {@code withAttachments}),
-   * so leaving the join out made every draft save and every draft read fail with
-   * "no Session" rather than merely being slow. Drafts carry no attachments today —
-   * that is a separate, deliberate gap — but the collection is still TOUCHED, and
-   * touching an empty lazy bag outside a session throws exactly as touching a full
-   * one does.
+   * so leaving the join out made every draft read fail with "no Session" rather than
+   * merely being slow. Drafts carry no attachments today — that is a separate,
+   * deliberate gap — but the collection is still TOUCHED, and touching an empty lazy
+   * bag outside a session throws exactly as touching a full one does.
+   * <p>
+   * This paragraph once claimed the same join fixed the draft SAVES too, and it did
+   * not: the join initialises the collection of the instance returned HERE, while the
+   * writers were mapping their answer from what {@code save} returned — a different,
+   * managed instance out of a merge, carrying an uninitialised proxy, in a session
+   * that closes with the write. The join is necessary and was never sufficient; what
+   * makes the writes work is that they now map from this instance. See
+   * {@code EmailBoxStorage#saveDraftRow}.
    *
    * @param userId the mailbox owner
    * @param draftLocalId the composer's handle on the draft
