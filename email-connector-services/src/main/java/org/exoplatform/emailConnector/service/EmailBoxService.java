@@ -469,6 +469,12 @@ public class EmailBoxService {
     MailboxSyncState syncState = null;
     String originalSyncStateJson = null;
     try {
+      // Snapshotted so the badge is only notified when the number it displays
+      // actually moved: a sync cycle that changed nothing would otherwise cost an
+      // eviction, a WebSocket frame and a REST re-fetch for every online user,
+      // every period, against the specification's "no recurring background load
+      // for users who are not consulting their badges"
+      long unreadCountBeforeSync = emailBoxStorage.countUnreadEmails(username);
       syncState = loadMailboxSyncState(username);
       originalSyncStateJson = JsonUtils.toJsonString(syncState);
       store = userEmailSettingService.connect(userEmailSetting);
@@ -492,7 +498,9 @@ public class EmailBoxService {
         }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
-      broadcastUnreadCountChanged(username);
+      if (emailBoxStorage.countUnreadEmails(username) != unreadCountBeforeSync) {
+        broadcastUnreadCountChanged(username);
+      }
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
@@ -2059,10 +2067,15 @@ public class EmailBoxService {
           LOG.warn("Error when closing store", e);
         }
       }
+      // Read/unread transitions are what the App Center badge reflects; without
+      // this broadcast the counter would only refresh at the next sync. Inside
+      // the guard, and only when at least one local update stuck: an empty call
+      // or a fully reverted one changed no count and must not cost an eviction,
+      // a WebSocket frame and a re-fetch for nothing.
+      if (failedEmailUpdates < mailRemoteIds.size()) {
+        broadcastUnreadCountChanged(username);
+      }
     }
-    // Read/unread transitions are what the App Center badge reflects; without
-    // this broadcast the counter would only refresh at the next sync
-    broadcastUnreadCountChanged(username);
     return failedEmailUpdates;
   }
 
@@ -2181,6 +2194,11 @@ public class EmailBoxService {
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing store", messagingException);
         }
+        // Removing mirror rows changes the unread count whenever any of them
+        // was unread, so the badge has to be told exactly as for a read/unread
+        // change. In the finally because the local rows are already gone by the
+        // time the remote step can fail, so a partial delete changed it too.
+        broadcastUnreadCountChanged(username);
       }
     }
     return failedEmailDeletions;
@@ -2264,6 +2282,11 @@ public class EmailBoxService {
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing store", messagingException);
         }
+        // Archiving removes the rows from the inbox the badge counts, so an
+        // unread mail leaving the inbox changes the count just as reading it
+        // does. In the finally because the local rows are already gone by the
+        // time the remote step can fail, so a partial archive changed it too.
+        broadcastUnreadCountChanged(username);
       }
     }
     return failedEmailArchives;
