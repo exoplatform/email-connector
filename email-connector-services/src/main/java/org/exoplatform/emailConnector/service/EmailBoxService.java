@@ -77,8 +77,6 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
-import org.exoplatform.commons.api.settings.data.Context;
-import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.commons.utils.CommonsUtils;
@@ -145,6 +143,12 @@ public class EmailBoxService {
                                                                            "emailNotificationCategory",
                                                                            "emailToReviewCategory");
 
+  // Unversioned coupling: these two literals mirror CategoryImportService's own private
+  // CATEGORY_CONTEXT/CATEGORY_IMPORT_SCOPE in Meeds-io/social — there is no public accessor
+  // nor nameId -> id resolution API to call instead today. If social ever renames them or
+  // changes how it persists that mapping, getDefaultEmailCategoryIds() silently returns an
+  // empty list (no compile error) rather than failing loudly. To be replaced by a supported
+  // CategoryService lookup once social exposes one.
   private static final Context      CATEGORY_IMPORT_CONTEXT                                   = Context.GLOBAL.id("CATEGORY");
 
   private static final Scope        CATEGORY_IMPORT_SCOPE                                     =
