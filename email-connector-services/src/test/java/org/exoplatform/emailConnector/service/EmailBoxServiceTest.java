@@ -39,6 +39,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -53,6 +54,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
@@ -96,20 +98,24 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
 
+import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -118,6 +124,7 @@ import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
@@ -125,6 +132,9 @@ import org.exoplatform.services.scheduler.JobInfo;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
 
+import io.meeds.social.category.model.Category;
+import io.meeds.social.category.model.CategoryObject;
+import io.meeds.social.category.model.CategoryWithName;
 import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.category.service.CategoryService;
 import io.meeds.social.util.JsonUtils;
@@ -694,6 +704,20 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void getDefaultEmailCategoryIds() {
+    // The importer has not run yet: no nameId -> id mapping is stored at all.
+    assertTrue(emailBoxService.getDefaultEmailCategoryIds().isEmpty());
+
+    // A stored id is returned, a missing one is skipped, and a malformed one is
+    // ignored instead of propagating a NumberFormatException.
+    mockCategoryIdSetting("emailImportantCategory", "11");
+    mockCategoryIdSetting("emailInvitationCategory", null);
+    mockCategoryIdSetting("emailNotificationCategory", "notANumber");
+    mockCategoryIdSetting("emailToReviewCategory", "44");
+    assertEquals(List.of(11L, 44L), emailBoxService.getDefaultEmailCategoryIds());
+  }
+
+  @Test
   @SneakyThrows
   void synchronizeSkipsBodyPrefetchForSmallSync() {
     UserEmailSetting userEmailSetting = userEmailSetting();
@@ -716,6 +740,29 @@ public class EmailBoxServiceTest {
 
   @Test
   @SneakyThrows
+  void getAvailableEmailCategories() {
+    mockCategoryIdSetting("emailImportantCategory", "11");
+    mockCategoryIdSetting("emailInvitationCategory", null);
+    mockCategoryIdSetting("emailNotificationCategory", null);
+    mockCategoryIdSetting("emailToReviewCategory", "44");
+    when(categoryService.getCategory(11L, TEST_USER, Locale.ENGLISH)).thenReturn(new CategoryWithName(11L,
+                                                                                                     0L,
+                                                                                                     "Important",
+                                                                                                     null,
+                                                                                                     0L,
+                                                                                                     0L,
+                                                                                                     null));
+    // A default category the user cannot see is skipped rather than failing the listing.
+    when(categoryService.getCategory(44L, TEST_USER, Locale.ENGLISH)).thenThrow(ObjectNotFoundException.class);
+
+    List<EmailCategory> categories = emailBoxService.getAvailableEmailCategories(TEST_USER, Locale.ENGLISH);
+    assertEquals(1, categories.size());
+    assertEquals(11L, categories.get(0).getId());
+    assertEquals("Important", categories.get(0).getName());
+  }
+
+  @Test
+  @SneakyThrows
   void synchronizeSkipsBodyPrefetchWhenSingleWorkerConfigured() {
     System.setProperty("email.connector.sync.body.fetch.threads", "1");
     try {
@@ -727,6 +774,39 @@ public class EmailBoxServiceTest {
     } finally {
       System.clearProperty("email.connector.sync.body.fetch.threads");
     }
+  }
+
+  @Test
+  @SneakyThrows
+  void linkEmailsToCategory() {
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(), 5L, TEST_USER));
+    verify(categoryLinkService, never()).link(anyLong(), any(CategoryObject.class), anyString());
+
+    // Unknown category: rejected up front, before any email is looked up.
+    when(categoryService.getCategory(5L)).thenReturn(null);
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+
+    when(categoryService.getCategory(5L)).thenReturn(new Category());
+    // An email that is not the user's own (or no longer cached) is skipped, not linked.
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+    verify(categoryLinkService, never()).link(anyLong(), any(CategoryObject.class), anyString());
+
+    mockOwnedEmail();
+    assertEquals(1, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+    ArgumentCaptor<CategoryObject> objectCaptor = ArgumentCaptor.forClass(CategoryObject.class);
+    verify(categoryLinkService).link(eq(5L), objectCaptor.capture(), eq(TEST_USER));
+    assertEquals(EmailCategoryPlugin.OBJECT_TYPE, objectCaptor.getValue().getType());
+    assertEquals("7", objectCaptor.getValue().getId());
+
+    // Already in that category: idempotent, not counted as newly linked.
+    doThrow(ObjectAlreadyExistsException.class).when(categoryLinkService)
+                                               .link(anyLong(), any(CategoryObject.class), anyString());
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+
+    // The category disappeared in between: surfaced as a 400, not a 500.
+    doThrow(ObjectNotFoundException.class).when(categoryLinkService)
+                                          .link(anyLong(), any(CategoryObject.class), anyString());
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
   }
 
   @Test
@@ -857,6 +937,34 @@ public class EmailBoxServiceTest {
       // collapses into -- including C, whose row was already stored with its own id
       // and must have been rewritten by the merge.
       assertEquals("<a@host>", row.getThreadId(), "all three fragments must collapse into the oldest thread");
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void aStaleReferencesHeaderMergesConversationsThatAreNotRelated() {
+    // The other side of lateMessageReferencingTwoThreadsMergesThemIntoTheOldest: the merge
+    // trusts the References header completely, so any message naming 2+ already-cached
+    // Message-IDs collapses their threads. Here A and B are unrelated conversations and the
+    // third message is what a forwarded digest -- or a client dumping a stale References
+    // list -- produces: it belongs to neither, yet it merges both.
+    //
+    // Pinned deliberately rather than asserted as correct. The merge is one-way (threads are
+    // never split again), so a false merge is irreversible, and whether a bare 2+ hit should
+    // really be enough is a product call. If the rule is tightened to demand a real chain
+    // through both threads, this is the test that must change -- on purpose, not by surprise.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage a = threadedMessage("<unrelated-a@host>", null, null, null, new Date(1000));
+    MimeMessage b = threadedMessage("<unrelated-b@host>", null, null, null, new Date(2000));
+    MimeMessage digest =
+                       threadedMessage("<digest@host>", "<unrelated-a@host> <unrelated-b@host>", null, null, new Date(3000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { a, b, digest });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(3, rows.size());
+    for (Email row : rows) {
+      assertEquals("<unrelated-a@host>",
+                   row.getThreadId(),
+                   "current behavior: a multi-id References header merges the threads it names, related or not");
     }
   }
 
@@ -2039,6 +2147,192 @@ public class EmailBoxServiceTest {
     Email email = email(TEST_USER);
     email.setCategoryIds(categoryIds);
     return email;
+  }
+
+  /**
+   * A mocked message carrying the bulk-mail classification headers. Only non-null values
+   * are stubbed, so an absent header behaves exactly as in production.
+   */
+  @SneakyThrows
+  private MimeMessage bulkSignalMessage(String autoSubmitted, String precedence, String listPost) {
+    MimeMessage message = mock(MimeMessage.class);
+    lenient().when(message.getHeader("Auto-Submitted"))
+             .thenReturn(autoSubmitted == null ? null : new String[] { autoSubmitted });
+    lenient().when(message.getHeader("Precedence")).thenReturn(precedence == null ? null : new String[] { precedence });
+    lenient().when(message.getHeader("List-Post")).thenReturn(listPost == null ? null : new String[] { listPost });
+    return message;
+  }
+
+  @Test
+  @SneakyThrows
+  void isAutoSubmittedReadsTheDeliveryHeaders() {
+    // No headers at all: a message somebody typed.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, null, null)));
+    // RFC 3834: any value other than "no" declares the message machine-generated, and the
+    // comparison is case-insensitive -- providers stamp "Auto-Replied" and "AUTO-GENERATED".
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("auto-generated", null, null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("Auto-Replied", null, null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("AUTO-NOTIFIED", null, null)));
+    // "no" is the explicit opposite and must NOT be read as automated, whatever its case
+    // or surrounding whitespace.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("no", null, null)));
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("NO", null, null)));
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("  no  ", null, null)));
+    // A blank header is not a declaration either.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("   ", null, null)));
+    // Legacy Precedence, again case-insensitively.
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "bulk", null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "Junk", null)));
+    // "list" is deliberately NOT automated: a mailing list stamps it on every message it
+    // relays, including one a colleague typed by hand.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "list", null)));
+  }
+
+  @Test
+  @SneakyThrows
+  void isPostableListNeedsAnActualMailtoAddress() {
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, null)));
+    assertTrue(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "<mailto:team@example.com>")));
+    assertTrue(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "<MAILTO:team@example.com>")));
+    // A list that explicitly refuses posting, and a malformed value: neither is postable,
+    // which is what separates a discussion list from a one-way blast.
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "NO")));
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "team@example.com")));
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "")));
+  }
+
+  @Test
+  @SneakyThrows
+  void synchronizePersistsTheBulkMailSignals() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("Auto-Submitted")).thenReturn(new String[] { "auto-generated" });
+    lenient().when(message.getHeader("List-Id")).thenReturn(new String[] { "<team.example.com>" });
+    lenient().when(message.getHeader("List-Post")).thenReturn(new String[] { "<mailto:team@example.com>" });
+    lenient().when(message.getHeader("List-Unsubscribe")).thenReturn(new String[] { "<mailto:bye@example.com>" });
+    lenient().when(message.getHeader("X-Original-Sender")).thenReturn(new String[] { "author@example.com" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    // The five signals must survive onto the cached row: they are the whole point of this
+    // groundwork, and a downstream categorizer only ever sees the row, never the message.
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    Email cached = created.getValue();
+    assertTrue(cached.isAutoSubmitted());
+    assertTrue(cached.isHasListId());
+    assertTrue(cached.isHasListPost());
+    assertTrue(cached.isHasListUnsubscribe());
+    assertEquals("author@example.com", cached.getOriginalSender());
+  }
+
+  @Test
+  @SneakyThrows
+  void notificationBackstopFiresWhenAClaimIsNeverReleased() {
+    String user = "backstopuser";
+    // The backstop exists for the consumer that claims the wait and then dies. Shortened so
+    // the deadline can actually elapse here, which is the only way to exercise it at all.
+    ReflectionTestUtils.setField(emailBoxService, "notificationMaxWaitMs", 150L);
+    emailBoxService.openNotificationWindow(user, List.of());
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.completeNotificationWindow(user, List.of());
+    // Nobody ever releases the claim: without the timer the notification would be lost.
+    verify(emailBoxStorage, never()).getEmails(user, MailFolder.INBOX);
+    verify(emailBoxStorage, timeout(3000)).getEmails(user, MailFolder.INBOX);
+  }
+
+  @Test
+  @SneakyThrows
+  void notificationGraceTimerFiresOnAWindowWithNoClaim() {
+    String user = "graceuser";
+    ReflectionTestUtils.setField(emailBoxService, "notificationGraceMs", 150L);
+    // A sync nobody classifies: the window completes with no claim, so the short grace
+    // delay owns the send.
+    emailBoxService.openNotificationWindow(user, List.of());
+    emailBoxService.completeNotificationWindow(user, List.of());
+    verify(emailBoxStorage, timeout(3000)).getEmails(user, MailFolder.INBOX);
+  }
+
+  @Test
+  @SneakyThrows
+  void concurrentClaimsAndReleasesSendExactlyOnce() {
+    String user = "raceuser";
+    // A long backstop, so anything that fires here is the real release path rather than a
+    // timer -- the point is that racing threads cannot produce two sends, nor zero.
+    ReflectionTestUtils.setField(emailBoxService, "notificationMaxWaitMs", 60000L);
+    int groups = 32;
+    emailBoxService.openNotificationWindow(user, List.of());
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch done = new CountDownLatch(groups);
+    List<Thread> threads = new ArrayList<>();
+    for (int i = 0; i < groups; i++) {
+      Thread thread = new Thread(() -> {
+        try {
+          emailBoxService.deferNewEmailsNotification(user);
+          start.await();
+          emailBoxService.notifyNewEmailsClassified(user);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          done.countDown();
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+    // Every claim is taken before any release, so the window can only empty after the
+    // sync is marked complete below.
+    emailBoxService.completeNotificationWindow(user, List.of());
+    start.countDown();
+    assertTrue(done.await(10, TimeUnit.SECONDS));
+    for (Thread thread : threads) {
+      thread.join(10000);
+    }
+    // Exactly one send, whatever order the releases landed in: the claim count and the
+    // window's completion flag are read and written inside the same compute().
+    verify(emailBoxStorage, times(1)).getEmails(user, MailFolder.INBOX);
+  }
+
+  @Test
+  @SneakyThrows
+  void unlinkEmailsFromCategory() {
+    assertEquals(0, emailBoxService.unlinkEmailsFromCategory(List.of(), 5L, TEST_USER));
+    verify(categoryLinkService, never()).unlink(anyLong(), any(CategoryObject.class), anyString());
+
+    // An email that is not the user's own (or no longer cached) is skipped.
+    assertEquals(0, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER));
+    verify(categoryLinkService, never()).unlink(anyLong(), any(CategoryObject.class), anyString());
+
+    mockOwnedEmail();
+    assertEquals(1, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER));
+    ArgumentCaptor<CategoryObject> objectCaptor = ArgumentCaptor.forClass(CategoryObject.class);
+    verify(categoryLinkService).unlink(eq(5L), objectCaptor.capture(), eq(TEST_USER));
+    assertEquals(EmailCategoryPlugin.OBJECT_TYPE, objectCaptor.getValue().getType());
+    assertEquals("7", objectCaptor.getValue().getId());
+
+    // Not linked to that category: idempotent, not counted as unlinked.
+    doThrow(ObjectNotFoundException.class).when(categoryLinkService)
+                                          .unlink(anyLong(), any(CategoryObject.class), anyString());
+    assertEquals(0, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER));
+  }
+
+  private void mockCategoryIdSetting(String nameId, String storedId) {
+    doReturn(storedId == null ? null : SettingValue.create(storedId)).when(settingService)
+                                                                    .get(any(Context.class), any(Scope.class), eq(nameId));
+  }
+
+  @SneakyThrows
+  private void mockOwnedEmail() {
+    Email email = email(TEST_USER);
+    email.setId(7l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         anyString(),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(email);
   }
 
   private UserEmailSetting userEmailSetting() {

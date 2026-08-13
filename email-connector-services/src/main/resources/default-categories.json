@@ -39,6 +39,16 @@
           "linkPermissions": [
             "*:/platform/users"
           ]
+        },
+        {
+          "nameId": "emailToReviewCategory",
+          "icon": "fa-eye",
+          "names": {
+            "en": "To review"
+          },
+          "linkPermissions": [
+            "*:/platform/users"
+          ]
         }
       ]
     }
