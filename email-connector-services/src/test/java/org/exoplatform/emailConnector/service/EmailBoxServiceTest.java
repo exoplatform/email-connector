@@ -3200,11 +3200,13 @@ public class EmailBoxServiceTest {
   }
 
   @Test
-  void aDraftIsStampedWithTheMomentItWasTypedSoItLandsLastInItsThread() throws Exception {
-    // The reader shows a draft at the bottom of its conversation without any sort
-    // dimension of its own: the thread query orders by date, and every save rewrites
-    // the row's date to now. This is that guarantee, asserted where it is produced --
-    // if it ever stops holding, the draft quietly moves up the conversation.
+  void aDraftIsStampedWithTheMomentItWasLastTyped() throws Exception {
+    // Every save rewrites the row's date to now, and the date means "when the user
+    // last typed". It no longer decides where the draft sits in its conversation --
+    // that comes from In-Reply-To, because this stamp was moving a reply to Monday's
+    // message below a mail that arrived tonight -- but it is still what the Drafts
+    // listing, the conversation list and the cache trim read as recency, so a draft
+    // being written must keep counting as the most recent thing in the mailbox.
     givenAUsableMailbox();
     when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
     Date before = new Date();

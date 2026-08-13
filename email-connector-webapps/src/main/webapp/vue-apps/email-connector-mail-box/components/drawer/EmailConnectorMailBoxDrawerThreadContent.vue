@@ -372,17 +372,21 @@ export default {
     // Normalize a fetched thread into the reader's state: dedupe by Message-ID, sort
     // oldest first, keep the latest message expanded.
     //
-    // A draft needs no sort dimension of its own, and deliberately does not get one:
-    // the row's date is the moment the user last typed, so a draft being written IS
-    // the most recent thing in the conversation and lands last under the ordering
-    // that was already here — which other views rely on. The one case it does not
-    // put last is a reply that arrived after the user last touched their draft, and
-    // there the ordering is telling the truth about what happened when.
+    // Mail sorts by date. A DRAFT does not, and the date sort is exactly what put it
+    // wrong: its row is re-dated every time the user types, so a reply to Monday's
+    // message resumed tonight sorted below a mail that arrived at 20:57 and answered
+    // nothing. The server places drafts under what they answer and this repeats the
+    // rule rather than trusting the order it was handed, because the list here is not
+    // always the server's: a single opened message and a background completion are
+    // merged into it, and a sort of the union has to know where a draft belongs.
     applyMessages(fetched) {
       const sorted = (fetched && fetched.length ? fetched : [this.email])
         .filter(Boolean)
         .sort((first, second) => new Date(first.receivedDate) - new Date(second.receivedDate));
-      const messages = this.dedupeByHeader(sorted);
+      // Positioned AFTER the dedupe, not before it: a sent copy takes the place of the
+      // draft it came from (see dedupeByHeader), and it is mail once it has — its place
+      // is the one its date earns, not the one the draft was holding.
+      const messages = this.positionDrafts(this.dedupeByHeader(sorted));
       this.messages = messages;
       // The last real message stays open, not the draft: the draft renders as its own
       // strip with no expanded form, and expanding nothing would leave the reader with
@@ -390,6 +394,44 @@ export default {
       const readable = messages.filter(message => !this.isDraft(message));
       const latest = readable[readable.length - 1];
       this.expandedIds = latest ? [this.msgKey(latest)] : [];
+    },
+    /**
+     * Moves each draft directly under the message it answers, and leaves the mail
+     * around it in the order it was given.
+     *
+     * A draft with nothing to answer, or one whose parent is not in this
+     * conversation — evicted from the cache, or not yet completed from the archive —
+     * stays at the end, which is also where a draft answering the newest message
+     * lands. That is what most replies are, so the common conversation looks
+     * unchanged.
+     *
+     * @param {Array} messages - the conversation, mail in date order
+     * @returns {Array} the same messages in reading order
+     */
+    positionDrafts(messages) {
+      if (messages.length < 2 || !messages.some(message => this.isDraft(message))) {
+        return messages;
+      }
+      const ordered = messages.filter(message => !this.isDraft(message));
+      messages.filter(message => this.isDraft(message)).forEach(draft => {
+        // The LAST copy of the parent: the same mail can be cached once per folder,
+        // and a reply belongs after all of its copies rather than between two of them.
+        const parentIndex = draft.inReplyTo
+          ? ordered.map(message => message.mailHeaderId).lastIndexOf(draft.inReplyTo)
+          : -1;
+        if (parentIndex < 0) {
+          ordered.push(draft);
+          return;
+        }
+        // Past the drafts already placed under this same parent, so two unsent replies
+        // to one message keep the order they were written in.
+        let insertAt = parentIndex + 1;
+        while (insertAt < ordered.length && this.isDraft(ordered[insertAt])) {
+          insertAt++;
+        }
+        ordered.splice(insertAt, 0, draft);
+      });
+      return ordered;
     },
     // The same message can be present in more than one folder (e.g. a provider
     // whose Archive/All-Mail overlaps the inbox), so show it once, preferring the

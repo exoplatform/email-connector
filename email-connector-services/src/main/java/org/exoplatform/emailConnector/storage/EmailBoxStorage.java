@@ -49,6 +49,7 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 
 import io.meeds.social.category.model.CategoryObject;
 import io.meeds.social.category.service.CategoryLinkService;
@@ -722,12 +723,31 @@ public class EmailBoxStorage {
    * All cached messages of a conversation, across every folder (INBOX, SENT,
    * ARCHIVE), oldest first — the read model for the conversation reader. Bodies
    * and recipients are loaded so each message renders in full.
+   * <p>
+   * Mail reads in the order the query returns it, by date. A DRAFT reads after the
+   * message it answers, which its date cannot say and its In-Reply-To can: see
+   * {@link EmailThreadingUtils#positionDraftsAfterTheirParent}. Applied here, at the
+   * one read every conversation goes through, rather than at its two callers — the
+   * order of a read model is part of the read model, the way the participant order
+   * of a thread summary already is, and the caller added next would otherwise have to
+   * remember.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @param userEmail the owner's own address, for the "me" resolution on each row
+   * @return the conversation's messages in reading order, never null
    */
   public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndThreadIdWithAttachments(userId, threadId);
-    return emailBoxEntities.stream()
-                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, false, userId, userEmail, true, true))
-                           .toList();
+    return EmailThreadingUtils.positionDraftsAfterTheirParent(emailBoxEntities.stream()
+                                                                             .map(emailBoxEntity -> fromEntity(emailBoxEntity,
+                                                                                                               true,
+                                                                                                               false,
+                                                                                                               userId,
+                                                                                                               userEmail,
+                                                                                                               true,
+                                                                                                               true))
+                                                                             .toList());
   }
 
   public long countUnreadEmails(String userId) {

@@ -2353,13 +2353,14 @@ public class EmailBoxService {
    * <p>
    * DRAFTS included, and that is why a draft is a row of this table rather than a
    * table of its own: an unsent reply belongs in the conversation it answers, and
-   * putting it there costs nothing here. It sorts last on its own — the query orders
-   * by date and a draft's date is the moment its author last typed — so nothing in
-   * this method distinguishes it. The reader is where a draft stops looking like mail.
+   * putting it there costs nothing here. It reads directly under the message it
+   * answers, which the storage layer settles for every caller of a conversation (see
+   * {@code EmailThreadingUtils#positionDraftsAfterTheirParent}), so nothing in this
+   * method distinguishes it. The reader is where a draft stops looking like mail.
    *
    * @param threadId the conversation id (see {@link #computeThreadId})
    * @param username the mailbox owner
-   * @return the thread's messages, oldest first, each with body and recipients
+   * @return the thread's messages in reading order, each with body and recipients
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
    */
   public List<Email> getThread(String threadId, String username) throws IllegalAccessException {
@@ -3598,6 +3599,14 @@ public class EmailBoxService {
                                                                                                    : stored.getDraftRevision()
                                                                                                        + 1));
     toStore.setDraftUpdatedDate(now);
+    // Still stamped on every save, though it no longer decides where the draft sits
+    // in its conversation — that is settled from In-Reply-To now, precisely because
+    // this line moved a reply to Monday's message below a mail that arrived tonight.
+    // What still reads it: the Drafts folder listing and the conversation list, both
+    // newest-first, where the draft the user was just writing belongs at the top; the
+    // cached search's ordering; and the sync cleanup, which trims the oldest end of
+    // the cache and would otherwise be free to evict a draft that has been open for
+    // weeks. Recency is what this column means, and typing IS recent activity.
     toStore.setReceivedDate(now);
     toStore.setSubject(draft.getSubject());
     toStore.setContent(draft.getContent() != null ? draft.getContent() : new EmailContent(null, null, null));
@@ -5532,9 +5541,10 @@ public class EmailBoxService {
                                             String messageId,
                                             String username,
                                             UserEmailSetting userEmailSetting) throws MessagingException {
-    // When the other client last wrote it. Both dates are stamped with it: the reader
-    // orders a conversation by receivedDate and shows a draft's own updated date, and
-    // an imported draft has to sit where its author left it, not where it was noticed.
+    // When the other client last wrote it. Both dates are stamped with it, so an
+    // imported draft is as recent as its author left it rather than as recent as the
+    // sync that noticed it — which is what the listings order on, and what decides
+    // whether the cache trim may evict it.
     Date writtenAt = message.getSentDate() != null ? message.getSentDate()
                                                    : (message.getReceivedDate() != null ? message.getReceivedDate()
                                                                                         : new Date());
