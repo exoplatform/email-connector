@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -39,7 +40,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -61,6 +61,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
@@ -2229,38 +2230,68 @@ public class EmailBoxServiceTest {
 
   @Test
   @SneakyThrows
-  void notificationBackstopFiresWhenAClaimIsNeverReleased() {
+  void aBackstopOnlyFlushesTheWindowItWasArmedFor() {
     String user = "backstopuser";
-    // The backstop exists for the consumer that claims the wait and then dies. Shortened so
-    // the deadline can actually elapse here, which is the only way to exercise it at all.
-    ReflectionTestUtils.setField(emailBoxService, "notificationMaxWaitMs", 150L);
+    // The race the generation stamp exists for: cancel(false) does nothing once the timer
+    // task has started, so a backstop can reach its flush at the very moment a new sync has
+    // installed a fresh window. Driven through the guard directly rather than through the
+    // scheduler -- the timer thread needs a live PortalContainer to get as far as the send,
+    // so a timing-based test would pass or fail on the container, not on the guard.
     emailBoxService.openNotificationWindow(user, List.of());
     emailBoxService.deferNewEmailsNotification(user);
     emailBoxService.completeNotificationWindow(user, List.of());
-    // Nobody ever releases the claim: without the timer the notification would be lost.
-    verify(emailBoxStorage, never()).getEmails(user, MailFolder.INBOX);
-    verify(emailBoxStorage, timeout(3000)).getEmails(user, MailFolder.INBOX);
+    long armedGeneration = notificationGeneration();
+
+    // A new sync opens its own window: the old backstop is now stale.
+    emailBoxService.openNotificationWindow(user, List.of());
+    long freshGeneration = notificationGeneration();
+    assertTrue(freshGeneration > armedGeneration);
+
+    // The stale backstop must leave that fresh window alone -- flushing it here is what sent
+    // an early notification and lost the in-flight window, with nothing in the logs.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, armedGeneration));
+    // And the window really is still there: its own generation still flushes it.
+    assertNotNull(emailBoxService.takePendingNotificationIfCurrent(user, freshGeneration));
+    // Once taken it is gone, so two timers cannot both send.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, freshGeneration));
   }
 
   @Test
   @SneakyThrows
-  void notificationGraceTimerFiresOnAWindowWithNoClaim() {
-    String user = "graceuser";
-    ReflectionTestUtils.setField(emailBoxService, "notificationGraceMs", 150L);
-    // A sync nobody classifies: the window completes with no claim, so the short grace
-    // delay owns the send.
+  void everyWindowGetsItsOwnGeneration() {
+    String user = "generationuser";
+    // Each transition installs a new window, so the timer armed by the previous one can
+    // never flush the next: claims and releases re-arm the backstop each time.
     emailBoxService.openNotificationWindow(user, List.of());
+    long opened = notificationGeneration();
+    emailBoxService.deferNewEmailsNotification(user);
+    long claimed = notificationGeneration();
+    emailBoxService.deferNewEmailsNotification(user);
+    long claimedAgain = notificationGeneration();
     emailBoxService.completeNotificationWindow(user, List.of());
-    verify(emailBoxStorage, timeout(3000)).getEmails(user, MailFolder.INBOX);
+    long completed = notificationGeneration();
+    assertTrue(opened < claimed && claimed < claimedAgain && claimedAgain < completed);
+    // Only the newest one is honoured.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, opened));
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, claimed));
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, claimedAgain));
+    assertNotNull(emailBoxService.takePendingNotificationIfCurrent(user, completed));
+  }
+
+  /**
+   * The generation stamped on the most recently installed notification window.
+   */
+  private long notificationGeneration() {
+    return ((AtomicLong) ReflectionTestUtils.getField(emailBoxService, "notificationGenerations")).get();
   }
 
   @Test
   @SneakyThrows
   void concurrentClaimsAndReleasesSendExactlyOnce() {
     String user = "raceuser";
-    // A long backstop, so anything that fires here is the real release path rather than a
-    // timer -- the point is that racing threads cannot produce two sends, nor zero.
-    ReflectionTestUtils.setField(emailBoxService, "notificationMaxWaitMs", 60000L);
+    // The backstop is 15 minutes, far beyond this test, so the single send asserted below is
+    // necessarily the real release path -- the point is that racing threads cannot produce
+    // two sends, nor zero.
     int groups = 32;
     emailBoxService.openNotificationWindow(user, List.of());
     CountDownLatch start = new CountDownLatch(1);

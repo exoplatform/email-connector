@@ -290,7 +290,12 @@
       <column name="ORIGINAL_SENDER" type="VARCHAR(320)"/>
     </addColumn>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-25">
+  <changeSet author="email-connector" id="1.0.0-39">
+    <!-- Numbered 39, past every id feature/ai-contribution already uses (0..38). This
+         changeset is new here rather than cherry-picked from upstream, and the contacts
+         backport stacked on this branch ships 1.0.0-25 and 1.0.0-27..29 - two different
+         changesets sharing an id under the same author is a Liquibase collision that would
+         only surface once both had reached develop. -->
     <!-- The reconcile view this change introduced (findSyncViewByUserIdAndFolder) runs on
          every routine sync of every connected mailbox: it filters on (USER_ID, FOLDER) and
          sorts on RECEIVED_DATE. The indexes above cover USER_ID, (USER_ID, THREAD_ID) and
