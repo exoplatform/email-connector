@@ -27,8 +27,10 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,10 +38,12 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -207,6 +211,27 @@ public class EmailBoxStorageTest {
     verify(emailBoxDAO, never()).markEmailsAsNotRecent(anyList(), anyString(), anyString());
     emailBoxStorage.markEmailsAsNotRecent(List.of(1L), "root", "INBOX");
     verify(emailBoxDAO).markEmailsAsNotRecent(List.of(1L), "root", "INBOX");
+  }
+
+  @Test
+  void markEmailsAsNotRecentSlicesLongIdListsForOracle() {
+    // Oracle refuses an IN list past 1000 literals (ORA-01795), and this list is bounded by
+    // the mailbox cache size -- 1000 by default now, up to 5000 when an administrator raises
+    // it. A first sync of a full cache must not fail on the very statement added to make
+    // bulk syncs cheaper.
+    List<Long> ids = LongStream.rangeClosed(1, 2500).boxed().toList();
+
+    emailBoxStorage.markEmailsAsNotRecent(ids, "root", "INBOX");
+
+    ArgumentCaptor<List<Long>> slices = ArgumentCaptor.forClass(List.class);
+    verify(emailBoxDAO, times(3)).markEmailsAsNotRecent(slices.capture(), eq("root"), eq("INBOX"));
+    List<List<Long>> issued = slices.getAllValues();
+    assertEquals(900, issued.get(0).size());
+    assertEquals(900, issued.get(1).size());
+    assertEquals(700, issued.get(2).size());
+    // Every id is still covered, exactly once and in order: a slice that dropped or
+    // duplicated rows would leave messages wearing a stale recent badge.
+    assertEquals(ids, issued.stream().flatMap(List::stream).toList());
   }
 
   @Test

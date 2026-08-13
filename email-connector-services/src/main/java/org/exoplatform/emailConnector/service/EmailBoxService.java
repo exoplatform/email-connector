@@ -39,6 +39,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.HashMap;
 import java.util.List;
@@ -138,6 +139,7 @@ import io.meeds.social.category.service.CategoryService;
 import io.meeds.social.html.utils.HtmlUtils;
 import io.meeds.social.util.JsonUtils;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 
 /**
  * A Service to manage and synchronize email box
@@ -304,6 +306,11 @@ public class EmailBoxService {
 
   // Mailboxes with a synchronization running right now, so two can never overlap and cache
   // the same message twice.
+  //
+  // In-JVM only, deliberately: on a clustered deployment two nodes can still sync the same
+  // mailbox at once -- the original duplicate-row bug, at cluster scope. Closing that needs a
+  // shared lock rather than a set, which is its own change; this guard covers the overlap
+  // that actually happens today, where the sync job and a user-triggered reset share a JVM.
   private final Set<String>                      syncingUsers          = ConcurrentHashMap.newKeySet();
 
   // Notifications waiting for their messages to be classified, keyed by mailbox owner.
@@ -317,6 +324,19 @@ public class EmailBoxService {
                                                                          thread.setDaemon(true);
                                                                          return thread;
                                                                        });
+
+  // Stamps every PendingNotification this service creates. A scheduled backstop is armed for
+  // one specific window, and by the time it runs that window may have been superseded by a
+  // newer one -- cancel(false) cannot stop a task that has already started. The generation is
+  // how the task tells "the window I was armed for" from "whatever is mapped now".
+  private final AtomicLong                       notificationGenerations = new AtomicLong();
+
+  // The two delays above, as instance state so a test can shorten them and let a backstop
+  // actually elapse -- the whole point of that timer -- instead of waiting minutes for it.
+  // Production never reassigns them.
+  private long                                   notificationGraceMs     = NOTIFICATION_GRACE_MS;
+
+  private long                                   notificationMaxWaitMs   = NOTIFICATION_MAX_WAIT_MS;
 
   @Autowired
   private CategoryService         categoryService;
@@ -358,6 +378,16 @@ public class EmailBoxService {
   }
 
   /**
+   * Stops the notification scheduler with the Spring context. The thread is a daemon, so a
+   * JVM shutdown never needed this; a context reload (hot redeploy, a test suite building
+   * several contexts) does, otherwise each reload leaves its own timer thread behind.
+   */
+  @PreDestroy
+  public void stopNotificationScheduler() {
+    notificationScheduler.shutdownNow();
+  }
+
+  /**
    * Synchronize user email box.
    *
    * @param username user of which email box will be synchronized
@@ -394,14 +424,36 @@ public class EmailBoxService {
       LOG.info("A synchronization is already running for user {}; skipping this one", username);
       return;
     }
+    try {
+      doSynchronize(username, userEmailSetting, inboxOnly);
+    } finally {
+      syncingUsers.remove(username);
+    }
+  }
+
+  /**
+   * Runs one synchronization for a caller that already holds the {@code syncingUsers} guard
+   * for this user -- {@link #synchronize(String, boolean)} or {@link #resetAndResynchronize}.
+   * Split out so the guard is taken and released in exactly one place per entry point: every
+   * statement that can throw is inside the caller's try/finally, so no failure path can leak
+   * the per-user lock and shut that mailbox out of syncing until the JVM restarts.
+   *
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding, already loaded and access-checked
+   * @param inboxOnly whether to sync the INBOX alone, skipping Sent and Archive
+   */
+  private void doSynchronize(String username, UserEmailSetting userEmailSetting, boolean inboxOnly) {
     Store store = null;
     // The sync memory: per-folder change snapshots + discovered folder names. Loaded
     // once, mutated by the folder syncs below, persisted at the end only when it
     // actually changed (the original serialized form is the dirty check, so a run
-    // that skipped everything writes nothing).
-    MailboxSyncState syncState = loadMailboxSyncState(username);
-    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
+    // that skipped everything writes nothing). Loaded inside the try so a failure to
+    // read or serialize it cannot escape before the finally that releases the guard.
+    MailboxSyncState syncState = null;
+    String originalSyncStateJson = null;
     try {
+      syncState = loadMailboxSyncState(username);
+      originalSyncStateJson = JsonUtils.toJsonString(syncState);
       store = userEmailSettingService.connect(userEmailSetting);
       updateEmailSyncStatus(username, SyncStatus.IN_PROGRESS);
       int emailBoxCacheSize = emailConnectorService.getEmailBoxCacheSize();
@@ -430,8 +482,10 @@ public class EmailBoxService {
       // Persisted in the finally so the folders that DID sync keep their fresh
       // snapshots even when a later folder failed; a folder that failed mid-sync
       // never returned a snapshot, so its stale one keeps forcing the full path.
-      saveMailboxSyncState(username, syncState, originalSyncStateJson);
-      syncingUsers.remove(username);
+      // Null when the load itself failed -- there is then nothing to persist.
+      if (syncState != null) {
+        saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      }
       try {
         if (store != null && store.isConnected()) {
           store.close();
@@ -478,18 +532,33 @@ public class EmailBoxService {
         throw new IllegalStateException("emailConnector.reset.syncInProgress");
       }
     }
-    // Clear the cached INBOX (deleteEmails also unlinks each email's category links). Sent
-    // and Archive are deliberately left alone: they are never mutated locally, so they cannot
-    // be the stale cache the user is recovering from, and re-downloading them costs a message
-    // body per row -- on a 100-message mailbox that is minutes of waiting for folders the
-    // inbox view, the notifications and the AI categorization never read.
-    deleteUserEmails(username, MailFolder.INBOX);
-    // Clear any BLOCKED / failed-attempt backoff so the immediate resync is not refused.
-    userEmailSetting.setEmailSyncFailedAttemps(0);
-    userEmailSetting.setEmailSyncStatus(SyncStatus.SUCCESS);
-    userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
-    // Full re-download of the inbox; the scheduled sync keeps the other folders current.
-    synchronize(username, true);
+    // Hold the same per-user guard the sync itself takes, for the whole clear-then-resync.
+    // The persisted status above is not enough on its own: a scheduled sync can start in the
+    // gap between reading it and clearing the cache, and would then reconcile against rows
+    // being deleted underneath it. Taking the guard here also stops the resync below from
+    // being swallowed by the "already running" branch, which would leave the mailbox cleared
+    // and empty until the next periodic run -- the opposite of an immediate recovery.
+    if (!syncingUsers.add(username)) {
+      throw new IllegalStateException("emailConnector.reset.syncInProgress");
+    }
+    try {
+      // Clear the cached INBOX (deleteEmails also unlinks each email's category links). Sent
+      // and Archive are deliberately left alone: they are never mutated locally, so they cannot
+      // be the stale cache the user is recovering from, and re-downloading them costs a message
+      // body per row -- on a 100-message mailbox that is minutes of waiting for folders the
+      // inbox view, the notifications and the AI categorization never read.
+      deleteUserEmails(username, MailFolder.INBOX);
+      // Clear any BLOCKED / failed-attempt backoff so the immediate resync is not refused.
+      userEmailSetting.setEmailSyncFailedAttemps(0);
+      userEmailSetting.setEmailSyncStatus(SyncStatus.SUCCESS);
+      userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
+      // Full re-download of the inbox; the scheduled sync keeps the other folders current.
+      // Straight to doSynchronize: the guard is already held here, and the access check plus
+      // the backoff reset above are exactly what synchronize() would have re-verified.
+      doSynchronize(username, userEmailSettingService.getUserEmailSetting(username), true);
+    } finally {
+      syncingUsers.remove(username);
+    }
   }
 
   /**
@@ -3007,7 +3076,7 @@ public class EmailBoxService {
    * @param message the freshly-fetched message
    * @return {@code true} when the message declares itself machine-generated
    */
-  private static boolean isAutoSubmitted(Message message) throws MessagingException {
+  static boolean isAutoSubmitted(Message message) throws MessagingException {
     String autoSubmitted = firstHeader(message, "Auto-Submitted");
     if (StringUtils.isNotBlank(autoSubmitted) && !StringUtils.equalsIgnoreCase(autoSubmitted.trim(), "no")) {
       return true;
@@ -3025,7 +3094,7 @@ public class EmailBoxService {
    * @param message the freshly-fetched message
    * @return {@code true} when List-Post names a postable address
    */
-  private static boolean isPostableList(Message message) throws MessagingException {
+  static boolean isPostableList(Message message) throws MessagingException {
     String listPost = firstHeader(message, "List-Post");
     return StringUtils.containsIgnoreCase(listPost, "mailto:");
   }
@@ -3155,13 +3224,18 @@ public class EmailBoxService {
     long maxLocalUid = maxKnownUid(userEmails);
     pendingNotifications.compute(username, (user, pending) -> {
       if (pending == null) {
-        return new PendingNotification(maxLocalUid, 0, false, null);
+        return new PendingNotification(maxLocalUid, 0, false, notificationGenerations.incrementAndGet(), null);
       }
       // A leftover from a previous sync whose timer has not fired yet: absorb it, keeping
       // the earliest boundary so none of its messages is skipped, and let this sync's
-      // window own the send.
+      // window own the send. The new generation is what stops that leftover's backstop from
+      // flushing this window if it was already running when cancel() came too late.
       cancelTimer(pending);
-      return new PendingNotification(Math.min(pending.maxLocalUid(), maxLocalUid), pending.pendingClaims(), false, null);
+      return new PendingNotification(Math.min(pending.maxLocalUid(), maxLocalUid),
+                                     pending.pendingClaims(),
+                                     false,
+                                     notificationGenerations.incrementAndGet(),
+                                     null);
     });
   }
 
@@ -3186,8 +3260,9 @@ public class EmailBoxService {
       long boundary = pending == null ? fallbackBoundary : Math.min(pending.maxLocalUid(), fallbackBoundary);
       int claims = pending == null ? 0 : pending.pendingClaims();
       cancelTimer(pending);
-      long delayMs = claims > 0 ? NOTIFICATION_MAX_WAIT_MS : NOTIFICATION_GRACE_MS;
-      return new PendingNotification(boundary, claims, true, scheduleNotificationTask(user, delayMs));
+      long delayMs = claims > 0 ? notificationMaxWaitMs : notificationGraceMs;
+      long generation = notificationGenerations.incrementAndGet();
+      return new PendingNotification(boundary, claims, true, generation, scheduleNotificationTask(user, delayMs, generation));
     });
   }
 
@@ -3225,22 +3300,36 @@ public class EmailBoxService {
    *
    * @param username the mailbox owner
    * @param delayMs how long to wait before sending
+   * @param generation the window this task is armed for; it flushes that window and no other
    * @return the scheduled task, so a later call can cancel or replace it
    */
-  private ScheduledFuture<?> scheduleNotificationTask(String username, long delayMs) {
+  private ScheduledFuture<?> scheduleNotificationTask(String username, long delayMs, long generation) {
     return notificationScheduler.schedule(() -> {
-      PendingNotification pending = pendingNotifications.remove(username);
-      if (pending != null) {
-        try {
-          RequestLifeCycle.begin(PortalContainer.getInstance());
-          try {
-            sendNotification(username, pending.maxLocalUid());
-          } finally {
-            RequestLifeCycle.end();
-          }
-        } catch (Exception e) {
-          LOG.warn("Error sending the new-email notification for user {}", username, e);
+      // Take the window only if it is still the one this task was armed for. cancel(false)
+      // does nothing once the task has started running, so without this check a backstop
+      // firing at the same instant a new sync installs a fresh window would remove that
+      // fresh entry and send on it -- notifying early and dropping the in-flight window,
+      // invisibly: the later release would find no entry and no-op as an "orphaned claim".
+      PendingNotification[] flushed = new PendingNotification[1];
+      pendingNotifications.compute(username, (user, pending) -> {
+        if (pending == null || pending.generation() != generation) {
+          return pending;
         }
+        flushed[0] = pending;
+        return null;
+      });
+      if (flushed[0] == null) {
+        return;
+      }
+      try {
+        RequestLifeCycle.begin(PortalContainer.getInstance());
+        try {
+          sendNotification(username, flushed[0].maxLocalUid());
+        } finally {
+          RequestLifeCycle.end();
+        }
+      } catch (Exception e) {
+        LOG.warn("Error sending the new-email notification for user {}", username, e);
       }
     }, delayMs, TimeUnit.MILLISECONDS);
   }
@@ -3265,13 +3354,20 @@ public class EmailBoxService {
         // consumer reacted to an event this service did not broadcast. The unknown boundary
         // makes the eventual send a no-op, matching the old "nothing pending" behavior,
         // but the claim is still tracked so its release stays balanced.
-        return new PendingNotification(Long.MAX_VALUE, 1, false, scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS));
+        long orphanGeneration = notificationGenerations.incrementAndGet();
+        return new PendingNotification(Long.MAX_VALUE,
+                                       1,
+                                       false,
+                                       orphanGeneration,
+                                       scheduleNotificationTask(user, notificationMaxWaitMs, orphanGeneration));
       }
       cancelTimer(pending);
+      long generation = notificationGenerations.incrementAndGet();
       return new PendingNotification(pending.maxLocalUid(),
                                      pending.pendingClaims() + 1,
                                      pending.syncCompleted(),
-                                     scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS));
+                                     generation,
+                                     scheduleNotificationTask(user, notificationMaxWaitMs, generation));
     });
   }
 
@@ -3301,10 +3397,12 @@ public class EmailBoxService {
       // -- 5000 messages take far longer than the 15 minutes that suited 500 -- and a
       // deadline that expires mid-run sends a notification counting only part of the mail.
       cancelTimer(pending);
+      long generation = notificationGenerations.incrementAndGet();
       return new PendingNotification(pending.maxLocalUid(),
                                      remainingClaims,
                                      pending.syncCompleted(),
-                                     scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS));
+                                     generation,
+                                     scheduleNotificationTask(user, notificationMaxWaitMs, generation));
     });
     if (readyToSend[0] == null) {
       return;
@@ -3327,10 +3425,16 @@ public class EmailBoxService {
    * @param maxLocalUid the highest UID present before the sync
    * @param pendingClaims outstanding {@link #deferNewEmailsNotification(String)} claims
    * @param syncCompleted whether the sync has cached its last message
+   * @param generation this window's identity, so an already-running backstop can tell whether
+   *          it is still the window it was armed for
    * @param future the scheduled backstop send, {@code null} while the window is open with
    *          no claim
    */
-  private record PendingNotification(long maxLocalUid, int pendingClaims, boolean syncCompleted, ScheduledFuture<?> future) {
+  private record PendingNotification(long maxLocalUid,
+                                     int pendingClaims,
+                                     boolean syncCompleted,
+                                     long generation,
+                                     ScheduledFuture<?> future) {
   }
 
   /**
