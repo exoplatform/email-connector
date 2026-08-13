@@ -113,16 +113,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :placeholder="$t('emailConnector.mailBox.newEmail.drawer.subject.placeholder')" />
       </v-list-item>
       <v-divider />
-      <rich-editor
-        ref="emailContent"
-        v-model="email.content.body"
-        :placeholder="$t('emailConnector.mailBox.newEmail.drawer.content.placeholder')"
-        ck-editor-type="email"
-        class="mx-4 mt-3"
-        content-link-enabled
-        :tag-enabled="false"
-        disable-suggester
-        hide-chars-count />
+      <div ref="editorWrapper" class="mx-4 mt-3">
+        <rich-editor
+          v-if="editorMaxHeight"
+          ref="emailContent"
+          v-model="email.content.body"
+          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.content.placeholder')"
+          ck-editor-type="email"
+          :auto-grow-max-height="editorMaxHeight"
+          content-link-enabled
+          :tag-enabled="false"
+          disable-suggester
+          hide-chars-count />
+      </div>
       <email-connector-new-email-drawer-attachments
         v-model="attachments"
         :active="newEmailDrawer" />
@@ -143,6 +146,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+const DEFAULT_EDITOR_MAX_HEIGHT = 300;
+
 export default {
   data() {
     return {
@@ -163,6 +168,7 @@ export default {
       attachments: [],
       loading: false,
       title: '',
+      editorMaxHeight: 0,
     };
   },
   created() {
@@ -232,6 +238,36 @@ export default {
         this.email.subject = `${forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.subject.prefix') : this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
       }
       this.newEmailDrawer = true;
+      this.$nextTick(() => this.measureEditorMaxHeight());
+    },
+    measureEditorMaxHeight(previousHeight = null, attempt = 0) {
+      // exo-drawer's opening transition isn't finished right after $nextTick, so we
+      // re-sample every frame until the measurement settles. It has to be final before
+      // <rich-editor> mounts (v-if): CKEditor's autogrow plugin captures auto-grow-max-height
+      // once at creation and never re-reads it.
+      const height = this.computeAvailableEditorHeight();
+      if (height === previousHeight || attempt >= 30) {
+        this.editorMaxHeight = height > 0 ? height : DEFAULT_EDITOR_MAX_HEIGHT;
+        return;
+      }
+      requestAnimationFrame(() => this.measureEditorMaxHeight(height, attempt + 1));
+    },
+    computeAvailableEditorHeight() {
+      const wrapperEl = this.$refs.editorWrapper;
+      const drawerEl = this.$refs.newEmailDrawer?.$el;
+      if (!wrapperEl || !drawerEl) {
+        return 0;
+      }
+      const footerEl = drawerEl.querySelector('.drawerFooter');
+      const footerHeight = footerEl ? footerEl.offsetHeight : 52;
+      // toolbar renders below the editable area (toolbarPosition="bottom"), fixed 30px
+      // height (platform-ui-skin CKEditor/Style.less .cke_bottom) — must be reserved too.
+      const toolbarHeight = 30;
+      const marginBottom = 16;
+      const rawHeight = drawerEl.getBoundingClientRect().bottom - wrapperEl.getBoundingClientRect().top - toolbarHeight - footerHeight - marginBottom;
+      // floor, not an exact-fit float: browser zoom rounds these rects to non-integer CSS
+      // px, and a fractional overshoot here would trigger the drawer's own scrollbar too.
+      return Math.floor(rawHeight);
     },
     close() {
       this.toEmails = '';
@@ -242,6 +278,7 @@ export default {
       this.email.mailHeaderId = null;
       this.email.attachments = [];
       this.attachments = [];
+      this.editorMaxHeight = 0;
       this.newEmailDrawer = false;
     },
     sendEmail(email) {

@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.plugin;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -50,10 +51,34 @@ public class EmailAclPlugin implements AclPlugin {
     return OBJECT_TYPE;
   }
 
+  /**
+   * An email is only visible to its mailbox owner. The object id reaches this
+   * check as an arbitrary caller-supplied string — the favorites REST endpoints
+   * and the MCP favorites tools forward whatever identifier an agent typed for
+   * object type "email" — so an id this plugin does not recognise (null, blank,
+   * non-numeric, out of {@code long} range, or numeric but matching no cached
+   * email) must simply answer {@code false}: a permission check degrades to
+   * "no", it never throws.
+   *
+   * @param objectId the candidate email id, as an untrusted string
+   * @param permissionType the permission being checked (unused: owner-only)
+   * @param identity the identity asking for access
+   * @return {@code true} only when the id resolves to a cached email owned by
+   *         the given identity
+   */
   @Override
   public boolean hasPermission(String objectId, String permissionType, Identity identity) {
-    Email email = emailBoxService.getEmailById(Long.parseLong(objectId), null);
-    return email != null && email.getUserId() != null && identity.getUserId() != null
-        && email.getUserId().equals(identity.getUserId());
+    if (identity == null || identity.getUserId() == null || StringUtils.isBlank(objectId)) {
+      return false;
+    }
+    long emailId;
+    try {
+      emailId = Long.parseLong(objectId);
+    } catch (NumberFormatException e) {
+      // also covers ids beyond Long range — not an email of ours either
+      return false;
+    }
+    Email email = emailBoxService.getEmailById(emailId, null);
+    return email != null && email.getUserId() != null && email.getUserId().equals(identity.getUserId());
   }
 }

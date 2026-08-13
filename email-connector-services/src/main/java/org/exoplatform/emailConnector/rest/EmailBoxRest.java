@@ -46,6 +46,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
+import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -309,7 +310,7 @@ public class EmailBoxRest {
 
   @GetMapping("/categories/available")
   @Secured("users")
-  @Operation(summary = "Lists the assignable email categories", method = "GET", description = "Returns the add-on's own email categories a user can assign (Important / Invitation / Notification), whether or not already used")
+  @Operation(summary = "Lists the assignable email categories", method = "GET", description = "Returns the add-on's own email categories a user can assign (Important / Invitation / Notification / To review), whether or not already used")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled") })
   public List<EmailCategory> getAvailableEmailCategories(HttpServletRequest request) {
     return emailBoxService.getAvailableEmailCategories(request.getRemoteUser(), request.getLocale());

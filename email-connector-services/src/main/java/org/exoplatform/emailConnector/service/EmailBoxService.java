@@ -96,8 +96,6 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
-import org.exoplatform.commons.api.settings.data.Context;
-import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.container.component.RequestLifeCycle;
@@ -259,8 +257,15 @@ public class EmailBoxService {
   private static final List<String> DEFAULT_EMAIL_CATEGORY_NAME_IDS                          =
                                                                    List.of("emailImportantCategory",
                                                                            "emailInvitationCategory",
-                                                                           "emailNotificationCategory");
+                                                                           "emailNotificationCategory",
+                                                                           "emailToReviewCategory");
 
+  // Unversioned coupling: these two literals mirror CategoryImportService's own private
+  // CATEGORY_CONTEXT/CATEGORY_IMPORT_SCOPE in Meeds-io/social — there is no public accessor
+  // nor nameId -> id resolution API to call instead today. If social ever renames them or
+  // changes how it persists that mapping, getDefaultEmailCategoryIds() silently returns an
+  // empty list (no compile error) rather than failing loudly. To be replaced by a supported
+  // CategoryService lookup once social exposes one.
   private static final Context      CATEGORY_IMPORT_CONTEXT                                   = Context.GLOBAL.id("CATEGORY");
 
   private static final Scope        CATEGORY_IMPORT_SCOPE                                     =
@@ -2243,7 +2248,7 @@ public class EmailBoxService {
 
   /**
    * The add-on's own email categories a user can assign — Important / Invitation /
-   * Notification — resolved to their localized name. These are the leaf
+   * Notification / To review — resolved to their localized name. These are the leaf
    * categories seeded from the add-on's {@code default-categories.json}, returned
    * whether or not they are already in use, so the picker always offers the full set.
    *
@@ -2372,7 +2377,19 @@ public class EmailBoxService {
         LOG.warn("Email sent but could not be copied to Sent folder for user {}", username, e);
       }
     } catch (MessagingException | UnsupportedEncodingException e) {
-      LOG.error("Error when sending email for user {}", username, e);
+      // The server, the port and the security mode belong in this line. A failure
+      // here says nothing about WHICH server refused: the exception names the
+      // condition ("451 4.3.2 Internal server error") and no more, so the same
+      // mailbox failing on one deployment and working on another is unanswerable
+      // from the log alone -- exactly the question that gets asked first. The
+      // connect-failure path already prints the host; the authentication path,
+      // which is the commoner failure, printed nothing.
+      LOG.error("Error when sending email for user {} through {}:{} ({})",
+                username,
+                emailConnector.getSmtpUrl(),
+                emailConnector.getSmtpPort(),
+                emailConnector.getSmtpSecurityType(),
+                e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
     } finally {
       // Free the commons temporary upload resources only after the message (and its Sent-folder copy) has been built,
