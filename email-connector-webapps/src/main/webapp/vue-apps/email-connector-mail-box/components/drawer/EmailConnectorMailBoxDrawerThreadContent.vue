@@ -338,6 +338,12 @@ export default {
      * @returns {void}
      */
     reloadFromCache() {
+      // Nothing is open here: the reader sits between conversations, or the drawer
+      // behind the composer has been closed. There is no conversation to bring up to
+      // date, and resolveThreadId reads a message that is not there.
+      if (!this.email) {
+        return;
+      }
       const threadId = this.resolveThreadId();
       if (!threadId) {
         return;
@@ -347,6 +353,18 @@ export default {
       const wasExpanded = this.expandedIds.slice();
       this.$emailConnectorMailBoxService.getThreadByThreadId(threadId)
         .then(fetched => {
+          if (!fetched?.length) {
+            // An answer with nothing in it is not this conversation being emptied — the
+            // messages on screen were read from the same table a moment ago. It is the
+            // id they were read under no longer naming them: saving a draft resolves
+            // its conversation the way a synced message does, and a resolution that
+            // finds the thread split collapses every part of it into the OLDEST id.
+            // Applying this would fall back to the single opened message and take the
+            // rest of the conversation off the screen. Keeping what is shown is both
+            // truthful and recoverable — reopening the conversation reads it whole,
+            // under the id the folder list now carries.
+            return;
+          }
           this.applyMessages(fetched);
           const stillHere = wasExpanded.filter(key => this.messages.some(message => this.msgKey(message) === key));
           this.expandedIds = Array.from(new Set(this.expandedIds.concat(stillHere)));

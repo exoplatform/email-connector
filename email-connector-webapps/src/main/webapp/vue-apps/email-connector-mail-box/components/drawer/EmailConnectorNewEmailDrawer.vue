@@ -125,6 +125,36 @@ const LOCAL_SAVE_DEBOUNCE_MS = 1000;
 // the point where the user has plainly stopped writing.
 const SERVER_PUSH_IDLE_MS = 2 * 60 * 1000;
 
+/**
+ * A fresh record for the draft one composer session is writing: nothing saved yet,
+ * no save in flight, and an empty queue for the saves to come.
+ *
+ * @returns {object} the session record
+ */
+function newDraftSession() {
+  return {
+    // The server's handle on the draft, minted on the first save and unchanged from
+    // then on — the IMAP UID cannot play that role, since saving a draft means
+    // appending a new message and deleting the old one, so the UID moves under us
+    // mid-sentence.
+    localId: null,
+    revision: 0,
+    state: null,
+    // How many saves of this session are still in flight, so the footer says "Saving…"
+    // for as long as any of them is, and so a close can tell that a draft is on its
+    // way into existence even though its id is not back yet.
+    pending: 0,
+    // The saves of this session, run one after another. Two saves of one draft must
+    // never be in flight together: the second would carry no local id while the first
+    // is still minting one, and the server would answer it with a SECOND draft of the
+    // same reply.
+    queue: Promise.resolve(),
+    // Set once the drawer has closed on this session, so the closing save is fired
+    // exactly once however many times the drawer reports itself closed.
+    closed: false,
+  };
+}
+
 export default {
   data() {
     return {
@@ -149,20 +179,19 @@ export default {
       loading: false,
       title: '',
       editorMaxHeight: 0,
-      // The draft this composer session is writing. draftLocalId is the server's
-      // handle on it, minted on the first save and unchanged from then on — the IMAP
-      // UID cannot play that role, since saving a draft means appending a new message
-      // and deleting the old one, so the UID moves under us mid-sentence.
-      draftLocalId: null,
-      draftRevision: 0,
-      draftState: null,
+      // The draft this composer session is writing, as ONE record rather than a
+      // scattering of fields. Every save reads the draft's identity from here and
+      // writes back to this same object, and opening the composer on something else
+      // puts a new record in its place — so a save still in flight when the drawer
+      // closes goes on talking about the draft it was given, and can neither be handed
+      // the next draft's text nor hand its own id to the next composer session.
+      draftSession: newDraftSession(),
       // The composed text as it stood at the last save, so a save that would change
       // nothing is never made. Comparing what we have against what we sent is cheaper
       // and more honest than trying to track "dirty" through a dozen input events.
       savedSignature: null,
       localSaveTimer: null,
       serverPushTimer: null,
-      draftSaving: false,
       discarding: false,
       // Said once per composer session, not once per save: an account with no Drafts
       // folder would otherwise repeat it on every pause in typing.
@@ -229,13 +258,13 @@ export default {
      * @returns {string} the label, or an empty string when there is nothing to say
      */
     draftStatusLabel() {
-      if (this.draftSaving) {
+      if (this.draftSession.pending > 0) {
         return this.$t('emailConnector.mailBox.newEmail.drawer.draft.saving');
       }
-      if (!this.draftLocalId) {
+      if (!this.draftSession.localId) {
         return '';
       }
-      if (this.draftState === 'SYNCED') {
+      if (this.draftSession.state === 'SYNCED') {
         return this.$t('emailConnector.mailBox.newEmail.drawer.draft.savedOnServer');
       }
       return this.$t('emailConnector.mailBox.newEmail.drawer.draft.savedLocally');
@@ -337,9 +366,9 @@ export default {
       // the draft is a reply TO, so the send path keeps the conversation. The save
       // path ignores it anyway once the draft has an id (see saveDraft).
       this.email.mailHeaderId = draft.inReplyTo || null;
-      this.draftLocalId = draft.draftLocalId;
-      this.draftRevision = draft.draftRevision || 0;
-      this.draftState = draft.draftState;
+      this.draftSession.localId = draft.draftLocalId;
+      this.draftSession.revision = draft.draftRevision || 0;
+      this.draftSession.state = draft.draftState;
       this.newEmailDrawer = true;
       this.$nextTick(() => this.measureEditorMaxHeight());
       this.$nextTick(() => {
@@ -413,22 +442,23 @@ export default {
      * is also the moment the draft is pushed to the mail server, which is the point
      * at which the user has most plainly finished for now.
      *
-     * The push is fired and not waited for: the drawer closes immediately, because
-     * the words are already safe locally and making someone watch a spinner over an
-     * IMAP round-trip they did not ask for would be the wrong trade. The local state
-     * is cleared straight away too, which is why the id and revision are captured
-     * into the call before the reset runs.
+     * The drawer closes IMMEDIATELY, and the save and the conversation's reload happen
+     * behind it: the words are already safe locally, and making someone watch an IMAP
+     * round-trip they did not ask for would be the wrong trade. What the save must not
+     * do is read the composer afterwards, since the lines below empty it — so it is
+     * handed a snapshot taken first, and the draft's identity lives on the session
+     * record rather than on fields this method clears.
+     *
+     * The session is deliberately NOT rotated here. Rotating it is how the composer
+     * forgets a draft, and it belongs to opening the composer on something else (see
+     * resetDraftTracking, called by open, resume and emptyComposer) — doing it here as
+     * well would cut the closing save off from the very record it is about to write.
      *
      * @returns {void}
      */
     close() {
       this.cancelDraftTimers();
-      if (this.hasContent && this.hasUnsavedChanges()) {
-        this.saveDraft(true);
-      } else if (this.draftLocalId && this.draftState !== 'SYNCED') {
-        // Nothing new typed, but the copy up there is not the copy down here.
-        this.saveDraft(true);
-      }
+      this.flushDraft();
       this.to = [];
       this.cc = [];
       this.bcc = [];
@@ -438,8 +468,85 @@ export default {
       this.email.attachments = [];
       this.attachments = [];
       this.editorMaxHeight = 0;
-      this.resetDraftTracking();
       this.newEmailDrawer = false;
+    },
+    /**
+     * The save a close fires: it stores what was on screen at the moment the drawer
+     * closed, and then tells the conversation, whatever came of it.
+     *
+     * Three cases, and the middle one is the defect this exists for:
+     *
+     * - Something typed since the last save is stored, from the snapshot, so what is
+     *   written is what the user was looking at rather than the emptied fields the
+     *   close leaves behind a line later.
+     *
+     * - Nothing typed since the last save, but there IS a draft — already saved, or
+     *   still being saved. That second half is the bug: a local autosave fires a
+     *   second after the last keystroke and takes a moment to answer, and a close
+     *   landing in that moment used to find no local id and no unsaved change and save
+     *   NOTHING. The draft existed, nobody said so, and the conversation behind the
+     *   composer went on showing no reply in progress until the user reopened it. A
+     *   save in flight now counts as a draft, and the queue means this save runs after
+     *   it and under the id it minted rather than creating a second draft of the same
+     *   reply.
+     *
+     * - A composer holding only what a reply prefilled has nothing to save, and must
+     *   not leave an empty draft behind.
+     *
+     * The conversation is told in every case where a draft exists — including when the
+     * save failed, because the row may well have been written before whatever failed
+     * did (production has produced exactly that: a stored draft whose response then
+     * errored), and re-reading is the only way to find out. That announcement is what
+     * makes the draft appear under the message it answers with nothing reopened by
+     * hand.
+     *
+     * @returns {void}
+     */
+    flushDraft() {
+      const session = this.draftSession;
+      if (session.closed) {
+        // Closing clears the flag the drawer is bound to, so the drawer can report
+        // itself closed a second time; the draft is saved on the first of them.
+        return;
+      }
+      session.closed = true;
+      const snapshot = this.snapshotDraft();
+      if (snapshot.hasContent && (snapshot.signature !== this.savedSignature || session.localId || session.pending)) {
+        this.storeDraft(session, snapshot, true, true);
+      } else if (session.localId) {
+        this.$root.$emit('refresh-email-box');
+      }
+    },
+    /**
+     * Everything a save needs, read off the screen in one go: the text as it stands,
+     * the recipients as the chips they are, and the answers to "is there anything
+     * here" and "has it changed since the last save".
+     *
+     * Taken as a snapshot because the save that matters most is fired by the close,
+     * which empties these fields immediately afterwards and may open on another draft
+     * before the request lands.
+     *
+     * @returns {object} the composed state, as a save consumes it
+     */
+    snapshotDraft() {
+      return {
+        subject: this.email.subject,
+        body: this.email.content.body,
+        // Names as well as addresses, unlike the send payload. A draft is read back
+        // into these very fields when it is resumed, so what is not stored is what the
+        // user sees disappear from a chip they typed. The send API has no use for them
+        // — the mail server resolves nothing from a display name — but the draft row
+        // is the composer's own memory of the state it was in.
+        to: this.toDraftRecipients(this.to),
+        cc: this.toDraftRecipients(this.cc),
+        bcc: this.toDraftRecipients(this.bcc),
+        // On a FIRST save this carries the PARENT's Message-ID, which is what makes a
+        // draft reply join its conversation while it is still being written. On every
+        // later save the server ignores it.
+        parentMessageId: this.email.mailHeaderId,
+        hasContent: this.hasContent,
+        signature: this.composeSignature(),
+      };
     },
     /**
      * Throws the draft away, on the user's explicit say-so, and closes.
@@ -450,7 +557,7 @@ export default {
      * @returns {void}
      */
     discardDraft() {
-      const draftLocalId = this.draftLocalId;
+      const draftLocalId = this.draftSession.localId;
       this.emptyComposer();
       if (!draftLocalId) {
         this.close();
@@ -517,66 +624,112 @@ export default {
      * @returns {void}
      */
     saveDraft(push) {
-      const signature = this.composeSignature();
-      if (!this.hasContent || (signature === this.savedSignature && !push)) {
+      const snapshot = this.snapshotDraft();
+      if (!snapshot.hasContent || (snapshot.signature === this.savedSignature && !push)) {
         return;
       }
-      this.draftRevision++;
-      const payload = {
-        draftLocalId: this.draftLocalId,
-        draftRevision: this.draftRevision,
-        // On a FIRST save this carries the PARENT's Message-ID, which is what makes a
-        // draft reply join its conversation while it is still being written. On every
-        // later save the server ignores it.
-        mailHeaderId: this.draftLocalId ? null : this.email.mailHeaderId,
-        subject: this.email.subject,
-        content: {body: this.email.content.body},
-        // Names as well as addresses here, unlike the send payload below. A draft is
-        // read back into these very fields when it is resumed, so what is not stored
-        // is what the user sees disappear from a chip they typed. The send API has no
-        // use for them — the mail server resolves nothing from a display name — but
-        // the draft row is the composer's own memory of the state it was in.
-        to: this.toDraftRecipients(this.to),
-        cc: this.toDraftRecipients(this.cc),
-        bcc: this.toDraftRecipients(this.bcc),
-      };
-      this.savedSignature = signature;
-      this.draftSaving = true;
-      // Captured before the request: the answer is judged against what this composer
-      // believed a moment ago, and the assignment below is what replaces it.
-      const previousState = this.draftState;
-      this.$emailConnectorMailBoxService.saveDraft(payload, push).then((saved) => {
-        if (!saved) {
-          // The draft this composer was writing is gone: sent or discarded from
-          // another tab, or deleted in another mail client and reconciled away by the
-          // sync. Forgetting the id is most of the reaction — what is still on screen
-          // belongs to nothing now — but the saved signature has to be forgotten with
-          // it, or a composer the user does not type into again would close believing
-          // it had nothing to save, and the words in front of them would go. Cleared,
-          // the very next save writes them as a new draft of their own, which is the
-          // only honest answer when the two versions can no longer be reconciled.
-          this.draftLocalId = null;
-          this.draftState = null;
-          this.savedSignature = null;
-          this.notifyDraftGone();
-          return;
-        }
-        this.draftLocalId = saved.draftLocalId;
-        this.draftState = saved.draftState;
-        this.notifyIfServerCopyGone(previousState, saved);
-        if (saved.draftRevision) {
-          this.draftRevision = Math.max(this.draftRevision, saved.draftRevision);
-        }
-        if (push) {
-          this.$root.$emit('refresh-email-box');
-          this.notifyIfLocalOnly(saved);
-        }
+      this.storeDraft(this.draftSession, snapshot, push, false);
+    },
+    /**
+     * Writes one revision of a draft, behind whatever save of the same session is
+     * still in flight.
+     *
+     * The queue is not caution about load, it is about identity: a draft's local id
+     * exists only once a save has come back with it, so two saves in flight together
+     * would both carry none, and the server would answer the second with a second
+     * draft of the same reply. Chained, the later save reads the id the earlier one
+     * minted — which is also what lets a close save under a draft whose first save has
+     * not answered yet.
+     *
+     * Everything it writes goes to the session record it was given, and to the
+     * composer only while that record is still the one on screen. A save that outlives
+     * its composer session must not put its draft's id back into fields the next reply
+     * is being typed into.
+     *
+     * @param {object} session - the draft session this save belongs to
+     * @param {object} snapshot - the composed state to store
+     * @param {boolean} push - whether to also upload the draft to the mail server
+     * @param {boolean} closing - whether this is the save a close fired, which tells
+     *          the conversation about its result whatever that result is
+     * @returns {void}
+     */
+    storeDraft(session, snapshot, push, closing) {
+      this.savedSignature = snapshot.signature;
+      session.pending++;
+      session.queue = session.queue.then(() => {
+        const payload = {
+          draftLocalId: session.localId,
+          draftRevision: ++session.revision,
+          mailHeaderId: session.localId ? null : snapshot.parentMessageId,
+          subject: snapshot.subject,
+          content: {body: snapshot.body},
+          to: snapshot.to,
+          cc: snapshot.cc,
+          bcc: snapshot.bcc,
+        };
+        // Captured before the request: the answer is judged against what this session
+        // believed a moment ago, and the assignment below is what replaces it.
+        const previousState = session.state;
+        return this.$emailConnectorMailBoxService.saveDraft(payload, push)
+          .then(saved => this.applySavedDraft(session, saved, previousState, push, push && !closing));
       }).catch(() => {
         // Let the next change try again rather than pretending this one landed.
-        this.savedSignature = null;
+        if (session === this.draftSession) {
+          this.savedSignature = null;
+        }
       }).finally(() => {
-        this.draftSaving = false;
+        session.pending--;
+        if (closing) {
+          this.$root.$emit('refresh-email-box');
+        }
       });
+    },
+    /**
+     * Takes in what the server made of a save.
+     *
+     * @param {object} session - the draft session the save belonged to
+     * @param {object} saved - the draft as stored, or nothing when there is no such
+     *          draft any more
+     * @param {string} previousState - what the session believed before this save
+     * @param {boolean} push - whether this save was asked to reach the mail server,
+     *          which is the only kind that can find out the account has no Drafts
+     *          folder to reach
+     * @param {boolean} announce - whether the conversation and the folder list should
+     *          be re-read now (a close announces itself, so it does not ask here)
+     * @returns {void}
+     */
+    applySavedDraft(session, saved, previousState, push, announce) {
+      if (!saved) {
+        // The draft this session was writing is gone: sent or discarded from another
+        // tab, or deleted in another mail client and reconciled away by the sync.
+        // Forgetting the id is most of the reaction — what is still on screen belongs
+        // to nothing now — but the saved signature has to be forgotten with it, or a
+        // composer the user does not type into again would close believing it had
+        // nothing to save, and the words in front of them would go. Cleared, the very
+        // next save writes them as a new draft of their own, which is the only honest
+        // answer when the two versions can no longer be reconciled.
+        session.localId = null;
+        session.state = null;
+        if (session === this.draftSession) {
+          this.savedSignature = null;
+          this.notifyDraftGone();
+        }
+        return;
+      }
+      session.localId = saved.draftLocalId;
+      session.state = saved.draftState;
+      if (saved.draftRevision) {
+        session.revision = Math.max(session.revision, saved.draftRevision);
+      }
+      if (session === this.draftSession) {
+        this.notifyIfServerCopyGone(previousState, saved);
+        if (push) {
+          this.notifyIfLocalOnly(saved);
+        }
+      }
+      if (announce) {
+        this.$root.$emit('refresh-email-box');
+      }
     },
     /**
      * Tells the user, once per composer session, that their draft could not be put
@@ -644,14 +797,6 @@ export default {
       }}));
     },
     /**
-     * Whether anything has been typed since the last save.
-     *
-     * @returns {boolean} true when there is something new to store
-     */
-    hasUnsavedChanges() {
-      return this.composeSignature() !== this.savedSignature;
-    },
-    /**
      * A single string standing for everything a draft is made of, so "has this
      * changed" is one comparison rather than a scattering of dirty flags.
      *
@@ -667,16 +812,19 @@ export default {
       ]);
     },
     /**
-     * Forgets the draft this composer session was writing. Called when the composer
-     * opens on something else and when it closes.
+     * Forgets the draft this composer session was writing, by starting a session.
+     * Called when the composer opens on something else, and when what it was holding
+     * has been sent or discarded.
+     *
+     * A NEW record rather than a cleared one: a save of the previous session may still
+     * be in flight, and it goes on writing to the object it was given — where it can
+     * no longer put a stale id under the draft that is about to be typed here.
      *
      * @returns {void}
      */
     resetDraftTracking() {
       this.cancelDraftTimers();
-      this.draftLocalId = null;
-      this.draftRevision = 0;
-      this.draftState = null;
+      this.draftSession = newDraftSession();
       this.savedSignature = null;
       this.localOnlyNotified = false;
       this.serverCopyGoneNotified = false;
@@ -738,8 +886,8 @@ export default {
       // exists because sending a draft is not "send, then tidy up from the client":
       // the save, the send and the two removals have to happen in one order, on the
       // server, where a failure between them can be reasoned about.
-      const send = this.draftLocalId
-        ? this.$emailConnectorMailBoxService.sendDraft(this.draftLocalId, this.email)
+      const send = this.draftSession.localId
+        ? this.$emailConnectorMailBoxService.sendDraft(this.draftSession.localId, this.email)
         : this.$emailConnectorMailBoxService.sendEmail(this.email);
       send.then(() => {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.success'), 'success');
