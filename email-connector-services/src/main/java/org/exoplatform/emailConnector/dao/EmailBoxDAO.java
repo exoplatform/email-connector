@@ -59,13 +59,22 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   /**
    * Counts the unread emails of the locally synced mirror. Never reaches the
    * IMAP server: the badge reflects what the platform already knows.
+   * <p>
+   * Scoped to one folder, and the caller passes the inbox: SENT and ARCHIVE
+   * rows carry the server's SEEN flag too, so an archived message that was
+   * never read would otherwise be counted forever — the client can only mark
+   * inbox messages read, so nothing could ever clear it. ALL_MAIL is a
+   * thread-completion cache that duplicates the other folders and must never be
+   * counted at all.
    *
    * @param  userId the mailbox owner
-   * @return        the number of unread emails
+   * @param  folder the folder to count in
+   * @return        the number of unread emails in that folder
    */
-  @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND (email.read IS NULL OR email.read = FALSE)")
-  long countUnreadByUserId(@Param("userId")
-  String userId);
+  @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read = FALSE)")
+  long countUnreadByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
 
   @Transactional
   @Modifying
