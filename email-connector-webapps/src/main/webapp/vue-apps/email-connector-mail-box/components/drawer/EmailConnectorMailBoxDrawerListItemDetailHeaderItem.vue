@@ -59,6 +59,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { personName } from '../../js/EmailRecipientDisplay.js';
+
 export default {
   props: {
     label: {
@@ -91,12 +93,29 @@ export default {
       document.dispatchEvent(new CustomEvent('open-contacts-drawer', {
         detail: {
           address: value.address,
-          name: value.name,
+          // The name only if it is one: this seeds a contact CREATION form, and a
+          // person filed under a name nobody chose outlives the row it came from.
+          name: personName(value),
         },
       }));
     },
+    /**
+     * One addressed person on an expanded To/Cc line: their name, then their
+     * address.
+     * <p>
+     * With no name there is only the address, rather than the address printed twice
+     * or a name-shaped hole in front of it — a recipient added as a bare address is
+     * ordinary on a draft, and this line rendered the missing half literally.
+     *
+     * @param {object} value - the address entry, carrying address and maybe a name
+     * @returns {string} the markup for that person
+     */
     parsedValue(value) {
-      return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${value.name}</a> ${value.address}` || `<span class="text-color">${value.name}</span> ${value.address}`;
+      const name = personName(value);
+      if (!name) {
+        return value.address;
+      }
+      return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${name}</a> ${value.address}` || `<span class="text-color">${name}</span> ${value.address}`;
     },
   },
 };

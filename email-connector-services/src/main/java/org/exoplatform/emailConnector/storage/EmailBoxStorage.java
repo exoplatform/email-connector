@@ -61,6 +61,12 @@ import lombok.SneakyThrows;
 @Component
 public class EmailBoxStorage {
 
+  // What a missing display name looked like for as long as the writers concatenated
+  // one: the word itself, in the name half of a stored name,address pair. The writers
+  // no longer produce it; the rows that already hold it are still being read every
+  // day, which is why it is also a value the READERS know by name.
+  private static final String NULL_NAME = "null";
+
   @Autowired
   private EmailBoxDAO         emailBoxDao;
 
@@ -653,7 +659,7 @@ public class EmailBoxStorage {
                         .thenComparing(row -> StringUtils.defaultString((String) row[1])));
     Map<String, Map<String, String>> namesByAddress = new HashMap<>();
     for (Object[] row : rows) {
-      String[] senderParts = splitStoredSender((String) row[1]);
+      String[] senderParts = splitStoredPerson((String) row[1]);
       String address = senderParts[1];
       if (StringUtils.isBlank(address) || StringUtils.equalsIgnoreCase(address, userEmail)) {
         continue;
@@ -782,17 +788,17 @@ public class EmailBoxStorage {
     if (StringUtils.isBlank(stored)) {
       return null;
     }
-    String[] parts = splitStoredSender(stored);
+    String[] parts = splitStoredPerson(stored);
     return new EmailSender(StringUtils.isBlank(parts[0]) ? parts[1] : parts[0], parts[1], null, null);
   }
 
   /**
-   * Takes the stored {@code name,address} sender column apart, and is the ONLY place
-   * that knows how that column is written — the full mapper and the light contact
-   * view both come through here, so the two can no longer disagree about what a
-   * sender looks like.
+   * Takes a stored {@code name,address} pair apart, and is the ONLY place that knows
+   * how that shape is written — the sender column, each entry of the To/Cc/Bcc/
+   * Reply-To columns, the full mapper and the light contact view all come through
+   * here, so no two of them can disagree about what a person looks like.
    * <p>
-   * Two things it does that the full mapper used to get wrong, both of which a draft
+   * Three things it does that the readers used to get wrong, all of which a draft
    * made ordinary rather than theoretical:
    * <ul>
    * <li>It tolerates a value with no comma, and a blank one. The mapper indexed
@@ -804,14 +810,18 @@ public class EmailBoxStorage {
    * <li>It splits on the LAST comma rather than the first. The address cannot contain
    * one; a display name legitimately can ("Doe, Jane"), and the platform profile name
    * a draft's own sender is stamped with is exactly such a name. Splitting on the
-   * first comma handed back that name's tail as the address.</li>
+   * first comma handed back that name's tail as the address — which the recipient
+   * reader still did, having been fixed nowhere, because it had its own copy of the
+   * split.</li>
+   * <li>It answers {@link #storedName}, so a column that carries the word
+   * {@code null} comes back with no name rather than with that word as one.</li>
    * </ul>
    *
-   * @param stored the stored sender column, may be null or blank
+   * @param stored the stored pair, may be null or blank
    * @return {@code [name, address]}, the name null when the column carries none, the
    *         address never null
    */
-  private static String[] splitStoredSender(String stored) {
+  private static String[] splitStoredPerson(String stored) {
     if (StringUtils.isBlank(stored)) {
       return new String[] { null, "" };
     }
@@ -821,18 +831,43 @@ public class EmailBoxStorage {
       // message cannot be without.
       return new String[] { null, stored };
     }
-    String name = stored.substring(0, lastComma);
-    return new String[] { StringUtils.isBlank(name) ? null : name, stored.substring(lastComma + 1) };
+    return new String[] { storedName(stored.substring(0, lastComma)), stored.substring(lastComma + 1) };
+  }
+
+  /**
+   * A display name as it is read from — and written into — a stored
+   * {@code name,address} pair, with an absent one answered as null.
+   * <p>
+   * The four characters {@code null} count as absent, and that is the whole reason
+   * this exists. They are what concatenating a null name produced for as long as the
+   * writers did it that way, and stopping the writers was not enough: the rows
+   * already written keep the word, and a reader that takes it at face value shows it
+   * to the user as somebody's name — a chip in the composer reading {@code null},
+   * which is what the owner is looking at. Reading it as absent retires those rows
+   * without a rewrite, and without a migration that would have to guess whether a
+   * person is really called that.
+   * <p>
+   * Also applied on the WRITE side, so a client that hands the word back (a legacy
+   * draft resumed in a browser tab opened before the fix, and saved again) cannot put
+   * a fresh one in the table.
+   *
+   * @param name the name half of a stored pair, may be null
+   * @return the name to use, or null when there is none
+   */
+  private static String storedName(String name) {
+    String trimmed = StringUtils.trimToNull(name);
+    return NULL_NAME.equals(trimmed) ? null : trimmed;
   }
 
   /**
    * Writes a sender into the stored {@code name,address} form, the counterpart of
-   * {@link #splitStoredSender}.
+   * {@link #splitStoredPerson}.
    * <p>
    * A missing display name is written as an empty one, never as the four characters
    * {@code null} that string concatenation produces: a name is optional on a message
    * and routinely absent on a draft, and the reader would show that word to the user
-   * as the sender's name.
+   * as the sender's name. {@link #storedName} decides what missing means, so the word
+   * cannot get back in through a client that echoes it either.
    *
    * @param sender the sender, may be null
    * @return the column value, never null
@@ -841,7 +876,7 @@ public class EmailBoxStorage {
     if (sender == null) {
       return "";
     }
-    return StringUtils.defaultString(sender.getName()) + "," + StringUtils.defaultString(sender.getAddress());
+    return StringUtils.defaultString(storedName(sender.getName())) + "," + StringUtils.defaultString(sender.getAddress());
   }
 
   public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId, String attachmentId, String userId) {
@@ -922,7 +957,7 @@ public class EmailBoxStorage {
         String body = emailBoxEntity.getBody();
         excerpt = StringUtils.isBlank(body) ? "" : Jsoup.parse(body).text().trim();
       }
-      String[] emailSenderParts = splitStoredSender(emailBoxEntity.getSender());
+      String[] emailSenderParts = splitStoredPerson(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
       List<Long> categoryIds = categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
                                                                                    String.valueOf(emailBoxEntity.getId()),
@@ -1024,6 +1059,11 @@ public class EmailBoxStorage {
    * The composer sends addresses alone (a half-typed address has no name yet), so
    * every draft ever saved carried {@code null} as the name of everyone it was
    * addressed to.
+   * <p>
+   * What counts as missing is {@link #storedName}'s to say, and it counts that word
+   * as missing: the composer reads a draft's recipients back into its chips and saves
+   * them again, so a row written before this was fixed would otherwise write its own
+   * {@code null} back out on the next autosave and outlive the fix.
    *
    * @param recipients the recipients, may be null or empty
    * @return the column value, never null
@@ -1033,7 +1073,7 @@ public class EmailBoxStorage {
       return "";
     }
     return recipients.stream()
-                     .map(recipient -> StringUtils.defaultString(recipient.getName()) + ","
+                     .map(recipient -> StringUtils.defaultString(storedName(recipient.getName())) + ","
                          + StringUtils.defaultString(recipient.getAddress()))
                      .collect(Collectors.joining(";"));
   }
@@ -1044,8 +1084,16 @@ public class EmailBoxStorage {
    * An entry with no address is dropped rather than returned as a nameless,
    * addressless recipient: a recipient IS an address, and the caller renders what
    * comes back — an entry with nothing in it draws an empty chip nobody can act on.
-   * Blank names are left blank on purpose, so the display-name resolution downstream
-   * (the platform profile, else the address itself) gets its chance.
+   * Missing names are handed on as missing on purpose, so the display-name resolution
+   * downstream (the platform profile, else the address itself) gets its chance — and
+   * a stored {@code null} counts as missing, which is what retires the rows written
+   * while the writer was still producing that word, with no re-save and no migration.
+   * <p>
+   * Each entry goes through {@link #splitStoredPerson} rather than through a split of
+   * its own. It had one — on the FIRST comma, where the sender's reader had already
+   * been moved to the last — so a recipient whose name carries a comma came back
+   * addressed to the tail of their own name. Two readers of one written form is how
+   * the same defect got fixed on one of them and stayed on the other.
    *
    * @param recipientsString the stored column, may be null or blank
    * @return the addresses, never null
@@ -1055,14 +1103,13 @@ public class EmailBoxStorage {
       return new InternetAddress[0];
     }
     return Arrays.stream(recipientsString.split(";")).map(entry -> {
-      String[] parts = entry.split(",", 2);
-      String name = parts.length > 0 ? parts[0] : "";
-      String address = parts.length > 1 ? parts[1] : "";
+      String[] parts = splitStoredPerson(entry);
+      String address = parts[1];
       if (StringUtils.isBlank(address)) {
         return null;
       }
       try {
-        return new InternetAddress(address, name);
+        return new InternetAddress(address, parts[0]);
       } catch (Exception e) {
         return null;
       }

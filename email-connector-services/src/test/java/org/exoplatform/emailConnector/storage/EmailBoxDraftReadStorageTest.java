@@ -91,8 +91,17 @@ public class EmailBoxDraftReadStorageTest {
 
   private static final String LISTED_RECIPIENTS_USER = "erin";
 
+  private static final String LEGACY_NULL_NAME_USER = "frank";
+
+  private static final String COMMA_RECIPIENT_USER = "grace";
+
+  private static final String ECHOED_NULL_NAME_USER = "heidi";
+
   @Autowired
   private EmailBoxStorage     emailBoxStorage;
+
+  @Autowired
+  private EmailBoxDAO         emailBoxDao;
 
   @MockBean
   private CategoryLinkService categoryLinkService;
@@ -234,6 +243,93 @@ public class EmailBoxDraftReadStorageTest {
     assertEquals("carol@example.org", listedDraft.getCc().get(0).getAddress());
     // And nothing else about the listing moved: mail is still listed without them.
     assertNull(listedMail.getTo(), "a message in a listing is still read without its recipients");
+  }
+
+  /**
+   * A row ALREADY WRITTEN with the word {@code null} where a display name goes —
+   * {@code null,veronika@example.org}, read off the owner's own mailbox — comes back
+   * with no name rather than with that word as one.
+   * <p>
+   * The write path stopped producing it, and that was left as the whole fix on the
+   * reasoning that each row would be rewritten by its next save. Too optimistic: a
+   * draft nobody saves again keeps the word for good, and the composer renders it as
+   * the name of the person the mail is addressed to — a chip reading {@code null},
+   * which is what the owner reported seeing. Written here through the DAO, because
+   * the storage layer can no longer produce such a row and the point is precisely
+   * that the ones on disk predate it.
+   */
+  @Test
+  void aStoredNameOfTheWordNullIsReadAsNoNameAtAll() {
+    EmailBoxEntity legacy = new EmailBoxEntity();
+    legacy.setUserId(LEGACY_NULL_NAME_USER);
+    legacy.setFolder(MailFolder.DRAFTS);
+    legacy.setDraftLocalId("draft-legacy-null");
+    legacy.setDraftState(DraftState.LOCAL_ONLY);
+    legacy.setDraftRevision(1L);
+    legacy.setDraftUpdatedDate(new Date());
+    legacy.setReceivedDate(new Date());
+    legacy.setRead(true);
+    legacy.setSubject("Re: a reply written before the fix");
+    legacy.setBody("<p>text</p>");
+    legacy.setSender("null,alice@example.org");
+    legacy.setTo("null,veronika@example.org");
+    legacy.setCc("null,carol@example.org");
+    emailBoxDao.save(legacy);
+
+    Email read = emailBoxStorage.getDraftByLocalId(LEGACY_NULL_NAME_USER, "draft-legacy-null");
+
+    assertNotNull(read);
+    assertEquals("veronika@example.org", read.getTo().get(0).getAddress());
+    assertEquals("veronika@example.org",
+                 read.getTo().get(0).getName(),
+                 "a recipient with no name is called by their address, not by the word null");
+    assertEquals("carol@example.org", read.getCc().get(0).getName());
+    assertEquals("alice@example.org", read.getSender().getName(), "and the same for the row's own sender");
+  }
+
+  /**
+   * A RECIPIENT whose display name contains a comma keeps their address — the same
+   * defect the sender reader was fixed for, on the other reader of the same written
+   * form.
+   * <p>
+   * Both columns are written as {@code name,address}, and the two readers disagreed
+   * about where the boundary is: the sender's splits on the last comma, the
+   * recipients' had its own split on the FIRST. So "Doe, Jane" came back addressed to
+   * the tail of her own name — and a name with a comma in it is exactly what the
+   * contacts picker puts in a chip.
+   */
+  @Test
+  void aRecipientWhoseNameHasACommaKeepsTheirAddress() {
+    Email draft = draft(COMMA_RECIPIENT_USER, "draft-comma-recipient", "Reporting", "<p>text</p>");
+    draft.setTo(List.of(new EmailRecipient("Doe, Jane", "jane@example.org", null, false)));
+    emailBoxStorage.saveDraft(draft);
+
+    Email read = emailBoxStorage.getDraftByLocalId(COMMA_RECIPIENT_USER, "draft-comma-recipient");
+
+    assertEquals(1, read.getTo().size());
+    assertEquals("jane@example.org", read.getTo().get(0).getAddress(), "the address is everything after the LAST comma");
+    assertEquals("Doe, Jane", read.getTo().get(0).getName());
+  }
+
+  /**
+   * The word is not written back when a client hands it in either.
+   * <p>
+   * Which it will: the composer fills its chips from the draft it resumed and saves
+   * them again on the next keystroke, so a browser holding a page loaded before the
+   * fix — or any other client of the draft API — sends back the name it was given. A
+   * write path that trusted it would put a fresh {@code null} in the table for every
+   * legacy row someone opens, and the fix would never converge.
+   */
+  @Test
+  void theWordNullIsNotWrittenBackWhenAClientSendsIt() {
+    Email draft = draft(ECHOED_NULL_NAME_USER, "draft-echoed-null", "Re: something", "<p>text</p>");
+    draft.setTo(List.of(new EmailRecipient("null", "veronika@example.org", null, false)));
+    emailBoxStorage.saveDraft(draft);
+
+    EmailBoxEntity stored = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(ECHOED_NULL_NAME_USER, "draft-echoed-null")
+                                       .get(0);
+
+    assertEquals(",veronika@example.org", stored.getTo(), "a name that is the word null is no name, and is stored as none");
   }
 
   /**

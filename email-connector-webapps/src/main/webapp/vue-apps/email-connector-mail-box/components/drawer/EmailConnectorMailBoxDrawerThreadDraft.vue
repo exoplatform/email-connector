@@ -52,6 +52,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { personLabel } from '../../js/EmailRecipientDisplay.js';
+
 export default {
   props: {
     // The draft row, as the conversation query returned it.
@@ -70,7 +72,7 @@ export default {
      */
     recipientsLabel() {
       const names = (this.draft?.to || [])
-        .map(recipient => recipient.name || recipient.address)
+        .map(recipient => personLabel(recipient))
         .filter(Boolean);
       return names.length
         ? this.$t('emailConnector.mailBox.list.drawer.thread.draft.to', {0: names.join(', ')})

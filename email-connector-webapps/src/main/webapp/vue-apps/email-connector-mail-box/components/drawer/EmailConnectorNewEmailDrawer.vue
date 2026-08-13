@@ -108,6 +108,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { personName } from '../../js/EmailRecipientDisplay.js';
+
 const DEFAULT_EDITOR_MAX_HEIGHT = 300;
 
 // How long a pause in typing counts as "the user has stopped for a moment". This is
@@ -276,7 +278,7 @@ export default {
             '<br><br>',
             this.$t('emailConnector.mailBox.forwardEmail.drawer.forwardedMessage'),
             '<br>',
-            `${this.$t('emailConnector.mailBox.forwardEmail.drawer.from')} ${email.sender.name?.trim()} &lt;${email.sender.address?.trim()}&gt;`,
+            `${this.$t('emailConnector.mailBox.forwardEmail.drawer.from')} ${personName(email.sender)} &lt;${email.sender.address?.trim()}&gt;`,
             '<br>',
             `${this.$t('emailConnector.mailBox.forwardEmail.drawer.date')} ${this.$emailConnectorMailBoxService.formatDateString(email.receivedDate, '', this.$t('emailConnector.mailBox.forwardEmail.drawer.date.at'), true)}`
           ];
@@ -286,11 +288,11 @@ export default {
           }
           if (email.to?.length) {
             bodyParts.push('<br>');
-            bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.to.label')} ${email.to.map(item => `${item.name?.trim()} <span>&lt;<a href="mailto:${item.address?.trim()}">${item.address?.trim()}</a>&gt;</span>`).join(', ')}`);
+            bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.to.label')} ${email.to.map(item => this.quotedRecipient(item)).join(', ')}`);
           }
           if (email.cc?.length) {
             bodyParts.push('<br>');
-            bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${email.cc.map(item => `${item.name?.trim()} <span>&lt;<a href="mailto:${item.address?.trim()}">${item.address?.trim()}</a>&gt;</span>`).join(', ')}`);
+            bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${email.cc.map(item => this.quotedRecipient(item)).join(', ')}`);
           }
           bodyParts.push('<br><br><br>');
           bodyParts.push(email.content.body || '');
@@ -385,7 +387,12 @@ export default {
       const seen = new Set();
       return (people || []).filter(person => person?.address?.trim())
         .map(person => ({
-          name: person.name?.trim(),
+          // personName rather than the raw name, because this is the way IN: a reply
+          // seeds its chips from the message it answers and a resumed draft from its
+          // own stored row, so anything wrong with a name here is typed back into the
+          // draft on the next autosave. A name that is the word null is dropped at the
+          // door instead of being carried around and rendered.
+          name: personName(person),
           address: person.address.trim(),
           avatarUrl: person.avatarUrl,
         }))
@@ -746,6 +753,20 @@ export default {
       }).finally(() => this.loading = false);
     },
     /**
+     * One addressed person in the quoted header a forward carries: their name in
+     * front of their address, or the address alone when they have no name — which
+     * this line used to print as the word undefined.
+     *
+     * @param {object} recipient - an addressed person of the forwarded message
+     * @returns {string} the markup for that person
+     */
+    quotedRecipient(recipient) {
+      const address = recipient.address?.trim();
+      const name = personName(recipient);
+      const link = `<span>&lt;<a href="mailto:${address}">${address}</a>&gt;</span>`;
+      return name ? `${name} ${link}` : link;
+    },
+    /**
      * Narrows recipient chips to what the send API consumes.
      *
      * @param {Array} recipients - the field's chips
@@ -761,14 +782,23 @@ export default {
      * addresses. Avatars stay out: they are resolved from the address on the way
      * back in, and storing a URL would only let it go stale.
      *
+     * A name is stored only when it is one somebody chose. The chip of a bare typed
+     * address reads as that address, and writing that back as a display name would
+     * store an invention — after which the row can no longer say whether the person
+     * has a name, and a later lookup that finds their real one has to fight it.
+     *
      * @param {Array} recipients - the field's chips
      * @returns {Array} [{name, address}] entries
      */
     toDraftRecipients(recipients) {
-      return (recipients || []).map(recipient => ({
-        name: recipient.name?.trim(),
-        address: recipient.address?.trim(),
-      })).filter(recipient => recipient.address);
+      return (recipients || []).map(recipient => {
+        const address = recipient.address?.trim();
+        const name = personName(recipient);
+        return {
+          name: name === address ? null : name,
+          address: address,
+        };
+      }).filter(recipient => recipient.address);
     },
     /**
      * Widens the quoted blocks the editor produced into something a mail client
