@@ -20,6 +20,7 @@ package org.exoplatform.emailConnector.listener;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.emailConnector.plugin.EmailApplicationBadgePlugin;
@@ -29,6 +30,7 @@ import org.exoplatform.services.listener.Event;
 import org.exoplatform.services.listener.Listener;
 import org.exoplatform.services.listener.ListenerService;
 
+import io.meeds.appcenter.plugin.ApplicationBadgePlugin;
 import io.meeds.appcenter.service.ApplicationBadgeService;
 
 import jakarta.annotation.PostConstruct;
@@ -41,6 +43,7 @@ import jakarta.annotation.PostConstruct;
  */
 @Component
 @Asynchronous
+@ConditionalOnClass(ApplicationBadgePlugin.class)
 public class EmailApplicationBadgeListener extends Listener<String, Object> {
 
   @Autowired
