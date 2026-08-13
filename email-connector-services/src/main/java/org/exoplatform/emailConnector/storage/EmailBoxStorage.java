@@ -363,7 +363,9 @@ public class EmailBoxStorage {
   }
 
   public long countUnreadEmails(String userId) {
-    return emailBoxDao.countUnreadByUserId(userId);
+    // The inbox is the only folder the eXo client can mark read, so it is the
+    // only one whose unread count a user can ever bring back to zero
+    return emailBoxDao.countUnreadByUserIdAndFolder(userId, MailFolder.INBOX);
   }
 
   public void deleteEmailsByIds(List<Long> emailsIds) {
