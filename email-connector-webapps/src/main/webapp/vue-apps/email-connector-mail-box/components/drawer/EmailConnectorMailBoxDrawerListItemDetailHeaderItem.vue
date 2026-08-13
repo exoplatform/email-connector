@@ -31,10 +31,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <!-- Truncated rather than wrapped or overflowing: a long address must not
              push the card button out of the row, which is exactly what a button
              placed after free-flowing text does. -->
+        <!-- Name and address are interpolated, never built as an HTML string: both
+             come straight from the mail's headers, so whoever sent the mail chooses
+             them. Rendered as markup, a From name is script the reader runs on the
+             portal page — and the drawer is not the sandboxed frame the body gets.
+             The link around the name is ours, so it stays real markup; only the
+             href is bound, and only to a platform profile URL we resolved here. -->
         <span
           class="text-truncate"
-          style="min-width: 0"
-          v-html="parsedValue(value)"></span>
+          style="min-width: 0">
+          <a
+            v-if="value.profileUrl"
+            :href="value.profileUrl"
+            target="_blank"
+            rel="noopener noreferrer">{{ value.name }}</a>
+          <span
+            v-else
+            class="text-color">{{ value.name }}</span>
+          <!-- Spaced by a margin rather than by a blank in the template: the
+               template compiler condenses whitespace between elements, so a plain
+               space would have left the name glued to the address. -->
+          <span class="ms-1">{{ value.address }}</span>
+        </span>
         <!-- The way from a mail to the person who sent it. Added beside the
              existing name rather than replacing it: a colleague's name already
              links to their profile, and taking that away to gain a contact card
@@ -94,9 +112,6 @@ export default {
           name: value.name,
         },
       }));
-    },
-    parsedValue(value) {
-      return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${value.name}</a> ${value.address}` || `<span class="text-color">${value.name}</span> ${value.address}`;
     },
   },
 };
