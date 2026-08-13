@@ -146,15 +146,19 @@ export function getEmailBox(folder, favoriteOnly) {
     // Decorate each listed email with what its conversation looks like from outside
     // the folder on screen: the full cross-folder message total, so the badge shows
     // the whole conversation size (Gmail-style) rather than only the messages the
-    // listing happens to hold, and whether the conversation carries an unsent draft.
-    // Both come from one server-side aggregate, decorated by lookup here — the row a
-    // draft belongs to is almost never the draft's own row (an inbox listing holds no
-    // DRAFTS rows at all), so there is nothing in the list itself to read it off.
+    // listing happens to hold, whether the conversation carries an unsent draft, and
+    // who it is with. All three come from the same server-side summary, decorated by
+    // lookup here — the row a draft belongs to is almost never the draft's own row
+    // (an inbox listing holds no DRAFTS rows at all), and a DRAFTS listing holds
+    // nothing but drafts, so there is nothing in the list itself to read either off.
+    // Participants are stamped on every row and read only by draft ones: the server
+    // only gathers them for conversations that carry a draft.
     const summaries = box?.threadSummaries || {};
     (box?.emails || []).forEach(email => {
       const summary = summaries[email.threadId];
       email.threadCount = summary?.messageCount;
       email.threadHasDraft = !!summary?.hasDraft;
+      email.threadParticipants = summary?.participants || [];
     });
     return box;
   });
@@ -168,7 +172,7 @@ export function getEmailBox(folder, favoriteOnly) {
  * threads themselves come out ordered by their most recent message.
  *
  * @param {Array} emails the flat email list, newest first
- * @returns {Array} threads, each { threadId, emails, latest, mailRemoteIds, count, unreadCount, hasDraft }
+ * @returns {Array} threads, each { threadId, emails, latest, mailRemoteIds, count, unreadCount, hasDraft, participants }
  */
 export function groupEmailsByThread(emails) {
   const byKey = new Map();
@@ -176,7 +180,7 @@ export function groupEmailsByThread(emails) {
     const key = email.threadId || email.mailHeaderId || String(email.mailRemoteId);
     let thread = byKey.get(key);
     if (!thread) {
-      thread = { threadId: key, emails: [], latest: email, mailRemoteIds: [], count: 0, unreadCount: 0, inboxCount: 0, hasDraft: false };
+      thread = { threadId: key, emails: [], latest: email, mailRemoteIds: [], count: 0, unreadCount: 0, inboxCount: 0, hasDraft: false, participants: [] };
       byKey.set(key, thread);
     }
     thread.emails.push(email);
@@ -192,6 +196,14 @@ export function groupEmailsByThread(emails) {
     // the fallback grouping key (no threadId yet, so no summary either) cannot clear
     // what a sibling row already reported.
     thread.hasDraft = thread.hasDraft || !!email.threadHasDraft;
+    // Who the conversation is with, out of the same summary and accumulated for the
+    // same reason: a row that fell back to the grouping key carries no summary and
+    // must not blank what a sibling row already reported. First non-empty wins —
+    // every row of a group shares one threadId and therefore one summary, so there
+    // is no second answer to choose between.
+    if (!thread.participants.length && email.threadParticipants?.length) {
+      thread.participants = email.threadParticipants;
+    }
     if (!email.read) {
       thread.unreadCount++;
     }

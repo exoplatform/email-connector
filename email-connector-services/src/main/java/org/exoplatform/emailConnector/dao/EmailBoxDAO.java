@@ -326,6 +326,49 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<Object[]> summarizeThreadsByUserId(@Param("userId")
   String userId);
 
+  /**
+   * Who wrote the messages of each conversation that carries an unsent draft, with
+   * the date each of them first appears in it.
+   * <p>
+   * This is what a DRAFT row is labelled with. A draft's own sender is the account
+   * owner, always — so labelling the row with it named the user to themselves on
+   * every draft they had, and never named the person the conversation is actually
+   * with. The names have to come from the conversation, and a Drafts listing holds
+   * DRAFTS rows and nothing else, so they cannot be read off the list any more than
+   * the draft flag could: the conversation's other messages are in INBOX, SENT or
+   * ARCHIVE.
+   * <p>
+   * Restricted to draft-carrying conversations by the subquery, and that restriction
+   * is the reason this is affordable rather than an optimisation on top of something
+   * affordable. The listing is polled while a sync runs; an unrestricted version
+   * would answer a row per (conversation, sender) pair of the whole cache — on a
+   * 5000-message mailbox, thousands of rows serialised into every poll for a fact
+   * only draft rows read. Restricted, a mailbox with no drafts gets no rows at all
+   * and one with three drafts gets a handful. The invariant it buys and that the
+   * caller depends on: {@code participants} is populated exactly for the
+   * conversations {@code hasDraft} is true of, which is exactly the set of rows that
+   * read it.
+   * <p>
+   * Drafts are excluded from the participant side ({@code draftLocalId IS NULL}) —
+   * a message being written is not somebody the conversation is with, and its sender
+   * is the owner the whole change exists to stop displaying.
+   * <p>
+   * It answers one row per (conversation, sender) pair rather than a concatenated
+   * list because there is no portable aggregate for "join these strings"; the
+   * grouping is what makes the row count the number of distinct senders instead of
+   * the number of messages. {@code MIN(receivedDate)} rides along so the caller can
+   * order the names by when each person first appears — a listing that re-orders its
+   * own participant names between two polls is a flicker, and an ungrouped result
+   * set has no order to rely on.
+   *
+   * @param userId the mailbox owner
+   * @return rows of {@code [threadId, storedSender, firstSeenDate]}, one per
+   *         (conversation, sender) pair of every conversation carrying a draft
+   */
+  @Query("SELECT participant.threadId, participant.sender, MIN(participant.receivedDate) FROM EmailBoxEntity participant WHERE participant.userId = :userId AND participant.threadId IS NOT NULL AND participant.draftLocalId IS NULL AND participant.threadId IN (SELECT draft.threadId FROM EmailBoxEntity draft WHERE draft.userId = :userId AND draft.draftLocalId IS NOT NULL AND draft.threadId IS NOT NULL) GROUP BY participant.threadId, participant.sender")
+  List<Object[]> findDraftThreadParticipantsByUserId(@Param("userId")
+  String userId);
+
   // Per-folder message counts, so the list's folder switch only offers folders that
   // actually have mail (e.g. no empty Archive tab on Gmail, which has no \Archive).
   @Query("SELECT email.folder, COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId GROUP BY email.folder")

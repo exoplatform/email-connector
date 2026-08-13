@@ -2101,6 +2101,12 @@ public class EmailBoxService {
    * Drafts. The conversations that DO appear carry their draft as a summary flag
    * rather than as a row (see {@link EmailBoxStorage#getThreadSummaries}): the list
    * says a reply is unfinished, the reader shows the reply itself.
+   * <p>
+   * The same summary is what a DRAFTS listing labels its rows with. A draft's own
+   * sender is the account owner, so a row rendered from it named the user to
+   * themselves and never named the person the conversation is with; the summary
+   * carries the conversation's other correspondents instead, which is why the
+   * owner's address has to be passed down to it.
    *
    * @param username user getting user emails
    * @param folder the folder to list: {@code INBOX}, {@code SENT}, {@code ARCHIVE}
@@ -2130,7 +2136,7 @@ public class EmailBoxService {
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
                         userEmailSetting.getEmailConnectorWebmailUrl(),
-                        emailBoxStorage.getThreadSummaries(username),
+                        emailBoxStorage.getThreadSummaries(username, userEmailSetting.getEmailAddress()),
                         emailBoxStorage.getFolderMessageCounts(username));
   }
 

@@ -16,9 +16,14 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -568,26 +573,128 @@ public class EmailBoxStorage {
    * What the list needs to know about each of the user's conversations that the
    * folder it is listing cannot tell it: the full cross-folder message count
    * (Gmail-style, rather than only the messages that happen to be in the folder on
-   * screen) and whether the conversation carries a draft.
+   * screen), whether the conversation carries a draft, and — where it does — who the
+   * conversation is with.
    * <p>
-   * One query for both, keyed by thread id so the caller can decorate a page of
-   * rows by lookup instead of by a query per row — see
-   * {@link EmailBoxDAO#summarizeThreadsByUserId} for why the two facts have to come
-   * out together.
+   * Keyed by thread id so the caller decorates a page of rows by lookup instead of
+   * by a query per row. Two statements for the whole listing, not one, and the split
+   * is about cost rather than tidiness: the count is
+   * {@code COUNT(DISTINCT Message-ID)} over the conversation's rows, and adding the
+   * sender to that {@code GROUP BY} would break it. A sent draft is cached twice for
+   * a while — the DRAFTS row and the SENT copy that went out under the very
+   * Message-ID it minted — and the two rows carry the sender written by two
+   * different code paths, so grouping by sender would count them as two messages and
+   * the number beside the participants would jump as the user pressed Send, which is
+   * the exact behaviour {@link EmailBoxDAO#summarizeThreadsByUserId} was shaped to
+   * avoid. The second statement is scoped to draft-carrying conversations and
+   * normally answers nothing at all.
    *
    * @param userId the mailbox owner
+   * @param userEmail the owner's own address, kept OUT of the participant names —
+   *          Gmail's convention is "me", never your own display name, and a draft's
+   *          sender is always the owner
    * @return a map of thread id to its summary, never null
    */
-  public Map<String, ThreadSummary> getThreadSummaries(String userId) {
+  public Map<String, ThreadSummary> getThreadSummaries(String userId, String userEmail) {
+    Map<String, List<String>> participants = getDraftThreadParticipants(userId, userEmail);
     Map<String, ThreadSummary> summaries = new HashMap<>();
     for (Object[] row : emailBoxDao.summarizeThreadsByUserId(userId)) {
       String threadId = (String) row[0];
       // The draft column is a SUM, so it can be null on a dialect that returns no
       // rows to add up; "no drafts" is the honest reading of that.
       boolean hasDraft = row[2] != null && ((Number) row[2]).intValue() > 0;
-      summaries.put(threadId, new ThreadSummary(threadId, ((Number) row[1]).intValue(), hasDraft));
+      summaries.put(threadId,
+                    new ThreadSummary(threadId,
+                                      ((Number) row[1]).intValue(),
+                                      hasDraft,
+                                      participants.getOrDefault(threadId, List.of())));
     }
     return summaries;
+  }
+
+  /**
+   * Who each draft-carrying conversation is with, oldest correspondent first — the
+   * names a draft row is labelled with in place of its own sender.
+   * <p>
+   * Three things happen to the raw rows here rather than in SQL, all of them because
+   * SQL is the wrong place for them:
+   * <ul>
+   * <li>The owner is dropped. Their address is the account binding's, which the
+   * database does not know; and it is the sender of every draft and of every sent
+   * copy, so a conversation would otherwise name the user to themselves. Gmail says
+   * "me" and only ever alongside somebody else — that is a change to how EVERY row
+   * of the list is labelled, not just a draft's, and is deliberately not made here.
+   * A conversation the owner is alone in therefore contributes no name and the row
+   * reads "Draft", which is what Gmail shows for a draft that answers nothing.</li>
+   * <li>The same person is folded into one name. A correspondent can be cached both
+   * with a display name and without one (a message whose From carries no personal
+   * part), which are two different stored senders for one address; a naive list
+   * would name them twice, once properly and once as a bare address. The address is
+   * the identity, and a name is preferred to an address for it.</li>
+   * <li>The order is fixed. The rows come out of a {@code GROUP BY} with no order of
+   * their own, and this listing is polled — names that re-shuffle between two polls
+   * are a visible flicker. Oldest first is also the order the conversation itself
+   * reads in.</li>
+   * </ul>
+   * The names are resolved exactly as the listing resolves a row's own sender —
+   * {@code EmailConnectorUtils.getEmailSender} with no profile lookup, the same
+   * arguments {@code fromEntity} passes for a listed row — so a draft row and the
+   * conversation's own row cannot end up calling the same person two different
+   * things. No directory lookup, no query per name.
+   *
+   * @param userId the mailbox owner
+   * @param userEmail the owner's own address, excluded from every conversation
+   * @return a map of thread id to its participant names, holding only the
+   *         conversations that carry a draft, never null
+   */
+  private Map<String, List<String>> getDraftThreadParticipants(String userId, String userEmail) {
+    List<Object[]> rows = new ArrayList<>(emailBoxDao.findDraftThreadParticipantsByUserId(userId));
+    rows.sort(Comparator.comparing((Object[] row) -> (Date) row[2], Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(row -> StringUtils.defaultString((String) row[1])));
+    Map<String, Map<String, String>> namesByAddress = new HashMap<>();
+    for (Object[] row : rows) {
+      String[] senderParts = splitStoredSender((String) row[1]);
+      String address = senderParts[1];
+      if (StringUtils.isBlank(address) || StringUtils.equalsIgnoreCase(address, userEmail)) {
+        continue;
+      }
+      // Insertion-ordered, so the map IS the display order once it is filled. Keyed
+      // on the address folded with ROOT rather than the default locale: the mailbox
+      // is read under whatever locale the server runs in, and a Turkish one folds I
+      // to a dotless letter, which would make two spellings of one address two people
+      // on some deployments and not on others.
+      Map<String, String> names = namesByAddress.computeIfAbsent((String) row[0], threadId -> new LinkedHashMap<>());
+      String key = address.toLowerCase(Locale.ROOT);
+      // Overwrite only a placeholder — the address standing in for a name we did not
+      // have yet — never a real name with a later row's, which would let the last
+      // message win over the first.
+      if (!names.containsKey(key) || names.get(key).equals(address)) {
+        names.put(key, participantName(senderParts));
+      }
+    }
+    Map<String, List<String>> participants = new HashMap<>();
+    namesByAddress.forEach((threadId, names) -> participants.put(threadId, List.copyOf(names.values())));
+    return participants;
+  }
+
+  /**
+   * What to call the person behind a stored sender column, as the list calls them.
+   * <p>
+   * It goes through the same helper the row mapper does instead of reading the name
+   * half of the column directly: the helper decodes an encoded display name and
+   * falls back to the address when there is none, and a second implementation of
+   * that would be a second answer to "what is this person called" on the same
+   * screen. No profile is resolved, because a listed row's sender is not resolved
+   * either.
+   *
+   * @param storedSenderParts the {@code [name, address]} of a stored sender column
+   * @return the name to show
+   */
+  @SneakyThrows
+  private String participantName(String[] storedSenderParts) {
+    EmailSender sender = EmailConnectorUtils.getEmailSender(new InternetAddress(storedSenderParts[1], storedSenderParts[0]),
+                                                           false);
+    return sender == null ? storedSenderParts[1] : sender.getName();
   }
 
   /**

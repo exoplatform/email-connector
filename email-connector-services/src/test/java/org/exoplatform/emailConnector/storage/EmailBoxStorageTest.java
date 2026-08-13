@@ -65,6 +65,10 @@ public class EmailBoxStorageTest {
 
   private static final Long   ID = 2l;
 
+  // The address of the mailbox the listing belongs to — the one name a row must
+  // never be labelled with.
+  private static final String OWNER_ADDRESS = "owner@example.org";
+
   @MockBean
   private EmailBoxDAO         emailBoxDAO;
 
@@ -468,7 +472,7 @@ public class EmailBoxStorageTest {
     when(emailBoxDAO.summarizeThreadsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-with-draft", 3L, 1L },
                                                                          new Object[] { "thread-without-draft", 2L, 0L }));
 
-    var summaries = emailBoxStorage.getThreadSummaries("root");
+    var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
 
     assertEquals(2, summaries.size());
     assertEquals(3, summaries.get("thread-with-draft").messageCount());
@@ -487,10 +491,109 @@ public class EmailBoxStorageTest {
   void getThreadSummariesTreatsAnAbsentDraftColumnAsNoDraft() {
     when(emailBoxDAO.summarizeThreadsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 1L, null }));
 
-    var summaries = emailBoxStorage.getThreadSummaries("root");
+    var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
 
     assertEquals(1, summaries.get("thread-1").messageCount());
     assertFalse(summaries.get("thread-1").hasDraft());
+  }
+
+  /**
+   * The names a draft row is labelled with: the conversation's other correspondents,
+   * oldest first, and never the account owner — whose address is the sender of every
+   * draft and of every sent copy, and whose name on a draft row is the whole defect
+   * this exists to fix ("benjamin benjamin, Draft" on a reply to Véronika).
+   * <p>
+   * Ordering is asserted rather than assumed because the rows arrive from a
+   * {@code GROUP BY} with no order of their own, and this listing is polled: names
+   * that re-shuffle between two polls are a flicker on screen.
+   * <p>
+   * Whether the QUERY answers the right conversations is settled against a real
+   * database in {@code EmailBoxThreadSummaryDAOTest}. What is asserted here is the
+   * part that lives in Java and cannot be expressed in SQL at all.
+   */
+  @Test
+  void getThreadSummariesNamesTheOtherPeopleInADraftsConversation() {
+    when(emailBoxDAO.summarizeThreadsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 3L, 1L }));
+    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
+        "Benjamin,owner@example.org", date(1) }, new Object[] { "thread-1", "Gianni,gianni@example.org", date(3) },
+                                                                                              new Object[] { "thread-1",
+                                                                                                  "Véronika,veronika@example.org",
+                                                                                                  date(2) }));
+
+    var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
+
+    assertEquals(List.of("Véronika", "Gianni"),
+                 summaries.get("thread-1").participants(),
+                 "the conversation's other people, in the order they first wrote in it, the owner left out");
+  }
+
+  /**
+   * A draft that answers nothing: its conversation holds no message but the draft
+   * itself, so there is nobody to name and the row shows the marker alone — Gmail's
+   * shape for a new message being written, and what the product owner asked for in
+   * as many words ("no need to tell me my name").
+   * <p>
+   * The empty list matters as much as a populated one: it is what the client tests
+   * to decide whether the marker gets a leading comma.
+   */
+  @Test
+  void getThreadSummariesNamesNobodyOnAConversationTheOwnerIsAloneIn() {
+    when(emailBoxDAO.summarizeThreadsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 1L, 1L }));
+    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
+        "Benjamin,owner@example.org", date(1) }));
+
+    var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
+
+    assertTrue(summaries.get("thread-1").participants().isEmpty(), "a draft that answers nothing is named by nothing");
+  }
+
+  /**
+   * One person cached twice, once with a display name and once without — which is
+   * ordinary, since a From header carries a personal part only when the sender's
+   * client wrote one. They are one correspondent and must be named once, by the name
+   * rather than by the bare address they were also seen under.
+   * <p>
+   * Two rows for one address would otherwise read "Véronika, veronika@example.org,
+   * Draft": the same person twice, in a line whose whole job is to say who the
+   * conversation is with.
+   */
+  @Test
+  void getThreadSummariesNamesTheSamePersonOnce() {
+    when(emailBoxDAO.summarizeThreadsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 3L, 1L }));
+    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
+        ",veronika@example.org", date(1) }, new Object[] { "thread-1", "Véronika,veronika@example.org", date(2) }));
+
+    var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
+
+    assertEquals(List.of("Véronika"), summaries.get("thread-1").participants(), "one address is one person, named by their name");
+  }
+
+  /**
+   * A conversation that carries no draft has no names, and nothing is expected to
+   * give it any: the query that gathers them is scoped to draft-carrying
+   * conversations precisely so that a mailbox with no drafts pays nothing for this,
+   * and only draft rows read the field.
+   */
+  @Test
+  void getThreadSummariesLeavesAnOrdinaryConversationUnnamed() {
+    when(emailBoxDAO.summarizeThreadsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 2L, 0L }));
+
+    var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
+
+    assertTrue(summaries.get("thread-1").participants().isEmpty());
+  }
+
+  /**
+   * A fixed instant, so the participant ordering under test is the one the dates
+   * dictate rather than whatever order the stubbed rows happen to be listed in.
+   *
+   * @param dayOfMonth the day of January 2026 the message arrived
+   * @return that date
+   */
+  private Date date(int dayOfMonth) {
+    return java.util.Date.from(java.time.LocalDate.of(2026, 1, dayOfMonth)
+                                                  .atStartOfDay(java.time.ZoneOffset.UTC)
+                                                  .toInstant());
   }
 
   private Email email(String username) {

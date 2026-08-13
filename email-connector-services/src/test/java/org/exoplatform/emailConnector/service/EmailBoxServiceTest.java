@@ -251,30 +251,35 @@ public class EmailBoxServiceTest {
 
   /**
    * The listing carries the conversation summaries the folder it lists cannot hold:
-   * the cross-folder message count, and whether a conversation has a reply the user
-   * never sent. One read of the summary for the whole page — the alternative is a
-   * lookup per visible row.
+   * the cross-folder message count, whether a conversation has a reply the user
+   * never sent, and who it is with. One read of the summary for the whole page — the
+   * alternative is a lookup per visible row.
+   * <p>
+   * The owner's own address goes down with the read, and the verify is on the pair
+   * rather than on the username alone: it is what keeps the user's name out of the
+   * participant list of their own drafts, and the mailbox binding is the only place
+   * that knows the address.
    */
   @Test
   void getEmailBoxCarriesTheConversationSummaries() throws Exception {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    ThreadSummary summary = new ThreadSummary("thread-1", 2, true);
-    when(emailBoxStorage.getThreadSummaries(TEST_USER)).thenReturn(Map.of("thread-1", summary));
+    ThreadSummary summary = new ThreadSummary("thread-1", 2, true, List.of("Veronika"));
+    when(emailBoxStorage.getThreadSummaries(TEST_USER, "testEmail")).thenReturn(Map.of("thread-1", summary));
 
     EmailBox emailBox = emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX);
 
-    verify(emailBoxStorage, times(1)).getThreadSummaries(TEST_USER);
+    verify(emailBoxStorage, times(1)).getThreadSummaries(TEST_USER, "testEmail");
     assertEquals(summary, emailBox.getThreadSummaries().get("thread-1"));
     assertTrue(emailBox.getThreadSummaries().get("thread-1").hasDraft());
   }
 
   /**
-   * The Drafts folder lists its own rows, and nothing else changes: the summaries
-   * ride along there exactly as they do in the inbox. What keeps the "Draft" marker
-   * off every row of that listing is the row itself being a draft, which the client
-   * can see without being told — not a folder-shaped exception here.
+   * The Drafts folder lists its own rows, and the summary is what those rows are
+   * labelled with: a draft's own sender is the account owner, so the name on the row
+   * comes from the conversation the summary describes rather than from the row
+   * itself.
    */
   @Test
   void getEmailBoxOnTheDraftsFolderListsTheDraftRowsThemselves() throws Exception {
@@ -286,13 +291,20 @@ public class EmailBoxServiceTest {
     draft.setDraftLocalId("draft-1");
     draft.setThreadId("thread-1");
     when(emailBoxStorage.getEmails(TEST_USER, MailFolder.DRAFTS)).thenReturn(List.of(draft));
-    when(emailBoxStorage.getThreadSummaries(TEST_USER)).thenReturn(Map.of("thread-1", new ThreadSummary("thread-1", 2, true)));
+    when(emailBoxStorage.getThreadSummaries(TEST_USER, "testEmail")).thenReturn(Map.of("thread-1",
+                                                                                              new ThreadSummary("thread-1",
+                                                                                                                2,
+                                                                                                                true,
+                                                                                                                List.of("Veronika"))));
 
     EmailBox emailBox = emailBoxService.getEmailBox(TEST_USER, MailFolder.DRAFTS);
 
     assertEquals(1, emailBox.getEmails().size());
     assertEquals("draft-1", emailBox.getEmails().get(0).getDraftLocalId());
     assertTrue(emailBox.getThreadSummaries().get("thread-1").hasDraft());
+    assertEquals(List.of("Veronika"),
+                 emailBox.getThreadSummaries().get("thread-1").participants(),
+                 "the draft row is named after the conversation, which the row itself cannot say");
   }
 
   @Test

@@ -101,7 +101,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                    A plain span with no listener of its own: this list streams
                    thousands of rows, and one handler per row is a real cost. -->
               <v-list-item-title>
-                {{ email.sender.name }}<span
+                {{ participants }}<span
                   v-if="showDraftMarker"
                   class="error--text font-weight-regular">{{ draftMarker }}</span><span
                     v-if="threadCount > 1"
@@ -242,6 +242,42 @@ export default {
     threadCount() {
       return this.thread ? this.thread.count : 1;
     },
+    // Whether this row IS a draft, as opposed to a message whose conversation holds
+    // one. The two are different rows on different screens and are labelled by
+    // different rules; the local id is the same thing the reader, the swipe and the
+    // context menu already key on, rather than which folder happens to be listed.
+    isDraft() {
+      return !!this.email.draftLocalId;
+    },
+    // Who the row names, which is not the same question for a draft as for a message.
+    //
+    // A message names its sender, as it always has. A DRAFT's sender is the account
+    // owner — always, that is what a draft is — so naming it named the user to
+    // themselves on every draft they had, and never named the person the
+    // conversation was actually with: a reply to Véronika read "benjamin benjamin,
+    // Draft 2". A draft is named after its CONVERSATION instead, by the other people
+    // in it, which is what Gmail shows and what the product owner asked for.
+    //
+    // Out of the same per-conversation summary the count and the marker come from,
+    // deliberately: three facts about one conversation rendered side by side, from
+    // one server answer, so a name cannot appear beside a marker that disagrees with
+    // it. NOT out of the draft's own recipients, which are what the user has typed so
+    // far and say nothing about who wrote the mail being answered.
+    //
+    // A draft that answers nothing has no other participants and is named by nothing
+    // at all — the row is then the marker alone, again Gmail's shape. The owner's own
+    // name never appears: Gmail's word for that is "me", and only ever alongside
+    // somebody else, which is a change to how every row of this list is labelled
+    // rather than to how a draft's is. The server leaves the owner out; nothing here
+    // has to know their address.
+    participants() {
+      return this.isDraft ? this.threadParticipants.join(', ') : this.email.sender.name;
+    },
+    // Server-stamped, read off the thread the grouping built or off the lone row,
+    // exactly like the draft flag beside it.
+    threadParticipants() {
+      return (this.thread ? this.thread.participants : this.email.threadParticipants) || [];
+    },
     // Whether this draft answers a conversation there is something to show of.
     //
     // Deliberately NOT "does it have a threadId": every draft has one, because a
@@ -258,7 +294,7 @@ export default {
     // "no conversation" — which is the truth, since opening the reader would show an
     // empty one.
     draftHasConversation() {
-      return !!this.email.draftLocalId && this.threadCount > 1;
+      return this.isDraft && this.threadCount > 1;
     },
     // Whether this conversation carries a reply the user never sent. Server-stamped
     // (the draft is a DRAFTS row and this list holds one folder's rows), so it is
@@ -284,8 +320,13 @@ export default {
     // surfaces (the strip names a thing on screen, this qualifies a participant
     // list), and sharing one key would let a change to either silently rewrite the
     // other.
+    //
+    // The separator goes with a name and not without one. A draft that answers
+    // nothing has nobody to be listed after, and Gmail renders it as the bare word:
+    // a leading comma there would be punctuation attaching a marker to an absence.
     draftMarker() {
-      return `, ${this.$t('emailConnector.mailBox.list.drawer.draft.label')}`;
+      const label = this.$t('emailConnector.mailBox.list.drawer.draft.label');
+      return this.participants ? `, ${label}` : label;
     },
     // A thread is unread when any of its messages is unread; a lone email falls back to its own flag.
     threadUnread() {
@@ -319,7 +360,13 @@ export default {
       }
       return '';
     },
+    // A draft has no sender worth announcing — it is the user's own — and routinely
+    // no subject either, so it is announced as what it is and by the fallback title
+    // the row itself shows rather than by "from me about undefined".
     ariaLabel() {
+      if (this.isDraft) {
+        return `Open unsent draft about ${this.subject}`;
+      }
       return `Open email from ${this.email.sender.name} about ${this.email.subject}`;
     },
   },
@@ -337,7 +384,7 @@ export default {
       if (this.selectMode) {
         this.emitSelect(!this.selected);
       }
-      else if (this.email.draftLocalId) {
+      else if (this.isDraft) {
         this.openDraft();
       }
       else {
@@ -386,7 +433,7 @@ export default {
       // Every action in that menu — reply, forward, archive, delete, categorize —
       // addresses a message by its IMAP UID, which a draft may not have yet, and none
       // of them means anything for an unsent message anyway.
-      if (this.email.draftLocalId) {
+      if (this.isDraft) {
         return;
       }
       if (!this.selectMode && !this.isSwiping) {
@@ -413,7 +460,7 @@ export default {
       // Delete and archive both address messages by IMAP UID, and a draft that has
       // not been uploaded has none. Discarding a draft is its own action, in the
       // composer, where the user can see what they are throwing away.
-      if (this.email.draftLocalId) {
+      if (this.isDraft) {
         this.reset();
         return;
       }
