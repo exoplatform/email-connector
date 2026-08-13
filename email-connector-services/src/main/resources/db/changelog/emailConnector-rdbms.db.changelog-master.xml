@@ -375,4 +375,23 @@
       <column name="PLATFORM_USERNAME" type="VARCHAR(250)"/>
     </addColumn>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-39">
+    <!-- Numbered 39, past every id feature/ai-contribution already uses (0..38). This
+         changeset is new here rather than cherry-picked from upstream, and the contacts
+         backport stacked on this branch ships 1.0.0-25 and 1.0.0-27..29 - two different
+         changesets sharing an id under the same author is a Liquibase collision that would
+         only surface once both had reached develop. -->
+    <!-- The reconcile view this change introduced (findSyncViewByUserIdAndFolder) runs on
+         every routine sync of every connected mailbox: it filters on (USER_ID, FOLDER) and
+         sorts on RECEIVED_DATE. The indexes above cover USER_ID, (USER_ID, THREAD_ID) and
+         (USER_ID, THREAD_INDEX_ROOT) - none covers FOLDER or RECEIVED_DATE, so the database
+         range-scans USER_ID alone and filters and sorts the rest in memory. That is a whole
+         mailbox's rows on the hottest query of the sync path, at a cache size that now
+         defaults to 1000 and that administrators may raise to 5000. -->
+    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE">
+      <column name="USER_ID"/>
+      <column name="FOLDER"/>
+      <column name="RECEIVED_DATE"/>
+    </createIndex>
+  </changeSet>
 </databaseChangeLog>

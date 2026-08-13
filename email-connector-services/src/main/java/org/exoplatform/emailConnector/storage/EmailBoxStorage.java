@@ -54,6 +54,10 @@ import lombok.SneakyThrows;
 @Component
 public class EmailBoxStorage {
 
+  // Largest IN list issued in one statement. Oracle refuses past 1000 literals (ORA-01795);
+  // the margin leaves room for the other bound parameters of the same query.
+  private static final int    IN_CLAUSE_MAX_SIZE = 900;
+
   @Autowired
   private EmailBoxDAO         emailBoxDao;
 
@@ -81,14 +85,23 @@ public class EmailBoxStorage {
    * companion of {@link #markEmailAsNotRecent}, introduced when the sync stopped
    * issuing one UPDATE per already-known message. No-op on an empty list, so a
    * steady-state sync touches nothing.
+   * <p>
+   * Issued in slices: this list is bounded by the mailbox cache size, whose default is now
+   * 1000 and which administrators may raise to 5000, and Oracle rejects an {@code IN} list of
+   * more than 1000 literals (ORA-01795). A first sync of a full cache would otherwise fail the
+   * whole run on the very statement added to make bulk syncs cheaper.
    *
    * @param mailRemoteIds the IMAP UIDs whose recent flag must be cleared
    * @param userId the mailbox owner
    * @param folder the folder discriminator scoping the UIDs
    */
   public void markEmailsAsNotRecent(List<Long> mailRemoteIds, String userId, String folder) {
-    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
-      emailBoxDao.markEmailsAsNotRecent(mailRemoteIds, userId, folder);
+    if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+      return;
+    }
+    for (int start = 0; start < mailRemoteIds.size(); start += IN_CLAUSE_MAX_SIZE) {
+      int end = Math.min(start + IN_CLAUSE_MAX_SIZE, mailRemoteIds.size());
+      emailBoxDao.markEmailsAsNotRecent(mailRemoteIds.subList(start, end), userId, folder);
     }
   }
 

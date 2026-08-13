@@ -32,12 +32,9 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.container.component.RequestLifeCycle;
-import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
-import org.exoplatform.social.metadata.MetadataService;
-import org.exoplatform.social.metadata.model.MetadataItem;
 
 import io.meeds.social.category.service.CategoryService;
 
@@ -65,19 +62,11 @@ public class ToReviewCategoryCleanup {
 
   private static final Scope   CATEGORY_IMPORT_SCOPE   = Scope.APPLICATION.id("CATEGORY_IMPORT");
 
-  // Categories are stored as "category"-typed metadata (the type name is not
-  // exposed as an API constant by the platform), so the pre-delete link count
-  // is read from the metadata items of that type on email objects.
-  private static final String  CATEGORY_METADATA_TYPE  = "category";
-
   @Autowired
   private SettingService       settingService;
 
   @Autowired
   private CategoryService      categoryService;
-
-  @Autowired
-  private MetadataService      metadataService;
 
   @Autowired
   private UserACL              userAcl;
@@ -115,9 +104,14 @@ public class ToReviewCategoryCleanup {
    * Deletes the "To review" category if the importer's mapping shows it was
    * ever created on this installation — absent mapping means a fresh install or
    * an already-cleaned one, so this is a no-op then. The category deletion
-   * cascades its email links at DB level; they are counted beforehand so the
-   * operation is auditable. The mapping is removed only once the category is
-   * confirmed gone, so a failed deletion is retried on the next startup.
+   * cascades its email links at DB level. The mapping is removed only once the
+   * category is confirmed gone, so a failed deletion is retried on the next
+   * startup.
+   * <p>
+   * The links are deliberately not counted for the log: the only lookup available returns
+   * every category link of every email of every user on the instance, unpaginated, and this
+   * runs on every startup while the stale mapping is present — far too much work for one
+   * number in a log line.
    *
    * @throws IllegalAccessException if the super user is unexpectedly not
    *           allowed to delete the category
@@ -127,13 +121,9 @@ public class ToReviewCategoryCleanup {
     if (categoryId <= 0) {
       return;
     }
-    long linkCount = countEmailLinks(categoryId);
     try {
       categoryService.deleteCategory(categoryId, userAcl.getSuperUser());
-      LOG.info("Deleted the retired '{}' email category (id {}) and its {} email link(s)",
-               TO_REVIEW_NAME_ID,
-               categoryId,
-               linkCount);
+      LOG.info("Deleted the retired '{}' email category (id {}) and its email links", TO_REVIEW_NAME_ID, categoryId);
     } catch (ObjectNotFoundException e) {
       // Already deleted (e.g. manually); only the stale mapping is left to remove.
       LOG.info("The retired '{}' email category (id {}) no longer exists, removing its stale import mapping",
@@ -162,25 +152,4 @@ public class ToReviewCategoryCleanup {
     }
   }
 
-  /**
-   * Counts the email links of the given category before it is deleted, purely
-   * for the audit log — a counting failure must not block the deletion itself.
-   *
-   * @param categoryId the category whose email links are counted
-   * @return the number of emails linked to the category, or -1 when the count
-   *         could not be read
-   */
-  private long countEmailLinks(long categoryId) {
-    try {
-      List<MetadataItem> items = metadataService.getMetadataItemsByMetadataTypeAndObjectType(CATEGORY_METADATA_TYPE,
-                                                                                             EmailCategoryPlugin.OBJECT_TYPE);
-      return items == null ? 0 :
-                           items.stream()
-                                .filter(item -> item.getMetadata() != null && item.getMetadata().getId() == categoryId)
-                                .count();
-    } catch (Exception e) {
-      LOG.warn("Unable to count the email links of category {}", categoryId, e);
-      return -1;
-    }
-  }
 }

@@ -27,7 +27,9 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -58,6 +60,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
@@ -973,6 +976,34 @@ public class EmailBoxServiceTest {
 
   @Test
   @SneakyThrows
+  void aStaleReferencesHeaderMergesConversationsThatAreNotRelated() {
+    // The other side of lateMessageReferencingTwoThreadsMergesThemIntoTheOldest: the merge
+    // trusts the References header completely, so any message naming 2+ already-cached
+    // Message-IDs collapses their threads. Here A and B are unrelated conversations and the
+    // third message is what a forwarded digest -- or a client dumping a stale References
+    // list -- produces: it belongs to neither, yet it merges both.
+    //
+    // Pinned deliberately rather than asserted as correct. The merge is one-way (threads are
+    // never split again), so a false merge is irreversible, and whether a bare 2+ hit should
+    // really be enough is a product call. If the rule is tightened to demand a real chain
+    // through both threads, this is the test that must change -- on purpose, not by surprise.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage a = threadedMessage("<unrelated-a@host>", null, null, null, new Date(1000));
+    MimeMessage b = threadedMessage("<unrelated-b@host>", null, null, null, new Date(2000));
+    MimeMessage digest =
+                       threadedMessage("<digest@host>", "<unrelated-a@host> <unrelated-b@host>", null, null, new Date(3000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { a, b, digest });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(3, rows.size());
+    for (Email row : rows) {
+      assertEquals("<unrelated-a@host>",
+                   row.getThreadId(),
+                   "current behavior: a multi-id References header merges the threads it names, related or not");
+    }
+  }
+
+  @Test
+  @SneakyThrows
   void threadIndexGroupingIsOrderIndependent() {
     // Exchange mail with a broken References chain: the only grouping signal is the
     // Thread-Index conversation root. The root lookup matches any cached row carrying
@@ -1837,6 +1868,181 @@ public class EmailBoxServiceTest {
     Email email = email(TEST_USER);
     email.setCategoryIds(categoryIds);
     return email;
+  }
+
+  /**
+   * A mocked message carrying the bulk-mail classification headers. Only non-null values
+   * are stubbed, so an absent header behaves exactly as in production.
+   */
+  @SneakyThrows
+  private MimeMessage bulkSignalMessage(String autoSubmitted, String precedence, String listPost) {
+    MimeMessage message = mock(MimeMessage.class);
+    lenient().when(message.getHeader("Auto-Submitted"))
+             .thenReturn(autoSubmitted == null ? null : new String[] { autoSubmitted });
+    lenient().when(message.getHeader("Precedence")).thenReturn(precedence == null ? null : new String[] { precedence });
+    lenient().when(message.getHeader("List-Post")).thenReturn(listPost == null ? null : new String[] { listPost });
+    return message;
+  }
+
+  @Test
+  @SneakyThrows
+  void isAutoSubmittedReadsTheDeliveryHeaders() {
+    // No headers at all: a message somebody typed.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, null, null)));
+    // RFC 3834: any value other than "no" declares the message machine-generated, and the
+    // comparison is case-insensitive -- providers stamp "Auto-Replied" and "AUTO-GENERATED".
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("auto-generated", null, null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("Auto-Replied", null, null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("AUTO-NOTIFIED", null, null)));
+    // "no" is the explicit opposite and must NOT be read as automated, whatever its case
+    // or surrounding whitespace.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("no", null, null)));
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("NO", null, null)));
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("  no  ", null, null)));
+    // A blank header is not a declaration either.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("   ", null, null)));
+    // Legacy Precedence, again case-insensitively.
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "bulk", null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "Junk", null)));
+    // "list" is deliberately NOT automated: a mailing list stamps it on every message it
+    // relays, including one a colleague typed by hand.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "list", null)));
+  }
+
+  @Test
+  @SneakyThrows
+  void isPostableListNeedsAnActualMailtoAddress() {
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, null)));
+    assertTrue(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "<mailto:team@example.com>")));
+    assertTrue(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "<MAILTO:team@example.com>")));
+    // A list that explicitly refuses posting, and a malformed value: neither is postable,
+    // which is what separates a discussion list from a one-way blast.
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "NO")));
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "team@example.com")));
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "")));
+  }
+
+  @Test
+  @SneakyThrows
+  void synchronizePersistsTheBulkMailSignals() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("Auto-Submitted")).thenReturn(new String[] { "auto-generated" });
+    lenient().when(message.getHeader("List-Id")).thenReturn(new String[] { "<team.example.com>" });
+    lenient().when(message.getHeader("List-Post")).thenReturn(new String[] { "<mailto:team@example.com>" });
+    lenient().when(message.getHeader("List-Unsubscribe")).thenReturn(new String[] { "<mailto:bye@example.com>" });
+    lenient().when(message.getHeader("X-Original-Sender")).thenReturn(new String[] { "author@example.com" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    // The five signals must survive onto the cached row: they are the whole point of this
+    // groundwork, and a downstream categorizer only ever sees the row, never the message.
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    Email cached = created.getValue();
+    assertTrue(cached.isAutoSubmitted());
+    assertTrue(cached.isHasListId());
+    assertTrue(cached.isHasListPost());
+    assertTrue(cached.isHasListUnsubscribe());
+    assertEquals("author@example.com", cached.getOriginalSender());
+  }
+
+  @Test
+  @SneakyThrows
+  void aBackstopOnlyFlushesTheWindowItWasArmedFor() {
+    String user = "backstopuser";
+    // The race the generation stamp exists for: cancel(false) does nothing once the timer
+    // task has started, so a backstop can reach its flush at the very moment a new sync has
+    // installed a fresh window. Driven through the guard directly rather than through the
+    // scheduler -- the timer thread needs a live PortalContainer to get as far as the send,
+    // so a timing-based test would pass or fail on the container, not on the guard.
+    emailBoxService.openNotificationWindow(user, List.of());
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.completeNotificationWindow(user, List.of());
+    long armedGeneration = notificationGeneration();
+
+    // A new sync opens its own window: the old backstop is now stale.
+    emailBoxService.openNotificationWindow(user, List.of());
+    long freshGeneration = notificationGeneration();
+    assertTrue(freshGeneration > armedGeneration);
+
+    // The stale backstop must leave that fresh window alone -- flushing it here is what sent
+    // an early notification and lost the in-flight window, with nothing in the logs.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, armedGeneration));
+    // And the window really is still there: its own generation still flushes it.
+    assertNotNull(emailBoxService.takePendingNotificationIfCurrent(user, freshGeneration));
+    // Once taken it is gone, so two timers cannot both send.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, freshGeneration));
+  }
+
+  @Test
+  @SneakyThrows
+  void everyWindowGetsItsOwnGeneration() {
+    String user = "generationuser";
+    // Each transition installs a new window, so the timer armed by the previous one can
+    // never flush the next: claims and releases re-arm the backstop each time.
+    emailBoxService.openNotificationWindow(user, List.of());
+    long opened = notificationGeneration();
+    emailBoxService.deferNewEmailsNotification(user);
+    long claimed = notificationGeneration();
+    emailBoxService.deferNewEmailsNotification(user);
+    long claimedAgain = notificationGeneration();
+    emailBoxService.completeNotificationWindow(user, List.of());
+    long completed = notificationGeneration();
+    assertTrue(opened < claimed && claimed < claimedAgain && claimedAgain < completed);
+    // Only the newest one is honoured.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, opened));
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, claimed));
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, claimedAgain));
+    assertNotNull(emailBoxService.takePendingNotificationIfCurrent(user, completed));
+  }
+
+  /**
+   * The generation stamped on the most recently installed notification window.
+   */
+  private long notificationGeneration() {
+    return ((AtomicLong) ReflectionTestUtils.getField(emailBoxService, "notificationGenerations")).get();
+  }
+
+  @Test
+  @SneakyThrows
+  void concurrentClaimsAndReleasesSendExactlyOnce() {
+    String user = "raceuser";
+    // The backstop is 15 minutes, far beyond this test, so the single send asserted below is
+    // necessarily the real release path -- the point is that racing threads cannot produce
+    // two sends, nor zero.
+    int groups = 32;
+    emailBoxService.openNotificationWindow(user, List.of());
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch done = new CountDownLatch(groups);
+    List<Thread> threads = new ArrayList<>();
+    for (int i = 0; i < groups; i++) {
+      Thread thread = new Thread(() -> {
+        try {
+          emailBoxService.deferNewEmailsNotification(user);
+          start.await();
+          emailBoxService.notifyNewEmailsClassified(user);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          done.countDown();
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+    // Every claim is taken before any release, so the window can only empty after the
+    // sync is marked complete below.
+    emailBoxService.completeNotificationWindow(user, List.of());
+    start.countDown();
+    assertTrue(done.await(10, TimeUnit.SECONDS));
+    for (Thread thread : threads) {
+      thread.join(10000);
+    }
+    // Exactly one send, whatever order the releases landed in: the claim count and the
+    // window's completion flag are read and written inside the same compute().
+    verify(emailBoxStorage, times(1)).getEmails(user, MailFolder.INBOX);
   }
 
   @Test
