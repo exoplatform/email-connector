@@ -35,6 +35,31 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import { foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
 
+/**
+ * Tags that open a line box of their own. One of them anywhere in a body means the
+ * sender's client expressed the message's line structure in markup — so the raw
+ * newlines around them are the source's own formatting, and collapsing them is what
+ * a mail client is supposed to do.
+ *
+ * DIV is deliberately absent: it is the tag mail clients also use as a plain
+ * envelope around typed text, so it is counted rather than merely detected.
+ */
+const LINE_STRUCTURE_TAGS = [
+  'BR', 'P', 'PRE', 'HR', 'BLOCKQUOTE',
+  'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TD', 'TH', 'CAPTION', 'COL', 'COLGROUP',
+  'UL', 'OL', 'LI', 'DL', 'DT', 'DD',
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'ARTICLE', 'SECTION', 'ASIDE', 'HEADER', 'FOOTER', 'NAV', 'MAIN',
+  'FIGURE', 'FIGCAPTION', 'FIELDSET', 'FORM', 'CENTER', 'ADDRESS',
+];
+
+/**
+ * How many DIVs a body may hold and still count as "typed text in an envelope".
+ * One wraps the whole message and renders as a single block; a second means the
+ * sender's client is using DIVs as the message's lines.
+ */
+const MAX_ENVELOPE_DIVS = 1;
+
 export default {
   data() {
     return {
@@ -146,19 +171,7 @@ export default {
         }
       `;
       const finalCSS = this.expandedDrawer ? baseCSS : baseCSS + responsiveCSS;
-      // Quoted-history folding looks for markup — a gmail_quote, a blockquote, an
-      // element holding the "On … wrote:" line. A plain-text mail has none of those,
-      // so folding never found a boundary in one and returned it untouched; it is
-      // skipped outright now that the text sits in a wrapper, because that wrapper is
-      // the one element it would find, and folding from it would hide the whole mail.
-      // Plain-text quoting (the leading "> ") is therefore still not folded — it never
-      // was, and preserving the line breaks does not change that either way.
-      const renderedBody = this.isPlainTextBody(html)
-        ? this.wrapPlainText(html)
-        : foldQuotedHistory(html, {
-          show: this.$t('emailConnector.mailBox.list.drawer.detail.showQuotedText'),
-          hide: this.$t('emailConnector.mailBox.list.drawer.detail.hideQuotedText'),
-        });
+      const renderedBody = this.renderBody(html);
       return `
         <html>
           <head>
@@ -168,6 +181,92 @@ export default {
           <body>${renderedBody}</body>
         </html>
       `;
+    },
+    /**
+     * Decide how the body reaches the iframe. Three shapes, because mail comes in
+     * three and they want opposite whitespace handling:
+     * <p>
+     * 1. no markup at all — the sender's newlines are the whole layout, so the text
+     *    is escaped and shown preformatted;<br>
+     * 2. markup that draws no lines of its own (typed text in an envelope, the shape
+     *    a reply arrives in) — same treatment, but the markup is kept, not escaped;<br>
+     * 3. real HTML — untouched, and folded as before.
+     * <p>
+     * Folding is skipped for 1 and 2. It looks for a gmail_quote, a blockquote or an
+     * element holding the "On … wrote:" line; a body of those shapes has none, so it
+     * never found a boundary in one and returned it unchanged. Left to run over the
+     * wrapper it would now find exactly one element, the wrapper, and fold from it —
+     * hiding the whole message. Plain-text quoting (the leading "&gt; ") is therefore
+     * still not folded: it never was, and keeping the line breaks does not change it.
+     *
+     * @param {string} html the raw email body
+     * @returns {string} the markup to place in the iframe's body
+     */
+    renderBody(html) {
+      if (this.isPlainTextBody(html)) {
+        return this.wrapPlainText(html);
+      }
+      if (this.isTextInWrapper(html)) {
+        // Not escaped, and deliberately: this exact string is what already went into
+        // the iframe for such a body. Only the whitespace rule around it changes, so
+        // nothing can render here that did not render before.
+        return `<div class="ec-plain-text">${html}</div>`;
+      }
+      return foldQuotedHistory(html, {
+        show: this.$t('emailConnector.mailBox.list.drawer.detail.showQuotedText'),
+        hide: this.$t('emailConnector.mailBox.list.drawer.detail.hideQuotedText'),
+      });
+    },
+    /**
+     * Whether a body that *does* carry markup is really typed text inside an
+     * envelope — the shape a reply arrives in, where a lone wrapper holds a message
+     * whose only line structure is its newlines.
+     * <p>
+     * Three things must hold together, and each one rules out a class of real HTML
+     * mail: the body has newlines to save at all; it holds no tag that opens a line
+     * box, which every newsletter, notification and quoted reply does; and it has at
+     * most one DIV, so a client using DIVs as the message's lines is left alone.
+     * <p>
+     * The residual misfire is a machine-generated body that is pretty-printed across
+     * several source lines yet uses no block tag whatsoever. That combination is rare
+     * — generated HTML reaches for tables or paragraphs immediately — and the cost is
+     * cosmetic, some source indentation becoming visible, not a mangled message.
+     *
+     * @param {string} html the raw email body
+     * @returns {boolean} true when the newlines are the body's only line structure
+     */
+    isTextInWrapper(html) {
+      if (!html || !html.includes('\n')) {
+        return false;
+      }
+      try {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        if (!doc || !doc.body) {
+          return false;
+        }
+        const elements = Array.from(doc.body.querySelectorAll('*'));
+        if (elements.some(el => LINE_STRUCTURE_TAGS.includes(el.tagName))) {
+          return false;
+        }
+        if (elements.filter(el => el.tagName === 'DIV').length > MAX_ENVELOPE_DIVS) {
+          return false;
+        }
+        return this.countTextLines(doc.body.textContent) > 1;
+      } catch (e) {
+        // Same rule as everywhere here: when in doubt, render as before.
+        return false;
+      }
+    },
+    /**
+     * How many lines of actual text a body holds, blank ones ignored. A single line
+     * means there is no line structure to preserve, and pre-wrapping it could only
+     * expose the source's own indentation.
+     *
+     * @param {string} text the body's text content
+     * @returns {number} the count of non-blank lines
+     */
+    countTextLines(text) {
+      return (text || '').split('\n').filter(line => line.trim() !== '').length;
     },
     /**
      * Whether the body arrived as plain text, i.e. carries no HTML the reader is
