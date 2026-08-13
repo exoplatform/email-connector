@@ -35,10 +35,25 @@ public class MailTemplateBuilder extends AbstractTemplateBuilder {
 
   private final TemplateProvider templateProvider;
 
+  /**
+   * Builds the mail message of the "new emails" notification, for the mail
+   * channel the given provider is registered on.
+   *
+   * @param mailTemplateProvider the provider holding the channel key and the
+   *          Groovy template path of this plugin
+   */
   public MailTemplateBuilder(MailTemplateProvider mailTemplateProvider) {
     this.templateProvider = mailTemplateProvider;
   }
 
+  /**
+   * Turns one notification into the mail actually sent to the user: its subject
+   * and its HTML body, both resolved in the receiver's language.
+   *
+   * @param notificationContext the context carrying the {@link NotificationInfo}
+   *          produced by the plugin
+   * @return the {@link MessageInfo} the mail channel sends
+   */
   @Override
   protected MessageInfo makeMessage(NotificationContext notificationContext) {
     NotificationInfo notification = notificationContext.getNotificationInfo();
@@ -60,14 +75,30 @@ public class MailTemplateBuilder extends AbstractTemplateBuilder {
     templateContext.put("EMAILS_LINK", notification.getValueOwnerParameter(NotificationConstants.LINK));
 
     MessageInfo messageInfo = new MessageInfo();
-    // process subject then add the result String to the template context
-    TemplateUtils.processSubject(templateContext);
-    messageInfo.subject((String) templateContext.get("SUBJECT"));
+    // The subject is what processSubject RETURNS: it renders the
+    // Notification.subject.NewEmailsNotificationPlugin bundle entry, substituting
+    // the $VARIABLES put in the context above. Reading "SUBJECT" back out of the
+    // context instead would only echo what we just put there, so the translated
+    // subject would never be used - and the mail would go out with no subject at
+    // all whenever that value is missing, which is exactly what happened here.
+    messageInfo.subject(TemplateUtils.processSubject(templateContext));
     messageInfo.body(TemplateUtils.processGroovy(templateContext));
     notificationContext.setException(templateContext.getException());
     return messageInfo.end();
   }
 
+  /**
+   * This plugin contributes nothing to the daily/weekly digest mail. A digest
+   * summarizing "you received emails" a day late would say less than the mailbox
+   * itself, so the notification is instant-only. Returning false without writing
+   * to the writer is how a plugin opts out: the digest keeps the lines the other
+   * plugins wrote, and no Notification.digest.* bundle entry is ever resolved for
+   * us - which is why none is defined.
+   *
+   * @param notificationContext the context carrying the notifications to digest
+   * @param writer the shared writer collecting every plugin's digest lines
+   * @return always false, this plugin writes no digest line
+   */
   @Override
   protected boolean makeDigest(NotificationContext notificationContext, Writer writer) {
     return false;
