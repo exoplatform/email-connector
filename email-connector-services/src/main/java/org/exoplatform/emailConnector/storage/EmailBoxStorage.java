@@ -666,9 +666,7 @@ public class EmailBoxStorage {
 
   /**
    * Decodes the stored {@code name,address} sender string without touching the
-   * directory. Split on the LAST comma: the address cannot contain one, while a
-   * display name legitimately can ("Doe, Jane") — the first-comma split the full
-   * mapper inherited would hand the rules a truncated address.
+   * directory.
    *
    * @param stored the stored sender string
    * @return the sender, or null for a blank value
@@ -677,13 +675,66 @@ public class EmailBoxStorage {
     if (StringUtils.isBlank(stored)) {
       return null;
     }
+    String[] parts = splitStoredSender(stored);
+    return new EmailSender(StringUtils.isBlank(parts[0]) ? parts[1] : parts[0], parts[1], null, null);
+  }
+
+  /**
+   * Takes the stored {@code name,address} sender column apart, and is the ONLY place
+   * that knows how that column is written — the full mapper and the light contact
+   * view both come through here, so the two can no longer disagree about what a
+   * sender looks like.
+   * <p>
+   * Two things it does that the full mapper used to get wrong, both of which a draft
+   * made ordinary rather than theoretical:
+   * <ul>
+   * <li>It tolerates a value with no comma, and a blank one. The mapper indexed
+   * {@code split(",")[1]} with nothing checked, on the reasoning that every row was
+   * built from a delivered message and so had a From header. A draft is the first row
+   * written HERE, and a blank sender column is written for any DTO that reaches
+   * {@code toEntity} without one — after which every read of that row threw, not just
+   * the read of its sender.</li>
+   * <li>It splits on the LAST comma rather than the first. The address cannot contain
+   * one; a display name legitimately can ("Doe, Jane"), and the platform profile name
+   * a draft's own sender is stamped with is exactly such a name. Splitting on the
+   * first comma handed back that name's tail as the address.</li>
+   * </ul>
+   *
+   * @param stored the stored sender column, may be null or blank
+   * @return {@code [name, address]}, the name null when the column carries none, the
+   *         address never null
+   */
+  private static String[] splitStoredSender(String stored) {
+    if (StringUtils.isBlank(stored)) {
+      return new String[] { null, "" };
+    }
     int lastComma = stored.lastIndexOf(',');
     if (lastComma < 0) {
-      return new EmailSender(stored, stored, null, null);
+      // A single value and no separator: it is the address, which is the only half a
+      // message cannot be without.
+      return new String[] { null, stored };
     }
     String name = stored.substring(0, lastComma);
-    String address = stored.substring(lastComma + 1);
-    return new EmailSender(StringUtils.isBlank(name) ? address : name, address, null, null);
+    return new String[] { StringUtils.isBlank(name) ? null : name, stored.substring(lastComma + 1) };
+  }
+
+  /**
+   * Writes a sender into the stored {@code name,address} form, the counterpart of
+   * {@link #splitStoredSender}.
+   * <p>
+   * A missing display name is written as an empty one, never as the four characters
+   * {@code null} that string concatenation produces: a name is optional on a message
+   * and routinely absent on a draft, and the reader would show that word to the user
+   * as the sender's name.
+   *
+   * @param sender the sender, may be null
+   * @return the column value, never null
+   */
+  private String toSenderString(EmailSender sender) {
+    if (sender == null) {
+      return "";
+    }
+    return StringUtils.defaultString(sender.getName()) + "," + StringUtils.defaultString(sender.getAddress());
   }
 
   public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId, String attachmentId, String userId) {
@@ -706,8 +757,7 @@ public class EmailBoxStorage {
                                                          email.getUserId(),
                                                          email.getSubject(),
                                                          email.getContent() != null ? email.getContent().getBody() : null,
-                                                         email.getSender() != null ? email.getSender().getName() + ","
-                                                             + email.getSender().getAddress() : "",
+                                                         toSenderString(email.getSender()),
                                                          toRecipientsString(email.getTo()),
                                                          toRecipientsString(email.getCc()),
                                                          toRecipientsString(email.getBcc()),
@@ -755,9 +805,17 @@ public class EmailBoxStorage {
           && emailBoxEntity.getAttachments() != null ? emailBoxEntity.getAttachments().stream().map(this::fromEmailAttachmentEntity).filter(Objects::nonNull).toList() : null;
       String excerpt = null;
       if (isExcerpt) {
-        excerpt = Jsoup.parse(emailBoxEntity.getBody()).text().trim();
+        // A row with no body at all. Every message this table held before drafts had
+        // one — it was fetched from the server with the message — so this parsed the
+        // column unguarded, and Jsoup.parse(null) throws. A draft whose author has
+        // typed a subject and no text yet is an ordinary draft, and one of them made
+        // the whole folder listing answer 500 (and the cached search, and the
+        // disconnect cleanup, which map the same way). An empty body has an empty
+        // excerpt, which is what the list already renders as "no content".
+        String body = emailBoxEntity.getBody();
+        excerpt = StringUtils.isBlank(body) ? "" : Jsoup.parse(body).text().trim();
       }
-      String[] emailSenderParts = emailBoxEntity.getSender().split(",");
+      String[] emailSenderParts = splitStoredSender(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
       List<Long> categoryIds = categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
                                                                                    String.valueOf(emailBoxEntity.getId()),
@@ -834,15 +892,42 @@ public class EmailBoxStorage {
     }
   }
 
+  /**
+   * Writes recipients into the stored {@code name,address;name,address} form.
+   * <p>
+   * A recipient with no display name is written with an empty one. It used to be
+   * written with the four characters {@code null} — the result of concatenating a
+   * null — which the reader then handed back as the person's name, because a
+   * recipient parsed out of a delivered message always had a name to write there.
+   * The composer sends addresses alone (a half-typed address has no name yet), so
+   * every draft ever saved carried {@code null} as the name of everyone it was
+   * addressed to.
+   *
+   * @param recipients the recipients, may be null or empty
+   * @return the column value, never null
+   */
   private String toRecipientsString(List<EmailRecipient> recipients) {
     if (recipients == null || recipients.isEmpty()) {
       return "";
     }
     return recipients.stream()
-                     .map(recipient -> recipient.getName() + "," + recipient.getAddress())
+                     .map(recipient -> StringUtils.defaultString(recipient.getName()) + ","
+                         + StringUtils.defaultString(recipient.getAddress()))
                      .collect(Collectors.joining(";"));
   }
 
+  /**
+   * Reads back what {@link #toRecipientsString} wrote.
+   * <p>
+   * An entry with no address is dropped rather than returned as a nameless,
+   * addressless recipient: a recipient IS an address, and the caller renders what
+   * comes back — an entry with nothing in it draws an empty chip nobody can act on.
+   * Blank names are left blank on purpose, so the display-name resolution downstream
+   * (the platform profile, else the address itself) gets its chance.
+   *
+   * @param recipientsString the stored column, may be null or blank
+   * @return the addresses, never null
+   */
   private static InternetAddress[] toRecipientsInternetAddresses(String recipientsString) {
     if (recipientsString == null || recipientsString.trim().isEmpty()) {
       return new InternetAddress[0];
@@ -851,6 +936,9 @@ public class EmailBoxStorage {
       String[] parts = entry.split(",", 2);
       String name = parts.length > 0 ? parts[0] : "";
       String address = parts.length > 1 ? parts[1] : "";
+      if (StringUtils.isBlank(address)) {
+        return null;
+      }
       try {
         return new InternetAddress(address, name);
       } catch (Exception e) {
