@@ -331,13 +331,6 @@ public class EmailBoxService {
   // how the task tells "the window I was armed for" from "whatever is mapped now".
   private final AtomicLong                       notificationGenerations = new AtomicLong();
 
-  // The two delays above, as instance state so a test can shorten them and let a backstop
-  // actually elapse -- the whole point of that timer -- instead of waiting minutes for it.
-  // Production never reassigns them.
-  private long                                   notificationGraceMs     = NOTIFICATION_GRACE_MS;
-
-  private long                                   notificationMaxWaitMs   = NOTIFICATION_MAX_WAIT_MS;
-
   @Autowired
   private CategoryService         categoryService;
 
@@ -3260,7 +3253,7 @@ public class EmailBoxService {
       long boundary = pending == null ? fallbackBoundary : Math.min(pending.maxLocalUid(), fallbackBoundary);
       int claims = pending == null ? 0 : pending.pendingClaims();
       cancelTimer(pending);
-      long delayMs = claims > 0 ? notificationMaxWaitMs : notificationGraceMs;
+      long delayMs = claims > 0 ? NOTIFICATION_MAX_WAIT_MS : NOTIFICATION_GRACE_MS;
       long generation = notificationGenerations.incrementAndGet();
       return new PendingNotification(boundary, claims, true, generation, scheduleNotificationTask(user, delayMs, generation));
     });
@@ -3305,26 +3298,14 @@ public class EmailBoxService {
    */
   private ScheduledFuture<?> scheduleNotificationTask(String username, long delayMs, long generation) {
     return notificationScheduler.schedule(() -> {
-      // Take the window only if it is still the one this task was armed for. cancel(false)
-      // does nothing once the task has started running, so without this check a backstop
-      // firing at the same instant a new sync installs a fresh window would remove that
-      // fresh entry and send on it -- notifying early and dropping the in-flight window,
-      // invisibly: the later release would find no entry and no-op as an "orphaned claim".
-      PendingNotification[] flushed = new PendingNotification[1];
-      pendingNotifications.compute(username, (user, pending) -> {
-        if (pending == null || pending.generation() != generation) {
-          return pending;
-        }
-        flushed[0] = pending;
-        return null;
-      });
-      if (flushed[0] == null) {
+      PendingNotification flushed = takePendingNotificationIfCurrent(username, generation);
+      if (flushed == null) {
         return;
       }
       try {
         RequestLifeCycle.begin(PortalContainer.getInstance());
         try {
-          sendNotification(username, flushed[0].maxLocalUid());
+          sendNotification(username, flushed.maxLocalUid());
         } finally {
           RequestLifeCycle.end();
         }
@@ -3332,6 +3313,36 @@ public class EmailBoxService {
         LOG.warn("Error sending the new-email notification for user {}", username, e);
       }
     }, delayMs, TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Removes and returns the pending window of {@code username}, but only if it is still the
+   * one identified by {@code generation} -- the window the caller's backstop was armed for.
+   * <p>
+   * This is what stops a backstop from flushing a window it was never armed for.
+   * {@code cancel(false)} does nothing once the task has started running, so a timer firing
+   * at the instant a new sync installs a fresh window would otherwise remove that fresh entry
+   * and send on it: an early notification, an in-flight window dropped, and no trace of
+   * either -- the later release finds no entry and no-ops as an "orphaned claim".
+   * <p>
+   * Package-visible so the guard itself can be tested. The scheduler thread it normally runs
+   * on needs a live {@link PortalContainer} to get as far as the send, which a unit test has
+   * no way to provide, so asserting through the timer would prove nothing.
+   *
+   * @param username the mailbox owner
+   * @param generation the window the caller is entitled to flush
+   * @return the flushed window, or {@code null} when a newer one has superseded it
+   */
+  PendingNotification takePendingNotificationIfCurrent(String username, long generation) {
+    PendingNotification[] flushed = new PendingNotification[1];
+    pendingNotifications.compute(username, (user, pending) -> {
+      if (pending == null || pending.generation() != generation) {
+        return pending;
+      }
+      flushed[0] = pending;
+      return null;
+    });
+    return flushed[0];
   }
 
   /**
@@ -3359,7 +3370,7 @@ public class EmailBoxService {
                                        1,
                                        false,
                                        orphanGeneration,
-                                       scheduleNotificationTask(user, notificationMaxWaitMs, orphanGeneration));
+                                       scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS, orphanGeneration));
       }
       cancelTimer(pending);
       long generation = notificationGenerations.incrementAndGet();
@@ -3367,7 +3378,7 @@ public class EmailBoxService {
                                      pending.pendingClaims() + 1,
                                      pending.syncCompleted(),
                                      generation,
-                                     scheduleNotificationTask(user, notificationMaxWaitMs, generation));
+                                     scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS, generation));
     });
   }
 
@@ -3402,7 +3413,7 @@ public class EmailBoxService {
                                      remainingClaims,
                                      pending.syncCompleted(),
                                      generation,
-                                     scheduleNotificationTask(user, notificationMaxWaitMs, generation));
+                                     scheduleNotificationTask(user, NOTIFICATION_MAX_WAIT_MS, generation));
     });
     if (readyToSend[0] == null) {
       return;
