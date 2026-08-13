@@ -116,6 +116,17 @@ export default {
         }
         .ec-quoted-toggle:hover { text-decoration: underline; }
         .ec-quoted-history { margin-top: 4px; }
+        /* A body that carried no markup keeps the only layout it ever had: its own
+           newlines and indentation. pre-wrap rather than a <br> pass because a mail
+           signature, a quoted "> " block or an ASCII table also lean on leading
+           spaces, which converting newlines alone would still collapse. Its own
+           class rather than <pre>, whose rule below force-aligns to the right. */
+        .ec-plain-text {
+          white-space: pre-wrap;
+          word-wrap: break-word;
+          overflow-wrap: break-word;
+          line-height: 1.4;
+        }
       `;
       const responsiveCSS = `
         * { max-width: 100% !important; box-sizing: border-box !important; }
@@ -135,20 +146,103 @@ export default {
         }
       `;
       const finalCSS = this.expandedDrawer ? baseCSS : baseCSS + responsiveCSS;
-      const foldedHtml = foldQuotedHistory(html, {
-        show: this.$t('emailConnector.mailBox.list.drawer.detail.showQuotedText'),
-        hide: this.$t('emailConnector.mailBox.list.drawer.detail.hideQuotedText'),
-      });
+      // Quoted-history folding looks for markup — a gmail_quote, a blockquote, an
+      // element holding the "On … wrote:" line. A plain-text mail has none of those,
+      // so folding never found a boundary in one and returned it untouched; it is
+      // skipped outright now that the text sits in a wrapper, because that wrapper is
+      // the one element it would find, and folding from it would hide the whole mail.
+      // Plain-text quoting (the leading "> ") is therefore still not folded — it never
+      // was, and preserving the line breaks does not change that either way.
+      const renderedBody = this.isPlainTextBody(html)
+        ? this.wrapPlainText(html)
+        : foldQuotedHistory(html, {
+          show: this.$t('emailConnector.mailBox.list.drawer.detail.showQuotedText'),
+          hide: this.$t('emailConnector.mailBox.list.drawer.detail.hideQuotedText'),
+        });
       return `
         <html>
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>${finalCSS}</style>
           </head>
-          <body>${foldedHtml}</body>
+          <body>${renderedBody}</body>
         </html>
       `;
     },
+    /**
+     * Whether the body arrived as plain text, i.e. carries no HTML the reader is
+     * meant to see rendered.
+     * <p>
+     * Keyed on whether parsing the body yields a *known* HTML element, not on
+     * whether it contains a "&lt;". Plain text mentioning "a &lt; b" never opens a
+     * tag at all (the parser needs a letter right after the "&lt;"), and the common
+     * "&lt;someone@example.com&gt;" does tokenize as a tag but as one no browser
+     * recognises — so both stay plain, which is the whole point. Conversely a mail
+     * with a single &lt;br&gt; is markup and is left alone.
+     * <p>
+     * A plain-text mail where somebody typed "&lt;b&gt;" by hand is read as HTML
+     * here. That is the same call every mail client makes, and the safe direction to
+     * be wrong in: it renders as it did before this fix rather than as escaped noise.
+     *
+     * @param {string} html the raw email body
+     * @returns {boolean} true when the body should be shown as preformatted text
+     */
+    isPlainTextBody(html) {
+      if (!html) {
+        return false;
+      }
+      try {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        if (!doc || !doc.body) {
+          return false;
+        }
+        return !Array.from(doc.body.querySelectorAll('*')).some(el => this.isKnownHtmlElement(el.tagName));
+      } catch (e) {
+        // Unparseable is not a reason to mangle the mail: fall back to the previous
+        // behaviour and let it through as HTML.
+        return false;
+      }
+    },
+    /**
+     * Whether a tag name is one the browser actually implements.
+     * <p>
+     * An unrecognised name yields an HTMLUnknownElement, which is exactly how we tell
+     * a real tag from the angle brackets around an email address.
+     *
+     * @param {string} tagName the parsed element's tag name
+     * @returns {boolean} true when the browser has a real element for it
+     */
+    isKnownHtmlElement(tagName) {
+      try {
+        return !(document.createElement(tagName) instanceof HTMLUnknownElement);
+      } catch (e) {
+        // createElement rejects names it considers invalid; nothing the browser
+        // refuses to build is markup we should honour.
+        return false;
+      }
+    },
+    /**
+     * Put a plain-text body into a container that keeps its line breaks.
+     * <p>
+     * Escaped first, and escaped by the DOM rather than by hand: the body is the
+     * sender's text, so a mail whose text happens to read "&lt;script&gt;" must show
+     * those characters, not become the tag. Wrapping unescaped text is how a
+     * line-break fix turns into an injection.
+     *
+     * @param {string} text the raw plain-text email body
+     * @returns {string} the escaped text wrapped in the preformatted container
+     */
+    wrapPlainText(text) {
+      const escaper = document.createElement('div');
+      escaper.textContent = text;
+      return `<div class="ec-plain-text">${escaper.innerHTML}</div>`;
+    },
+    /**
+     * Size the iframe to its content once the document is in. Measured again after a
+     * beat because fonts and images land after load and each one moves the height.
+     *
+     * @returns {void}
+     */
     onLoadIframe() {
       this.recalculateIframeHeight();
 
@@ -156,6 +250,12 @@ export default {
       setTimeout(() => this.recalculateIframeHeight(), 400);
     },
 
+    /**
+     * Match the iframe's height to the mail it holds, so the drawer scrolls as one
+     * page instead of the mail scrolling inside a fixed frame.
+     *
+     * @returns {void}
+     */
     recalculateIframeHeight() {
       const iframe = this.$refs.iframe;
       if (!iframe) {
