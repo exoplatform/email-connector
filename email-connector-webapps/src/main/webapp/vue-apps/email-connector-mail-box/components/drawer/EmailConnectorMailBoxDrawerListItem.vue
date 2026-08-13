@@ -242,6 +242,24 @@ export default {
     threadCount() {
       return this.thread ? this.thread.count : 1;
     },
+    // Whether this draft answers a conversation there is something to show of.
+    //
+    // Deliberately NOT "does it have a threadId": every draft has one, because a
+    // draft that references nothing threads as a conversation of one, so the id is
+    // present either way and says nothing. What tells the two apart is whether the
+    // conversation holds anything BESIDES the draft, and that is exactly what the
+    // count beside the participants already is — the server's per-conversation
+    // aggregate, DISTINCT by Message-ID across every folder, so a plain draft counts
+    // 1 and a reply counts the mail it answers too. Read off the same number the row
+    // renders, so what the user sees and what the click does cannot disagree.
+    //
+    // It is also right in the awkward case rather than merely safe: when the parent
+    // has fallen out of the cache window the count drops back to 1 and this says
+    // "no conversation" — which is the truth, since opening the reader would show an
+    // empty one.
+    draftHasConversation() {
+      return !!this.email.draftLocalId && this.threadCount > 1;
+    },
     // Whether this conversation carries a reply the user never sent. Server-stamped
     // (the draft is a DRAFTS row and this list holds one folder's rows), so it is
     // read off the thread the grouping built, or off the lone row when there is no
@@ -249,14 +267,16 @@ export default {
     threadHasDraft() {
       return this.thread ? !!this.thread.hasDraft : !!this.email.threadHasDraft;
     },
-    // A row that IS a draft does not get told it has one. That is what keeps the
-    // Drafts folder's own listing quiet: every row there is the draft, saying so on
-    // each of them is noise, and Gmail does not do it either. The rule is read off
-    // the row rather than off a "which folder are we listing" prop, so it cannot
-    // drift from the folder the rows actually came from — the same reason the
-    // reader's own isDraft keys on the local id and not on the folder.
+    // Shown wherever the conversation carries one, the Drafts folder's own listing
+    // included. This reverses what slice 6 chose — it suppressed the marker on a row
+    // that IS a draft, on the reasoning that saying so on every row of Drafts is
+    // noise — and it is a product decision, not something the code discovered: in a
+    // list of CONVERSATIONS the marker says "this thread has an unfinished reply",
+    // which is information about the thread rather than about the row, and that is
+    // worth reading inside Drafts as much as outside it. There is nothing left to
+    // decide per row, so the whole rule is now the flag.
     showDraftMarker() {
-      return this.threadHasDraft && !this.email.draftLocalId;
+      return this.threadHasDraft;
     },
     // ", Draft" — built here rather than in the template so the separator sits
     // against the name with no margin of its own, the way a list separator reads.
@@ -317,11 +337,8 @@ export default {
       if (this.selectMode) {
         this.emitSelect(!this.selected);
       }
-      // A draft has no reader: opening it means going back to writing it. It also has
-      // no IMAP UID until it has been uploaded, so the detail path — which addresses
-      // messages by UID — has nothing to open it with.
       else if (this.email.draftLocalId) {
-        this.$root.$emit('resume-draft', this.email);
+        this.openDraft();
       }
       else {
         if (this.expanded) {
@@ -331,6 +348,38 @@ export default {
         else {
           this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl);
         }
+      }
+    },
+    /**
+     * Opens a draft, which means one of two different things — Gmail's rule, asked
+     * for by name.
+     *
+     * A plain draft, a message that answers nothing, goes straight back to the
+     * composer: there is no conversation to put it in and a reader would have one
+     * item in it, the unfinished thing the user came back to write.
+     *
+     * A reply lands in the conversation it answers instead, where the reader already
+     * renders it at the bottom as its own strip and it is resumed from there. Getting
+     * there means opening the reader on the DRAFT's own row — deliberately, rather
+     * than hunting the conversation for a real message to open it on: the reader only
+     * ever needs the row's thread id, it fetches the conversation itself, and looking
+     * for an anchor would mean a second thread request and a message that may be in
+     * any folder. The one thing it costs is the toolbar's mail actions, which address
+     * a message by IMAP UID and are hidden for a draft anchor for exactly the reason
+     * every other mail action already stays off a draft row.
+     *
+     * @returns {void}
+     */
+    openDraft() {
+      if (!this.draftHasConversation) {
+        this.$root.$emit('resume-draft', this.email);
+      }
+      else if (this.expanded) {
+        this.$root.$emit('open-email-thread-content', this.email);
+        this.$root.$emit('set-opened', this.email.mailRemoteId);
+      }
+      else {
+        this.$root.$emit('open-email-thread-drawer', this.email, this.emails, this.syncInProgress, this.webmailUrl);
       }
     },
     openActionMenuDrawer() {

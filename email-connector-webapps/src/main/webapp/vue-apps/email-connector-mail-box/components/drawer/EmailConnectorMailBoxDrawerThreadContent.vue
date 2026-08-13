@@ -126,6 +126,11 @@ export default {
     subject() {
       return this.email?.subject || this.$t('emailConnector.mailBox.list.drawer.noSubject');
     },
+    // What the reader is open ON, as an identity the row cannot be without: a draft's
+    // local id, any other message's folder + UID. See the watcher.
+    openedKey() {
+      return this.email ? this.msgKey(this.email) : null;
+    },
     // The message ids of this conversation, matching Phase 2's grouping key so the
     // reader and the collapsed list row agree on what a thread is.
     threadMailRemoteIds() {
@@ -173,8 +178,12 @@ export default {
     },
   },
   watch: {
-    // Reload whenever a different conversation is opened.
-    'email.mailRemoteId': {
+    // Reload whenever a different conversation is opened. Keyed on the row's own
+    // identity rather than on its IMAP UID: a conversation can now be opened from
+    // its draft, and a draft may have no UID at all — two unpushed ones would then
+    // both watch null, and opening the second would leave the first one's
+    // conversation on screen.
+    openedKey: {
       immediate: true,
       handler() {
         this.loadThread();

@@ -355,6 +355,12 @@ export default {
     this.$root.$on('open-email-detail-drawer', () => {
       this.email = null;
     });
+    // The reader opened on a row it was handed rather than on a UID — a draft's
+    // conversation. Same consequence here: this drawer is no longer the one showing a
+    // message.
+    this.$root.$on('open-email-thread-drawer', () => {
+      this.email = null;
+    });
     // Opening the mailbox, optionally straight onto one message — that is how the
     // global Favorites drawer hands a mail over. The payload used to be the plain
     // "loading" flag and callers still pass it that way, so an object is what marks
