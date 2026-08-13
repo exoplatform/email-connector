@@ -28,6 +28,8 @@ import org.exoplatform.services.listener.Asynchronous;
 import org.exoplatform.services.listener.Event;
 import org.exoplatform.services.listener.Listener;
 import org.exoplatform.services.listener.ListenerService;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 
 import io.meeds.appcenter.service.ApplicationBadgeService;
 
@@ -43,7 +45,14 @@ import jakarta.annotation.PostConstruct;
 @Asynchronous
 public class EmailApplicationBadgeListener extends Listener<String, Object> {
 
-  @Autowired
+  private static final Log        LOG = ExoLogger.getLogger(EmailApplicationBadgeListener.class);
+
+  /**
+   * Optional for the same reason as the plugin it feeds: without the
+   * Application Center there is no badge to refresh, and the mailbox must still
+   * start.
+   */
+  @Autowired(required = false)
   private ApplicationBadgeService applicationBadgeService;
 
   @Autowired
@@ -51,6 +60,10 @@ public class EmailApplicationBadgeListener extends Listener<String, Object> {
 
   @PostConstruct
   public void init() {
+    if (applicationBadgeService == null) {
+      LOG.debug("Application Center badge service not available, Mail badge listener not registered");
+      return;
+    }
     listenerService.addListener(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, this);
   }
 
