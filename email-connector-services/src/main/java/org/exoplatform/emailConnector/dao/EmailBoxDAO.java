@@ -271,11 +271,52 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("mailHeaderIds")
   List<String> mailHeaderIds);
 
-  // Count DISTINCT messages per thread (by Message-ID), matching the reader which
-  // shows the same message once even when it is cached in several folders (e.g. INBOX
-  // and ALL_MAIL). A raw row count would over-report by the cross-folder duplicates.
-  @Query("SELECT email.threadId, COUNT(DISTINCT email.mailHeaderId) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.mailHeaderId IS NOT NULL GROUP BY email.threadId")
-  List<Object[]> countMessagesByThread(@Param("userId")
+  /**
+   * One row per conversation: how many messages it holds, and how many of them are
+   * drafts. The list shows both — the count next to the participants, and a "Draft"
+   * marker when the conversation carries a reply the user never sent.
+   * <p>
+   * They are ONE query on purpose. The list is built from the cached rows of a
+   * single folder and drafts live under {@code DRAFTS}, so an inbox listing never
+   * sees the draft it has to report; the alternative to reading it here is a lookup
+   * per visible row, which is an N+1 over the whole page. This aggregate already
+   * had to run for the count, and carrying the draft out of the same {@code GROUP
+   * BY} costs nothing beyond one more projected column.
+   * <p>
+   * The count is DISTINCT by Message-ID, matching the reader, which shows the same
+   * message once even when it is cached in several folders (INBOX and ALL_MAIL, or
+   * a draft and the SENT copy it turned into — a sent draft goes out under the
+   * Message-ID it minted at its first save, so for as long as both rows exist they
+   * are two rows for one message). A raw row count would over-report by exactly
+   * those duplicates.
+   * <p>
+   * Two details of the DISTINCT expression are load-bearing:
+   * <ul>
+   * <li>It falls back to the draft's local id, because a draft written in ANOTHER
+   * mail client may reach us with no Message-ID at all — half-written mail
+   * legitimately has none, and {@code createDraftFromServerMessage} stores what the
+   * server gave it. {@code COUNT(DISTINCT)} ignores nulls, so without the fallback
+   * such a draft would be reported by the flag and left out of the number beside
+   * it. The local id is a UUID minted here and can never collide with a
+   * Message-ID.</li>
+   * <li>The {@code MAIL_HEADER_ID IS NOT NULL} predicate that used to sit in the
+   * WHERE clause is gone, and it has to be: it would have dropped that same
+   * header-less draft out of the aggregate before either column saw it. Removing it
+   * changes nothing else — {@code COUNT(DISTINCT)} was already ignoring nulls, so
+   * every conversation that has at least one message with a Message-ID reports the
+   * number it reported before, and a conversation of nothing but header-less mail
+   * goes from being absent to reporting 0, which the client already treats the same
+   * way (it falls back to what it can see in the folder).</li>
+   * </ul>
+   * The draft column is a count rather than a boolean because JPQL has no boolean
+   * aggregate; the caller reads it as "more than none".
+   *
+   * @param userId the mailbox owner
+   * @return rows of {@code [threadId, messageCount, draftCount]}, one per
+   *         conversation
+   */
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL GROUP BY email.threadId")
+  List<Object[]> summarizeThreadsByUserId(@Param("userId")
   String userId);
 
   // Per-folder message counts, so the list's folder switch only offers folders that

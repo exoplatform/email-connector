@@ -455,6 +455,44 @@ public class EmailBoxStorageTest {
     assertEquals(1212L, retrievedEmailAttachment.getMailRemoteId());
   }
 
+  /**
+   * The mapping of the summary aggregate onto what the list reads: a count, and a
+   * draft column read as "more than none".
+   * <p>
+   * Whether the QUERY answers the right rows is settled against a real database in
+   * {@code EmailBoxThreadSummaryDAOTest}, not here — a mocked DAO can only be asked
+   * whether three columns are read in the right order, which is all this asserts.
+   */
+  @Test
+  void getThreadSummariesReadsTheCountAndTheDraftOutOfOneRow() {
+    when(emailBoxDAO.summarizeThreadsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-with-draft", 3L, 1L },
+                                                                         new Object[] { "thread-without-draft", 2L, 0L }));
+
+    var summaries = emailBoxStorage.getThreadSummaries("root");
+
+    assertEquals(2, summaries.size());
+    assertEquals(3, summaries.get("thread-with-draft").messageCount());
+    assertTrue(summaries.get("thread-with-draft").hasDraft());
+    assertEquals(2, summaries.get("thread-without-draft").messageCount());
+    assertFalse(summaries.get("thread-without-draft").hasDraft());
+  }
+
+  /**
+   * A null draft column reads as "no drafts". The column is a {@code SUM} over a
+   * {@code CASE}, and a dialect is entitled to answer null where it had nothing to
+   * add up; a NullPointerException in the middle of building the inbox listing is
+   * not an acceptable reading of "this conversation has no draft".
+   */
+  @Test
+  void getThreadSummariesTreatsAnAbsentDraftColumnAsNoDraft() {
+    when(emailBoxDAO.summarizeThreadsByUserId("root")).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 1L, null }));
+
+    var summaries = emailBoxStorage.getThreadSummaries("root");
+
+    assertEquals(1, summaries.get("thread-1").messageCount());
+    assertFalse(summaries.get("thread-1").hasDraft());
+  }
+
   private Email email(String username) {
     EmailAttachment emailAttachment = emailAttachment();
     return new Email(null,

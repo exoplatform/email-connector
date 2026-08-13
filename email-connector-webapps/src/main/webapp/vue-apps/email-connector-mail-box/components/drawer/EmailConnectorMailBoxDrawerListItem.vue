@@ -93,10 +93,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               height="8"
               class="my-0 me-1 error-color-background" />
             <v-list-item-content :class="['py-0', { 'font-weight-bold': threadUnread }]">
+              <!-- The participants line, and after them the conversation's size.
+                   A conversation the user has a reply half-written in says so right
+                   here, last among the participants and in the platform's error
+                   colour — the point being that you can see a reply is unfinished
+                   without opening anything, which is what stops it being forgotten.
+                   A plain span with no listener of its own: this list streams
+                   thousands of rows, and one handler per row is a real cost. -->
               <v-list-item-title>
                 {{ email.sender.name }}<span
-                  v-if="threadCount > 1"
-                  class="text-light-color ms-1 font-weight-regular">{{ threadCount }}</span>
+                  v-if="showDraftMarker"
+                  class="error--text font-weight-regular">{{ draftMarker }}</span><span
+                    v-if="threadCount > 1"
+                    class="text-light-color ms-1 font-weight-regular">{{ threadCount }}</span>
               </v-list-item-title>
             </v-list-item-content>
             <v-list-item-action class="my-0 flex-row align-center">
@@ -232,6 +241,31 @@ export default {
     },
     threadCount() {
       return this.thread ? this.thread.count : 1;
+    },
+    // Whether this conversation carries a reply the user never sent. Server-stamped
+    // (the draft is a DRAFTS row and this list holds one folder's rows), so it is
+    // read off the thread the grouping built, or off the lone row when there is no
+    // thread.
+    threadHasDraft() {
+      return this.thread ? !!this.thread.hasDraft : !!this.email.threadHasDraft;
+    },
+    // A row that IS a draft does not get told it has one. That is what keeps the
+    // Drafts folder's own listing quiet: every row there is the draft, saying so on
+    // each of them is noise, and Gmail does not do it either. The rule is read off
+    // the row rather than off a "which folder are we listing" prop, so it cannot
+    // drift from the folder the rows actually came from — the same reason the
+    // reader's own isDraft keys on the local id and not on the folder.
+    showDraftMarker() {
+      return this.threadHasDraft && !this.email.draftLocalId;
+    },
+    // ", Draft" — built here rather than in the template so the separator sits
+    // against the name with no margin of its own, the way a list separator reads.
+    // The label is a key of its own and not the thread strip's: the two are separate
+    // surfaces (the strip names a thing on screen, this qualifies a participant
+    // list), and sharing one key would let a change to either silently rewrite the
+    // other.
+    draftMarker() {
+      return `, ${this.$t('emailConnector.mailBox.list.drawer.draft.label')}`;
     },
     // A thread is unread when any of its messages is unread; a lone email falls back to its own flag.
     threadUnread() {

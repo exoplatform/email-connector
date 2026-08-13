@@ -41,6 +41,7 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 
@@ -513,19 +514,29 @@ public class EmailBoxStorage {
   }
 
   /**
-   * The total number of cached messages per conversation, across every folder, keyed
-   * by thread id — so the inbox list can show the full conversation count (Gmail-style)
-   * rather than only the messages that happen to be in the inbox.
+   * What the list needs to know about each of the user's conversations that the
+   * folder it is listing cannot tell it: the full cross-folder message count
+   * (Gmail-style, rather than only the messages that happen to be in the folder on
+   * screen) and whether the conversation carries a draft.
+   * <p>
+   * One query for both, keyed by thread id so the caller can decorate a page of
+   * rows by lookup instead of by a query per row — see
+   * {@link EmailBoxDAO#summarizeThreadsByUserId} for why the two facts have to come
+   * out together.
    *
    * @param userId the mailbox owner
-   * @return a map of thread id to its cached message count
+   * @return a map of thread id to its summary, never null
    */
-  public Map<String, Integer> getThreadMessageCounts(String userId) {
-    Map<String, Integer> counts = new HashMap<>();
-    for (Object[] row : emailBoxDao.countMessagesByThread(userId)) {
-      counts.put((String) row[0], ((Number) row[1]).intValue());
+  public Map<String, ThreadSummary> getThreadSummaries(String userId) {
+    Map<String, ThreadSummary> summaries = new HashMap<>();
+    for (Object[] row : emailBoxDao.summarizeThreadsByUserId(userId)) {
+      String threadId = (String) row[0];
+      // The draft column is a SUM, so it can be null on a dialect that returns no
+      // rows to add up; "no drafts" is the honest reading of that.
+      boolean hasDraft = row[2] != null && ((Number) row[2]).intValue() > 0;
+      summaries.put(threadId, new ThreadSummary(threadId, ((Number) row[1]).intValue(), hasDraft));
     }
-    return counts;
+    return summaries;
   }
 
   /**

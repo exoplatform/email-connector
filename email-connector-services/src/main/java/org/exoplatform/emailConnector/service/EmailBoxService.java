@@ -2095,10 +2095,18 @@ public class EmailBoxService {
    * set of stars the last sync saw (a star set elsewhere appears on the next sync,
    * a star set here appears immediately because the toggle writes locally first).
    *
+   * The listing is the folder's rows and nothing else, which is what keeps a
+   * conversation the user has only started — an unsent draft with no mail behind it
+   * — out of the inbox. It has no INBOX row to be listed by, and it belongs in
+   * Drafts. The conversations that DO appear carry their draft as a summary flag
+   * rather than as a row (see {@link EmailBoxStorage#getThreadSummaries}): the list
+   * says a reply is unfinished, the reader shows the reply itself.
+   *
    * @param username user getting user emails
-   * @param folder the folder to list: {@code INBOX}, {@code SENT} or {@code ARCHIVE}
+   * @param folder the folder to list: {@code INBOX}, {@code SENT}, {@code ARCHIVE}
+   *          or {@code DRAFTS}
    * @param starredOnly when {@code true}, only the starred messages are returned
-   * @return the folder's cached messages plus the per-conversation counts
+   * @return the folder's cached messages plus the per-conversation summaries
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
    * @throws IllegalArgumentException if {@code folder} is not a browsable folder
    */
@@ -2122,7 +2130,7 @@ public class EmailBoxService {
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
                         userEmailSetting.getEmailConnectorWebmailUrl(),
-                        emailBoxStorage.getThreadMessageCounts(username),
+                        emailBoxStorage.getThreadSummaries(username),
                         emailBoxStorage.getFolderMessageCounts(username));
   }
 

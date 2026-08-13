@@ -128,6 +128,7 @@ import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -135,6 +136,7 @@ import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
+import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -245,6 +247,52 @@ public class EmailBoxServiceTest {
     emailBoxService.getEmailBox(TEST_USER);
     verify(userEmailSettingService, times(2)).getUserEmailSetting(TEST_USER);
     verify(emailBoxStorage).getEmails(TEST_USER, "INBOX");
+  }
+
+  /**
+   * The listing carries the conversation summaries the folder it lists cannot hold:
+   * the cross-folder message count, and whether a conversation has a reply the user
+   * never sent. One read of the summary for the whole page — the alternative is a
+   * lookup per visible row.
+   */
+  @Test
+  void getEmailBoxCarriesTheConversationSummaries() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    ThreadSummary summary = new ThreadSummary("thread-1", 2, true);
+    when(emailBoxStorage.getThreadSummaries(TEST_USER)).thenReturn(Map.of("thread-1", summary));
+
+    EmailBox emailBox = emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX);
+
+    verify(emailBoxStorage, times(1)).getThreadSummaries(TEST_USER);
+    assertEquals(summary, emailBox.getThreadSummaries().get("thread-1"));
+    assertTrue(emailBox.getThreadSummaries().get("thread-1").hasDraft());
+  }
+
+  /**
+   * The Drafts folder lists its own rows, and nothing else changes: the summaries
+   * ride along there exactly as they do in the inbox. What keeps the "Draft" marker
+   * off every row of that listing is the row itself being a draft, which the client
+   * can see without being told — not a folder-shaped exception here.
+   */
+  @Test
+  void getEmailBoxOnTheDraftsFolderListsTheDraftRowsThemselves() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email draft = new Email();
+    draft.setFolder(MailFolder.DRAFTS);
+    draft.setDraftLocalId("draft-1");
+    draft.setThreadId("thread-1");
+    when(emailBoxStorage.getEmails(TEST_USER, MailFolder.DRAFTS)).thenReturn(List.of(draft));
+    when(emailBoxStorage.getThreadSummaries(TEST_USER)).thenReturn(Map.of("thread-1", new ThreadSummary("thread-1", 2, true)));
+
+    EmailBox emailBox = emailBoxService.getEmailBox(TEST_USER, MailFolder.DRAFTS);
+
+    assertEquals(1, emailBox.getEmails().size());
+    assertEquals("draft-1", emailBox.getEmails().get(0).getDraftLocalId());
+    assertTrue(emailBox.getThreadSummaries().get("thread-1").hasDraft());
   }
 
   @Test
