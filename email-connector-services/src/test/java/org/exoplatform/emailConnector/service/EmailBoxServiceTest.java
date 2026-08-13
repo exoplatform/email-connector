@@ -23,7 +23,10 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -38,6 +41,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
 import javax.mail.Authenticator;
@@ -66,14 +70,21 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 
+import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
@@ -81,6 +92,9 @@ import org.exoplatform.services.scheduler.JobInfo;
 import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.services.scheduler.PeriodInfo;
 
+import io.meeds.social.category.model.Category;
+import io.meeds.social.category.model.CategoryObject;
+import io.meeds.social.category.model.CategoryWithName;
 import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.category.service.CategoryService;
 import lombok.SneakyThrows;
@@ -540,6 +554,117 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, times(3)).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER);
     verify(emailAtatchment).setName("attachment.pdf");
     verify(emailAtatchment).setMimeType("application/pdf");
+  }
+
+  @Test
+  void getDefaultEmailCategoryIds() {
+    // The importer has not run yet: no nameId -> id mapping is stored at all.
+    assertTrue(emailBoxService.getDefaultEmailCategoryIds().isEmpty());
+
+    // A stored id is returned, a missing one is skipped, and a malformed one is
+    // ignored instead of propagating a NumberFormatException.
+    mockCategoryIdSetting("emailImportantCategory", "11");
+    mockCategoryIdSetting("emailInvitationCategory", null);
+    mockCategoryIdSetting("emailNotificationCategory", "notANumber");
+    mockCategoryIdSetting("emailToReviewCategory", "44");
+    assertEquals(List.of(11L, 44L), emailBoxService.getDefaultEmailCategoryIds());
+  }
+
+  @Test
+  @SneakyThrows
+  void getAvailableEmailCategories() {
+    mockCategoryIdSetting("emailImportantCategory", "11");
+    mockCategoryIdSetting("emailInvitationCategory", null);
+    mockCategoryIdSetting("emailNotificationCategory", null);
+    mockCategoryIdSetting("emailToReviewCategory", "44");
+    when(categoryService.getCategory(11L, TEST_USER, Locale.ENGLISH)).thenReturn(new CategoryWithName(11L,
+                                                                                                     0L,
+                                                                                                     "Important",
+                                                                                                     null,
+                                                                                                     0L,
+                                                                                                     0L,
+                                                                                                     null));
+    // A default category the user cannot see is skipped rather than failing the listing.
+    when(categoryService.getCategory(44L, TEST_USER, Locale.ENGLISH)).thenThrow(ObjectNotFoundException.class);
+
+    List<EmailCategory> categories = emailBoxService.getAvailableEmailCategories(TEST_USER, Locale.ENGLISH);
+    assertEquals(1, categories.size());
+    assertEquals(11L, categories.get(0).getId());
+    assertEquals("Important", categories.get(0).getName());
+  }
+
+  @Test
+  @SneakyThrows
+  void linkEmailsToCategory() {
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(), 5L, TEST_USER));
+    verify(categoryLinkService, never()).link(anyLong(), any(CategoryObject.class), anyString());
+
+    // Unknown category: rejected up front, before any email is looked up.
+    when(categoryService.getCategory(5L)).thenReturn(null);
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+
+    when(categoryService.getCategory(5L)).thenReturn(new Category());
+    // An email that is not the user's own (or no longer cached) is skipped, not linked.
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+    verify(categoryLinkService, never()).link(anyLong(), any(CategoryObject.class), anyString());
+
+    mockOwnedEmail();
+    assertEquals(1, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+    ArgumentCaptor<CategoryObject> objectCaptor = ArgumentCaptor.forClass(CategoryObject.class);
+    verify(categoryLinkService).link(eq(5L), objectCaptor.capture(), eq(TEST_USER));
+    assertEquals(EmailCategoryPlugin.OBJECT_TYPE, objectCaptor.getValue().getType());
+    assertEquals("7", objectCaptor.getValue().getId());
+
+    // Already in that category: idempotent, not counted as newly linked.
+    doThrow(ObjectAlreadyExistsException.class).when(categoryLinkService)
+                                               .link(anyLong(), any(CategoryObject.class), anyString());
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+
+    // The category disappeared in between: surfaced as a 400, not a 500.
+    doThrow(ObjectNotFoundException.class).when(categoryLinkService)
+                                          .link(anyLong(), any(CategoryObject.class), anyString());
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+  }
+
+  @Test
+  @SneakyThrows
+  void unlinkEmailsFromCategory() {
+    assertEquals(0, emailBoxService.unlinkEmailsFromCategory(List.of(), 5L, TEST_USER));
+    verify(categoryLinkService, never()).unlink(anyLong(), any(CategoryObject.class), anyString());
+
+    // An email that is not the user's own (or no longer cached) is skipped.
+    assertEquals(0, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER));
+    verify(categoryLinkService, never()).unlink(anyLong(), any(CategoryObject.class), anyString());
+
+    mockOwnedEmail();
+    assertEquals(1, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER));
+    ArgumentCaptor<CategoryObject> objectCaptor = ArgumentCaptor.forClass(CategoryObject.class);
+    verify(categoryLinkService).unlink(eq(5L), objectCaptor.capture(), eq(TEST_USER));
+    assertEquals(EmailCategoryPlugin.OBJECT_TYPE, objectCaptor.getValue().getType());
+    assertEquals("7", objectCaptor.getValue().getId());
+
+    // Not linked to that category: idempotent, not counted as unlinked.
+    doThrow(ObjectNotFoundException.class).when(categoryLinkService)
+                                          .unlink(anyLong(), any(CategoryObject.class), anyString());
+    assertEquals(0, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER));
+  }
+
+  private void mockCategoryIdSetting(String nameId, String storedId) {
+    doReturn(storedId == null ? null : SettingValue.create(storedId)).when(settingService)
+                                                                    .get(any(Context.class), any(Scope.class), eq(nameId));
+  }
+
+  @SneakyThrows
+  private void mockOwnedEmail() {
+    Email email = email(TEST_USER);
+    email.setId(7l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         anyString(),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(email);
   }
 
   private UserEmailSetting userEmailSetting() {

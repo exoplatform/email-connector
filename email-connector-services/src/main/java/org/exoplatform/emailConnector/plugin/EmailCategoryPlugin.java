@@ -1,5 +1,4 @@
 /**
-/**
  * Copyright (C) 2026 eXo Platform SAS
  *
  *  This program is free software: you can redistribute it and/or modify
@@ -19,26 +18,43 @@ package org.exoplatform.emailConnector.plugin;
 
 import java.util.List;
 
+import jakarta.annotation.PostConstruct;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
 
 import io.meeds.social.category.plugin.CategoryPlugin;
+import io.meeds.social.category.service.CategoryPluginService;
 
 @Service
 public class EmailCategoryPlugin implements CategoryPlugin {
 
-  public static final String OBJECT_TYPE = EmailConnectorUtils.EMAIL_FEATURE;
+  public static final String    OBJECT_TYPE = EmailConnectorUtils.EMAIL_FEATURE;
 
   @Autowired
-  private UserACL            userAcl;
-  
+  private UserACL               userAcl;
+
   @Autowired
-  EmailBoxService emailBoxService;
+  private EmailBoxService        emailBoxService;
+
+  @Autowired
+  private CategoryPluginService categoryPluginService;
+
+  /**
+   * Registers this plugin with the platform's category service. Email-connector's
+   * Spring context builds after social's, so the {@code @Autowired List<CategoryPlugin>}
+   * there is resolved before this bean exists and would miss it — leaving the "email"
+   * object type on the linked-ids fallback. Self-registering here makes our plugin the
+   * authoritative source for the email category tree.
+   */
+  @PostConstruct
+  public void init() {
+    categoryPluginService.addPlugin(this);
+  }
 
   @Override
   public String getType() {
@@ -57,16 +73,11 @@ public class EmailCategoryPlugin implements CategoryPlugin {
 
   @Override
   public List<Long> getCategoryIds(long spaceId, String username) {
-    try {
-      EmailBox emailBox = emailBoxService.getEmailBox(username);
-      return emailBox.getEmails()
-                     .stream()
-                     .filter(email -> email.getCategoryIds() != null)
-                     .flatMap(email -> email.getCategoryIds().stream())
-                     .distinct()
-                     .toList();
-    } catch (IllegalAccessException e) {
-      return null;
-    }
+    // The add-on's own default email categories are the complete email-category
+    // vocabulary, so the email tree exposes exactly that current set. Both the
+    // read-only filter and the assign picker read from here; a category removed
+    // from the defaults therefore disappears at once, even if an older email is
+    // still linked to it (its stale link is simply ignored, never re-listed).
+    return emailBoxService.getDefaultEmailCategoryIds();
   }
 }

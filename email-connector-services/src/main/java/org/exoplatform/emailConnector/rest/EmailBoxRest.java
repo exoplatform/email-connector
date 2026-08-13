@@ -45,6 +45,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
+import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -272,6 +273,74 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @GetMapping("/categories")
+  @Secured("users")
+  @Operation(summary = "Lists the categories used on the user's emails", method = "GET", description = "Returns the categories currently applied to the user's emails, resolved to their localized name")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public List<EmailCategory> getEmailCategories(HttpServletRequest request) {
+    try {
+      return emailBoxService.getEmailCategories(request.getRemoteUser(), request.getLocale());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
+  @GetMapping("/categories/available")
+  @Secured("users")
+  @Operation(summary = "Lists the assignable email categories", method = "GET", description = "Returns the add-on's own email categories a user can assign (Important / Invitation / Notification / To review), whether or not already used")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled") })
+  public List<EmailCategory> getAvailableEmailCategories(HttpServletRequest request) {
+    return emailBoxService.getAvailableEmailCategories(request.getRemoteUser(), request.getLocale());
+  }
+
+  @PostMapping("/categories/{categoryId}")
+  @Secured("users")
+  @Operation(summary = "Tags emails with a category", method = "POST", description = "Links the given emails (by IMAP id) to an existing category; use it to categorize a whole conversation by passing its message ids")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Unknown category"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public Map<String, Integer> linkEmailsToCategory(HttpServletRequest request,
+                                                   @Parameter(description = "Category id", required = true)
+                                                   @PathVariable("categoryId")
+                                                   long categoryId,
+                                                   @Parameter(description = "Email remote ids", required = true)
+                                                   @RequestBody
+                                                   List<Long> mailRemoteIds) {
+    try {
+      int linked = emailBoxService.linkEmailsToCategory(mailRemoteIds, categoryId, request.getRemoteUser());
+      Map<String, Integer> response = new HashMap<>();
+      response.put("linked", linked);
+      return response;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  @DeleteMapping("/categories/{categoryId}")
+  @Secured("users")
+  @Operation(summary = "Removes a category from emails", method = "DELETE", description = "Unlinks the given emails (by IMAP id) from a category")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public Map<String, Integer> unlinkEmailsFromCategory(HttpServletRequest request,
+                                                       @Parameter(description = "Category id", required = true)
+                                                       @PathVariable("categoryId")
+                                                       long categoryId,
+                                                       @Parameter(description = "Email remote ids", required = true)
+                                                       @RequestBody
+                                                       List<Long> mailRemoteIds) {
+    try {
+      int unlinked = emailBoxService.unlinkEmailsFromCategory(mailRemoteIds, categoryId, request.getRemoteUser());
+      Map<String, Integer> response = new HashMap<>();
+      response.put("unlinked", unlinked);
+      return response;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
   }
 
