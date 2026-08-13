@@ -155,18 +155,42 @@ public class EmailBoxService {
   // backfill and every subsequent sync on large mailboxes.
   private static final int        NON_INBOX_FOLDER_SYNC_LIMIT                                 = 100;
 
+  // The message headers this service reads by name. Named once so the prefetch list below and
+  // the call sites that read them cannot drift apart: a header missing from the prefetch costs
+  // a server round-trip per message, and nothing fails loudly when that happens.
+  private static final String     HEADER_REFERENCES                                           = "References";
+
+  private static final String     HEADER_IN_REPLY_TO                                          = "In-Reply-To";
+
+  private static final String     HEADER_THREAD_INDEX                                         = "Thread-Index";
+
+  private static final String     HEADER_AUTO_SUBMITTED                                       = "Auto-Submitted";
+
+  private static final String     HEADER_PRECEDENCE                                           = "Precedence";
+
+  private static final String     HEADER_LIST_ID                                              = "List-Id";
+
+  private static final String     HEADER_LIST_POST                                            = "List-Post";
+
+  private static final String     HEADER_LIST_UNSUBSCRIBE                                     = "List-Unsubscribe";
+
+  private static final String     HEADER_ORIGINAL_SENDER                                      = "X-Original-Sender";
+
+  // The IMAP name of the inbox, as opposed to MailFolder.INBOX, our own folder discriminator.
+  private static final String     INBOX_FOLDER_NAME                                           = "INBOX";
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
-                                                                                              List.of("References",
-                                                                                                      "In-Reply-To",
-                                                                                                      "Thread-Index",
-                                                                                                      "Auto-Submitted",
-                                                                                                      "Precedence",
-                                                                                                      "List-Id",
-                                                                                                      "List-Post",
-                                                                                                      "List-Unsubscribe",
-                                                                                                      "X-Original-Sender");
+                                                                                              List.of(HEADER_REFERENCES,
+                                                                                                      HEADER_IN_REPLY_TO,
+                                                                                                      HEADER_THREAD_INDEX,
+                                                                                                      HEADER_AUTO_SUBMITTED,
+                                                                                                      HEADER_PRECEDENCE,
+                                                                                                      HEADER_LIST_ID,
+                                                                                                      HEADER_LIST_POST,
+                                                                                                      HEADER_LIST_UNSUBSCRIBE,
+                                                                                                      HEADER_ORIGINAL_SENDER);
 
   // How long a new-mail notification waits for someone to classify the messages first. Short,
   // because with no such consumer this is pure added latency.
@@ -453,7 +477,7 @@ public class EmailBoxService {
       // INBOX drives the new-mail notifications; Sent and Archive are cached (best
       // effort — a missing folder must not fail the sync) so a conversation shows the
       // user's own replies ("Me") and previously-archived messages inline.
-      syncFolderIfChanged(store, store.getFolder("INBOX"), MailFolder.INBOX, username, userEmailSetting, emailBoxCacheSize, true, syncState);
+      syncFolderIfChanged(store, store.getFolder(INBOX_FOLDER_NAME), MailFolder.INBOX, username, userEmailSetting, emailBoxCacheSize, true, syncState);
       if (!inboxOnly) {
         int nonInboxWindow = Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
         try {
@@ -1433,11 +1457,11 @@ public class EmailBoxService {
       if (isAutoSubmitted(message)) {
         return EmailConnectorUtils.MAIL_TYPE_AUTOMATED;
       }
-      boolean hasListId = firstHeader(message, "List-Id") != null;
+      boolean hasListId = firstHeader(message, HEADER_LIST_ID) != null;
       if (hasListId && isPostableList(message)) {
         return EmailConnectorUtils.MAIL_TYPE_LIST;
       }
-      if (hasListId || firstHeader(message, "List-Unsubscribe") != null) {
+      if (hasListId || firstHeader(message, HEADER_LIST_UNSUBSCRIBE) != null) {
         return EmailConnectorUtils.MAIL_TYPE_BULK;
       }
     } catch (Exception e) {
@@ -1777,7 +1801,7 @@ public class EmailBoxService {
     Folder inbox = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting);
-      inbox = store.getFolder("INBOX");
+      inbox = store.getFolder(INBOX_FOLDER_NAME);
       inbox.open(Folder.READ_ONLY);
       Message message = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
       EmailAttachment emailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(mailRemoteId,
@@ -1991,7 +2015,7 @@ public class EmailBoxService {
       try {
         if (updateRemoteReadStatus) {
           store = userEmailSettingService.connect(userEmailSetting);
-          inbox = store.getFolder("INBOX");
+          inbox = store.getFolder(INBOX_FOLDER_NAME);
           inbox.open(Folder.READ_WRITE);
         }
         for (Long mailRemoteId : mailRemoteIds) {
@@ -2059,7 +2083,7 @@ public class EmailBoxService {
       IMAPFolder inbox = null;
       try {
         store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
-        inbox = (IMAPFolder) store.getFolder("INBOX");
+        inbox = (IMAPFolder) store.getFolder(INBOX_FOLDER_NAME);
         inbox.open(Folder.READ_WRITE);
         IMAPFolder trash = findTrashFolder(store);
         for (Long mailRemoteId : mailRemoteIds) {
@@ -2154,7 +2178,7 @@ public class EmailBoxService {
       IMAPFolder inbox = null;
       try {
         store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
-        inbox = (IMAPFolder) store.getFolder("INBOX");
+        inbox = (IMAPFolder) store.getFolder(INBOX_FOLDER_NAME);
         IMAPFolder archive = findArchiveFolder(store);
         inbox.open(Folder.READ_WRITE);
         for (Long mailRemoteId : mailRemoteIds) {
@@ -2412,14 +2436,14 @@ public class EmailBoxService {
       applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds);
       if (!StringUtils.isEmpty(email.getMailHeaderId())) {
         String parentMessageId = email.getMailHeaderId();
-        message.setHeader("In-Reply-To", parentMessageId);
+        message.setHeader(HEADER_IN_REPLY_TO, parentMessageId);
         // RFC 5322 §3.6.4: References is the parent's own References plus the parent's
         // Message-ID — not just the parent id, otherwise a third message in the chain
         // loses the link to the first and starts a new thread.
         String parentReferences = emailBoxStorage.getMailReferencesByMailHeaderId(parentMessageId, username);
         String referencesHeader = EmailThreadingUtils.buildReferencesHeader(parentReferences, parentMessageId);
         if (!StringUtils.isEmpty(referencesHeader)) {
-          message.setHeader("References", referencesHeader);
+          message.setHeader(HEADER_REFERENCES, referencesHeader);
         }
       }
       Transport.send(message);
@@ -2605,9 +2629,9 @@ public class EmailBoxService {
                                                                                                username,
                                                                                                false);
           String mailHeaderId = ((MimeMessage) message).getMessageID();
-          String inReplyTo = firstHeader(message, "In-Reply-To");
-          String references = firstHeader(message, "References");
-          String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, "Thread-Index"));
+          String inReplyTo = firstHeader(message, HEADER_IN_REPLY_TO);
+          String references = firstHeader(message, HEADER_REFERENCES);
+          String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, HEADER_THREAD_INDEX));
           String threadId = computeThreadId(username, mailHeaderId, messageUid, inReplyTo, references, threadIndexRoot);
           emailBoxStorage.createEmail(new Email(null,
                                                 messageUid,
@@ -2632,10 +2656,10 @@ public class EmailBoxService {
                                                 folderKey,
                                                 threadIndexRoot != null ? threadIndexRoot : "",
                                                 isAutoSubmitted(message),
-                                                firstHeader(message, "List-Id") != null,
+                                                firstHeader(message, HEADER_LIST_ID) != null,
                                                 isPostableList(message),
-                                                firstHeader(message, "List-Unsubscribe") != null,
-                                                firstHeader(message, "X-Original-Sender")));
+                                                firstHeader(message, HEADER_LIST_UNSUBSCRIBE) != null,
+                                                firstHeader(message, HEADER_ORIGINAL_SENDER)));
           newEmailIds.add(messageUid);
 
         }
@@ -2732,14 +2756,14 @@ public class EmailBoxService {
                                          String username,
                                          String folderKey) throws MessagingException {
     if (StringUtils.isEmpty(email.getThreadId())) {
-      String inReplyTo = firstHeader(message, "In-Reply-To");
-      String references = firstHeader(message, "References");
-      String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, "Thread-Index"));
+      String inReplyTo = firstHeader(message, HEADER_IN_REPLY_TO);
+      String references = firstHeader(message, HEADER_REFERENCES);
+      String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, HEADER_THREAD_INDEX));
       String threadId = computeThreadId(username, ((MimeMessage) message).getMessageID(), messageUid, inReplyTo, references, threadIndexRoot);
       emailBoxStorage.updateThreadInfo(username, messageUid, threadId, inReplyTo, references, folderKey,
                                        threadIndexRoot != null ? threadIndexRoot : "");
     } else if (email.getThreadIndexRoot() == null) {
-      String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, "Thread-Index"));
+      String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, HEADER_THREAD_INDEX));
       if (threadIndexRoot != null) {
         mergeThreadsSharingRoot(username, email.getThreadId(), threadIndexRoot);
       }
@@ -3070,11 +3094,11 @@ public class EmailBoxService {
    * @return {@code true} when the message declares itself machine-generated
    */
   static boolean isAutoSubmitted(Message message) throws MessagingException {
-    String autoSubmitted = firstHeader(message, "Auto-Submitted");
+    String autoSubmitted = firstHeader(message, HEADER_AUTO_SUBMITTED);
     if (StringUtils.isNotBlank(autoSubmitted) && !StringUtils.equalsIgnoreCase(autoSubmitted.trim(), "no")) {
       return true;
     }
-    String precedence = firstHeader(message, "Precedence");
+    String precedence = firstHeader(message, HEADER_PRECEDENCE);
     return precedence != null && StringUtils.equalsAnyIgnoreCase(precedence.trim(), "bulk", "junk");
   }
 
@@ -3088,7 +3112,7 @@ public class EmailBoxService {
    * @return {@code true} when List-Post names a postable address
    */
   static boolean isPostableList(Message message) throws MessagingException {
-    String listPost = firstHeader(message, "List-Post");
+    String listPost = firstHeader(message, HEADER_LIST_POST);
     return StringUtils.containsIgnoreCase(listPost, "mailto:");
   }
 
