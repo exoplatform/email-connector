@@ -90,6 +90,7 @@ import javax.mail.search.SearchTerm;
 import javax.mail.search.SubjectTerm;
 
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -3307,7 +3308,7 @@ public class EmailBoxService {
         throw e;
       }
       sent = true;
-      cleanupSentDraft(stored, stateBeforeSend, username, userEmailSetting);
+      cleanupSentDraft(stored, username, userEmailSetting);
     } finally {
       lock.unlock();
       if (sent) {
@@ -3427,17 +3428,17 @@ public class EmailBoxService {
    *
    * @param sentDraft the row that was just sent, as it was read before the send —
    *          which is where its technical id and the UID of its server copy live
-   * @param stateBeforeSend the state the row was in before it was claimed for
-   *          sending — which is what says whether there is a server copy at all
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    */
-  private void cleanupSentDraft(Email sentDraft,
-                                DraftState stateBeforeSend,
-                                String username,
-                                UserEmailSetting userEmailSetting) {
-    if (sentDraft.getMailRemoteId() != null && !DraftState.LOCAL_ONLY.equals(stateBeforeSend) && isServerDraftsEnabled()
-        && !removeServerDraftCopy(sentDraft.getMailRemoteId(), username, userEmailSetting)) {
+  private void cleanupSentDraft(Email sentDraft, String username, UserEmailSetting userEmailSetting) {
+    // Whether there is a copy up there is the UID's answer, not the state's: a row can
+    // be LOCAL_ONLY and still carry the UID of a copy we appended (see
+    // serverDraftCopyUid), and skipping it here left that copy behind in the Drafts
+    // folder of a mail the user had already sent.
+    long serverCopyUid = serverDraftCopyUid(sentDraft);
+    if (serverCopyUid > 0 && isServerDraftsEnabled()
+        && !removeServerDraftCopy(serverCopyUid, sentDraft.getMailHeaderId(), username, userEmailSetting)) {
       LOG.warn("Email sent but its draft copy could not be removed from the Drafts folder for user {}", username);
     }
     try {
@@ -3477,8 +3478,14 @@ public class EmailBoxService {
       if (stored == null) {
         return false;
       }
-      if (stored.getMailRemoteId() != null && !DraftState.LOCAL_ONLY.equals(stored.getDraftState())
-          && isServerDraftsEnabled() && !removeServerDraftCopy(stored.getMailRemoteId(), username, userEmailSetting)) {
+      // Again the UID and not the state: a LOCAL_ONLY row that carries one has a copy
+      // up there just the same, and reading the state here meant a draft the user had
+      // thrown away was left in their Drafts folder — and, being a Drafts message we
+      // no longer had a row for, imported back by the next sync as a draft they had
+      // deliberately discarded.
+      long serverCopyUid = serverDraftCopyUid(stored);
+      if (serverCopyUid > 0 && isServerDraftsEnabled()
+          && !removeServerDraftCopy(serverCopyUid, stored.getMailHeaderId(), username, userEmailSetting)) {
         // The server still has it. Keeping the local row is what stops the two from
         // disagreeing, and what lets the user simply try again.
         throw new IllegalStateException("emailConnector.drafts.discard.serverCopyRemains");
@@ -3584,21 +3591,55 @@ public class EmailBoxService {
     toStore.setCc(draft.getCc());
     toStore.setBcc(draft.getBcc());
     // Whatever was on the server is now stale. A draft that had never reached it stays
-    // LOCAL_ONLY, so the upload path can tell "there is a copy to replace" from "there
-    // has never been one" without asking the server.
+    // LOCAL_ONLY, which is what the composer reads to tell the user their words live
+    // only here. It is NOT what says whether there is a copy to replace up there — the
+    // row's UID is, because a row can be left LOCAL_ONLY while carrying one (see
+    // serverDraftCopyUid); reading the state for that left orphaned copies behind.
     toStore.setDraftState(DraftState.LOCAL_ONLY.equals(stored.getDraftState()) ? DraftState.LOCAL_ONLY : DraftState.DIRTY);
     return toStore;
+  }
+
+  /**
+   * The UID of the copy this draft has on the mail server, or -1 when it has none —
+   * the single answer the three paths that must remove a copy (a push replacing it,
+   * a discard throwing it away, a send taking it with the mail) all ask.
+   * <p>
+   * It is the UID that answers it, and deliberately not {@link DraftState}. The
+   * three paths used to ask the state instead, on the reading that
+   * {@link DraftState#LOCAL_ONLY} means "never uploaded, so nothing up there to
+   * remove". That reading is not true, and the case where it breaks is the ordinary
+   * one it was written for: {@link EmailBoxStorage#markDraftUploaded} records the UID
+   * of the copy it just appended but leaves the state alone when the row's revision
+   * has moved — the user typed while the APPEND was in flight — precisely so the
+   * revision guard cannot mark a row SYNCED over a sentence that never went up. That
+   * leaves a LOCAL_ONLY row carrying a perfectly real UID, and asking the state would
+   * decline to remove the copy it points at: the next push appends a second one, and
+   * the user's other mail clients show the duplicate draft this whole design exists
+   * to prevent.
+   * <p>
+   * Trusting the UID is safe in the other direction too, because it is only ever
+   * written when we appended a copy, and cleared the moment we learn one is gone
+   * (see {@link EmailBoxStorage#detachDraftFromServerCopy}, and
+   * {@link #removePreviousDraftCopy} for the identity check that makes a UID we do
+   * still hold safe to act on).
+   *
+   * @param draft the draft's row
+   * @return the UID of its copy in the Drafts folder, or -1 when there is none
+   */
+  private long serverDraftCopyUid(Email draft) {
+    Long mailRemoteId = draft == null ? null : draft.getMailRemoteId();
+    return mailRemoteId != null && mailRemoteId > 0 ? mailRemoteId : -1;
   }
 
   /**
    * Uploads a draft to the mail server's Drafts folder by APPENDing the whole
    * message, and records the UID of the copy it created.
    * <p>
-   * Append BEFORE anything else is removed, always — the previous copy's removal is
-   * a separate step and a later slice. If this method appends and then everything
-   * afterwards fails, the user sees the same draft twice in their other mail client;
-   * if it were the other way round, they would see it nowhere. A visible duplicate
-   * beats lost content, every time.
+   * Append BEFORE anything else is removed, always — the previous copy goes only once
+   * the new one is up and the row points at it. If this method appends and then
+   * everything afterwards fails, the user sees the same draft twice in their other mail
+   * client; if it were the other way round, they would see it nowhere. A visible
+   * duplicate beats lost content, every time.
    * <p>
    * Getting the UID back is the awkward part. With UIDPLUS (RFC 4315) the server
    * returns it in the APPENDUID response and JavaMail hands it over as an
@@ -3619,12 +3660,9 @@ public class EmailBoxService {
   private Email uploadDraft(Email saved, String username, UserEmailSetting userEmailSetting) {
     Store store = null;
     IMAPFolder draftsFolder = null;
-    // A previous copy exists only if the row has been uploaded before. LOCAL_ONLY
-    // means it never was, and that distinction is the whole reason the state is
-    // stored rather than inferred from the UID being set.
-    long previousUid = DraftState.DIRTY.equals(saved.getDraftState()) && saved.getMailRemoteId() != null ?
-                                                                                                        saved.getMailRemoteId() :
-                                                                                                        -1;
+    // The UID, and not the state, is what says a copy is up there — see
+    // serverDraftCopyUid for why reading the state here left copies behind.
+    long previousUid = serverDraftCopyUid(saved);
     boolean expungeOnClose = false;
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
@@ -3657,7 +3695,7 @@ public class EmailBoxService {
       // does the previous one go. Never the other way round.
       if (previousUid > 0 && previousUid != appendedUid) {
         try {
-          expungeOnClose = removePreviousDraftCopy(draftsFolder, previousUid, username);
+          expungeOnClose = removePreviousDraftCopy(draftsFolder, previousUid, saved.getMailHeaderId(), username);
         } catch (Exception e) {
           // The new copy is up and the row points at it, so the user's draft is
           // correct. What is left behind is a duplicate — the failure we deliberately
@@ -3700,17 +3738,17 @@ public class EmailBoxService {
    * <p>
    * A previous copy that is simply not there any more (another client removed it) is
    * not a failure: there is nothing left to do, and saying so at debug level is enough.
+   * Neither is a UID that now holds somebody else's message — see
+   * {@link #isOurDraftCopy} for why that is checked before anything is flagged.
+   * <p>
+   * Throws rather than swallowing, because the two callers want opposite things from a
+   * failure: the upload has already put the new copy up and must not fail over a
+   * leftover duplicate, while the discard must not claim the draft is gone when it is
+   * not.
    *
    * @param draftsFolder the open Drafts folder
    * @param previousUid the UID of the copy being superseded
-   * @param username the mailbox owner
-   * Throws rather than swallowing, because the two callers want opposite things
-   * from a failure: the upload has already put the new copy up and must not fail
-   * over a leftover duplicate, while the discard must not claim the draft is gone
-   * when it is not.
-   *
-   * @param draftsFolder the open Drafts folder
-   * @param previousUid the UID of the copy being superseded
+   * @param expectedMessageId the Message-ID the row says that copy carries
    * @param username the mailbox owner
    * @return true when the caller must close the folder with expunge, because the
    *         server offered no way to remove just this one message
@@ -3718,10 +3756,14 @@ public class EmailBoxService {
    */
   private boolean removePreviousDraftCopy(IMAPFolder draftsFolder,
                                           long previousUid,
+                                          String expectedMessageId,
                                           String username) throws MessagingException {
     Message previous = draftsFolder.getMessageByUID(previousUid);
     if (previous == null) {
       LOG.debug("The previous draft copy of user {} (uid {}) is already gone", username, previousUid);
+      return false;
+    }
+    if (!isOurDraftCopy(previous, expectedMessageId, previousUid, username)) {
       return false;
     }
     previous.setFlag(Flags.Flag.DELETED, true);
@@ -3737,17 +3779,73 @@ public class EmailBoxService {
   }
 
   /**
+   * Whether the message sitting at a remembered UID is really the draft copy we put
+   * there — asked immediately before it is flagged {@code \Deleted}, and the only
+   * thing standing between a remembered number and somebody else's mail.
+   * <p>
+   * A UID is not a name. It identifies a message only within one UIDVALIDITY of one
+   * folder, so a mailbox that was rebuilt, restored from backup or migrated hands the
+   * same numbers out again to entirely different messages. The sync notices that (every
+   * UID vanishing at once) and clears the ones it holds, but it notices on its own
+   * schedule, and a push can run first. Message-ID equality is what settles it, exactly
+   * as it does for the stray-copy janitor: it is the only identity a message really
+   * carries, and every copy we append is pinned to the one on the row.
+   * <p>
+   * Both copies of a draft carry that same pinned Message-ID, which is not a problem
+   * here and is the reason the caller compares UIDs first: the copy just appended is
+   * excluded by number before identity is ever asked about.
+   * <p>
+   * A row that carries no Message-ID at all cannot be checked, and is let through. That
+   * is not a hole so much as the older, narrower trust: the UID was written by our own
+   * append and no other path invents one. Refusing there would guarantee the leftover
+   * copy this method exists to remove, in exchange for a doubt we have no way to
+   * resolve.
+   *
+   * @param message the message found at the remembered UID
+   * @param expectedMessageId the Message-ID the row says its copy carries
+   * @param uid the remembered UID, for the log
+   * @param username the mailbox owner
+   * @return true when the message is the draft copy the row is pointing at
+   * @throws MessagingException if the message's headers cannot be read
+   */
+  private boolean isOurDraftCopy(Message message,
+                                 String expectedMessageId,
+                                 long uid,
+                                 String username) throws MessagingException {
+    if (StringUtils.isBlank(expectedMessageId)) {
+      return true;
+    }
+    String[] messageIds = message.getHeader("Message-ID");
+    String actualMessageId = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
+    if (StringUtils.equals(actualMessageId, StringUtils.trim(expectedMessageId))) {
+      return true;
+    }
+    // Warn rather than debug: nothing was lost, but the mailbox has renumbered itself
+    // under us and that is worth seeing in a log next to whatever else went odd that day.
+    LOG.warn("The Drafts message at uid {} of user {} is {} and not the draft copy {} the row remembers; leaving it alone",
+             uid,
+             username,
+             actualMessageId,
+             expectedMessageId);
+    return false;
+  }
+
+  /**
    * Removes one copy of a draft from the mail server's Drafts folder, on its own
    * connection — the discard path's counterpart to the removal the upload does
    * inline while it already has the folder open.
    *
    * @param mailRemoteId the UID of the copy to remove
+   * @param expectedMessageId the Message-ID the row says that copy carries
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
-   * @return true when the copy is gone (or was already gone, or there is no Drafts
-   *         folder to hold one), false when the server still has it
+   * @return true when the copy is gone (or was already gone, or was never ours, or
+   *         there is no Drafts folder to hold one), false when the server still has it
    */
-  private boolean removeServerDraftCopy(long mailRemoteId, String username, UserEmailSetting userEmailSetting) {
+  private boolean removeServerDraftCopy(long mailRemoteId,
+                                        String expectedMessageId,
+                                        String username,
+                                        UserEmailSetting userEmailSetting) {
     Store store = null;
     IMAPFolder draftsFolder = null;
     boolean expungeOnClose = false;
@@ -3761,7 +3859,7 @@ public class EmailBoxService {
         return true;
       }
       draftsFolder.open(Folder.READ_WRITE);
-      expungeOnClose = removePreviousDraftCopy(draftsFolder, mailRemoteId, username);
+      expungeOnClose = removePreviousDraftCopy(draftsFolder, mailRemoteId, expectedMessageId, username);
       return true;
     } catch (Exception e) {
       LOG.warn("Could not remove the server copy (uid {}) of a discarded draft of user {}", mailRemoteId, username, e);
@@ -5306,14 +5404,17 @@ public class EmailBoxService {
                              String username,
                              UserEmailSetting userEmailSetting,
                              int windowSize) {
-    List<Long> strayUids = new ArrayList<>();
-    int imported = importServerDrafts(uidFolder, serverMessages, knownDraftsByUid, username, userEmailSetting, strayUids);
+    // Keyed by UID, valued by the Message-ID the copy was identified through, because
+    // the janitor removes them on its own connection and must be able to prove, at that
+    // point, that the message still sitting at that number is the one it judged.
+    Map<Long, String> strayCopies = new LinkedHashMap<>();
+    int imported = importServerDrafts(uidFolder, serverMessages, knownDraftsByUid, username, userEmailSetting, strayCopies);
     int detached = detachDraftsDeletedElsewhere(uidFolder, serverMessages, cachedDrafts, username);
     // The same cleanup every other folder gets, and the moment its draft guard stops
     // being theoretical: rows the server no longer has go, EXCEPT the ones this
     // feature exists to protect (see isProtectedDraft).
     cleanupObsoleteEmails(uidFolder, cachedDrafts, serverMessages, username, windowSize);
-    int removedStrays = removeStrayDraftCopies(strayUids, username, userEmailSetting);
+    int removedStrays = removeStrayDraftCopies(strayCopies, username, userEmailSetting);
     LOG.info("Synchronized folder {} of user {}: {} draft(s) on the server, {} written in another client and imported,"
         + " {} kept locally after their server copy vanished, {} stray copy(ies) of already-sent mail found, {} removed",
              MailFolder.DRAFTS,
@@ -5321,7 +5422,7 @@ public class EmailBoxService {
              serverMessages.length,
              imported,
              detached,
-             strayUids.size(),
+             strayCopies.size(),
              removedStrays);
   }
 
@@ -5341,8 +5442,8 @@ public class EmailBoxService {
    * @param knownDraftsByUid the cached draft rows indexed by IMAP UID
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
-   * @param strayUids collects the UIDs of copies of already-sent mail, for the
-   *          janitor to remove from the server
+   * @param strayCopies collects the copies of already-sent mail, by UID and by the
+   *          Message-ID they were recognised through, for the janitor to remove
    * @return the number of drafts imported
    */
   private int importServerDrafts(UIDFolder uidFolder,
@@ -5350,7 +5451,7 @@ public class EmailBoxService {
                                  Map<Long, Email> knownDraftsByUid,
                                  String username,
                                  UserEmailSetting userEmailSetting,
-                                 List<Long> strayUids) {
+                                 Map<Long, String> strayCopies) {
     int imported = 0;
     for (Message message : serverMessages) {
       try {
@@ -5362,7 +5463,7 @@ public class EmailBoxService {
         }
         String messageId = message instanceof MimeMessage mimeMessage ? mimeMessage.getMessageID() : null;
         if (emailBoxStorage.isMessageCachedInFolder(username, messageId, MailFolder.SENT)) {
-          strayUids.add(messageUid);
+          strayCopies.put(messageUid, messageId);
           continue;
         }
         createDraftFromServerMessage(message, messageUid, messageId, username, userEmailSetting);
@@ -5491,8 +5592,16 @@ public class EmailBoxService {
    * The other states are handled by not being handled here, and each for its own
    * reason. {@link DraftState#SYNCED} means the row and the server copy said the
    * same thing, so the copy's removal is the whole story and the row goes with it
-   * (through the ordinary cleanup). {@link DraftState#LOCAL_ONLY} never had a copy
-   * to lose. {@link DraftState#SENDING} belongs to a send that is still in the air.
+   * (through the ordinary cleanup). {@link DraftState#SENDING} belongs to a send that
+   * is still in the air.
+   * <p>
+   * {@link DraftState#LOCAL_ONLY} is skipped as well, and not — as this said when it
+   * was written — because such a row never had a copy to lose: one that was uploaded
+   * while its author kept typing keeps its UID (see {@link #serverDraftCopyUid}). It
+   * is skipped because leaving that UID in place costs nothing. Every path that acts
+   * on it looks the message up first and finds nothing, or finds a message that is not
+   * ours and says so; and the row is already protected from the cleanup, so its words
+   * are in no danger while it waits for the next save to replace the number.
    *
    * @param uidFolder the open Drafts folder, to resolve each server message's UID
    * @param serverMessages the Drafts window this sync read
@@ -5605,17 +5714,23 @@ public class EmailBoxService {
    * recoverable from Sent, and every tighter test available would be a resemblance
    * test, which is the thing that must not decide this.
    *
-   * @param strayUids the UIDs identified as copies of already-sent mail
+   * @param strayCopies the copies of already-sent mail, by UID and by the Message-ID
+   *          each was recognised through
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    * @return the number of copies removed
    */
-  private int removeStrayDraftCopies(List<Long> strayUids, String username, UserEmailSetting userEmailSetting) {
-    if (CollectionUtils.isEmpty(strayUids)) {
+  private int removeStrayDraftCopies(Map<Long, String> strayCopies, String username, UserEmailSetting userEmailSetting) {
+    if (MapUtils.isEmpty(strayCopies)) {
       return 0;
     }
-    List<Long> uidsToRemove = strayUids.size() > STRAY_DRAFT_REMOVAL_LIMIT ? strayUids.subList(0, STRAY_DRAFT_REMOVAL_LIMIT)
-                                                                          : strayUids;
+    Map<Long, String> copiesToRemove = strayCopies.entrySet()
+                                                  .stream()
+                                                  .limit(STRAY_DRAFT_REMOVAL_LIMIT)
+                                                  .collect(Collectors.toMap(Map.Entry::getKey,
+                                                                            Map.Entry::getValue,
+                                                                            (first, second) -> first,
+                                                                            LinkedHashMap::new));
     Store store = null;
     IMAPFolder draftsFolder = null;
     boolean expungeOnClose = false;
@@ -5632,17 +5747,21 @@ public class EmailBoxService {
         return 0;
       }
       draftsFolder.open(Folder.READ_WRITE);
-      for (Long strayUid : uidsToRemove) {
+      for (Map.Entry<Long, String> strayCopy : copiesToRemove.entrySet()) {
         try {
-          expungeOnClose = removePreviousDraftCopy(draftsFolder, strayUid, username) || expungeOnClose;
+          expungeOnClose = removePreviousDraftCopy(draftsFolder, strayCopy.getKey(), strayCopy.getValue(), username)
+              || expungeOnClose;
           removed++;
         } catch (Exception e) {
-          LOG.warn("Could not remove the stray Drafts copy (uid {}) of an already-sent mail of user {}", strayUid, username, e);
+          LOG.warn("Could not remove the stray Drafts copy (uid {}) of an already-sent mail of user {}",
+                   strayCopy.getKey(),
+                   username,
+                   e);
         }
       }
       return removed;
     } catch (Exception e) {
-      LOG.warn("Could not remove {} stray Drafts copy(ies) of already-sent mail of user {}", uidsToRemove.size(), username, e);
+      LOG.warn("Could not remove {} stray Drafts copy(ies) of already-sent mail of user {}", copiesToRemove.size(), username, e);
       return removed;
     } finally {
       saveMailboxSyncState(username, syncState, originalSyncStateJson);

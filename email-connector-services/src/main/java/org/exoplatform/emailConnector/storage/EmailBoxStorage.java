@@ -215,9 +215,16 @@ public class EmailBoxStorage {
    * can have moved; the check is here anyway because the consequence of being wrong
    * is precisely the failure this feature exists to prevent — a row marked as
    * safely on the server while carrying a sentence that was never sent up. If the
-   * revision has moved, the UID is still worth keeping (it is where the previous
-   * copy lives, which is what a later slice needs in order to remove it) but the
-   * state stays whatever it was, so the next push still runs.
+   * revision has moved, the UID is written anyway and the state stays whatever it
+   * was, so the next push still runs.
+   * <p>
+   * That the UID is written unconditionally is load-bearing rather than incidental,
+   * and the service side of it is worth stating here because the two halves are far
+   * apart: the copy that was just appended is real, and this row is the only record
+   * of where it is. Keeping the number is what lets the next push remove it. The
+   * service therefore reads the UID, and not the state, to decide whether there is a
+   * copy to remove — it once read the state, and a row left LOCAL_ONLY by exactly
+   * this branch had its copy skipped and duplicated on the next push.
    *
    * @param userId the mailbox owner
    * @param draftLocalId the composer's handle on the draft

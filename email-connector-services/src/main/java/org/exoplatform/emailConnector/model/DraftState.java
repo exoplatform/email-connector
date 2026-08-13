@@ -33,8 +33,13 @@ public enum DraftState {
    * Written here, never uploaded — either the account has no Drafts folder, the
    * administrator turned server-side drafts off, the upload has not been asked
    * for yet (typing pauses save locally only), or it failed. The user's words are
-   * safe; nobody else's mail client can see them yet. Nothing to delete on the
-   * server when the next upload lands.
+   * safe; nobody else's mail client can see the version they last typed.
+   * <p>
+   * What it does NOT mean is "there is nothing up there to delete". A row is left in
+   * this state by an upload whose author kept typing during the APPEND — the copy
+   * exists, it is simply not the current text, and the row keeps its UID. Whether a
+   * copy has to be removed is the UID's answer, never this one; reading it here was a
+   * duplicate draft on the user's mail server.
    */
   LOCAL_ONLY,
 
