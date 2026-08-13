@@ -1,0 +1,56 @@
+{
+  "descriptors": [
+    {
+      "nameId": "emailCategory",
+      "icon": "fa-inbox",
+      "names": {
+        "en": "Inbox"
+      },
+      "linkPermissions": [
+        "*:/platform/users"
+      ],
+      "subCategories": [
+        {
+          "nameId": "emailImportantCategory",
+          "icon": "fa-exclamation-circle",
+          "names": {
+            "en": "Important"
+          },
+          "linkPermissions": [
+            "*:/platform/users"
+          ]
+        },
+        {
+          "nameId": "emailInvitationCategory",
+          "icon": "fa-calendar-alt",
+          "names": {
+            "en": "Invitation"
+          },
+          "linkPermissions": [
+            "*:/platform/users"
+          ]
+        },
+        {
+          "nameId": "emailNotificationCategory",
+          "icon": "fa-bell",
+          "names": {
+            "en": "Notification"
+          },
+          "linkPermissions": [
+            "*:/platform/users"
+          ]
+        },
+        {
+          "nameId": "emailToReviewCategory",
+          "icon": "fa-eye",
+          "names": {
+            "en": "To review"
+          },
+          "linkPermissions": [
+            "*:/platform/users"
+          ]
+        }
+      ]
+    }
+  ]
+}

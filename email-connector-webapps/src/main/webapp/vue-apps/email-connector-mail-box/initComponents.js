@@ -42,6 +42,7 @@ import EmailConnectorMailBoxDrawerListItemDetailBody from './components/drawer/E
 import EmailConnectorMailBoxDrawerListItemDetailContent from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailContent.vue';
 import EmailConnectorMailBoxDrawerThreadContent from './components/drawer/EmailConnectorMailBoxDrawerThreadContent.vue';
 import EmailConnectorMailBoxDrawerThreadMessage from './components/drawer/EmailConnectorMailBoxDrawerThreadMessage.vue';
+import EmailConnectorMailBoxDrawerCategoryBar from './components/drawer/EmailConnectorMailBoxDrawerCategoryBar.vue';
 import EmailConnectorMailBoxDrawerListItemDetailHeader from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailHeader.vue';
 import EmailConnectorMailBoxDrawerListItemDetailHeaderItem from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailHeaderItem.vue';
 import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailSenderAvatar.vue';
@@ -81,6 +82,7 @@ const components = {
   'email-connector-mail-box-drawer-list-item-detail-content': EmailConnectorMailBoxDrawerListItemDetailContent,
   'email-connector-mail-box-drawer-thread-content': EmailConnectorMailBoxDrawerThreadContent,
   'email-connector-mail-box-drawer-thread-message': EmailConnectorMailBoxDrawerThreadMessage,
+  'email-connector-mail-box-drawer-category-bar': EmailConnectorMailBoxDrawerCategoryBar,
   'email-connector-mail-box-drawer-list-item-detail-header': EmailConnectorMailBoxDrawerListItemDetailHeader,
   'email-connector-mail-box-drawer-list-item-detail-header-item': EmailConnectorMailBoxDrawerListItemDetailHeaderItem,
   'email-connector-mail-box-drawer-list-item-detail-sender-avatar': EmailConnectorMailBoxDrawerListItemDetailSenderAvatar,

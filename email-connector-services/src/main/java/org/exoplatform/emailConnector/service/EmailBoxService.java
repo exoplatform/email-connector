@@ -74,6 +74,7 @@ import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -132,6 +133,26 @@ public class EmailBoxService {
   // Caps the OR-of-Message-ID search when completing a thread from the archive on
   // open, so an unusually long conversation can't build a giant IMAP SEARCH.
   private static final int        ARCHIVE_COMPLETION_SEARCH_LIMIT                             = 50;
+
+  // The nameIds of the add-on's own default email categories (see default-categories.json).
+  // The platform's CategoryImportService persists each nameId -> created category id in
+  // SettingService, so the assignable email category ids are resolved from there.
+  private static final List<String> DEFAULT_EMAIL_CATEGORY_NAME_IDS                          =
+                                                                   List.of("emailImportantCategory",
+                                                                           "emailInvitationCategory",
+                                                                           "emailNotificationCategory",
+                                                                           "emailToReviewCategory");
+
+  // Unversioned coupling: these two literals mirror CategoryImportService's own private
+  // CATEGORY_CONTEXT/CATEGORY_IMPORT_SCOPE in Meeds-io/social — there is no public accessor
+  // nor nameId -> id resolution API to call instead today. If social ever renames them or
+  // changes how it persists that mapping, getDefaultEmailCategoryIds() silently returns an
+  // empty list (no compile error) rather than failing loudly. To be replaced by a supported
+  // CategoryService lookup once social exposes one.
+  private static final Context      CATEGORY_IMPORT_CONTEXT                                   = Context.GLOBAL.id("CATEGORY");
+
+  private static final Scope        CATEGORY_IMPORT_SCOPE                                     =
+                                                                          Scope.APPLICATION.id("CATEGORY_IMPORT");
 
   private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE              =
                                                                                  "User %s is not allowed to synchronize email";
@@ -907,6 +928,52 @@ public class EmailBoxService {
       }
     }
     return categories;
+  }
+
+  /**
+   * The add-on's own email categories a user can assign — Important / Invitation /
+   * Notification / To review — resolved to their localized name. These are the leaf
+   * categories seeded from the add-on's {@code default-categories.json}, returned
+   * whether or not they are already in use, so the picker always offers the full set.
+   *
+   * @param username the mailbox owner
+   * @param locale the locale to resolve category names in
+   * @return the assignable email categories, in their defined order
+   */
+  public List<EmailCategory> getAvailableEmailCategories(String username, Locale locale) {
+    List<EmailCategory> categories = new ArrayList<>();
+    for (Long categoryId : getDefaultEmailCategoryIds()) {
+      try {
+        CategoryWithName category = categoryService.getCategory(categoryId, username, locale);
+        if (category != null) {
+          categories.add(new EmailCategory(categoryId, category.getName()));
+        }
+      } catch (ObjectNotFoundException | IllegalAccessException e) {
+        // Skip a default category the user cannot see (unexpected with *:/platform/users).
+      }
+    }
+    return categories;
+  }
+
+  /**
+   * The category ids of the add-on's own default email categories, resolved from the
+   * {@code nameId -> id} mapping the platform's category importer persisted in settings.
+   *
+   * @return the default email category ids (empty until the importer has run)
+   */
+  public List<Long> getDefaultEmailCategoryIds() {
+    List<Long> ids = new ArrayList<>();
+    for (String nameId : DEFAULT_EMAIL_CATEGORY_NAME_IDS) {
+      SettingValue<?> settingValue = settingService.get(CATEGORY_IMPORT_CONTEXT, CATEGORY_IMPORT_SCOPE, nameId);
+      if (settingValue != null && settingValue.getValue() != null) {
+        try {
+          ids.add(Long.parseLong(settingValue.getValue().toString()));
+        } catch (NumberFormatException e) {
+          LOG.debug("Invalid category id stored for {}", nameId);
+        }
+      }
+    }
+    return ids;
   }
 
   public void sendEmail(Email email, String username) throws IllegalAccessException {
