@@ -853,7 +853,22 @@ public class EmailBoxStorage {
                               emailBoxEntity.getDraftRevision(),
                               emailBoxEntity.getDraftUpdatedDate());
 
-      if (withRecipients) {
+      // A draft carries its recipients on EVERY read, whatever the caller asked for.
+      //
+      // Not a convenience: the caller that asks for a listing without them is the
+      // folder list, and a listing row shows a sender, a subject and an excerpt, so
+      // leaving them out was right for as long as a row was mail. A draft row is not
+      // only rendered — it is RESUMED from, straight out of the list, and the composer
+      // fills its recipient fields from what it was handed. Handed a row without them
+      // it showed none, and the first autosave wrote that emptiness back over the
+      // stored ones: the user's draft lost the people it was addressed to by being
+      // opened. Verified on a live mailbox, on drafts imported with recipients whose
+      // rows came back with none after a resume.
+      //
+      // Here rather than at the four call sites, because "a draft is always read whole"
+      // is a property of the row and not of who is asking — the next read path added
+      // would otherwise have to remember, and this one did not.
+      if (withRecipients || StringUtils.isNotBlank(emailBoxEntity.getDraftLocalId())) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
         InternetAddress[] emailCcRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getCc());
         InternetAddress[] emailBccRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getBcc());

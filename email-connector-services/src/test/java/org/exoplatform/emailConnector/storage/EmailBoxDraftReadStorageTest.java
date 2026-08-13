@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
@@ -87,6 +88,8 @@ public class EmailBoxDraftReadStorageTest {
   private static final String COMMA_NAME_USER  = "carol";
 
   private static final String NAMELESS_TO_USER = "dave";
+
+  private static final String LISTED_RECIPIENTS_USER = "erin";
 
   @Autowired
   private EmailBoxStorage     emailBoxStorage;
@@ -201,6 +204,56 @@ public class EmailBoxDraftReadStorageTest {
     assertEquals(1, read.getTo().size());
     assertEquals("bob@example.org", read.getTo().get(0).getAddress());
     assertNotEquals("null", read.getTo().get(0).getName(), "a missing name is missing, it is not the word null");
+  }
+
+  /**
+   * A draft in a folder LISTING comes back with its recipients, where a message in
+   * the same listing does not.
+   * <p>
+   * The listing asks for rows without recipients, and rightly so for mail: a row
+   * shows a sender, a subject and an excerpt, and parsing the rest for every message
+   * of a folder buys nothing. A draft row is not only rendered though — it is RESUMED
+   * from, straight out of the list, and the composer fills its recipient fields from
+   * the row it is handed. Handed one without them it showed none, and its first
+   * autosave wrote that emptiness back: opening a draft was how it lost the people it
+   * was addressed to.
+   */
+  @Test
+  void aDraftInAFolderListingCarriesItsRecipients() {
+    Email draft = draft(LISTED_RECIPIENTS_USER, "draft-listed", "Ready to go", "<p>text</p>");
+    draft.setCc(List.of(new EmailRecipient("Carol", "carol@example.org", null, false)));
+    emailBoxStorage.saveDraft(draft);
+    emailBoxStorage.createEmail(mail(LISTED_RECIPIENTS_USER));
+
+    Email listedDraft = emailBoxStorage.getEmails(LISTED_RECIPIENTS_USER, MailFolder.DRAFTS).get(0);
+    Email listedMail = emailBoxStorage.getEmails(LISTED_RECIPIENTS_USER, MailFolder.INBOX).get(0);
+
+    assertEquals(1, listedDraft.getTo().size(), "a draft is listed with the people it is addressed to");
+    assertEquals("bob@example.org", listedDraft.getTo().get(0).getAddress());
+    assertEquals(1, listedDraft.getCc().size());
+    assertEquals("carol@example.org", listedDraft.getCc().get(0).getAddress());
+    // And nothing else about the listing moved: mail is still listed without them.
+    assertNull(listedMail.getTo(), "a message in a listing is still read without its recipients");
+  }
+
+  /**
+   * An ordinary cached message, to hold the listing's unchanged half.
+   *
+   * @param userId the mailbox owner
+   * @return the message to write
+   */
+  private Email mail(String userId) {
+    Email email = new Email();
+    email.setUserId(userId);
+    email.setFolder(MailFolder.INBOX);
+    email.setMailRemoteId(1L);
+    email.setMailHeaderId("<delivered@example.org>");
+    email.setSender(new EmailSender("Bob", "bob@example.org", null, null));
+    email.setTo(List.of(new EmailRecipient("Alice", "alice@example.org", null, false)));
+    email.setSubject("A delivered message");
+    email.setContent(new EmailContent("<p>with a body</p>", null, null));
+    email.setReceivedDate(new Date());
+    return email;
   }
 
   /**

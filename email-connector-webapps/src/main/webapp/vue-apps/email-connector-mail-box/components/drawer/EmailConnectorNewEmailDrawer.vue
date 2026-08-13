@@ -524,9 +524,14 @@ export default {
         mailHeaderId: this.draftLocalId ? null : this.email.mailHeaderId,
         subject: this.email.subject,
         content: {body: this.email.content.body},
-        to: this.toAddresses(this.to),
-        cc: this.toAddresses(this.cc),
-        bcc: this.toAddresses(this.bcc),
+        // Names as well as addresses here, unlike the send payload below. A draft is
+        // read back into these very fields when it is resumed, so what is not stored
+        // is what the user sees disappear from a chip they typed. The send API has no
+        // use for them — the mail server resolves nothing from a display name — but
+        // the draft row is the composer's own memory of the state it was in.
+        to: this.toDraftRecipients(this.to),
+        cc: this.toDraftRecipients(this.cc),
+        bcc: this.toDraftRecipients(this.bcc),
       };
       this.savedSignature = signature;
       this.draftSaving = true;
@@ -749,6 +754,21 @@ export default {
     toAddresses(recipients) {
       return (recipients || []).map(recipient => ({ address: recipient.address?.trim() }))
         .filter(recipient => recipient.address);
+    },
+    /**
+     * The same chips for a draft save, keeping the name each one carries so that
+     * resuming the draft puts back the chips the user typed rather than bare
+     * addresses. Avatars stay out: they are resolved from the address on the way
+     * back in, and storing a URL would only let it go stale.
+     *
+     * @param {Array} recipients - the field's chips
+     * @returns {Array} [{name, address}] entries
+     */
+    toDraftRecipients(recipients) {
+      return (recipients || []).map(recipient => ({
+        name: recipient.name?.trim(),
+        address: recipient.address?.trim(),
+      })).filter(recipient => recipient.address);
     },
     /**
      * Widens the quoted blocks the editor produced into something a mail client
