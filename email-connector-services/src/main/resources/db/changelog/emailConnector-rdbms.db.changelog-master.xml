@@ -574,5 +574,35 @@
       <column name="DRAFT_LOCAL_ID"/>
     </createIndex>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-41">
+    <comment>
+      A draft that has not been uploaded has no IMAP UID, and MAIL_REMOTE_ID has
+      been NOT NULL since 1.0.0-2. That was right for every row that had ever
+      existed: each one mirrored a message on the server, and the UID was how it
+      was addressed. A locally authored draft is the first row in this table that
+      is not a copy of anything — it is written HERE and pushed up afterwards, so
+      between the first keystroke and the first successful APPEND it has no UID to
+      carry, which is the premise of the whole local-first design rather than an
+      edge case. Slice 1 added the four draft columns and left this one alone, so
+      the very first save of a new draft failed on the constraint.
+
+      A sentinel UID (0, -1) was considered and rejected. The code reasons in terms
+      of "a UID means a copy exists on the server" — see EmailBoxService's
+      serverDraftCopyUid, which is what the push, the discard and the send all ask
+      before removing a copy — so a sentinel would have to be excluded again at
+      every one of those questions, and at the sync's UID-keyed lookups
+      (findByMailRemoteIdAndUserIdAndFolder, findCachedMailRemoteIds), where every
+      unsent draft of a mailbox would collide on the one sentinel value. It would
+      also not even be sufficient: detachDraftFromServerCopy writes MAIL_REMOTE_ID
+      = NULL when the copy a row pointed at is gone from the server, so the column
+      has to accept NULL regardless — the sentinel would only move the same failure
+      later, into the sync, where it is far harder to see.
+
+      Dropping the constraint is additive and reversible: every existing row keeps
+      its UID, and nothing that reads one starts having to handle a null it could
+      not already get.
+    </comment>
+    <dropNotNullConstraint tableName="EMAIL_BOX" columnName="MAIL_REMOTE_ID" columnDataType="BIGINT"/>
+  </changeSet>
 
 </databaseChangeLog>
