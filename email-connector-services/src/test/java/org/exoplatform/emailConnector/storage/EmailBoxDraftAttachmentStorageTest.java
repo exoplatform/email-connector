@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -466,6 +467,95 @@ public class EmailBoxDraftAttachmentStorageTest {
     assertNull(emailBoxStorage.materializeDraftAttachment(USERNAME, "draft-someone-elses", attachmentId,
                                                           "phone bytes".getBytes()));
     assertNull(emailBoxStorage.getDraftAttachments(USERNAME, "draft-mine").get(0).getFileId(), "and nothing was written");
+  }
+
+  /**
+   * A file taken off a message being FORWARDED becomes the draft's own file: bytes in
+   * the file store, a size, no MIME part path — and the draft's revision stepped.
+   * <p>
+   * The stepped revision is the assertion that matters, and it is the same one attaching
+   * a file needs for the same reason: a draft already uploaded to the mail server skips
+   * its next upload when nothing has changed, so a forward that did not step it would be
+   * accepted by a synced draft and then sent without the files the composer is showing.
+   * A materialization deliberately does NOT step it — that is bookkeeping about where
+   * existing content lives — and this is the opposite case: new files on the draft.
+   * <p>
+   * The absent part path is the other half. It would name a part of the message being
+   * forwarded, and a draft's rows are read against the draft's OWN copy on the server —
+   * so a path kept here would resolve, on the next read, to whatever sits at that index
+   * of a completely different message.
+   */
+  @Test
+  void aForwardedFileBecomesTheDraftsOwnFileAndCountsAsAnEdit() {
+    emailBoxStorage.saveDraft(draft("draft-forward", 1L, "fyi"));
+    emailBoxStorage.markDraftUploaded(USERNAME, "draft-forward", 4242L, 1L);
+    assertEquals(DraftState.SYNCED,
+                 emailBoxStorage.getDraftByLocalId(USERNAME, "draft-forward").getDraftState(),
+                 "the row has to start SYNCED or this test proves nothing");
+
+    EmailAttachment carried = emailBoxStorage.copyDraftAttachment(USERNAME, "draft-forward", "contract.pdf", "application/pdf",
+                                                                  "the contract".getBytes());
+
+    assertNotNull(carried);
+    assertNotNull(carried.getFileId(), "the bytes are the draft's own now, not the forwarded message's");
+    assertEquals(Long.valueOf("the contract".length()), carried.getSize());
+    assertNull(carried.getAttachmentRemoteId(), "a path here would be read against the draft's own copy, not the original");
+    assertEquals("contract.pdf", carried.getName());
+    Email afterForward = emailBoxStorage.getDraftByLocalId(USERNAME, "draft-forward");
+    assertEquals(Long.valueOf(2L), afterForward.getDraftRevision(), "carrying a file onto a forward is an edit");
+    assertEquals(DraftState.DIRTY, afterForward.getDraftState(), "a synced draft that has taken a file is no longer synced");
+    assertEquals(1, afterForward.getContent().getAttachments().size(), "and it was really written, not only answered");
+  }
+
+  /**
+   * Forwarding the same message twice produces two independent files, and removing one
+   * leaves the other whole.
+   * <p>
+   * The tempting alternative is to point the second row at the file the first already
+   * stored. It would corrupt both: taking the chip off one draft records that file as
+   * unreferenced, and a later sweep would free it under the draft that still shows it —
+   * a forward that arrives with an attachment nothing can read. The cost of not sharing
+   * is one copy of the bytes per forward, which is the right side to be wrong on.
+   */
+  @Test
+  void forwardingTheSameFileTwiceGivesEachForwardItsOwnCopy() {
+    emailBoxStorage.saveDraft(draft("draft-first", 1L, "fyi"));
+    emailBoxStorage.saveDraft(draft("draft-second", 1L, "fyi too"));
+
+    EmailAttachment first = emailBoxStorage.copyDraftAttachment(USERNAME, "draft-first", "contract.pdf", "application/pdf",
+                                                                "the contract".getBytes());
+    EmailAttachment second = emailBoxStorage.copyDraftAttachment(USERNAME, "draft-second", "contract.pdf", "application/pdf",
+                                                                 "the contract".getBytes());
+
+    assertNotEquals(first.getFileId(), second.getFileId(), "one file per forward: sharing would let either free the other's");
+    assertTrue(emailBoxStorage.removeDraftAttachment(USERNAME, "draft-first", first.getId()));
+    assertEquals(List.of(first.getFileId()),
+                 emailOrphanFileDAO.findAll().stream().map(EmailOrphanFileEntity::getFileId).toList(),
+                 "only the copy that was removed is unreferenced");
+    List<EmailAttachment> survivors = emailBoxStorage.getDraftAttachments(USERNAME, "draft-second");
+    assertEquals(1, survivors.size(), "the other forward still carries its file");
+    assertEquals(second.getFileId(), survivors.get(0).getFileId());
+  }
+
+  /**
+   * Somebody else's draft is not a draft this user can forward onto, and neither is one
+   * that does not exist — the lookup IS the ownership check, exactly as it is everywhere
+   * else a draft's files are touched.
+   */
+  @Test
+  void aForwardOntoADraftThatIsNotYoursCarriesNothing() {
+    emailBoxStorage.saveDraft(draft("draft-mine-forward", 1L, "fyi"));
+
+    assertNull(emailBoxStorage.copyDraftAttachment("mallory", "draft-mine-forward", "contract.pdf", "application/pdf",
+                                                   "the contract".getBytes()));
+    assertNull(emailBoxStorage.copyDraftAttachment(USERNAME, "draft-that-is-not-there", "contract.pdf", "application/pdf",
+                                                   "the contract".getBytes()));
+    assertNull(emailBoxStorage.copyDraftAttachment(USERNAME, "draft-mine-forward", "contract.pdf", "application/pdf", null),
+               "and no bytes is nothing to carry");
+
+    Email untouched = emailBoxStorage.getDraftByLocalId(USERNAME, "draft-mine-forward");
+    assertTrue(untouched.getContent().getAttachments().isEmpty());
+    assertEquals(Long.valueOf(1L), untouched.getDraftRevision(), "nothing was carried, so nothing was edited");
   }
 
   /**
