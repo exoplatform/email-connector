@@ -2800,6 +2800,45 @@ public class EmailBoxServiceTest {
     assertFalse(saved.isRecent());
   }
 
+  /**
+   * A draft carrying a file of its own is NOT uploaded to the mail server, even when
+   * the push is asked for and the account has drafts enabled.
+   * <p>
+   * An IMAP APPEND writes the whole message, so a draft uploaded without its files
+   * puts a copy in the user's Drafts folder that looks complete and is not — opened on
+   * their phone it shows the text with the attachments missing, and a send from there
+   * sends the incomplete version. Suspended for this slice, and made safe in the next
+   * one; until then the composer's existing "your draft lives only here" notice is the
+   * honest thing to say, and it fires precisely because the state comes back unsynced.
+   * <p>
+   * Asserted as "no connection was ever opened", which is the observable form of it:
+   * the upload path's first act is to connect.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftCarryingAFileIsNotUploadedToTheMailServer() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.DIRTY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> {
+      Email toStore = invocation.getArgument(0);
+      // What the storage layer hands back after an edit: the row, read whole, with the
+      // file the user attached on it.
+      EmailAttachment attachment = new EmailAttachment(3L, null, null, "report.pdf", "application/pdf", null,
+                                                       MailFolder.DRAFTS, 77L, 12L);
+      toStore.setContent(new EmailContent(toStore.getContent().getBody(), null, List.of(attachment)));
+      return toStore;
+    });
+
+    Email saved = emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
+
+    assertNotNull(saved);
+    assertFalse(DraftState.SYNCED.equals(saved.getDraftState()), "an unsent file means the draft is not on the server");
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
   @Test
   void aDraftReplyJoinsTheConversationItRepliesTo() throws Exception {
     // The whole point of writing the threading headers at save time rather than at
@@ -3996,7 +4035,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null,
-                     null);
+                     null, null);
   }
 
   private EmailConnector emailConnector() {

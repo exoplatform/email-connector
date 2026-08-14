@@ -82,7 +82,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
       <email-connector-new-email-drawer-attachments
         v-model="attachments"
-        :active="newEmailDrawer" />
+        :active="newEmailDrawer"
+        :persist="persistAttachment"
+        :unpersist="unpersistAttachment" />
     </template>
     <template #footer>
       <div class="d-flex align-center">
@@ -254,7 +256,12 @@ export default {
      * @returns {boolean} true when the composer holds anything
      */
     hasContent() {
-      return !!(this.email.content.body || this.email.subject) || !!this.to.length || !!this.cc.length || !!this.bcc.length;
+      // A file counts. Attaching one to an empty composer is an ordinary way to start
+      // a mail, and it is already a draft the moment it is stored — so the Discard
+      // button has to be there to throw it away, and the closing save has to have
+      // something to announce.
+      return !!(this.email.content.body || this.email.subject) || !!this.to.length || !!this.cc.length || !!this.bcc.length
+        || !!this.attachments.length;
     },
     /**
      * The quiet line beside the Discard button that says where the draft stands.
@@ -361,7 +368,23 @@ export default {
      * @returns {void}
      */
     resume(draft) {
-      this.attachments = [];
+      // The files the draft was stored with, as chips the user can see and remove.
+      // They carry an id and no upload id, which is what tells every path apart: they
+      // are already on the server side of the draft, so they are downloaded from it,
+      // removed through it, and left out of the send payload — the send path reads
+      // them off the row itself.
+      this.attachments = (draft.content?.attachments || []).map((attachment, index) => ({
+        key: `stored-${attachment.id || index}`,
+        id: attachment.id,
+        name: attachment.name,
+        title: attachment.name,
+        mimeType: attachment.mimeType,
+        mimetype: attachment.mimeType,
+        size: attachment.size || 0,
+        uploadId: null,
+        uploading: false,
+        stored: true,
+      }));
       this.resetDraftTracking();
       this.title = this.$t('emailConnector.mailBox.newEmail.drawer.draft.title');
       this.to = this.toRecipients(draft.to);
@@ -678,6 +701,103 @@ export default {
         return;
       }
       this.storeDraft(this.draftSession, snapshot, push, false);
+    },
+    /**
+     * Puts an uploaded file onto the draft, so it stops depending on this browser
+     * session.
+     *
+     * A commons upload is a temporary file. A draft's whole point is to be there
+     * tomorrow, so a draft whose files were uploads would resume showing chips that
+     * resolve to nothing and would send with nothing attached. This hands the upload
+     * to the server, which copies it into the platform's file store and answers with
+     * the attachment as stored.
+     *
+     * There has to be a draft to attach to, and at the moment the first file lands
+     * there often is not: the local id only exists once a save has come back with
+     * one, and attaching a file to an empty composer is a perfectly ordinary way to
+     * start a mail. So a draft is forced into existence first, through the same
+     * queued save every other write goes through — which is also what makes this safe
+     * against a save that is already in flight.
+     *
+     * The revision the server answers with is taken on board, because attaching is an
+     * edit and the row has moved past what this composer believed. Without that, the
+     * next autosave would arrive stale and be dropped, and the words typed since the
+     * paperclip would sit unsaved until the one after it.
+     *
+     * @param {object} entry - the uploaded attachment, carrying its upload id
+     * @returns {Promise} resolves with the stored attachment, or rejects
+     */
+    async persistAttachment(entry) {
+      const session = this.draftSession;
+      if (!session.localId) {
+        await this.forceDraft(session);
+      }
+      if (!session.localId || session !== this.draftSession) {
+        // No draft could be created, or the composer has moved on to another message
+        // while this file was going up. Either way this file has nothing to belong to.
+        throw new Error('No draft to attach to');
+      }
+      const draft = await this.$emailConnectorMailBoxService.addDraftAttachment(session.localId, {
+        uploadId: entry.uploadId,
+        name: entry.name,
+        mimeType: entry.mimeType,
+        size: entry.size,
+      });
+      this.applyDraftRevision(session, draft);
+      const stored = (draft?.content?.attachments || []);
+      return stored.length ? stored[stored.length - 1] : null;
+    },
+    /**
+     * Takes a stored file off the draft. Same revision bookkeeping as attaching, for
+     * the same reason: a detach is an edit.
+     *
+     * @param {object} entry - the stored attachment, carrying its own id
+     * @returns {Promise} resolves once the file is off the draft
+     */
+    async unpersistAttachment(entry) {
+      const session = this.draftSession;
+      if (!session.localId || !entry?.id) {
+        return;
+      }
+      const draft = await this.$emailConnectorMailBoxService.removeDraftAttachment(session.localId, entry.id);
+      this.applyDraftRevision(session, draft);
+    },
+    /**
+     * Creates the draft row this composer does not have one for yet, by running one
+     * save through the session's own queue.
+     *
+     * Through the queue rather than around it, because that is what makes a draft's
+     * local id exist exactly once: a save started here alongside one already in flight
+     * would both carry no id, and the server would mint a second draft of one message.
+     *
+     * @param {object} session - the draft session to give an id to
+     * @returns {Promise} resolves once the session has an id, or gave up
+     */
+    forceDraft(session) {
+      const snapshot = this.snapshotDraft();
+      this.storeDraft(session, snapshot, false, false);
+      return session.queue;
+    },
+    /**
+     * Takes on board a revision the server stepped without the composer asking — what
+     * attaching and detaching do.
+     *
+     * The saved signature is deliberately left alone: the words on screen have not
+     * changed, and clearing it would make the next pause re-save text that is already
+     * stored.
+     *
+     * @param {object} session - the draft session
+     * @param {object} draft - the draft as the server answered with it
+     * @returns {void}
+     */
+    applyDraftRevision(session, draft) {
+      if (!draft) {
+        return;
+      }
+      if (draft.draftRevision) {
+        session.revision = Math.max(session.revision, draft.draftRevision);
+      }
+      session.state = draft.draftState;
     },
     /**
      * Writes one revision of a draft, behind whatever save of the same session is
