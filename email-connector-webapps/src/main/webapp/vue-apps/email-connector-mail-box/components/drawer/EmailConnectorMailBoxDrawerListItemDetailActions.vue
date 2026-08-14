@@ -50,6 +50,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20">fa-trash</v-icon>
       </v-btn>
     </template>
+    <!-- What a Trash message offers instead. -->
+    <template v-if="trashActions">
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.restore.label')"
+        @click="restoreEmail()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-trash-restore</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.purge.label')"
+        color="error"
+        @click="purgeEmail()"
+        icon>
+        <v-icon size="20">fa-times-circle</v-icon>
+      </v-btn>
+    </template>
   </v-layout>
 </template>
 
@@ -71,6 +87,15 @@ export default {
     readOnly() {
       return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email?.folder);
     },
+    /**
+     * Whether the opened message is a trashed one, in which case this toolbar offers
+     * restore and delete-permanently in place of the three withheld above.
+     *
+     * @returns {Boolean} true when the Trash actions belong here
+     */
+    trashActions() {
+      return this.$emailConnectorMailBoxService.hasTrashActions(this.email?.folder);
+    },
   },
   methods: {
     updateEmailReadStatus() {
@@ -84,6 +109,25 @@ export default {
     archiveEmail() {
       this.$root.$emit('archive-email', [this.email.mailRemoteId]);
       this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Puts the opened message back into the inbox and closes the reader — the message
+     * is leaving the Trash listing behind it, so there is nothing left to read here.
+     *
+     * @returns {void}
+     */
+    restoreEmail() {
+      this.$root.$emit('restore-email', [this.email.mailRemoteId]);
+      this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Asks first, then destroys. The reader closes only once the user has confirmed,
+     * so cancelling leaves them looking at the message they decided to keep.
+     *
+     * @returns {void}
+     */
+    purgeEmail() {
+      this.$root.$emit('open-purge-email-confirm-popup', [this.email.mailRemoteId], () => this.$root.$emit('close-email-detail-drawer'));
     },
   }
 };

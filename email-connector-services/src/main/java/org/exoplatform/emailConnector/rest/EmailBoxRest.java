@@ -507,6 +507,79 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Puts trashed messages back into the inbox.
+   * <p>
+   * Its own endpoint rather than a flag on the delete: restore and delete are opposite
+   * operations on the same rows, and a boolean deciding which one runs is one typo away
+   * from destroying what the user asked to keep. The verb is POST because a restore is
+   * a move, not a removal.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteIds the IMAP UIDs, within the Trash folder, to put back
+   * @return {@code failedRestores}: how many could not be restored
+   */
+  @PostMapping("/trash/restore")
+  @Secured("users")
+  @Operation(summary = "Restores trashed emails", method = "POST", description = "Moves the given messages out of the Trash folder and back into the inbox")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public Map<String, Integer> restoreEmail(HttpServletRequest request,
+                                           @Parameter(description = "Email remote ids", required = true)
+                                           @RequestBody
+                                           List<Long> mailRemoteIds) {
+    try {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      int failedRestores = emailBoxService.restoreEmail(mailRemoteIds, request.getRemoteUser());
+      Map<String, Integer> response = new HashMap<>();
+      response.put("failedRestores", failedRestores);
+      return response;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Removes trashed messages from the mail server for good.
+   * <p>
+   * Named messages only — the body is the list to destroy, and an empty one is a 404
+   * rather than "everything". There is deliberately no endpoint that empties the Trash:
+   * see {@code EmailBoxService#purgeEmail}.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteIds the IMAP UIDs, within the Trash folder, to destroy
+   * @return {@code failedPurges}: how many could not be removed
+   */
+  @DeleteMapping("/trash")
+  @Secured("users")
+  @Operation(summary = "Permanently deletes trashed emails", method = "DELETE", description = "Removes the given messages from the Trash folder on the mail server, with no copy kept anywhere")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public Map<String, Integer> purgeEmail(HttpServletRequest request,
+                                         @Parameter(description = "Email remote ids", required = true)
+                                         @RequestBody
+                                         List<Long> mailRemoteIds) {
+    try {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      int failedPurges = emailBoxService.purgeEmail(mailRemoteIds, request.getRemoteUser());
+      Map<String, Integer> response = new HashMap<>();
+      response.put("failedPurges", failedPurges);
+      return response;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
   @GetMapping("/categories")
   @Secured("users")
   @Operation(summary = "Lists the categories used on the user's emails", method = "GET", description = "Returns the categories currently applied to the user's emails, resolved to their localized name")

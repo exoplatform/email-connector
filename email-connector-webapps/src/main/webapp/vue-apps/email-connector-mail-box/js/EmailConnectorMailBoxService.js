@@ -140,6 +140,79 @@ export function isReadOnlyFolder(folder) {
   return READ_ONLY_FOLDERS.includes(folder || 'INBOX');
 }
 
+// Folders that offer the Trash actions — restore, and delete permanently.
+//
+// A second list beside READ_ONLY_FOLDERS rather than a hole punched in it, because the
+// two say different things about the same folder and both are true at once: none of
+// the ORDINARY mail actions may be offered on a Trash row (they are inbox-keyed
+// server-side, EXO-89367), and these two extra ones must be. Folding them into one flag
+// would mean "read-only" quietly coming to mean "read-only except the two writes we
+// added", which is how a rule stops being readable.
+//
+// Read by the row menu, the reader's toolbar and the bulk toolbar — the same three
+// places that ask isReadOnlyFolder, so the two answers cannot drift apart.
+const TRASH_ACTION_FOLDERS = ['TRASH'];
+
+/**
+ * Whether a folder's messages may be restored or permanently deleted.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX, which is what
+ *        every row written before folders existed meant
+ * @returns {Boolean} true when the Trash actions may be offered on those messages
+ */
+export function hasTrashActions(folder) {
+  return TRASH_ACTION_FOLDERS.includes(folder || 'INBOX');
+}
+
+/**
+ * Puts trashed messages back into the inbox.
+ *
+ * They do NOT come back into the inbox listing at once: the backend deliberately does
+ * not chase the new inbox UID, so the message reappears at the next synchronization
+ * like any other newly arrived mail.
+ *
+ * @param {Array} mailRemoteIds the IMAP UIDs, within the Trash folder, to put back
+ * @returns {Promise} resolving to {failedRestores}
+ */
+export function restoreEmails(mailRemoteIds) {
+  return fetch('/email-connector/rest/email-box/trash/restore', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(mailRemoteIds)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when restoring emails');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Removes trashed messages from the mail server for good. There is no undo, and no
+ * "empty the trash" beside it — this only ever acts on messages the user named.
+ *
+ * @param {Array} mailRemoteIds the IMAP UIDs, within the Trash folder, to destroy
+ * @returns {Promise} resolving to {failedPurges}
+ */
+export function purgeEmails(mailRemoteIds) {
+  return fetch('/email-connector/rest/email-box/trash', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'DELETE',
+    body: JSON.stringify(mailRemoteIds)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when permanently deleting emails');
+    }
+    return resp.json();
+  });
+}
+
 export function getEmailBox(folder, favoriteOnly) {
   const params = new URLSearchParams();
   if (folder && folder !== 'INBOX') {

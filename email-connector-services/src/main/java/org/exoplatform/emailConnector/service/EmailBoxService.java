@@ -294,6 +294,14 @@ public class EmailBoxService {
                                                                                                      "papirkurv",
                                                                                                      "roskakori");
 
+  // Human names for the two folders the by-UID removal mechanic is pointed at, used
+  // only in its log lines. The mechanic itself (removeMessageByUid / closeFolderQuietly)
+  // is folder-agnostic; these keep the logs readable without it having to ask a folder
+  // for its own name mid-operation.
+  private static final String     DRAFTS_FOLDER_LABEL                                         = "Drafts";
+
+  private static final String     TRASH_FOLDER_LABEL                                          = "Trash";
+
   // How many stray Drafts copies of already-sent mail one sync may remove from the
   // mail server. A bound, not a policy: the janitor exists for the occasional copy a
   // failed send-cleanup left behind, so a run finding dozens is describing something
@@ -447,6 +455,12 @@ public class EmailBoxService {
 
   private static final String     USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE                  =
                                                                              "User %s is not allowed to archive email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_RESTORE_EMAIL_MESSAGE                  =
+                                                                             "User %s is not allowed to restore email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_PURGE_EMAIL_MESSAGE                    =
+                                                                             "User %s is not allowed to permanently delete email";
 
   /**
    * The administrator's kill switch for the server-side half of drafts, in the
@@ -3230,6 +3244,273 @@ public class EmailBoxService {
   }
 
   /**
+   * Puts trashed messages back into the INBOX — the undo of {@link #deleteEmail},
+   * with the two folders swapped.
+   * <p>
+   * The local TRASH rows go first, before the server is touched, exactly as the delete
+   * does it: a row is a mirror of a message, and leaving it listed while the message is
+   * being moved out from under it shows the user a Trash that still holds what they
+   * just took back. Every remote failure puts its own row back
+   * ({@link #recreateCachedRow}), so a half-failed selection leaves the messages that
+   * moved gone from the list and the ones that did not still in it, and the count this
+   * returns is what the interface tells the user.
+   * <p>
+   * <b>The restored message's new INBOX UID is not chased.</b> A COPY reports the
+   * destination UID only under UIDPLUS, and following it would mean writing an INBOX
+   * row from a message we have not fetched — a second, weaker importer beside the sync,
+   * for a message the sync will import correctly within the minute. So nothing is
+   * written back and the next INBOX sync picks the message up as a new one. Two
+   * consequences, both deliberate:
+   * <ul>
+   * <li>the message does not reappear in the inbox instantly — it appears at the next
+   * sync, like any other newly arrived mail;</li>
+   * <li>if it was unread when it was deleted it is unread when it comes back, and the
+   * sync's new-mail notification does not know it is not new, so restoring an unread
+   * message can notify. Accepted for now: the alternative is a "restored" marker
+   * carried across a sync boundary keyed on a UID we deliberately do not know.</li>
+   * </ul>
+   *
+   * @param mailRemoteIds the IMAP UIDs, within the TRASH folder, to put back
+   * @param username the mailbox owner
+   * @return how many of them could NOT be restored
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int restoreEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
+    return applyTrashAction(mailRemoteIds, username, TrashAction.RESTORE);
+  }
+
+  /**
+   * Removes trashed messages from the mail server for good — no copy anywhere, no
+   * undo.
+   * <p>
+   * Named messages only. There is deliberately no "empty the Trash": the cache holds a
+   * 30-message window ({@link #TRASH_FOLDER_SYNC_LIMIT}) onto a folder that routinely
+   * holds hundreds, so a button meaning "empty" would either act on the 30 listed —
+   * claiming a trash is empty while it holds hundreds — or destroy messages the user
+   * has never been shown. Both are the interface lying about its own reach, and
+   * providers purge Trash on their own schedule anyway.
+   * <p>
+   * The identity check before the flag is not optional here. Flagging the wrong message
+   * {@code \Deleted} in a folder that is then expunged is the one thing in this add-on
+   * that can destroy mail that was never the user's to lose — see
+   * {@link #isExpectedMessageAtUid} for how a remembered UID stops naming the message
+   * it named.
+   * <p>
+   * The local row is deleted first and re-created on failure, as everywhere else, and
+   * that is worth stating for this method in particular: a permanent delete that FAILED
+   * must leave the message visible in the Trash, not vanished from the mirror while
+   * alive on the server.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within the TRASH folder, to destroy
+   * @param username the mailbox owner
+   * @return how many of them could NOT be removed
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int purgeEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
+    return applyTrashAction(mailRemoteIds, username, TrashAction.PURGE);
+  }
+
+  /**
+   * What {@link #applyTrashAction} is doing with the messages it takes out of the
+   * Trash. The two differ by one COPY and by nothing else — connection, folder
+   * resolution, ordering, identity check, removal and compensation are the same
+   * sequence — and a destructive path is the last place to keep two copies of one
+   * sequence and hope they stay in step.
+   */
+  private enum TrashAction {
+    /** Copy back to the INBOX, then remove the Trash copy. */
+    RESTORE,
+    /** Remove the Trash copy, and nothing else. */
+    PURGE
+  }
+
+  /**
+   * The shared body of {@link #restoreEmail} and {@link #purgeEmail}.
+   * <p>
+   * Ordering, which is the part that matters: rows are read FOLDER-SCOPED to TRASH and
+   * deleted locally BEFORE the server is touched, then each message is acted on
+   * individually and its own row re-created if that fails. Reading them folder-scoped
+   * is not defensive tidiness — an IMAP UID numbers messages within one folder, so the
+   * same number names a different message in the inbox, and an unscoped read would hand
+   * this method inbox rows to delete and inbox Message-IDs to check the Trash against.
+   * <p>
+   * A UID with no cached TRASH row is refused rather than acted on. This API exists to
+   * act on what the mirror listed; a UID the mirror does not hold is either a stale
+   * client or a number nobody ever saw, and "permanently delete a message I cannot show
+   * you" is not a thing to do on trust.
+   * <p>
+   * When the removal has to go through {@code close(true)} — no UIDPLUS — the
+   * per-message granularity degrades: flags are set one at a time but the removal
+   * happens once, at the close. If that close fails, the flagged messages stay in the
+   * Trash while their local rows are already gone. Nothing repairs that here on
+   * purpose: the next Trash sync re-imports whatever the server still holds, and the
+   * mirror converges on the mailbox. Self-healing, not a leak.
+   * <p>
+   * A restore that copies into the INBOX and then fails to remove the Trash copy leaves
+   * the message in BOTH folders. That is the deliberate direction — a duplicate the
+   * next syncs reconcile beats a message that exists nowhere — and it is why the copy
+   * comes first.
+   *
+   * @param mailRemoteIds the IMAP UIDs within the TRASH folder
+   * @param username the mailbox owner
+   * @param action what to do with them
+   * @return how many could not be dealt with
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  private int applyTrashAction(List<Long> mailRemoteIds, String username, TrashAction action) throws IllegalAccessException {
+    if (CollectionUtils.isEmpty(mailRemoteIds)) {
+      return 0;
+    }
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(action == TrashAction.RESTORE ? USER_NOT_ALLOWED_FOR_RESTORE_EMAIL_MESSAGE
+                                                                                   : USER_NOT_ALLOWED_FOR_PURGE_EMAIL_MESSAGE,
+                                                     username));
+    }
+    Map<Long, Email> trashRows = new LinkedHashMap<>();
+    for (Long mailRemoteId : mailRemoteIds) {
+      try {
+        Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.TRASH, false, false, false, false);
+        if (email != null) {
+          trashRows.put(mailRemoteId, email);
+        }
+      } catch (Exception e) {
+        LOG.error("Error getting trashed email {} for user {}", mailRemoteId, username, e);
+      }
+    }
+    deleteEmails(new ArrayList<>(trashRows.values()));
+
+    int failures = 0;
+    Store store = null;
+    IMAPFolder trash = null;
+    boolean expungeOnClose = false;
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      // The STRICT lookup, the one the rows were cached by — never the loose
+      // findTrashFolder the delete path files into. That one may answer a different
+      // folder, and a UID from one folder used against another is how this destroys
+      // somebody's mail.
+      trash = resolveTrashFolder(store, syncState);
+      if (trash == null) {
+        // Rows cached as TRASH and no Trash folder to find: the mailbox was
+        // reorganized, or the strict lookup no longer recognizes the folder. Nothing
+        // can be acted on, so every row goes back and every id counts as failed.
+        LOG.warn("No Trash folder for user {}; {} message(s) could not be {}",
+                 username,
+                 mailRemoteIds.size(),
+                 action == TrashAction.RESTORE ? "restored" : "permanently deleted");
+        trashRows.values().forEach(this::recreateCachedRow);
+        return mailRemoteIds.size();
+      }
+      trash.open(Folder.READ_WRITE);
+      // The COPY destination is not opened: IMAP copies server-side into a folder named
+      // by the command, and opening the inbox here would only invite the read-status and
+      // expunge semantics of an open folder into a path that wants none of them.
+      Folder inbox = action == TrashAction.RESTORE ? store.getFolder("INBOX") : null;
+      for (Long mailRemoteId : mailRemoteIds) {
+        Email trashRow = trashRows.get(mailRemoteId);
+        try {
+          if (trashRow == null) {
+            LOG.warn("No cached Trash row for uid {} of user {}; refusing to act on it", mailRemoteId, username);
+            failures++;
+            continue;
+          }
+          Message message = trash.getMessageByUID(mailRemoteId);
+          if (message == null) {
+            // Already out of the Trash — emptied by the provider, or by another client
+            // of the user's. The outcome the caller asked for is the outcome, so this
+            // is a success and the row stays deleted.
+            LOG.debug("The trashed message of user {} (uid {}) is already gone", username, mailRemoteId);
+            continue;
+          }
+          String expectedMessageId = trashRow.getMailHeaderId();
+          if (!isExpectedMessageAtUid(message, expectedMessageId, mailRemoteId, TRASH_FOLDER_LABEL, username)) {
+            // The UID names somebody else's message now. Touch nothing, put the row
+            // back, and let the user try again after the next sync has renumbered it.
+            recreateCachedRow(trashRow);
+            failures++;
+            continue;
+          }
+          if (action == TrashAction.RESTORE) {
+            trash.copyMessages(new Message[] { message }, inbox);
+          }
+          // Gmail's move, in mirror image of the delete path: [Gmail]/Trash is exclusive
+          // with every label, so copying OUT of it IS the move and the server expunges
+          // the source right away. The message is where it was asked to be, so an
+          // already-expunged source is the success and not the failure it looks like.
+          try {
+            if (message.isExpunged()) {
+              LOG.debug("The trashed message of user {} (uid {}) was expunged by the copy out of the Trash",
+                        username,
+                        mailRemoteId);
+              continue;
+            }
+            expungeOnClose =
+                           removeMessageByUid(trash, mailRemoteId, expectedMessageId, TRASH_FOLDER_LABEL, username)
+                               || expungeOnClose;
+          } catch (MessageRemovedException alreadyRemoved) {
+            LOG.debug("The trashed message of user {} (uid {}) was already removed", username, mailRemoteId);
+          }
+        } catch (Exception e) {
+          recreateCachedRow(trashRow);
+          failures++;
+          LOG.error("Error when {} email {} for user {}",
+                    action == TrashAction.RESTORE ? "restoring" : "permanently deleting",
+                    mailRemoteId,
+                    username,
+                    e);
+        }
+      }
+    } catch (Exception e) {
+      LOG.error("Error when connecting store for user {}", username, e);
+      trashRows.values().forEach(this::recreateCachedRow);
+      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+    } finally {
+      // The folder name the strict lookup just resolved is worth keeping, exactly as
+      // the sync keeps it: the alternative is a LIST * per action.
+      saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      closeFolderQuietly(trash, expungeOnClose, TRASH_FOLDER_LABEL, username);
+      closeQuietly(null, store, username);
+      // No unread-count broadcast, and that is a statement rather than an omission:
+      // the badge already excludes TRASH (EmailBoxStorage#countUnreadEmails), so
+      // neither removing a Trash row nor putting one back changes what it counts. The
+      // restored message starts counting when the next INBOX sync imports it, which
+      // broadcasts on its own.
+    }
+    return failures;
+  }
+
+  /**
+   * Puts one cached row back after the remote half of an operation failed — the
+   * compensating half of "delete the row first, then act on the server".
+   * <p>
+   * {@code setId(null)} then create, rather than an update: the row was really deleted,
+   * so it is really re-created, and the database gives it a new primary key. The
+   * category links are re-made from the ids the row was read with, because
+   * {@link #deleteEmails} unlinked them on the way out and a message coming back
+   * without its categories has silently lost user data.
+   *
+   * @param email the row to put back, may be null (nothing to do)
+   */
+  private void recreateCachedRow(Email email) {
+    if (email == null) {
+      return;
+    }
+    email.setId(null);
+    emailBoxStorage.createEmail(email);
+    if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
+      email.getCategoryIds()
+           .forEach(emailCategoryId -> categoryLinkService.link(emailCategoryId,
+                                                                new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
+                                                                                   String.valueOf(email.getId()),
+                                                                                   0)));
+    }
+  }
+
+  /**
    * Link one or more emails (by IMAP mailRemoteId) to an existing category, acting
    * as the given user (the category ACL is enforced by CategoryLinkService). Emails
    * already in the category are skipped. Returns the number of emails newly linked.
@@ -5335,70 +5616,79 @@ public class EmailBoxService {
   }
 
   /**
-   * Removes the copy of a draft that the APPEND just superseded, so the user's other
-   * mail clients show one draft rather than a growing pile of them.
+   * Removes ONE message from an open IMAP folder, addressed by its UID — the
+   * flag-then-expunge mechanic, folder-agnostic.
    * <p>
    * Two ways to do it, and the difference matters. With UIDPLUS (RFC 4315) the
    * message can be expunged BY UID — precisely the one message, nothing else. JavaMail
    * exposes that as {@code expunge(Message[])} and refuses it when the server does not
    * advertise the extension.
    * <p>
-   * Without UIDPLUS the only expunge IMAP offers is the whole-folder one, reached here
-   * through {@code close(true)}. Its limitation is worth stating plainly rather than
-   * discovering later: it removes EVERY message in the Drafts folder currently flagged
+   * Without UIDPLUS the only expunge IMAP offers is the whole-folder one, reached
+   * through {@code close(true)} — which is why this answers a boolean instead of doing
+   * it itself: the caller may be removing several messages on one open folder and must
+   * expunge once, at the end. Its limitation is worth stating plainly rather than
+   * discovering later: it removes EVERY message in that folder currently flagged
    * {@code \Deleted}, including ones some other client of the user's flagged and has
-   * not yet expunged itself. We do it anyway, for two reasons. The blast radius is one
-   * folder, and it is the folder whose entire purpose is to hold superseded copies of
-   * unfinished messages. And the alternative — leaving the flag set and never
+   * not yet expunged itself.
+   * <p>
+   * We do it anyway, and the reasoning is per-folder rather than universal — which is
+   * the one thing to weigh before pointing this at a new folder. For DRAFTS the blast
+   * radius is the folder whose entire purpose is to hold superseded copies of
+   * unfinished messages, and the alternative — leaving the flag set and never
    * expunging — is not "safe", it is a Drafts folder that fills up with struck-through
-   * copies of the same half-written mail, which is the visible failure this step exists
-   * to prevent.
+   * copies of the same half-written mail. For TRASH it is the folder the user has
+   * already thrown things into, so an over-broad expunge removes messages that were
+   * awaiting removal anyway. Neither argument would hold for the INBOX, and nothing
+   * points this there.
    * <p>
-   * A previous copy that is simply not there any more (another client removed it) is
-   * not a failure: there is nothing left to do, and saying so at debug level is enough.
+   * A message that is simply not there any more (another client removed it) is not a
+   * failure: there is nothing left to do, and saying so at debug level is enough.
    * Neither is a UID that now holds somebody else's message — see
-   * {@link #isOurDraftCopy} for why that is checked before anything is flagged.
+   * {@link #isExpectedMessageAtUid} for why that is checked before anything is flagged.
    * <p>
-   * Throws rather than swallowing, because the two callers want opposite things from a
-   * failure: the upload has already put the new copy up and must not fail over a
-   * leftover duplicate, while the discard must not claim the draft is gone when it is
-   * not.
+   * Throws rather than swallowing, because callers want opposite things from a
+   * failure: a draft upload has already put the new copy up and must not fail over a
+   * leftover duplicate, while a discard — or a permanent delete — must not claim the
+   * message is gone when it is not.
    *
-   * @param draftsFolder the open Drafts folder
-   * @param previousUid the UID of the copy being superseded
-   * @param expectedMessageId the Message-ID the row says that copy carries
+   * @param folder the OPEN folder holding the message, opened READ_WRITE
+   * @param uid the UID of the message to remove, within that folder
+   * @param expectedMessageId the Message-ID the local row says that message carries
+   * @param folderLabel the folder's name for the log ("Drafts", "Trash")
    * @param username the mailbox owner
    * @return true when the caller must close the folder with expunge, because the
    *         server offered no way to remove just this one message
    * @throws MessagingException if the message could not be flagged for removal
    */
-  private boolean removePreviousDraftCopy(IMAPFolder draftsFolder,
-                                          long previousUid,
-                                          String expectedMessageId,
-                                          String username) throws MessagingException {
-    Message previous = draftsFolder.getMessageByUID(previousUid);
-    if (previous == null) {
-      LOG.debug("The previous draft copy of user {} (uid {}) is already gone", username, previousUid);
+  private boolean removeMessageByUid(IMAPFolder folder,
+                                     long uid,
+                                     String expectedMessageId,
+                                     String folderLabel,
+                                     String username) throws MessagingException {
+    Message message = folder.getMessageByUID(uid);
+    if (message == null) {
+      LOG.debug("The {} message of user {} (uid {}) is already gone", folderLabel, username, uid);
       return false;
     }
-    if (!isOurDraftCopy(previous, expectedMessageId, previousUid, username)) {
+    if (!isExpectedMessageAtUid(message, expectedMessageId, uid, folderLabel, username)) {
       return false;
     }
-    previous.setFlag(Flags.Flag.DELETED, true);
+    message.setFlag(Flags.Flag.DELETED, true);
     try {
       // UID EXPUNGE: this message and no other. JavaMail throws when the server has
       // not advertised UIDPLUS, which is exactly the signal we want.
-      draftsFolder.expunge(new Message[] { previous });
+      folder.expunge(new Message[] { message });
       return false;
     } catch (MessagingException e) {
-      LOG.debug("No UID EXPUNGE for user {}; the previous draft copy goes on close instead", username, e);
+      LOG.debug("No UID EXPUNGE for user {}; the {} message goes on close instead", username, folderLabel, e);
       return true;
     }
   }
 
   /**
-   * Whether the message sitting at a remembered UID is really the draft copy we put
-   * there — asked immediately before it is flagged {@code \Deleted}, and the only
+   * Whether the message sitting at a remembered UID is really the one the local row is
+   * pointing at — asked immediately before it is flagged {@code \Deleted}, and the only
    * thing standing between a remembered number and somebody else's mail.
    * <p>
    * A UID is not a name. It identifies a message only within one UIDVALIDITY of one
@@ -5407,17 +5697,76 @@ public class EmailBoxService {
    * UID vanishing at once) and clears the ones it holds, but it notices on its own
    * schedule, and a push can run first. Message-ID equality is what settles it, exactly
    * as it does for the stray-copy janitor: it is the only identity a message really
-   * carries, and every copy we append is pinned to the one on the row.
+   * carries, and every row we cache is pinned to the one the message carried.
    * <p>
    * Both copies of a draft carry that same pinned Message-ID, which is not a problem
-   * here and is the reason the caller compares UIDs first: the copy just appended is
-   * excluded by number before identity is ever asked about.
+   * for the drafts caller and is the reason it compares UIDs first: the copy just
+   * appended is excluded by number before identity is ever asked about.
    * <p>
    * A row that carries no Message-ID at all cannot be checked, and is let through. That
-   * is not a hole so much as the older, narrower trust: the UID was written by our own
-   * append and no other path invents one. Refusing there would guarantee the leftover
-   * copy this method exists to remove, in exchange for a doubt we have no way to
-   * resolve.
+   * is not a hole so much as the older, narrower trust: for a draft the UID was written
+   * by our own append and no other path invents one, and for a mirrored folder it was
+   * read off the server in the same fetch as the row. Refusing there would guarantee
+   * the leftover copy this check exists to allow removing, in exchange for a doubt we
+   * have no way to resolve.
+   *
+   * @param message the message found at the remembered UID
+   * @param expectedMessageId the Message-ID the row says its message carries
+   * @param uid the remembered UID, for the log
+   * @param folderLabel the folder's name for the log ("Drafts", "Trash")
+   * @param username the mailbox owner
+   * @return true when the message is the one the row is pointing at
+   * @throws MessagingException if the message's headers cannot be read
+   */
+  private boolean isExpectedMessageAtUid(Message message,
+                                         String expectedMessageId,
+                                         long uid,
+                                         String folderLabel,
+                                         String username) throws MessagingException {
+    if (StringUtils.isBlank(expectedMessageId)) {
+      return true;
+    }
+    String[] messageIds = message.getHeader("Message-ID");
+    String actualMessageId = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
+    if (StringUtils.equals(actualMessageId, StringUtils.trim(expectedMessageId))) {
+      return true;
+    }
+    // Warn rather than debug: nothing was lost, but the mailbox has renumbered itself
+    // under us and that is worth seeing in a log next to whatever else went odd that day.
+    LOG.warn("The {} message at uid {} of user {} is {} and not the {} the row remembers; leaving it alone",
+             folderLabel,
+             uid,
+             username,
+             actualMessageId,
+             expectedMessageId);
+    return false;
+  }
+
+  /**
+   * Removes the copy of a draft that the APPEND just superseded, so the user's other
+   * mail clients show one draft rather than a growing pile of them — the Drafts
+   * folder's name for {@link #removeMessageByUid}, which is where the mechanic and the
+   * reasoning about its blast radius both live.
+   *
+   * @param draftsFolder the open Drafts folder
+   * @param previousUid the UID of the copy being superseded
+   * @param expectedMessageId the Message-ID the row says that copy carries
+   * @param username the mailbox owner
+   * @return true when the caller must close the folder with expunge
+   * @throws MessagingException if the message could not be flagged for removal
+   */
+  private boolean removePreviousDraftCopy(IMAPFolder draftsFolder,
+                                          long previousUid,
+                                          String expectedMessageId,
+                                          String username) throws MessagingException {
+    return removeMessageByUid(draftsFolder, previousUid, expectedMessageId, DRAFTS_FOLDER_LABEL, username);
+  }
+
+  /**
+   * Whether the message sitting at a remembered Drafts UID is really the draft copy we
+   * put there — the Drafts folder's name for {@link #isExpectedMessageAtUid}, which is
+   * where the reasoning lives. Kept because the stray-copy janitor asks the question on
+   * a message it already holds, without going through a removal.
    *
    * @param message the message found at the remembered UID
    * @param expectedMessageId the Message-ID the row says its copy carries
@@ -5430,22 +5779,7 @@ public class EmailBoxService {
                                  String expectedMessageId,
                                  long uid,
                                  String username) throws MessagingException {
-    if (StringUtils.isBlank(expectedMessageId)) {
-      return true;
-    }
-    String[] messageIds = message.getHeader("Message-ID");
-    String actualMessageId = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
-    if (StringUtils.equals(actualMessageId, StringUtils.trim(expectedMessageId))) {
-      return true;
-    }
-    // Warn rather than debug: nothing was lost, but the mailbox has renumbered itself
-    // under us and that is worth seeing in a log next to whatever else went odd that day.
-    LOG.warn("The Drafts message at uid {} of user {} is {} and not the draft copy {} the row remembers; leaving it alone",
-             uid,
-             username,
-             actualMessageId,
-             expectedMessageId);
-    return false;
+    return isExpectedMessageAtUid(message, expectedMessageId, uid, DRAFTS_FOLDER_LABEL, username);
   }
 
   /**
@@ -5490,22 +5824,42 @@ public class EmailBoxService {
   }
 
   /**
-   * Closes the Drafts folder, expunging it only when {@link #removePreviousDraftCopy}
-   * had no way to remove one message on its own — see there for what that costs.
+   * Closes a folder, expunging it only when {@link #removeMessageByUid} had no way to
+   * remove its messages one at a time — see there for what that costs.
+   * <p>
+   * A close that FAILS while expunge was the only removal available is the case worth
+   * naming: the messages stay flagged {@code \Deleted} on the server and their local
+   * rows are already gone, so the mailbox and the mirror disagree. Nothing here tries
+   * to repair it, on purpose — the next sync of that folder re-imports whatever the
+   * server still holds, which puts the rows back exactly where the messages are. Warn
+   * and let the sync converge.
+   *
+   * @param folder the folder to close, may be null or already closed
+   * @param expunge whether the close must expunge the folder
+   * @param folderLabel the folder's name for the log ("Drafts", "Trash")
+   * @param username the mailbox owner, for the log
+   */
+  private void closeFolderQuietly(IMAPFolder folder, boolean expunge, String folderLabel, String username) {
+    if (folder == null || !folder.isOpen()) {
+      return;
+    }
+    try {
+      folder.close(expunge);
+    } catch (MessagingException e) {
+      LOG.warn("Error when closing the {} folder of user {}", folderLabel, username, e);
+    }
+  }
+
+  /**
+   * Closes the Drafts folder — the Drafts folder's name for
+   * {@link #closeFolderQuietly}.
    *
    * @param draftsFolder the folder to close, may be null or already closed
    * @param expunge whether the close must expunge the folder
    * @param username the mailbox owner, for the log
    */
   private void closeDraftsFolderQuietly(IMAPFolder draftsFolder, boolean expunge, String username) {
-    if (draftsFolder == null || !draftsFolder.isOpen()) {
-      return;
-    }
-    try {
-      draftsFolder.close(expunge);
-    } catch (MessagingException e) {
-      LOG.warn("Error when closing the Drafts folder of user {}", username, e);
-    }
+    closeFolderQuietly(draftsFolder, expunge, DRAFTS_FOLDER_LABEL, username);
   }
 
   /**

@@ -127,6 +127,45 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}
       </span>
     </v-list-item>
+    <!-- The Trash's own two actions, where the ordinary ones above are withheld. Not
+         gated on `restricted`: the swipe offers neither of them, so there is nothing
+         here for the mobile long-press drawer to be repeating. -->
+    <v-list-item
+      v-if="trashActions"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="restoreEmail">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="mx-auto"
+          size="16">
+          fa-trash-restore
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.restore.label') }}
+      </span>
+    </v-list-item>
+    <v-list-item
+      v-if="trashActions"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="purgeEmail">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="error--text mx-auto"
+          size="16">
+          fa-times-circle
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.purge.label') }}
+      </span>
+    </v-list-item>
   </v-list>
 </template>
 
@@ -172,6 +211,13 @@ export default {
     readOnly() {
       return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
+    // Whether this row is one the Trash actions apply to. Off the ROW's folder for the
+    // same reason readOnly above is, and asked of the same service so the two answers
+    // are made in one place: a folder that offers restore must be one where the
+    // ordinary actions are withheld, and nothing here can drift out of that pairing.
+    trashActions() {
+      return this.$emailConnectorMailBoxService.hasTrashActions(this.email.folder);
+    },
   },
   methods: {
     selectEmail() {
@@ -193,6 +239,27 @@ export default {
     archiveEmail() {
       this.$emit('close');
       this.$root.$emit('archive-email', this.threadIds);
+    },
+    /**
+     * Puts the row (or the whole thread it stands for) back into the inbox. No
+     * confirmation: a restore is undone by deleting again.
+     *
+     * @returns {void}
+     */
+    restoreEmail() {
+      this.$emit('close');
+      this.$root.$emit('restore-email', this.threadIds);
+    },
+    /**
+     * Asks first, then destroys. The confirmation is opened from here, where the click
+     * happened and where the count is known, rather than inside the drawer that sends
+     * the request — so every entry point asks the same question in the same words.
+     *
+     * @returns {void}
+     */
+    purgeEmail() {
+      this.$emit('close');
+      this.$root.$emit('open-purge-email-confirm-popup', this.threadIds);
     },
   }
 };

@@ -71,6 +71,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         icon>
         <v-icon size="20" class="error--text">fa-trash</v-icon>
       </v-btn>
+      <v-btn
+        v-if="canApplyTrashActions"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.restore.label')"
+        @click="restoreEmails()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-trash-restore</v-icon>
+      </v-btn>
+      <v-btn
+        v-if="canApplyTrashActions"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.purge.label')"
+        @click="purgeEmails()"
+        icon>
+        <v-icon size="20" class="error--text">fa-times-circle</v-icon>
+      </v-btn>
     </template>
     <template v-else>
       <v-btn
@@ -120,7 +134,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
         <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
       </v-btn>
-    </template>  
+      <v-btn
+        v-if="canApplyTrashActions"
+        @click="restoreEmails()"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-trash-restore
+        </v-icon>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.restore.label') }}
+      </v-btn>
+      <v-btn
+        v-if="canApplyTrashActions"
+        @click="purgeEmails()"
+        outlined
+        class="btn error font-weight-bold">
+        <v-icon size="16" class="error--text pe-3">fa-times-circle</v-icon>
+        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.purge.label') }} </span>
+      </v-btn>
+    </template>
   </div>
 </template>
 
@@ -201,6 +236,23 @@ export default {
       return !this.selectedEmails.some(emailId =>
         this.$emailConnectorMailBoxService.isReadOnlyFolder(this.emailsMap[emailId]?.folder));
     },
+    /**
+     * Whether the selection may be restored or permanently deleted.
+     *
+     * The mirror of canMutateSelection, off the same rows and with the same all-or-none
+     * reading — but requiring EVERY row to be one the Trash actions apply to rather than
+     * none. A selection with one non-Trash row in it must not offer to restore it: the
+     * request would be answered against the Trash folder, where that row's UID names
+     * some other message entirely. `every` on an empty selection is true in JavaScript,
+     * so the emptiness is ruled out explicitly.
+     *
+     * @returns {Boolean} true when restore / delete permanently may be offered
+     */
+    canApplyTrashActions() {
+      return this.hasSelectedEmails
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.hasTrashActions(this.emailsMap[emailId]?.folder));
+    },
   },
   created() {
     this.$root.$on('open-webmail', this.openWebmail);
@@ -231,6 +283,24 @@ export default {
     },
     archiveEmails() {
       this.$root.$emit('archive-email', this.selectedEmails);
+    },
+    /**
+     * Puts the whole selection back into the inbox. No confirmation — a restore is
+     * undone by deleting again.
+     *
+     * @returns {void}
+     */
+    restoreEmails() {
+      this.$root.$emit('restore-email', this.selectedEmails);
+    },
+    /**
+     * Asks first, then destroys the whole selection. The confirmation is handed the
+     * ids so it can say how many messages are about to go.
+     *
+     * @returns {void}
+     */
+    purgeEmails() {
+      this.$root.$emit('open-purge-email-confirm-popup', this.selectedEmails);
     },
     deleteEmails() {
       this.$root.$emit('delete-email', this.selectedEmails); 

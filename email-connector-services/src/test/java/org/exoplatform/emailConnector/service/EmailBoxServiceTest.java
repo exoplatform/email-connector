@@ -580,6 +580,260 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
   }
 
+  // ---------------------------------------------------------------------------------
+  // Trash actions: restore and permanent delete. Both go through the same body, so the
+  // arms that differ (the COPY) are pinned once each and the arms they share (identity
+  // check, UIDPLUS or not, compensation, no Trash folder) once for whichever of the two
+  // the failure would hurt most.
+  // ---------------------------------------------------------------------------------
+
+  @Test
+  @SneakyThrows
+  void restoreEmailCopiesBackToTheInboxThenRemovesTheTrashCopy() {
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    Message message = givenATrashedMessage(trash, "<kept@host>", "<kept@host>");
+    Folder inbox = trashStore().getFolder("INBOX");
+
+    int failed = emailBoxService.restoreEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(0, failed);
+    // The row goes first, then the copy, then the removal of the source.
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
+    verify(trash).open(Folder.READ_WRITE);
+    verify(trash).copyMessages(any(Message[].class), eq(inbox));
+    verify(message).setFlag(Flags.Flag.DELETED, true);
+    verify(trash).expunge(any(Message[].class));
+    // UID EXPUNGE worked, so the close must NOT expunge the whole folder.
+    verify(trash).close(false);
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void purgeEmailRemovesTheMessageAndCopiesItNowhere() {
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    Message message = givenATrashedMessage(trash, "<doomed@host>", "<doomed@host>");
+
+    int failed = emailBoxService.purgeEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(0, failed);
+    // The whole difference between the two actions: a permanent delete puts the message
+    // nowhere. A copy here would be a "permanent delete" that silently kept a copy.
+    // Untyped any(): since Mockito 2, any(Folder.class) does NOT match a null argument,
+    // and the destination this action would wrongly copy to is exactly null — so the
+    // typed matcher passes while the copy is happening.
+    verify(trash, never()).copyMessages(any(), any());
+    verify(message).setFlag(Flags.Flag.DELETED, true);
+    verify(trash).expunge(any(Message[].class));
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void aServerWithoutUidplusFallsBackToExpungeOnClose() {
+    // JavaMail refuses expunge(Message[]) when the server never advertised UIDPLUS
+    // (RFC 4315). The only removal left is the whole-folder one, at close — coarser,
+    // and the folder it is coarse about is the Trash.
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    Message message = givenATrashedMessage(trash, "<doomed@host>", "<doomed@host>");
+    doThrow(new MessagingException("UID EXPUNGE not supported")).when(trash).expunge(any(Message[].class));
+
+    int failed = emailBoxService.purgeEmail(List.of(1212L), TEST_USER);
+
+    // Flagged per message, removed once at the close — and still a success: the
+    // message is on its way out, and a close that fails self-heals at the next sync.
+    assertEquals(0, failed);
+    verify(message).setFlag(Flags.Flag.DELETED, true);
+    verify(trash).close(true);
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void restoreEmailToleratesGmailExpungingTheSourceOnTheCopyOut() {
+    // Mirror image of deleteEmailToleratesGmailTrashExpunge. [Gmail]/Trash is exclusive
+    // with every label, so copying OUT of it IS the move: the source is expunged by the
+    // COPY itself. The restore has succeeded, so nothing may be flagged, nothing counted
+    // as failed, and the row must NOT come back.
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    Message message = givenATrashedMessage(trash, "<kept@host>", "<kept@host>");
+    when(message.isExpunged()).thenReturn(true);
+
+    int failed = emailBoxService.restoreEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(0, failed);
+    verify(trash).copyMessages(any(Message[].class), any(Folder.class));
+    verify(message, never()).setFlag(Flags.Flag.DELETED, true);
+    verify(trash, never()).expunge(any(Message[].class));
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void purgeEmailRefusesAUidThatNowCarriesSomebodyElsesMessage() {
+    // The load-bearing check of this whole slice. A UID names a message only within one
+    // UIDVALIDITY, so a rebuilt or restored mailbox hands the same numbers to different
+    // messages. Flagging the wrong one \Deleted in a folder about to be expunged is the
+    // one thing here that can destroy mail nobody asked to lose.
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    Message stranger = givenATrashedMessage(trash, "<mine@host>", "<stranger@host>");
+
+    int failed = emailBoxService.purgeEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(1, failed);
+    verify(stranger, never()).setFlag(Flags.Flag.DELETED, true);
+    verify(trash, never()).expunge(any(Message[].class));
+    verify(trash).close(false);
+    // The row it refused to act on goes back, so the message stays visible in Trash.
+    verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void restoreEmailRefusesToCopyAMessageThatIsNotTheOneTheRowRemembers() {
+    // Same check, other action, other harm: a mismatch here would copy a stranger's
+    // message INTO the user's inbox rather than destroy it.
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    Message stranger = givenATrashedMessage(trash, "<mine@host>", "<stranger@host>");
+
+    int failed = emailBoxService.restoreEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(1, failed);
+    verify(trash, never()).copyMessages(any(), any());
+    verify(stranger, never()).setFlag(Flags.Flag.DELETED, true);
+    verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void aRemoteFailurePutsThatMessagesRowBackInTheTrash() {
+    // The compensating half of "delete the row first, then act on the server". Without
+    // it a failed restore leaves the message on the server and gone from the mirror —
+    // invisible until the next sync, and invisible for good if the sync window has
+    // moved past it.
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    givenATrashedMessage(trash, "<kept@host>", "<kept@host>");
+    doThrow(new MessagingException("COPY rejected")).when(trash).copyMessages(any(Message[].class), any(Folder.class));
+
+    int failed = emailBoxService.restoreEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(1, failed);
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
+    // Re-created, not updated: the row was really deleted, so it comes back with no id
+    // and the database gives it a new one.
+    verify(emailBoxStorage).createEmail(argThat(email -> email.getId() == null && MailFolder.TRASH.equals(email.getFolder())));
+  }
+
+  @Test
+  @SneakyThrows
+  void aMailboxWithNoTrashFolderFailsEveryIdAndKeepsEveryRow() {
+    // Rows cached as TRASH and no Trash folder to find: the mailbox was reorganized, or
+    // the strict lookup no longer recognizes the folder. Nothing can be acted on, so
+    // nothing may be silently reported as done.
+    givenAMailboxListing();
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder(MailFolder.TRASH);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.TRASH),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(row);
+
+    int failed = emailBoxService.purgeEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(1, failed);
+    verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void aMessageAlreadyOutOfTheTrashCountsAsDone() {
+    // The provider emptied it, or another client did. The outcome the caller asked for
+    // is the outcome: a success, and the row stays deleted.
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    givenATrashedMessage(trash, "<gone@host>", "<gone@host>");
+    when(trash.getMessageByUID(1212L)).thenReturn(null);
+
+    int failed = emailBoxService.purgeEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(0, failed);
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void aUidWithNoCachedTrashRowIsRefusedRatherThanActedOn() {
+    // These endpoints act on what the mirror listed. A uid the mirror does not hold is
+    // a stale client or a number nobody ever saw, and "permanently delete a message I
+    // cannot show you" is not something to do on trust.
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+
+    int failed = emailBoxService.purgeEmail(List.of(1212L), TEST_USER);
+
+    assertEquals(1, failed);
+    verify(trash, never()).getMessageByUID(anyLong());
+    verify(trash, never()).expunge(any(Message[].class));
+  }
+
+  @Test
+  @SneakyThrows
+  void trashActionsRefuseAUserWhoMayNotConnect() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    List<Long> ids = List.of(1212L);
+
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.restoreEmail(ids, TEST_USER));
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.purgeEmail(ids, TEST_USER));
+    // Refused before anything local is touched.
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * The store the current {@link #givenAMailboxListing} handed out, re-fetched from the
+   * mock rather than threaded through every helper's return value.
+   *
+   * @return the connected store of the test mailbox
+   */
+  @SneakyThrows
+  private Store trashStore() {
+    return userEmailSettingService.connect(userEmailSettingService.getUserEmailSetting(TEST_USER));
+  }
+
+  /**
+   * One trashed message: a cached TRASH row at uid 1212 pinned to {@code rowMessageId},
+   * and the message the server actually has at that uid carrying
+   * {@code serverMessageId}. Passing two different ids is how the UIDVALIDITY-renumbering
+   * case is set up.
+   *
+   * @param trash the mailbox's Trash folder
+   * @param rowMessageId the Message-ID the local row remembers
+   * @param serverMessageId the Message-ID the server's message at that uid carries
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private Message givenATrashedMessage(IMAPFolder trash, String rowMessageId, String serverMessageId) {
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder(MailFolder.TRASH);
+    row.setMailHeaderId(rowMessageId);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.TRASH),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(row);
+    Message message = mock(Message.class);
+    lenient().when(trash.getMessageByUID(1212L)).thenReturn(message);
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { serverMessageId });
+    return message;
+  }
+
   @Test
   void getThreadReadsCacheWithoutImap() throws Exception {
     // getThread is the fast path: a pure cache read, never an IMAP connection, so the
@@ -2459,7 +2713,10 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
-    when(store.getFolder("INBOX")).thenReturn(inbox);
+    // Lenient: this listing is also the harness for the Trash actions, and a permanent
+    // delete never touches the INBOX at all — which is the point of that action, not an
+    // incomplete test.
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
     lenient().when(inbox.getMessageCount()).thenReturn(0);
     lenient().when(inbox.isOpen()).thenReturn(true);
     lenient().when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
