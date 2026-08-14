@@ -3119,7 +3119,7 @@ public class EmailBoxServiceTest {
                                                                                                            null,
                                                                                                            MailFolder.DRAFTS,
                                                                                                            99L,
-                                                                                                           25L * 1024 * 1024)));
+                                                                                                           25L * 1024 * 1024, null)));
 
     ForwardedAttachments forwarded = emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 1212L, MailFolder.INBOX);
 
@@ -3181,7 +3181,7 @@ public class EmailBoxServiceTest {
                                                                                                                                    null,
                                                                                                                                    MailFolder.DRAFTS,
                                                                                                                                    88L,
-                                                                                                                                   10L)));
+                                                                                                                                   10L, null)));
     givenTheFileStoreHolds(88L, "typed-here.txt", "here it is".getBytes());
 
     ForwardedAttachments forwarded = emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 4242L, MailFolder.DRAFTS);
@@ -4584,7 +4584,7 @@ public class EmailBoxServiceTest {
    * @return the cached row
    */
   private EmailAttachment cachedPart(String partPath, String name) {
-    return new EmailAttachment(null, 1212L, partPath, name, "application/pdf", null, MailFolder.INBOX, null, null);
+    return new EmailAttachment(null, 1212L, partPath, name, "application/pdf", null, MailFolder.INBOX, null, null, null);
   }
 
   /**
@@ -4650,7 +4650,7 @@ public class EmailBoxServiceTest {
              .thenAnswer(invocation -> {
                byte[] bytes = invocation.getArgument(4);
                return new EmailAttachment(7L, null, null, invocation.getArgument(2), invocation.getArgument(3), null,
-                                          MailFolder.DRAFTS, 55L, (long) bytes.length);
+                                          MailFolder.DRAFTS, 55L, (long) bytes.length, null);
              });
   }
 
