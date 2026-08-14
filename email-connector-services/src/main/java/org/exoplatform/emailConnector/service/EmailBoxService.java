@@ -458,6 +458,15 @@ public class EmailBoxService {
   // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email (SMTP-friendly, 25 MB).
   private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = 25L * 1024 * 1024;
 
+  // What an attachment is called and what it is declared as when the message it came
+  // from says neither. Both are load-bearing rather than cosmetic: a row with a blank
+  // name is not written at all (the entity mapper answers null for one), and a part
+  // with a blank content type reaches the data handler, which is a difference the
+  // recipient sees.
+  private static final String     DEFAULT_ATTACHMENT_NAME                                     = "attachment";
+
+  private static final String     DEFAULT_ATTACHMENT_MIME_TYPE                                = "application/octet-stream";
+
   @Autowired
   private CategoryLinkService     categoryLinkService;
 
@@ -2374,14 +2383,7 @@ public class EmailBoxService {
       if (bodyPart == null) {
         throw new RuntimeException("Attachment not found in the email");
       }
-      try (InputStream is = bodyPart.getInputStream(); ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-        byte[] buffer = new byte[256 * 1024];
-        int bytesRead;
-        while ((bytesRead = is.read(buffer)) != -1) {
-          baos.write(buffer, 0, bytesRead);
-        }
-        emailAttachment.setData(baos.toByteArray());
-      }
+      emailAttachment.setData(readPartBytes(bodyPart));
       String fileName = bodyPart.getFileName();
       if (fileName != null) {
         emailAttachment.setName(fileName);
@@ -3415,6 +3417,15 @@ public class EmailBoxService {
    * row is returned unchanged, which leaves the composer saying the draft lives only
    * here, which is true.
    * <p>
+   * A draft written in ANOTHER client and imported by the sync is the one case where
+   * something has to happen before the message can be built at all: its attachments are
+   * MIME part paths into the copy sitting in the Drafts folder, which is precisely the
+   * copy this push replaces and deletes. So the bytes are brought over to this side
+   * first (see {@link #materializeRemoteDraftParts}) and only then is the new message
+   * appended — after which the draft is an ordinary local one and this never runs for
+   * it again. If they cannot be brought over, the push does not happen: the stale copy
+   * up there still holds the files, which is better than a fresh one that does not.
+   * <p>
    * Why the arithmetic above matters more now than it did: every push re-uploads the
    * WHOLE message, so a 20 MB file goes up again on every push. The composer answers
    * that by not arming its idle timer at all while the draft carries a file — a draft
@@ -3463,8 +3474,25 @@ public class EmailBoxService {
       Email toStore = stored == null ? buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting)
                                      : buildNextDraftRevision(draft, stored);
       Email saved = emailBoxStorage.saveDraft(toStore);
-      if (!pushToServer || !isServerDraftsEnabled() || DraftState.SYNCED.equals(saved.getDraftState())
-          || !draftFilesAreAllReadable(saved, username)) {
+      if (!pushToServer || !isServerDraftsEnabled() || DraftState.SYNCED.equals(saved.getDraftState())) {
+        return saved;
+      }
+      // A draft imported from another client carries addresses into its copy on the
+      // server, and that copy is what this push is about to replace and delete. The
+      // bytes come over FIRST, so the delete never destroys the only holder of a file.
+      // Nothing happens here for a draft that has no such parts, which is every draft
+      // written in this composer and every imported draft after the first push.
+      if (!remoteDraftParts(draftAttachmentRows(saved)).isEmpty()) {
+        if (!materializeRemoteDraftParts(saved, username, userEmailSetting)) {
+          // Refused, not failed: the user's words are stored, the copy up there is stale
+          // but still complete, and the composer's existing notice says the draft lives
+          // only here — which is true of the sentence they just typed.
+          return saved;
+        }
+        Email materialized = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+        saved = materialized != null ? materialized : saved;
+      }
+      if (!draftFilesAreAllReadable(saved, username)) {
         return saved;
       }
       return uploadDraft(saved, username, userEmailSetting);
@@ -3513,6 +3541,14 @@ public class EmailBoxService {
    * removed: the draft is left exactly where it was, on both sides, for the user to
    * take the broken chip off and try again. Delivering a mail whose attachments are
    * missing is the one failure here that the sender cannot see and cannot take back.
+   * <p>
+   * <b>Sending a draft written elsewhere.</b> Its files may still be MIME part paths
+   * into its copy in the Drafts folder rather than bytes on this side — a draft that
+   * was edited and sent without a push in between. They are brought over first (see
+   * {@link #materializeRemoteDraftParts}), in the same breath and before the same
+   * claim, and a draft whose files cannot be brought over is refused with the same
+   * code as one whose file has gone. It is the same failure: a file the composer shows
+   * and the message would not carry.
    * <p>
    * A second send of the same draft cannot start while the first is in flight: the
    * row is claimed as {@link DraftState#SENDING} before the message goes out (see
@@ -3563,6 +3599,19 @@ public class EmailBoxService {
       // claimed, nothing removed here or on the server, and the user still holding a
       // draft they can fix.
       List<EmailAttachment> storedAttachments = emailBoxStorage.getDraftAttachments(username, draftLocalId);
+      if (!remoteDraftParts(storedAttachments).isEmpty()) {
+        // An imported draft being sent without ever having been pushed since it was
+        // edited. Its files are still addresses into the copy on the server, and the
+        // message about to go out is built here — so they come over now or the send is
+        // refused. Refused and not "sent without them": a mail delivered without the
+        // file its sender attached cannot be discovered by them or taken back.
+        if (!materializeRemoteDraftParts(stored, username, userEmailSetting)) {
+          LOG.warn("The draft of user {} cannot be sent: the files it shows are still only in a server copy that cannot be read",
+                   username);
+          throw new IllegalStateException("emailConnector.drafts.send.attachmentGone");
+        }
+        storedAttachments = emailBoxStorage.getDraftAttachments(username, draftLocalId);
+      }
       requireReadableDraftFiles(storedAttachments, username);
       DraftState stateBeforeSend = saveDraftBeforeSend(draft, stored);
       emailBoxStorage.updateDraftState(username, draftLocalId, DraftState.SENDING);
@@ -3996,13 +4045,27 @@ public class EmailBoxService {
    * bytes are not still fails, one layer down: the part throws while the message is
    * being written, the APPEND fails, and {@link #uploadDraft} leaves the row unsynced.
    * Same outcome, slower road.
+   * <p>
+   * It asks about EVERY attachment row and not only the ones with a file
+   * ({@link #draftAttachmentRows}, deliberately not {@link #storedAttachmentsOf}). A
+   * row with no file id is an imported draft's remote part that
+   * {@link #materializeRemoteDraftParts} did not manage to bring over, and the message
+   * builder would silently leave it out — which is the same failure as a missing file,
+   * arrived at from the other side. Structural rather than trusting the caller to have
+   * materialized first: the invariant is "never a message with a part quietly missing",
+   * and a gate that can be bypassed by adding a call site is not one.
    *
    * @param draft the draft as stored, read with its attachments
    * @param username the mailbox owner, for the log
    * @return true when the draft can be assembled whole
    */
   private boolean draftFilesAreAllReadable(Email draft, String username) {
-    for (EmailAttachment attachment : storedAttachmentsOf(draft)) {
+    for (EmailAttachment attachment : draftAttachmentRows(draft)) {
+      if (attachment.getFileId() == null) {
+        LOG.warn("The draft of user {} shows the file {}, whose bytes are still only in its copy on the server;"
+            + " it is not uploaded to the Drafts folder", username, attachment.getName());
+        return false;
+      }
       if (!emailBoxStorage.attachmentFileExists(attachment.getFileId())) {
         // Warn rather than debug: a row naming a file that is gone means something
         // freed a file that was still referenced, which is a bug somewhere else and is
@@ -4014,6 +4077,221 @@ public class EmailBoxService {
       }
     }
     return true;
+  }
+
+  /**
+   * Every attachment row a draft carries, whatever kind it is — the list the two gates
+   * ask their question of.
+   * <p>
+   * Deliberately not {@link #storedAttachmentsOf}, which answers only the rows that
+   * have bytes on this side. That filter is right where a message is being ASSEMBLED
+   * (nothing else can be put on a part), and it is exactly wrong where the question is
+   * "may this message be assembled at all": a row it silently skips is a file the user
+   * can see and the message would not carry.
+   *
+   * @param draft the draft as stored, read with its attachments
+   * @return its attachment rows, never null
+   */
+  private List<EmailAttachment> draftAttachmentRows(Email draft) {
+    if (draft == null || draft.getContent() == null || CollectionUtils.isEmpty(draft.getContent().getAttachments())) {
+      return List.of();
+    }
+    return draft.getContent().getAttachments().stream().filter(Objects::nonNull).toList();
+  }
+
+  /**
+   * The attachments of a draft that are still only an ADDRESS: a MIME part path into
+   * the copy sitting in the user's Drafts folder, with no bytes on this side.
+   * <p>
+   * That is what an imported draft's files are (see
+   * {@link #createDraftFromServerMessage}) and what
+   * {@link #materializeRemoteDraftParts} exists to convert. The two kinds are mutually
+   * exclusive by construction — a file id or a part path, never both — so this and
+   * {@link #storedAttachmentsOf} partition the rows between them.
+   *
+   * @param attachments the draft's attachment rows, may be null
+   * @return the ones whose bytes are still only on the server, never null
+   */
+  private List<EmailAttachment> remoteDraftParts(List<EmailAttachment> attachments) {
+    if (CollectionUtils.isEmpty(attachments)) {
+      return List.of();
+    }
+    return attachments.stream()
+                      .filter(attachment -> attachment != null && attachment.getFileId() == null
+                          && StringUtils.isNotBlank(attachment.getAttachmentRemoteId()))
+                      .toList();
+  }
+
+  /**
+   * Brings the bytes of a draft's remote parts over to this side, out of the copy on
+   * the mail server, so that the draft stops depending on a message that is about to
+   * be destroyed.
+   * <p>
+   * <b>Why this has to happen before anything else.</b> A draft written on the user's
+   * phone carries addresses, not content: its attachments name parts of ONE message,
+   * at one UID, in the Drafts folder. Editing that draft makes it
+   * {@link DraftState#DIRTY}, and a push then APPENDs a message rebuilt from the row
+   * and deletes the previous copy — IMAP has no update. Rebuilt from addresses, that
+   * message carries no files, and the copy being deleted is the only thing that held
+   * them. The user would watch chips they could see turn into a mail with nothing
+   * attached, on both sides at once.
+   * <p>
+   * <b>Copy first, then append, then delete.</b> Doing this here rather than streaming
+   * the parts straight from the old copy into the APPEND is what makes the ordering
+   * safe rather than merely usual: when the previous copy is deleted the bytes are
+   * already in the platform's file store, so there is no window in which the only
+   * holder of a file is a message being removed. Streaming would also have to keep the
+   * old message readable across a write of the new one on the same connection, for a
+   * saving of one copy on a path that runs once in a draft's life.
+   * <p>
+   * <b>Once, and only when needed.</b> A materialized row is indistinguishable from a
+   * file the user attached here, so this runs on the first push or send AFTER an
+   * imported draft is edited and never again — and never at all for the imported draft
+   * nobody opens, which is the common case and the reason the sync does not do this.
+   * <p>
+   * <b>Memory.</b> One part at a time, and no more: each part is read, written to the
+   * file store and forgotten before the next is fetched. The IMAP side does stream —
+   * a part's {@code getInputStream} is a partial {@code FETCH BODY[n]} rather than a
+   * whole-message read — but {@code FileService} takes bytes, so the peak cost of this
+   * is the single largest part of the draft. That is the same limit
+   * {@link StoredFileDataSource} states from the other direction, and the same one
+   * {@code EmailBoxStorage#addDraftAttachment} already pays for a file attached here.
+   * <p>
+   * <b>All or nothing, and false rather than a lie.</b> A part that cannot be found or
+   * read stops the whole thing, and the caller is expected to refuse: the push leaves
+   * the row unsynced (so the copy up there, stale but complete, keeps the files and the
+   * composer says the draft lives only here), and the send fails outright. What has
+   * already been brought over stays brought over — each part is independent, and a
+   * retry picks up where this stopped.
+   * <p>
+   * <b>The copy is identified before it is read</b>, through the same
+   * {@link #isOurDraftCopy} check the removal paths use. A UID is not a name, and
+   * reading someone else's message here would not fail loudly — it would attach a
+   * stranger's file to the user's draft and then send it.
+   *
+   * @param draft the draft's row, for the UID of its server copy and the Message-ID
+   *          that copy is pinned with
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @return true when the draft carries no remote parts any more
+   */
+  private boolean materializeRemoteDraftParts(Email draft, String username, UserEmailSetting userEmailSetting) {
+    String draftLocalId = draft.getDraftLocalId();
+    long serverCopyUid = serverDraftCopyUid(draft);
+    if (serverCopyUid <= 0) {
+      // The row shows files whose only copy was in a message it no longer points at —
+      // the draft was deleted from the other client between the sync that imported it
+      // and now. Nothing can be recovered; the caller refuses rather than producing a
+      // message without them.
+      LOG.warn("The draft {} of user {} shows files that lived in a server copy it no longer has", draftLocalId, username);
+      return false;
+    }
+    Store store = null;
+    IMAPFolder draftsFolder = null;
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      draftsFolder = resolveDraftsFolder(store, syncState);
+      if (draftsFolder == null) {
+        LOG.warn("No Drafts folder for user {}; the files of draft {} cannot be brought over", username, draftLocalId);
+        return false;
+      }
+      // READ_ONLY: this reads a message and writes nothing to the mailbox. The copy is
+      // removed later, by the push, and only once the new one is up.
+      draftsFolder.open(Folder.READ_ONLY);
+      Message serverCopy = draftsFolder.getMessageByUID(serverCopyUid);
+      if (serverCopy == null || !isOurDraftCopy(serverCopy, draft.getMailHeaderId(), serverCopyUid, username)) {
+        LOG.warn("The Drafts copy (uid {}) holding the files of draft {} of user {} is gone",
+                 serverCopyUid,
+                 draftLocalId,
+                 username);
+        return false;
+      }
+      for (EmailAttachment part : remoteDraftParts(emailBoxStorage.getDraftAttachments(username, draftLocalId))) {
+        if (!materializeRemoteDraftPart(serverCopy, part, draftLocalId, username)) {
+          return false;
+        }
+      }
+      return true;
+    } catch (Exception e) {
+      LOG.warn("Could not bring over the files of draft {} of user {} from its copy in the Drafts folder",
+               draftLocalId,
+               username,
+               e);
+      return false;
+    } finally {
+      // Persisted like the push's, so the discovered Drafts folder name survives and the
+      // upload that follows does not re-walk the whole folder list.
+      saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      closeDraftsFolderQuietly(draftsFolder, false, username);
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * One remote part, read out of the server copy and written into the file store.
+   * <p>
+   * Failure is answered rather than thrown, because the caller's decision is the same
+   * for every way this can go wrong — the part is not there, its bytes cannot be read,
+   * the file store wrote nothing — and it is "do not build a message that would be
+   * missing it".
+   *
+   * @param serverCopy the draft's copy in the Drafts folder, already identified as ours
+   * @param part the attachment row, carrying the MIME part path to read
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @return true when the row now owns its bytes
+   */
+  private boolean materializeRemoteDraftPart(Message serverCopy, EmailAttachment part, String draftLocalId, String username) {
+    try {
+      BodyPart bodyPart = getPartByPath(serverCopy, part.getAttachmentRemoteId());
+      if (bodyPart == null) {
+        LOG.warn("The Drafts copy of draft {} of user {} has no part {} any more",
+                 draftLocalId,
+                 username,
+                 part.getAttachmentRemoteId());
+        return false;
+      }
+      if (emailBoxStorage.materializeDraftAttachment(username, draftLocalId, part.getId(), readPartBytes(bodyPart)) == null) {
+        LOG.warn("The file {} of draft {} of user {} could not be written to the file store",
+                 part.getName(),
+                 draftLocalId,
+                 username);
+        return false;
+      }
+      return true;
+    } catch (Exception e) {
+      LOG.warn("The file {} of draft {} of user {} could not be read from its copy in the Drafts folder",
+               part.getName(),
+               draftLocalId,
+               username,
+               e);
+      return false;
+    }
+  }
+
+  /**
+   * The bytes of one MIME part, decoded.
+   * <p>
+   * Extracted from the attachment download so that the download and the bringing-over
+   * of a draft's parts read a part the same way — one buffer size, one decode, one
+   * place for the next person to change.
+   *
+   * @param bodyPart the part to read
+   * @return its content
+   * @throws IOException if the part cannot be read
+   * @throws MessagingException if the part's stream cannot be opened
+   */
+  private byte[] readPartBytes(BodyPart bodyPart) throws IOException, MessagingException {
+    try (InputStream input = bodyPart.getInputStream(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+      byte[] buffer = new byte[256 * 1024];
+      int bytesRead;
+      while ((bytesRead = input.read(buffer)) != -1) {
+        output.write(buffer, 0, bytesRead);
+      }
+      return output.toByteArray();
+    }
   }
 
   /**
@@ -4839,7 +5117,7 @@ public class EmailBoxService {
                                           String mimeType) throws MessagingException {
     MimeBodyPart attachmentPart = new MimeBodyPart();
     attachmentPart.setDataHandler(new DataHandler(dataSource));
-    String name = StringUtils.defaultIfBlank(fileName, "attachment");
+    String name = StringUtils.defaultIfBlank(fileName, DEFAULT_ATTACHMENT_NAME);
     try {
       attachmentPart.setFileName(MimeUtility.encodeText(name, "UTF-8", null));
     } catch (UnsupportedEncodingException e) {
@@ -4872,8 +5150,8 @@ public class EmailBoxService {
                                         List<EmailAttachment> attachments) throws MessagingException {
     long totalSize = 0;
     for (EmailAttachment attachment : attachments) {
-      String mimeType = StringUtils.defaultIfBlank(attachment.getMimeType(), "application/octet-stream");
-      String fileName = StringUtils.defaultIfBlank(attachment.getName(), "attachment");
+      String mimeType = StringUtils.defaultIfBlank(attachment.getMimeType(), DEFAULT_ATTACHMENT_MIME_TYPE);
+      String fileName = StringUtils.defaultIfBlank(attachment.getName(), DEFAULT_ATTACHMENT_NAME);
       totalSize += attachment.getSize() == null ? 0L : attachment.getSize();
       multipart.addBodyPart(attachmentBodyPart(new StoredFileDataSource(emailBoxStorage,
                                                                        attachment.getFileId(),
@@ -6478,12 +6756,23 @@ public class EmailBoxService {
    * draft in the user's own Drafts folder is the user's, so their own address is the
    * honest fallback.
    * <p>
-   * Attachments are NOT imported, deliberately: attachments on drafts are out of
-   * scope for now (they need upload ids persisted against the row and the
-   * INBOX-hardcoded attachment fetch parameterised), and recording names we cannot
-   * fetch — or, worse, carrying an imported draft into a send that would silently
-   * drop them — is a worse answer than not showing them. The copy on the server
-   * keeps them; resuming such a draft here writes a message without them.
+   * <b>Attachments are imported as what they are: addresses.</b> Each one is a MIME
+   * part path INTO the message sitting at this UID — the same descriptor every
+   * received message's attachments are cached as, produced by the same walk of the
+   * MIME tree, and downloaded through the same folder-scoped read (see
+   * {@link #getAttachmentByMailRemoteIdAnIdAndUserId}, which resolves DRAFTS like any
+   * other folder). No bytes are pulled here: a sync that copied every file out of
+   * every imported draft would cost megabytes for drafts the user never opens.
+   * <p>
+   * The bytes come over later and only if they are needed — at the first push or send
+   * after the draft is edited, see {@link #materializeRemoteDraftParts}. That pairing
+   * is not optional and the two halves must not be separated: showing the chips
+   * without it would let the user edit the draft, watch the push rebuild the message
+   * from a row that has only an address, and delete the copy that held the file.
+   * <p>
+   * A part with no path is dropped, because a row that cannot be addressed can neither
+   * be downloaded nor brought over; a part with no filename is kept under a default
+   * one, because dropping it would be exactly the silent loss this is here to stop.
    *
    * @param message the Drafts message, headers already prefetched
    * @param messageUid its IMAP UID in the Drafts folder
@@ -6523,12 +6812,12 @@ public class EmailBoxService {
     EmailContent importedContent = new EmailContent(messageContent != null ? StringUtils.defaultString(messageContent.getBody())
                                                                            : "",
                                                     null,
-                                                    null);
+                                                    importedDraftAttachments(messageContent));
     // The part's own Content-Type, carried across rather than dropped with the rest.
     // The three-argument constructor leaves the flag false, and false is an answer:
     // the reader would take a draft another client wrote in HTML for typed text and
-    // show its markup. Attachments are still deliberately left behind (above) — the
-    // format of the body is not one of them, and it costs nothing to keep.
+    // show its markup. The attachment descriptors above and this flag answer two
+    // different questions about the same imported part, and both are kept.
     importedContent.setHtml(messageContent != null && messageContent.isHtml());
     draft.setContent(importedContent);
     draft.setSender(serverDraftSender(message, userEmailSetting));
@@ -6543,6 +6832,43 @@ public class EmailBoxService {
     draft.setThreadIndexRoot(threadIndexRoot != null ? threadIndexRoot : "");
     draft.setThreadId(computeThreadId(username, messageId, messageUid, inReplyTo, references, threadIndexRoot));
     emailBoxStorage.createEmail(draft);
+  }
+
+  /**
+   * The attachment descriptors to cache for an imported draft: the ones the MIME walk
+   * produced, filtered to those that can actually be addressed, with the two fields
+   * every consumer reads unguarded filled in.
+   * <p>
+   * <b>A part with a blank path is dropped.</b> The path is the whole of the row's
+   * usefulness — it is how the download reaches the bytes and how
+   * {@link #materializeRemoteDraftParts} brings them over — so a row without one is a
+   * chip that can never resolve to anything, on a draft that could then never be
+   * uploaded (see {@link #draftFilesAreAllReadable}, which refuses a draft carrying a
+   * row with neither a file nor a way to get one). Dropping it is what keeps the
+   * draft usable.
+   * <p>
+   * <b>A part with a blank NAME is kept</b>, under a default one, and the asymmetry is
+   * deliberate: a nameless part is still fetchable and still belongs on the message
+   * that gets rebuilt, so dropping it would be precisely the silent loss this slice
+   * exists to stop. It costs a chip reading "attachment", which is honest about what
+   * is known. The name also has to be non-blank for the row to be written at all —
+   * {@code EmailBoxStorage#toEmailAttachmentEntity} maps a nameless descriptor to null,
+   * and a null in a cascade-persisted collection is not a row, it is a failure.
+   *
+   * @param messageContent the content the MIME walk extracted, may be null
+   * @return the attachments to cache with the draft row, or null when it has none
+   */
+  private List<EmailAttachment> importedDraftAttachments(EmailContent messageContent) {
+    if (messageContent == null || CollectionUtils.isEmpty(messageContent.getAttachments())) {
+      return null;
+    }
+    List<EmailAttachment> attachments = messageContent.getAttachments().stream().filter(attachment -> attachment != null
+        && StringUtils.isNotBlank(attachment.getAttachmentRemoteId())).map(attachment -> {
+          attachment.setName(StringUtils.defaultIfBlank(attachment.getName(), DEFAULT_ATTACHMENT_NAME));
+          attachment.setMimeType(StringUtils.defaultIfBlank(attachment.getMimeType(), DEFAULT_ATTACHMENT_MIME_TYPE));
+          return attachment;
+        }).toList();
+    return attachments.isEmpty() ? null : attachments;
   }
 
   /**
