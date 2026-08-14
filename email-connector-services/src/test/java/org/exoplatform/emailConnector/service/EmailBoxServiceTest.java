@@ -3580,7 +3580,7 @@ public class EmailBoxServiceTest {
     when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
     when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 5555L) });
     EmailAttachment attachedHere = new EmailAttachment(4L, 4242L, null, "typed-here.txt", "text/plain", null, MailFolder.DRAFTS,
-                                                       88L, 11L);
+                                                       88L, 11L, null);
     givenAnImportedDraftCarrying(remotePartRow("from-the-phone.pdf"), attachedHere);
     givenTheFileStoreHolds(88L, "typed-here.txt", "here it is".getBytes());
     when(emailBoxStorage.attachmentFileExists(88L)).thenReturn(true);
@@ -4753,7 +4753,7 @@ public class EmailBoxServiceTest {
    * @return the attachment row
    */
   private EmailAttachment attachmentRow() {
-    return new EmailAttachment(3L, null, null, "report.pdf", "application/pdf", null, MailFolder.DRAFTS, 77L, 21L);
+    return new EmailAttachment(3L, null, null, "report.pdf", "application/pdf", null, MailFolder.DRAFTS, 77L, 21L, null);
   }
 
   /**
@@ -4826,7 +4826,7 @@ public class EmailBoxServiceTest {
    * @return the attachment row
    */
   private EmailAttachment remotePartRow(String name) {
-    return new EmailAttachment(3L, 4242L, "2", name, "application/pdf", null, MailFolder.DRAFTS, null, null);
+    return new EmailAttachment(3L, 4242L, "2", name, "application/pdf", null, MailFolder.DRAFTS, null, null, null);
   }
 
   /**
@@ -4870,7 +4870,7 @@ public class EmailBoxServiceTest {
       }
       EmailAttachment broughtOver = new EmailAttachment(remotePart.getId(), 4242L, null, remotePart.getName(),
                                                         remotePart.getMimeType(), null, MailFolder.DRAFTS, 77L,
-                                                        (long) bytes.length);
+                                                        (long) bytes.length, null);
       rows.set(0, broughtOver);
       return broughtOver;
     });
