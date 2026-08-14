@@ -25,6 +25,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.model.DraftState;
 
 public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
@@ -175,32 +176,212 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * starred flag rides in this projection because the reconcile diffs it exactly
    * like the read flag; loading it any other way would mean a second per-folder
    * query every sync.
+   * <p>
+   * The two draft columns ride along for the same "the sync itself needs them"
+   * reason. The state is what tells a draft the user is still writing from a
+   * message the server no longer has — the two look identical from the UID alone.
+   * The local id joined it when the Drafts folder started syncing: a draft whose
+   * server copy vanished has to be put back to a state that will re-upload, and
+   * every write to a draft is addressed by its local id (never by its row id or
+   * its UID, both of which move under a draft), so without it here the reconcile
+   * would have to re-read every draft row in full just to learn the handle.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator
-   * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read, recent, starred]},
-   *         newest first
+   * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read,
+   *         recent, starred, draftState, draftLocalId]}, newest first
    */
-  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
+  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred, email.draftState, email.draftLocalId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
   List<Object[]> findSyncViewByUserIdAndFolder(@Param("userId")
   String userId, @Param("folder")
   String folder);
+
+  /**
+   * A draft by the composer's own handle on it. Returns a list rather than a single
+   * row on purpose: the local id is not a database-level unique key (it is null on
+   * every non-draft row, and vendors disagree about whether repeated nulls collide
+   * in a unique index), so the query must not be the thing that throws when the
+   * unexpected happens. The caller takes the first and the save path's per-draft
+   * lock is what actually keeps there being only one.
+   * <p>
+   * It fetches the attachments, like every other query that returns whole rows the
+   * REST layer will answer with, and for the same reason: the platform sets
+   * {@code spring.jpa.open-in-view=false}, so a collection left uninitialised inside
+   * the transaction cannot be initialised at all by the time the row is serialised.
+   * Every caller of this query hands what it read to a mapper that reads the
+   * attachments ({@code EmailBoxStorage#fromEntity} with {@code withAttachments}),
+   * so leaving the join out made every draft read fail with "no Session" rather than
+   * merely being slow. Drafts carry no attachments today — that is a separate,
+   * deliberate gap — but the collection is still TOUCHED, and touching an empty lazy
+   * bag outside a session throws exactly as touching a full one does.
+   * <p>
+   * This paragraph once claimed the same join fixed the draft SAVES too, and it did
+   * not: the join initialises the collection of the instance returned HERE, while the
+   * writers were mapping their answer from what {@code save} returned — a different,
+   * managed instance out of a merge, carrying an uninitialised proxy, in a session
+   * that closes with the write. The join is necessary and was never sufficient; what
+   * makes the writes work is that they now map from this instance. See
+   * {@code EmailBoxStorage#saveDraftRow}.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @return the matching rows with their attachments, normally exactly one, never
+   *         null
+   */
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId")
+  List<EmailBoxEntity> findByUserIdAndDraftLocalIdWithAttachments(@Param("userId")
+  String userId, @Param("draftLocalId")
+  String draftLocalId);
 
   @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")
   String mailHeaderId, @Param("userId")
   String userId);
 
+  /**
+   * How many cached messages of a folder carry a given Message-ID. A count rather
+   * than {@link #findByMailHeaderIdAndUserId} filtered in Java: the one caller only
+   * asks "does this exist", and the full lookup drags the body CLOB of every
+   * matching row through the persistence layer to answer a yes/no.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the Message-ID to look for
+   * @param folder the folder discriminator to look in
+   * @return the number of matching cached rows
+   */
+  @Query("SELECT COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId AND email.folder = :folder")
+  long countByMailHeaderIdAndUserIdAndFolder(@Param("mailHeaderId")
+  String mailHeaderId, @Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
+   * Cuts a draft's row loose from the copy it had on the mail server: the state
+   * goes back to {@link org.exoplatform.emailConnector.model.DraftState#LOCAL_ONLY}
+   * and the UID is cleared. Used by the Drafts sync when the copy this row pointed
+   * at is no longer on the server — another mail client deleted it — while the row
+   * still carries text that never reached it.
+   * <p>
+   * Clearing the UID is not tidiness. It is what stops the next upload from
+   * flagging a stranger's message for deletion: IMAP UIDs are unique within one
+   * UIDVALIDITY, and a folder that changed its UIDVALIDITY (a rebuilt mailbox) is
+   * seen from here as every UID having vanished at once — precisely this case, at
+   * which point the remembered numbers mean nothing at all.
+   * <p>
+   * Neither the revision nor the text is touched: the row's words are unchanged,
+   * only where they also live.
+   *
+   * The state is bound as a parameter rather than written as a JPQL enum literal:
+   * the value is always {@code LOCAL_ONLY} (the storage layer is what says so), and
+   * a bound parameter goes through the same enum conversion as every other write to
+   * this column instead of relying on how a given dialect renders a literal.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param draftState the state to put the row back to
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.draftState = :draftState, email.mailRemoteId = null WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId")
+  void detachDraftFromServerCopy(@Param("userId")
+  String userId, @Param("draftLocalId")
+  String draftLocalId, @Param("draftState")
+  DraftState draftState);
+
   @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds AND email.threadId IS NOT NULL")
   List<String> findDistinctThreadIdsByMailHeaderIds(@Param("userId")
   String userId, @Param("mailHeaderIds")
   List<String> mailHeaderIds);
 
-  // Count DISTINCT messages per thread (by Message-ID), matching the reader which
-  // shows the same message once even when it is cached in several folders (e.g. INBOX
-  // and ALL_MAIL). A raw row count would over-report by the cross-folder duplicates.
-  @Query("SELECT email.threadId, COUNT(DISTINCT email.mailHeaderId) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.mailHeaderId IS NOT NULL GROUP BY email.threadId")
-  List<Object[]> countMessagesByThread(@Param("userId")
+  /**
+   * One row per conversation: how many messages it holds, and how many of them are
+   * drafts. The list shows both — the count next to the participants, and a "Draft"
+   * marker when the conversation carries a reply the user never sent.
+   * <p>
+   * They are ONE query on purpose. The list is built from the cached rows of a
+   * single folder and drafts live under {@code DRAFTS}, so an inbox listing never
+   * sees the draft it has to report; the alternative to reading it here is a lookup
+   * per visible row, which is an N+1 over the whole page. This aggregate already
+   * had to run for the count, and carrying the draft out of the same {@code GROUP
+   * BY} costs nothing beyond one more projected column.
+   * <p>
+   * The count is DISTINCT by Message-ID, matching the reader, which shows the same
+   * message once even when it is cached in several folders (INBOX and ALL_MAIL, or
+   * a draft and the SENT copy it turned into — a sent draft goes out under the
+   * Message-ID it minted at its first save, so for as long as both rows exist they
+   * are two rows for one message). A raw row count would over-report by exactly
+   * those duplicates.
+   * <p>
+   * Two details of the DISTINCT expression are load-bearing:
+   * <ul>
+   * <li>It falls back to the draft's local id, because a draft written in ANOTHER
+   * mail client may reach us with no Message-ID at all — half-written mail
+   * legitimately has none, and {@code createDraftFromServerMessage} stores what the
+   * server gave it. {@code COUNT(DISTINCT)} ignores nulls, so without the fallback
+   * such a draft would be reported by the flag and left out of the number beside
+   * it. The local id is a UUID minted here and can never collide with a
+   * Message-ID.</li>
+   * <li>The {@code MAIL_HEADER_ID IS NOT NULL} predicate that used to sit in the
+   * WHERE clause is gone, and it has to be: it would have dropped that same
+   * header-less draft out of the aggregate before either column saw it. Removing it
+   * changes nothing else — {@code COUNT(DISTINCT)} was already ignoring nulls, so
+   * every conversation that has at least one message with a Message-ID reports the
+   * number it reported before, and a conversation of nothing but header-less mail
+   * goes from being absent to reporting 0, which the client already treats the same
+   * way (it falls back to what it can see in the folder).</li>
+   * </ul>
+   * The draft column is a count rather than a boolean because JPQL has no boolean
+   * aggregate; the caller reads it as "more than none".
+   *
+   * @param userId the mailbox owner
+   * @return rows of {@code [threadId, messageCount, draftCount]}, one per
+   *         conversation
+   */
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL GROUP BY email.threadId")
+  List<Object[]> summarizeThreadsByUserId(@Param("userId")
+  String userId);
+
+  /**
+   * Who wrote the messages of each conversation that carries an unsent draft, with
+   * the date each of them first appears in it.
+   * <p>
+   * This is what a DRAFT row is labelled with. A draft's own sender is the account
+   * owner, always — so labelling the row with it named the user to themselves on
+   * every draft they had, and never named the person the conversation is actually
+   * with. The names have to come from the conversation, and a Drafts listing holds
+   * DRAFTS rows and nothing else, so they cannot be read off the list any more than
+   * the draft flag could: the conversation's other messages are in INBOX, SENT or
+   * ARCHIVE.
+   * <p>
+   * Restricted to draft-carrying conversations by the subquery, and that restriction
+   * is the reason this is affordable rather than an optimisation on top of something
+   * affordable. The listing is polled while a sync runs; an unrestricted version
+   * would answer a row per (conversation, sender) pair of the whole cache — on a
+   * 5000-message mailbox, thousands of rows serialised into every poll for a fact
+   * only draft rows read. Restricted, a mailbox with no drafts gets no rows at all
+   * and one with three drafts gets a handful. The invariant it buys and that the
+   * caller depends on: {@code participants} is populated exactly for the
+   * conversations {@code hasDraft} is true of, which is exactly the set of rows that
+   * read it.
+   * <p>
+   * Drafts are excluded from the participant side ({@code draftLocalId IS NULL}) —
+   * a message being written is not somebody the conversation is with, and its sender
+   * is the owner the whole change exists to stop displaying.
+   * <p>
+   * It answers one row per (conversation, sender) pair rather than a concatenated
+   * list because there is no portable aggregate for "join these strings"; the
+   * grouping is what makes the row count the number of distinct senders instead of
+   * the number of messages. {@code MIN(receivedDate)} rides along so the caller can
+   * order the names by when each person first appears — a listing that re-orders its
+   * own participant names between two polls is a flicker, and an ungrouped result
+   * set has no order to rely on.
+   *
+   * @param userId the mailbox owner
+   * @return rows of {@code [threadId, storedSender, firstSeenDate]}, one per
+   *         (conversation, sender) pair of every conversation carrying a draft
+   */
+  @Query("SELECT participant.threadId, participant.sender, MIN(participant.receivedDate) FROM EmailBoxEntity participant WHERE participant.userId = :userId AND participant.threadId IS NOT NULL AND participant.draftLocalId IS NULL AND participant.threadId IN (SELECT draft.threadId FROM EmailBoxEntity draft WHERE draft.userId = :userId AND draft.draftLocalId IS NOT NULL AND draft.threadId IS NOT NULL) GROUP BY participant.threadId, participant.sender")
+  List<Object[]> findDraftThreadParticipantsByUserId(@Param("userId")
   String userId);
 
   // Per-folder message counts, so the list's folder switch only offers folders that

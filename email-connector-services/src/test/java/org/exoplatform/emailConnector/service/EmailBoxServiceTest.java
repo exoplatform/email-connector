@@ -38,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -93,6 +94,7 @@ import javax.mail.search.AndTerm;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
 import javax.mail.search.FromStringTerm;
+import javax.mail.search.HeaderTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
 import javax.mail.search.SearchException;
@@ -101,9 +103,11 @@ import javax.mail.search.SearchTerm;
 import javax.mail.search.SubjectTerm;
 
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -112,6 +116,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.sun.mail.imap.AppendUID;
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
@@ -123,12 +128,14 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
+import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
+import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
@@ -136,6 +143,7 @@ import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
+import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -250,6 +258,64 @@ public class EmailBoxServiceTest {
     emailBoxService.getEmailBox(TEST_USER);
     verify(userEmailSettingService, times(2)).getUserEmailSetting(TEST_USER);
     verify(emailBoxStorage).getEmails(TEST_USER, "INBOX");
+  }
+
+  /**
+   * The listing carries the conversation summaries the folder it lists cannot hold:
+   * the cross-folder message count, whether a conversation has a reply the user
+   * never sent, and who it is with. One read of the summary for the whole page — the
+   * alternative is a lookup per visible row.
+   * <p>
+   * The owner's own address goes down with the read, and the verify is on the pair
+   * rather than on the username alone: it is what keeps the user's name out of the
+   * participant list of their own drafts, and the mailbox binding is the only place
+   * that knows the address.
+   */
+  @Test
+  void getEmailBoxCarriesTheConversationSummaries() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    ThreadSummary summary = new ThreadSummary("thread-1", 2, true, List.of("Veronika"));
+    when(emailBoxStorage.getThreadSummaries(TEST_USER, "testEmail")).thenReturn(Map.of("thread-1", summary));
+
+    EmailBox emailBox = emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX);
+
+    verify(emailBoxStorage, times(1)).getThreadSummaries(TEST_USER, "testEmail");
+    assertEquals(summary, emailBox.getThreadSummaries().get("thread-1"));
+    assertTrue(emailBox.getThreadSummaries().get("thread-1").hasDraft());
+  }
+
+  /**
+   * The Drafts folder lists its own rows, and the summary is what those rows are
+   * labelled with: a draft's own sender is the account owner, so the name on the row
+   * comes from the conversation the summary describes rather than from the row
+   * itself.
+   */
+  @Test
+  void getEmailBoxOnTheDraftsFolderListsTheDraftRowsThemselves() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email draft = new Email();
+    draft.setFolder(MailFolder.DRAFTS);
+    draft.setDraftLocalId("draft-1");
+    draft.setThreadId("thread-1");
+    when(emailBoxStorage.getEmails(TEST_USER, MailFolder.DRAFTS)).thenReturn(List.of(draft));
+    when(emailBoxStorage.getThreadSummaries(TEST_USER, "testEmail")).thenReturn(Map.of("thread-1",
+                                                                                              new ThreadSummary("thread-1",
+                                                                                                                2,
+                                                                                                                true,
+                                                                                                                List.of("Veronika"))));
+
+    EmailBox emailBox = emailBoxService.getEmailBox(TEST_USER, MailFolder.DRAFTS);
+
+    assertEquals(1, emailBox.getEmails().size());
+    assertEquals("draft-1", emailBox.getEmails().get(0).getDraftLocalId());
+    assertTrue(emailBox.getThreadSummaries().get("thread-1").hasDraft());
+    assertEquals(List.of("Veronika"),
+                 emailBox.getThreadSummaries().get("thread-1").participants(),
+                 "the draft row is named after the conversation, which the row itself cannot say");
   }
 
   @Test
@@ -1885,14 +1951,15 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void cachedFolderNamesSkipTheDiscoveryScan() {
-    // Sent/Archive used to be re-discovered with a LIST * over the whole subscribed
-    // folder list on every sync; the remembered names replace that with one
-    // single-folder exists() probe each.
+    // Sent/Archive/Drafts used to be re-discovered with a LIST * over the whole
+    // subscribed folder list on every sync; the remembered names replace that with
+    // one single-folder exists() probe each.
     UserEmailSetting userEmailSetting = userEmailSetting();
     MailboxSyncState state = new MailboxSyncState();
     state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
     state.setSentFolderName("MySent");
     state.setArchiveFolderName("MyArchive");
+    state.setDraftsFolderName("MyDrafts");
     mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
     IMAPFolder sent = mock(IMAPFolder.class);
     when(sent.exists()).thenReturn(true);
@@ -1900,14 +1967,19 @@ public class EmailBoxServiceTest {
     IMAPFolder archive = mock(IMAPFolder.class);
     when(archive.exists()).thenReturn(true);
     when(archive.getMessageCount()).thenReturn(0);
+    IMAPFolder drafts = mock(IMAPFolder.class);
+    when(drafts.exists()).thenReturn(true);
+    when(drafts.getMessageCount()).thenReturn(0);
     Store connectedStore = userEmailSettingService.connect(userEmailSetting);
     when(connectedStore.getFolder("MySent")).thenReturn(sent);
     when(connectedStore.getFolder("MyArchive")).thenReturn(archive);
+    when(connectedStore.getFolder("MyDrafts")).thenReturn(drafts);
     emailBoxService.synchronize(TEST_USER);
-    // Both folders resolved by name (and INBOX skipped): the full-list scan never runs.
+    // All three resolved by name (and INBOX skipped): the full-list scan never runs.
     verify(connectedStore.getDefaultFolder(), never()).listSubscribed("*");
     verify(sent).open(Folder.READ_ONLY);
     verify(archive).open(Folder.READ_ONLY);
+    verify(drafts).open(Folder.READ_ONLY);
   }
 
   @Test
@@ -3197,6 +3269,1107 @@ public class EmailBoxServiceTest {
     return message;
   }
 
+  @Test
+  void saveDraftRefusesAUserWhoMayNotUseTheirMailbox() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    Email draft = draft(null);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.saveDraft(draft, TEST_USER, false));
+  }
+
+  @Test
+  void saveDraftWithoutPushNeverOpensAConnection() throws Exception {
+    // The typing-pause save is the one that runs constantly, and it must cost nothing
+    // but a row: no IMAP connection, no folder discovery, no APPEND.
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+    assertEquals(MailFolder.DRAFTS, saved.getFolder());
+    assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  @Test
+  void firstSaveMintsALocalIdAndAMessageIdOfOurOwn() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+    assertTrue(StringUtils.isNotBlank(saved.getDraftLocalId()));
+    // Our own id, on the user's own domain -- and emphatically NOT the
+    // @email-connector.local form synthesizeMessageId produces, which is a local
+    // placeholder that must never leave this box.
+    assertTrue(saved.getMailHeaderId().startsWith("<"));
+    assertTrue(saved.getMailHeaderId().endsWith(">"));
+    assertFalse(saved.getMailHeaderId().contains("email-connector.local"));
+    assertEquals(1L, saved.getDraftRevision());
+    assertTrue(saved.isRead());
+    assertFalse(saved.isRecent());
+  }
+
+  @Test
+  void aDraftReplyJoinsTheConversationItRepliesTo() throws Exception {
+    // The whole point of writing the threading headers at save time rather than at
+    // send time: while the user is still typing, the draft already belongs to the
+    // conversation they are answering.
+    givenAUsableMailbox();
+    when(emailBoxStorage.getMailReferencesByMailHeaderId("<parent@host>", TEST_USER)).thenReturn("<root@host>");
+    when(emailBoxStorage.getSiblingThreadIds(eq(TEST_USER), anyList())).thenReturn(List.of("<root@host>"));
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email draft = draft(null);
+    // On a FIRST save, mailHeaderId carries the PARENT's id -- the same meaning the
+    // send payload gives it, so the composer needs no new concept.
+    draft.setMailHeaderId("<parent@host>");
+    Email saved = emailBoxService.saveDraft(draft, TEST_USER, false);
+    assertEquals("<parent@host>", saved.getInReplyTo());
+    assertEquals("<root@host> <parent@host>", saved.getMailReferences());
+    assertEquals("<root@host>", saved.getThreadId());
+    // and the draft's own id is its own, not the parent's
+    assertFalse("<parent@host>".equals(saved.getMailHeaderId()));
+  }
+
+  @Test
+  void aLaterSaveNeverRethreadsTheDraftAgainstItself() throws Exception {
+    // A resumed draft carries its OWN minted id in mailHeaderId. Reading that as a
+    // parent id would thread the draft against itself; the identity is settled at the
+    // first save and owned here from then on.
+    givenAUsableMailbox();
+    Email stored = draft("draft-1");
+    stored.setMailHeaderId("<mine@example.org>");
+    stored.setThreadId("<root@host>");
+    stored.setDraftState(DraftState.SYNCED);
+    stored.setDraftRevision(3L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email incoming = draft("draft-1");
+    incoming.setMailHeaderId("<mine@example.org>");
+    incoming.setDraftRevision(4L);
+    emailBoxService.saveDraft(incoming, TEST_USER, false);
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertNull(written.getValue().getInReplyTo());
+    assertNull(written.getValue().getThreadId());
+    // the previously-synced copy is now stale, so the next push has one to replace
+    assertEquals(DraftState.DIRTY, written.getValue().getDraftState());
+    verify(emailBoxStorage, never()).getMailReferencesByMailHeaderId(anyString(), anyString());
+  }
+
+  @Test
+  void anEditedDraftThatWasNeverUploadedStaysLocalOnly() throws Exception {
+    // LOCAL_ONLY is not merely "unsynced": it is what tells the upload path there is
+    // no previous copy to remove.
+    givenAUsableMailbox();
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setDraftRevision(2L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(3L);
+    emailBoxService.saveDraft(incoming, TEST_USER, false);
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals(DraftState.LOCAL_ONLY, written.getValue().getDraftState());
+  }
+
+  @Test
+  void aPushSkipsTheAppendWhenNothingChangedSinceTheLastOne() throws Exception {
+    // The interlock that makes "save on close" free for a draft nobody touched: the
+    // storage layer drops the stale revision and hands back the SYNCED row, and a
+    // SYNCED row is never re-appended. An APPEND re-uploads the entire message,
+    // attachments included, so this is not a micro-optimisation.
+    givenAUsableMailbox();
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.SYNCED);
+    stored.setDraftRevision(5L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenReturn(stored);
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(5L);
+    Email saved = emailBoxService.saveDraft(incoming, TEST_USER, true);
+    assertEquals(DraftState.SYNCED, saved.getDraftState());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  @Test
+  void aPushAppendsToTheDraftsFolderAndRecordsTheUidTheServerReports() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4242L) });
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, true);
+    verify(draftsFolder).open(Folder.READ_WRITE);
+    assertEquals(4242L, saved.getMailRemoteId());
+    assertEquals(DraftState.SYNCED, saved.getDraftState());
+  }
+
+  @Test
+  void aPushFallsBackToAMessageIdSearchWhenTheServerHasNoUidplus() throws Exception {
+    // Without UIDPLUS there is no way to ask what UID the message we just wrote got.
+    // Minting our own Message-ID is what leaves us a handle on it at all.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { null });
+    Message appended = mock(Message.class);
+    when(draftsFolder.search(any(HeaderTerm.class))).thenReturn(new Message[] { appended });
+    when(draftsFolder.getUID(appended)).thenReturn(77L);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, true);
+    assertEquals(77L, saved.getMailRemoteId());
+    assertEquals(DraftState.SYNCED, saved.getDraftState());
+  }
+
+  @Test
+  void aMailboxWithNoDraftsFolderKeepsTheDraftLocalAndCreatesNothing() throws Exception {
+    // Creating a folder in someone's mailbox is a permanent, visible change to a store
+    // they share with every other client they own. It is not ours to make because they
+    // typed two words into a compose window.
+    givenAUsableMailbox();
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(any(UserEmailSetting.class))).thenReturn(store);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    when(defaultFolder.list("*")).thenReturn(new Folder[0]);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, true);
+    assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
+    assertNull(saved.getMailRemoteId());
+    verify(defaultFolder, never()).create(anyInt());
+  }
+
+  @Test
+  void theServerSideKillSwitchStopsTheUploadWithoutStoppingDrafts() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    System.setProperty(EmailBoxService.DRAFTS_SERVER_ENABLED_PROPERTY, "false");
+    try {
+      Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, true);
+      // saved, listable, resumable -- just not uploaded
+      assertEquals(MailFolder.DRAFTS, saved.getFolder());
+      assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
+      verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    } finally {
+      System.clearProperty(EmailBoxService.DRAFTS_SERVER_ENABLED_PROPERTY);
+    }
+  }
+
+  @Test
+  void aFailedUploadLeavesTheWordsSafelyStoredLocally() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenThrow(new MessagingException("server said no"));
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, true);
+    assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
+    assertNull(saved.getMailRemoteId());
+  }
+
+  @Test
+  void deleteDraftRemovesTheRowAndAnswersWhetherThereWasOne() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "nope")).thenReturn(null);
+    assertFalse(emailBoxService.deleteDraft("nope", TEST_USER));
+    Email stored = draft("draft-1");
+    stored.setId(9L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    assertTrue(emailBoxService.deleteDraft("draft-1", TEST_USER));
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    // Never uploaded, so there is nothing up there to remove and no connection to make
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  @Test
+  void aPushRemovesThePreviousCopyOnlyAfterTheNewOneIsUp() throws Exception {
+    // Append before delete, always. If everything after the append fails the user sees
+    // the same draft twice in another client; the other way round they see it nowhere.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4243L) });
+    Message previous = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(previous);
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.DIRTY);
+    stored.setDraftRevision(2L);
+    stored.setMailRemoteId(4242L);
+    stored.setMailHeaderId("<draft@example.org>");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> storedRowAfter(invocation.getArgument(0), 4242L));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(3L);
+    emailBoxService.saveDraft(incoming, TEST_USER, true);
+    InOrder inOrder = inOrder(draftsFolder, previous);
+    inOrder.verify(draftsFolder).appendUIDMessages(any(Message[].class));
+    inOrder.verify(previous).setFlag(Flags.Flag.DELETED, true);
+    // UID EXPUNGE: this message and no other, so the folder closes WITHOUT expunging
+    verify(draftsFolder).expunge(new Message[] { previous });
+    verify(draftsFolder).close(false);
+  }
+
+  @Test
+  void aServerWithoutUidplusHasThePreviousCopyExpungedOnClose() throws Exception {
+    // Without UIDPLUS the only expunge IMAP offers is the whole-folder one. See
+    // removePreviousDraftCopy for why we still take it.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4243L) });
+    Message previous = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(previous);
+    when(draftsFolder.isOpen()).thenReturn(true);
+    doThrow(new MessagingException("EXPUNGE not supported")).when(draftsFolder).expunge(any(Message[].class));
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.DIRTY);
+    stored.setDraftRevision(2L);
+    stored.setMailRemoteId(4242L);
+    stored.setMailHeaderId("<draft@example.org>");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> storedRowAfter(invocation.getArgument(0), 4242L));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(3L);
+    emailBoxService.saveDraft(incoming, TEST_USER, true);
+    verify(previous).setFlag(Flags.Flag.DELETED, true);
+    verify(draftsFolder).close(true);
+  }
+
+  @Test
+  void aFirstPushHasNoPreviousCopyToRemove() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4242L) });
+    when(draftsFolder.isOpen()).thenReturn(true);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    emailBoxService.saveDraft(draft(null), TEST_USER, true);
+    verify(draftsFolder, never()).getMessageByUID(anyLong());
+    verify(draftsFolder).close(false);
+  }
+
+  @Test
+  void theCopyOfADraftUploadedWhileItsAuthorKeptTypingIsRemovedOnTheNextPush() throws Exception {
+    // The seam between the upload's bookkeeping and the removal it is supposed to
+    // trigger. The APPEND lands, but the user typed while it was in flight, so the
+    // revision guard rightly refuses to call the row SYNCED — and the row is left
+    // LOCAL_ONLY carrying the UID of a copy that is really up there. Deciding from the
+    // state that a LOCAL_ONLY row has nothing to remove meant that copy was never
+    // deleted, and the next push added a second one: a duplicate draft in the user's
+    // other mail client, which is the exact outcome this design exists to prevent.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4242L) },
+                                                                         new AppendUID[] { new AppendUID(1L, 4243L) });
+    Message firstCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(firstCopy);
+    // The first push: a draft that has never been uploaded, being typed into.
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setDraftRevision(2L);
+    stored.setMailHeaderId("<draft@example.org>");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> storedRowAfter(invocation.getArgument(0),
+                                                                                             stored.getMailRemoteId()));
+    // What the storage layer really does when the row moved under the upload: the UID
+    // is recorded, the state is NOT moved to SYNCED. Asserted in EmailBoxStorageTest;
+    // reproduced here because it is the input this path was getting wrong.
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any())).thenAnswer(invocation -> {
+      stored.setMailRemoteId(invocation.getArgument(2));
+      stored.setDraftState(DraftState.LOCAL_ONLY);
+      return stored;
+    });
+    Email firstPush = draft("draft-1");
+    firstPush.setDraftRevision(3L);
+    Email afterFirstPush = emailBoxService.saveDraft(firstPush, TEST_USER, true);
+    assertEquals(DraftState.LOCAL_ONLY, afterFirstPush.getDraftState());
+    assertEquals(4242L, afterFirstPush.getMailRemoteId());
+    verify(draftsFolder, never()).getMessageByUID(anyLong());
+    // The second push, carrying the sentence that was typed during the first.
+    stored.setDraftRevision(4L);
+    Email secondPush = draft("draft-1");
+    secondPush.setDraftRevision(5L);
+    secondPush.setContent(new EmailContent("the sentence typed during the upload", null, null));
+    emailBoxService.saveDraft(secondPush, TEST_USER, true);
+    // Exactly one removal, of the first copy and of nothing else, and only after the
+    // second APPEND: no duplicate is left behind and none was risked.
+    InOrder inOrder = inOrder(draftsFolder, firstCopy);
+    inOrder.verify(draftsFolder, times(2)).appendUIDMessages(any(Message[].class));
+    inOrder.verify(firstCopy).setFlag(Flags.Flag.DELETED, true);
+    verify(draftsFolder).expunge(new Message[] { firstCopy });
+    verify(draftsFolder, never()).getMessageByUID(4243L);
+    // And the newer text is what went up, not the text the first push carried.
+    ArgumentCaptor<Message[]> appended = ArgumentCaptor.forClass(Message[].class);
+    verify(draftsFolder, times(2)).appendUIDMessages(appended.capture());
+    assertEquals("the sentence typed during the upload", appended.getAllValues().get(1)[0].getContent());
+  }
+
+  @Test
+  void aRememberedUidThatNowHoldsSomebodyElsesMessageIsLeftAlone() throws Exception {
+    // A UID names a message only within one UIDVALIDITY of one folder, so a rebuilt or
+    // restored mailbox hands the same numbers out to entirely different messages. The
+    // sync notices that and clears the UIDs it holds, but it notices on its own
+    // schedule and a push can run first. Message-ID equality is what settles it — the
+    // same identity test the stray-copy janitor uses, and for the same reason.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4243L) });
+    Message aStrangersMessage = serverDraftCopy("<somebody-elses-mail@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(aStrangersMessage);
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.DIRTY);
+    stored.setDraftRevision(2L);
+    stored.setMailRemoteId(4242L);
+    stored.setMailHeaderId("<draft@example.org>");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> storedRowAfter(invocation.getArgument(0), 4242L));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(3L);
+    emailBoxService.saveDraft(incoming, TEST_USER, true);
+    // Nothing of somebody else's is flagged, and the folder closes without expunging.
+    verify(aStrangersMessage, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(draftsFolder, never()).expunge(any(Message[].class));
+    verify(draftsFolder).close(false);
+  }
+
+  @Test
+  void aDraftWhoseServerCopyVanishedAppendsAFreshOneWithoutExpungingAnything() throws Exception {
+    // The other half of the same rule, and where it meets the sync's detach path: that
+    // path clears the UID precisely so a number that means nothing any more is never
+    // acted on. A row with no UID has nothing to remove, whatever its state says.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4244L) });
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setDraftRevision(2L);
+    stored.setMailRemoteId(null);
+    stored.setMailHeaderId("<draft@example.org>");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> storedRowAfter(invocation.getArgument(0), null));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(3L);
+    Email saved = emailBoxService.saveDraft(incoming, TEST_USER, true);
+    assertEquals(4244L, saved.getMailRemoteId());
+    verify(draftsFolder, never()).getMessageByUID(anyLong());
+    verify(draftsFolder).close(false);
+  }
+
+  @Test
+  void discardingADraftUploadedMidTypingStillTakesItsServerCopy() throws Exception {
+    // The discard's mirror of the push bug, and the worse of the two: reading the state
+    // here left the copy of a draft the user had thrown away sitting in their Drafts
+    // folder — where the next sync, finding a Drafts message with no row of its own,
+    // would import it back as the draft they had just discarded.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = draft("draft-1");
+    stored.setId(9L);
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setMailRemoteId(4242L);
+    stored.setMailHeaderId("<draft@example.org>");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    assertTrue(emailBoxService.deleteDraft("draft-1", TEST_USER));
+    verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
+  @Test
+  void sendingADraftUploadedMidTypingStillTakesItsServerCopy() throws Exception {
+    // Same rule on the send path. Here the janitor would eventually tidy the leftover
+    // (its Message-ID is in Sent), but relying on that means the user's other client
+    // shows a draft of a mail they have already sent until the next sync runs.
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER);
+      verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
+      verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    }
+  }
+
+  @Test
+  void discardingAnUploadedDraftTakesTheServerCopyFirst() throws Exception {
+    // The mirror image of the upload's order: a draft the user threw away must not
+    // reappear in their other mail client.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Email stored = draft("draft-1");
+    stored.setId(9L);
+    stored.setDraftState(DraftState.SYNCED);
+    stored.setMailRemoteId(4242L);
+    stored.setMailHeaderId("<draft@example.org>");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    assertTrue(emailBoxService.deleteDraft("draft-1", TEST_USER));
+    verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
+  @Test
+  void aDiscardThatCannotReachTheServerKeepsTheLocalRow() throws Exception {
+    // Keeping the row is what stops the two copies from disagreeing about whether the
+    // draft exists, and what lets the user simply try again.
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    doThrow(new MessagingException("no")).when(draftsFolder).open(Folder.READ_WRITE);
+    Email stored = draft("draft-1");
+    stored.setId(9L);
+    stored.setDraftState(DraftState.SYNCED);
+    stored.setMailRemoteId(4242L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    assertThrows(IllegalStateException.class, () -> emailBoxService.deleteDraft("draft-1", TEST_USER));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  @Test
+  void aDraftIsStampedWithTheMomentItWasLastTyped() throws Exception {
+    // Every save rewrites the row's date to now, and the date means "when the user
+    // last typed". It no longer decides where the draft sits in its conversation --
+    // that comes from In-Reply-To, because this stamp was moving a reply to Monday's
+    // message below a mail that arrived tonight -- but it is still what the Drafts
+    // listing, the conversation list and the cache trim read as recency, so a draft
+    // being written must keep counting as the most recent thing in the mailbox.
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    Date before = new Date();
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+    assertNotNull(saved.getReceivedDate());
+    assertNotNull(saved.getDraftUpdatedDate());
+    assertFalse(saved.getReceivedDate().before(before));
+    // A later revision moves it again: the date means "when the user last typed", not
+    // "when this draft was started".
+    Email stored = draft("draft-1");
+    stored.setDraftRevision(1L);
+    stored.setReceivedDate(new Date(0));
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    Email edited = emailBoxService.saveDraft(draft("draft-1"), TEST_USER, false);
+    assertFalse(edited.getReceivedDate().before(before));
+  }
+
+  @Test
+  void sendDraftRefusesAUserWhoMayNotUseTheirMailbox() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    Email draft = draft("draft-1");
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+  }
+
+  @Test
+  void sendDraftRefusesAComposerThatHasNothingSavedYet() throws Exception {
+    // A composer with no local id has no row to take apart; that send goes through
+    // sendEmail, which owns the path that has nothing to clean up.
+    givenAUsableMailbox();
+    Email draft = draft(null);
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+  }
+
+  @Test
+  void sendingADraftThatIsNoLongerThereSaysSoRatherThanSendingSomethingElse() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(null);
+    Email draft = draft("draft-1");
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+  }
+
+  @Test
+  void aSecondSendOfTheSameDraftIsRefusedWhileTheFirstIsStillInTheAir() throws Exception {
+    // Double-sending a mail cannot be undone, so the claim on the row is checked
+    // before anything reaches the SMTP server.
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.SENDING);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email draft = draft("draft-1");
+      assertThrows(IllegalArgumentException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+      transportMock.verifyNoInteractions();
+    }
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  @Test
+  void sendingADraftSavesItThenSendsItThenRemovesTheCopiesInThatOrder() throws Exception {
+    // The whole point of the slice, expressed as an ordering. Save first, because
+    // everything after it is destructive and the row is what the user gets back.
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER);
+      InOrder inOrder = inOrder(emailBoxStorage, serverCopy);
+      inOrder.verify(emailBoxStorage).saveDraft(any(Email.class));
+      inOrder.verify(emailBoxStorage).updateDraftState(TEST_USER, "draft-1", DraftState.SENDING);
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+      // The server copy goes before the local row, and only after the send returned.
+      inOrder.verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
+      inOrder.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    }
+  }
+
+  @Test
+  void aSentDraftGoesOutUnderTheMessageIdItWasSavedWith() throws Exception {
+    // THE landmine. MimeMessage#saveChanges regenerates the Message-ID from scratch,
+    // and Transport.send(msg) calls saveChanges as its very first statement -- so a
+    // header stamped before the send is discarded and the mail leaves under an id
+    // nobody recorded. That breaks the one thing the minted id exists for: the sent
+    // copy being recognisable as the draft it grew out of, in the reader and in every
+    // other mail client's threading.
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    givenADraftsFolder();
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setMailRemoteId(null);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER);
+      ArgumentCaptor<Message> sentCaptor = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sentCaptor.capture()));
+      MimeMessage sent = (MimeMessage) sentCaptor.getValue();
+      // Transport is mocked here, so the call that would destroy the id never ran.
+      // Run it by hand -- this line IS the test.
+      sent.saveChanges();
+      assertEquals("<draft@example.org>", sent.getHeader("Message-ID")[0]);
+    }
+  }
+
+  @Test
+  void aPlainMimeMessageWouldHaveLostThatMessageId() throws Exception {
+    // The control for the test above: the same two calls on an ordinary MimeMessage,
+    // proving the landmine is real and not a precaution against nothing.
+    MimeMessage plain = new MimeMessage(Session.getInstance(new Properties()));
+    plain.setText("body");
+    plain.setHeader("Message-ID", "<draft@example.org>");
+    plain.saveChanges();
+    assertFalse("<draft@example.org>".equals(plain.getHeader("Message-ID")[0]));
+    // And stamping it AFTER saveChanges -- which is enough for the APPEND, since
+    // writeTo does not re-save an already-saved message -- does not survive the
+    // second saveChanges that Transport.send performs.
+    plain.setHeader("Message-ID", "<draft@example.org>");
+    plain.saveChanges();
+    assertFalse("<draft@example.org>".equals(plain.getHeader("Message-ID")[0]));
+  }
+
+  @Test
+  void aSentDraftKeepsTheThreadingItWasGivenAtItsFirstSave() throws Exception {
+    // Not re-derived from the composer's payload: the draft joined its conversation
+    // when it was first saved, and the mail that goes out must land in that same
+    // thread rather than in one computed a second time from different inputs.
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    givenADraftsFolder();
+    Email stored = storedDraft();
+    stored.setInReplyTo("<parent@host>");
+    stored.setMailReferences("<root@host> <parent@host>");
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER);
+      ArgumentCaptor<Message> sentCaptor = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sentCaptor.capture()));
+      assertEquals("<parent@host>", sentCaptor.getValue().getHeader("In-Reply-To")[0]);
+      assertEquals("<root@host> <parent@host>", sentCaptor.getValue().getHeader("References")[0]);
+    }
+  }
+
+  @Test
+  void aRefusedSendLeavesTheDraftExactlyWhereItWas() throws Exception {
+    // Nothing was removed before the send returned, so there is nothing to undo: the
+    // claim comes back off and the draft is intact, here and on the server.
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    // No mailbox stubs at all, and that is the assertion behind the assertion: a
+    // refused send never reaches the IMAP side, so nothing was there to undo.
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      transportMock.when(() -> Transport.send(any(Message.class))).thenThrow(new MessagingException("relay refused"));
+      Email draft = draft("draft-1");
+      assertThrows(IllegalStateException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+    }
+    // The row was SYNCED and has just been re-saved with newer text, so DIRTY is where
+    // it belongs: the copy up on the server is now stale.
+    verify(emailBoxStorage).updateDraftState(TEST_USER, "draft-1", DraftState.DIRTY);
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  @Test
+  void aSendWhoseCleanupFailsStillTakesTheLocalRowAway() throws Exception {
+    // The mail is out and cannot be recalled. Showing the user a draft of a message
+    // they have already sent -- and inviting them to send it twice -- is worse than
+    // leaving a stray copy in a Drafts folder.
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    doThrow(new MessagingException("no")).when(draftsFolder).open(Folder.READ_WRITE);
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER);
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+    }
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
+  @Test
+  void theRevisionGuardNeverDropsTheTextASendIsCarrying() throws Exception {
+    // Everywhere else a save at a revision the row has already reached is a late
+    // autosave and is dropped. A send is not that: it carries what is on screen at the
+    // moment the button was pressed, so it is forced past the stored revision -- or
+    // the mail that goes out and the row that is kept would say different things.
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    givenADraftsFolder();
+    Email stored = storedDraft();
+    stored.setDraftRevision(7L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    Email draft = draft("draft-1");
+    draft.setDraftRevision(7L);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft, TEST_USER);
+    }
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals(8L, written.getValue().getDraftRevision());
+  }
+
+  @Test
+  void aSaveUnderAnIdThatIsGoneNeverBringsTheDraftBack() throws Exception {
+    // An autosave that left the browser before the draft was sent and landed after.
+    // Re-creating the row would put a draft of an already-sent mail back in front of
+    // the user; answering "there is no such draft" is the whole fix.
+    givenAUsableMailbox();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(null);
+    assertNull(emailBoxService.saveDraft(draft("draft-1"), TEST_USER, false));
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void theSyncCleanupNeverDeletesADraftThatIsNotSafelyOnTheServer() {
+    // The single most dangerous existing rule meeting the one row it must not apply
+    // to: cleanupObsoleteEmails deletes any cached row whose UID is not in the server
+    // window, and for a draft that has not been uploaded that is exactly the normal
+    // state of the newest thing the user has written.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.getMessageCount()).thenReturn(1);
+    MimeMessage onServer = mock(MimeMessage.class);
+    when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new MimeMessage[] { onServer });
+    when(((UIDFolder) inbox).getUID(onServer)).thenReturn(1L);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(10);
+    // Four cached rows the server window does not contain: an ordinary message, an
+    // unpushed draft, a draft whose server copy is stale, and one a send has claimed
+    // — that last one because the send is going to take it apart itself, in an order
+    // chosen for what happens when a step fails.
+    Email obsolete = lightRow(11L, 900L, null);
+    Email localOnlyDraft = lightRow(12L, null, DraftState.LOCAL_ONLY);
+    Email dirtyDraft = lightRow(13L, 901L, DraftState.DIRTY);
+    Email sendingDraft = lightRow(14L, 902L, DraftState.SENDING);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, MailFolder.INBOX)).thenReturn(List.of(obsolete,
+                                                                                        localOnlyDraft,
+                                                                                        dirtyDraft,
+                                                                                        sendingDraft));
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<List<Long>> deleted = ArgumentCaptor.forClass(List.class);
+    verify(emailBoxStorage).deleteEmailsByIds(deleted.capture());
+    assertEquals(List.of(11L), deleted.getValue());
+  }
+
+  @Test
+  @SneakyThrows
+  void aDraftWrittenInAnotherClientBecomesARowOfItsOwn() {
+    // There is no reliable cross-client identity for a draft — most clients mint a
+    // fresh Message-ID on every save — so a Drafts message whose UID we do not know
+    // becomes a NEW row. It is emphatically not merged into a draft of ours by
+    // subject, In-Reply-To or recipients: that would silently discard one side's
+    // writing, which is the failure this whole design exists to prevent.
+    MimeMessage phoneDraft = serverDraft("<phone@example.org>");
+    IMAPFolder draftsFolder = givenASyncableDraftsFolder(phoneDraft);
+    when(draftsFolder.getUID(phoneDraft)).thenReturn(77L);
+    // One draft of our own, being written here, on a UID the server does not have.
+    when(emailBoxStorage.getSyncEmails(TEST_USER, MailFolder.DRAFTS))
+                                                                    .thenReturn(List.of(lightDraftRow(13L,
+                                                                                                      null,
+                                                                                                      DraftState.LOCAL_ONLY,
+                                                                                                      "draft-1")));
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    Email imported = created.getValue();
+    assertEquals(MailFolder.DRAFTS, imported.getFolder());
+    assertEquals(77L, imported.getMailRemoteId());
+    assertEquals("<phone@example.org>", imported.getMailHeaderId());
+    assertEquals(DraftState.SYNCED, imported.getDraftState());
+    assertTrue(StringUtils.isNotBlank(imported.getDraftLocalId()));
+    // Threaded through the one computeThreadId every other message goes through, so
+    // an imported draft sits in the conversation it answers rather than in a notion
+    // of a conversation of its own.
+    assertEquals("<phone@example.org>", imported.getThreadId());
+    // A draft is the user's own text: never unread, never recent, so the new-mail
+    // notification cannot see it.
+    assertTrue(imported.isRead());
+    assertFalse(imported.isRecent());
+    // And ours is untouched.
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  @Test
+  @SneakyThrows
+  void aDraftWithUnsavedWordsSurvivesASyncThatCannotSeeItAnyMore() {
+    // The moment the cleanup's draft guard stops being theoretical. The server no
+    // longer has the copy this row points at, and the row carries text that never
+    // reached it — so it is kept, and put back to the state a draft that has never
+    // been uploaded is in, which is exactly what it now is.
+    IMAPFolder draftsFolder = givenASyncableDraftsFolder();
+    Email dirtyDraft = lightDraftRow(13L, 901L, DraftState.DIRTY, "draft-1");
+    Email unpushedDraft = lightDraftRow(12L, null, DraftState.LOCAL_ONLY, "draft-2");
+    when(emailBoxStorage.getSyncEmails(TEST_USER, MailFolder.DRAFTS)).thenReturn(List.of(dirtyDraft, unpushedDraft));
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.DIRTY);
+    stored.setMailRemoteId(901L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage).detachDraftFromServerCopy(TEST_USER, "draft-1");
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    // Read in the window, never written to: the sync opens Drafts READ_ONLY like
+    // every other folder, and only the janitor takes a writable connection.
+    verify(draftsFolder, never()).open(Folder.READ_WRITE);
+  }
+
+  @Test
+  @SneakyThrows
+  void aDraftDeletedInAnotherClientDisappearsHereToo() {
+    // Nothing unsaved on this side: the row and the copy said the same thing, the
+    // user deleted it on their phone, and that is what they meant. It is the
+    // ordinary cleanup that carries this out — a SYNCED draft is deliberately not
+    // protected from it.
+    givenASyncableDraftsFolder();
+    when(emailBoxStorage.getSyncEmails(TEST_USER, MailFolder.DRAFTS))
+                                                                    .thenReturn(List.of(lightDraftRow(21L,
+                                                                                                      800L,
+                                                                                                      DraftState.SYNCED,
+                                                                                                      "draft-9")));
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(21L));
+    verify(emailBoxStorage, never()).detachDraftFromServerCopy(anyString(), anyString());
+  }
+
+  @Test
+  @SneakyThrows
+  void aDraftASendHasClaimedIsLeftExactlyWhereItIs() {
+    // SENDING says nothing about the server copy: it is a claim, and the send that
+    // took it is going to take the row apart itself, in an order chosen for what
+    // happens when a step fails. A sync deleting it — or quietly rewriting its state
+    // — would turn "sent but not cleaned up" into a silent double outcome.
+    givenASyncableDraftsFolder();
+    when(emailBoxStorage.getSyncEmails(TEST_USER, MailFolder.DRAFTS))
+                                                                    .thenReturn(List.of(lightDraftRow(22L,
+                                                                                                      802L,
+                                                                                                      DraftState.SENDING,
+                                                                                                      "draft-8")));
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    verify(emailBoxStorage, never()).detachDraftFromServerCopy(anyString(), anyString());
+  }
+
+  @Test
+  @SneakyThrows
+  void theJanitorRemovesACopyOfAlreadySentMailAndSparesAGenuineDraft() {
+    // A send whose cleanup failed leaves a copy in Drafts. It is recognisable with
+    // certainty and by nothing else: the sent mail went out under the very
+    // Message-ID the draft was pinned with, so a Drafts entry whose Message-ID is
+    // already in Sent is that leftover. A draft that merely LOOKS sent is untouched.
+    MimeMessage strayCopy = serverDraft("<already-sent@example.org>");
+    MimeMessage genuineDraft = serverDraft("<still-writing@example.org>");
+    IMAPFolder draftsFolder = givenASyncableDraftsFolder(strayCopy, genuineDraft);
+    when(draftsFolder.getUID(strayCopy)).thenReturn(500L);
+    when(draftsFolder.getUID(genuineDraft)).thenReturn(501L);
+    when(emailBoxStorage.isMessageCachedInFolder(TEST_USER, "<already-sent@example.org>", MailFolder.SENT)).thenReturn(true);
+    when(emailBoxStorage.isMessageCachedInFolder(TEST_USER, "<still-writing@example.org>", MailFolder.SENT)).thenReturn(false);
+    Message strayOnServer = serverDraftCopy("<already-sent@example.org>");
+    when(draftsFolder.getMessageByUID(500L)).thenReturn(strayOnServer);
+    emailBoxService.synchronize(TEST_USER);
+    // The leftover is removed from the server and never becomes a row: a draft of a
+    // mail the user has already sent is the one thing this feature must not show.
+    verify(draftsFolder).open(Folder.READ_WRITE);
+    verify(strayOnServer).setFlag(Flags.Flag.DELETED, true);
+    verify(draftsFolder, never()).getMessageByUID(501L);
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertEquals("<still-writing@example.org>", created.getValue().getMailHeaderId());
+  }
+
+  @Test
+  @SneakyThrows
+  void aServerDraftWithNoSenderIsStoredUnderTheMailboxOwnersOwnAddress() {
+    // Half-written mail with no From is exactly what a Drafts folder holds, and a
+    // row stored with a blank sender cannot be read back at all — the entity mapper
+    // splits that column on a comma and takes the second half. A draft in the user's
+    // own Drafts folder is the user's, so their address is both safe and true.
+    MimeMessage anonymousDraft = serverDraft("<no-from@example.org>");
+    IMAPFolder draftsFolder = givenASyncableDraftsFolder(anonymousDraft);
+    when(draftsFolder.getUID(anonymousDraft)).thenReturn(88L);
+    when(anonymousDraft.getFrom()).thenReturn(null);
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertNotNull(created.getValue().getSender());
+    assertEquals(userEmailSetting().getEmailAddress(), created.getValue().getSender().getAddress());
+  }
+
+  @Test
+  @SneakyThrows
+  void aCacheResetNeverGoesNearTheDraftsFolder() {
+    // The reset's premise is that the server is the truth and the local copy is
+    // disposable. That is false for the one folder whose rows are authored here, so
+    // inboxOnly skips Drafts exactly as it skips Sent and Archive — and this is the
+    // caller for which the difference is not about cost.
+    UserEmailSetting userEmailSetting = givenAUsableMailbox();
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    emailBoxService.resetAndResynchronize(TEST_USER);
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.DRAFTS);
+    // Not even resolved: a reset must not so much as look for the folder, or a
+    // failure in there would report itself as a failed reset.
+    verify(store, never()).getDefaultFolder();
+  }
+
+  /**
+   * A connected mailbox whose Drafts folder holds the given messages — the starting
+   * point of every Drafts-sync test. The inbox is present but empty, so the sync
+   * reaches the folder under test without any of the inbox machinery running.
+   *
+   * @param serverDrafts the messages the Drafts folder holds, newest last
+   * @return the mocked Drafts folder
+   */
+  @SneakyThrows
+  private IMAPFolder givenASyncableDraftsFolder(MimeMessage... serverDrafts) {
+    UserEmailSetting userEmailSetting = givenAUsableMailbox();
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    IMAPFolder draftsFolder = mock(IMAPFolder.class);
+    when(draftsFolder.exists()).thenReturn(true);
+    when(draftsFolder.getAttributes()).thenReturn(new String[] { "\\Drafts" });
+    lenient().when(draftsFolder.getFullName()).thenReturn("Drafts");
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { draftsFolder });
+    when(draftsFolder.getMessageCount()).thenReturn(serverDrafts.length);
+    if (serverDrafts.length > 0) {
+      when(draftsFolder.getMessages(anyInt(), anyInt())).thenReturn(serverDrafts);
+    }
+    // A real cache size, because the trim half of the cleanup is one of the two
+    // things under test here and a size of zero would put every row in the overflow.
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    return draftsFolder;
+  }
+
+  /**
+   * A draft as it sits in the mail server's Drafts folder, written by some other
+   * client of the user's.
+   *
+   * @param messageId the Message-ID that client gave it
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private MimeMessage serverDraft(String messageId) {
+    MimeMessage message = mock(MimeMessage.class);
+    when(message.getMessageID()).thenReturn(messageId);
+    lenient().when(message.getFrom()).thenReturn(new Address[] { new InternetAddress("someone@example.org", "Someone") });
+    return message;
+  }
+
+  /**
+   * A copy of a draft as it is found again at a remembered UID: a message that
+   * answers a Message-ID header, because that header is what proves the copy is the
+   * one the row is pointing at before anything is flagged for deletion.
+   *
+   * @param messageId the Message-ID the message carries
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private Message serverDraftCopy(String messageId) {
+    Message message = mock(Message.class);
+    when(message.getHeader("Message-ID")).thenReturn(new String[] { messageId });
+    return message;
+  }
+
+  /**
+   * A draft row as the light sync view returns it.
+   *
+   * @param id the row's technical id
+   * @param mailRemoteId the IMAP UID of its copy on the server, null when it has none
+   * @param draftState where the row stands against that copy
+   * @param draftLocalId the composer's handle on it
+   * @return the light row
+   */
+  private Email lightDraftRow(Long id, Long mailRemoteId, DraftState draftState, String draftLocalId) {
+    Email email = lightRow(id, mailRemoteId, draftState);
+    email.setDraftLocalId(draftLocalId);
+    email.setFolder(MailFolder.DRAFTS);
+    return email;
+  }
+
+  /**
+   * A mailbox the user is allowed to use, with no other expectation set — the
+   * starting point of every draft test.
+   *
+   * @return the user's email setting, for the tests that need to hand it back
+   */
+  private UserEmailSetting givenAUsableMailbox() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    return userEmailSetting;
+  }
+
+  /**
+   * A connected store whose only subscribed folder announces itself as the Drafts
+   * folder through the RFC 6154 SPECIAL-USE attribute.
+   *
+   * @return the mocked Drafts folder
+   */
+  @SneakyThrows
+  private IMAPFolder givenADraftsFolder() {
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(any(UserEmailSetting.class))).thenReturn(store);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    IMAPFolder draftsFolder = mock(IMAPFolder.class);
+    when(draftsFolder.exists()).thenReturn(true);
+    when(draftsFolder.getAttributes()).thenReturn(new String[] { "\\Drafts" });
+    lenient().when(draftsFolder.getFullName()).thenReturn("Drafts");
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { draftsFolder });
+    return draftsFolder;
+  }
+
+  /**
+   * A composed draft as the client sends it: text and recipients, and the local id
+   * only once the client has one.
+   *
+   * @param draftLocalId the draft's local id, or null for a first save
+   * @return the composed draft
+   */
+  private Email draft(String draftLocalId) {
+    Email draft = new Email();
+    draft.setDraftLocalId(draftLocalId);
+    draft.setSubject("half a subject");
+    draft.setContent(new EmailContent("half a sentence", null, null));
+    draft.setTo(List.of(new EmailRecipient("Bob", "bob@example.org", null, false)));
+    return draft;
+  }
+
+  /**
+   * A draft as the storage layer hands it back: the composer's text plus the
+   * identity the service settled at the first save — the technical id, the minted
+   * Message-ID, and the UID of the copy sitting in the mailbox's Drafts folder.
+   *
+   * @return the stored draft
+   */
+  private Email storedDraft() {
+    Email stored = draft("draft-1");
+    stored.setId(9L);
+    stored.setUserId(TEST_USER);
+    stored.setFolder(MailFolder.DRAFTS);
+    stored.setDraftState(DraftState.SYNCED);
+    stored.setDraftRevision(2L);
+    stored.setMailRemoteId(4242L);
+    stored.setMailHeaderId("<draft@example.org>");
+    return stored;
+  }
+
+  /**
+   * What the storage layer hands back from a draft save: the text that was just
+   * written, over the identity the row already carried. The service reads the UID and
+   * the Message-ID off that answer to decide what to remove from the Drafts folder,
+   * so a mock that dropped them would be testing a row no real save ever produces.
+   *
+   * @param written the draft as the service asked for it to be stored
+   * @param mailRemoteId the UID the row already carried, null when it carried none
+   * @return the row as the storage layer would answer it
+   */
+  private Email storedRowAfter(Email written, Long mailRemoteId) {
+    written.setMailRemoteId(mailRemoteId);
+    written.setMailHeaderId("<draft@example.org>");
+    return written;
+  }
+
+  /**
+   * The row the storage layer answers with once an appended copy has been recorded.
+   *
+   * @param mailRemoteId the IMAP UID the server gave the appended copy
+   * @return the draft as it now stands
+   */
+  private Email uploaded(long mailRemoteId) {
+    Email email = draft("draft-1");
+    email.setMailRemoteId(mailRemoteId);
+    email.setDraftState(DraftState.SYNCED);
+    return email;
+  }
+
+  /**
+   * A row as the light sync view returns it — ids, flags and the draft state, and
+   * nothing else.
+   *
+   * @param id the row's technical id
+   * @param mailRemoteId the IMAP UID, null for a draft never uploaded
+   * @param draftState the draft state, null for an ordinary message
+   * @return the light row
+   */
+  private Email lightRow(Long id, Long mailRemoteId, DraftState draftState) {
+    Email email = new Email();
+    email.setId(id);
+    email.setMailRemoteId(mailRemoteId);
+    email.setDraftState(draftState);
+    email.setUserId(TEST_USER);
+    return email;
+  }
+
   private Email emailWithCategories(List<Long> categoryIds) {
     Email email = email(TEST_USER);
     email.setCategoryIds(categoryIds);
@@ -3542,7 +4715,11 @@ public class EmailBoxServiceTest {
                      false,
                      false,
                      null,
-                     false);
+                     false,
+                     null,
+                     null,
+                     null,
+                     null);
   }
 
   private EmailConnector emailConnector() {

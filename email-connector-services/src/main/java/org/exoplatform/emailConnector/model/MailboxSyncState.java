@@ -26,10 +26,10 @@ import lombok.NoArgsConstructor;
  * read-modified-written by user-facing preference flows, and sync bookkeeping
  * racing user preferences over one JSON blob is how settings get clobbered).
  * Carries one {@link FolderSyncSnapshot} per bulk-synced folder — the basis of
- * the skip-if-unchanged check — and the discovered Sent/Archive folder names, so
- * a routine sync stops re-scanning the whole folder list ({@code LIST *}) every
- * period just to re-find two folders that never move. Flat fields rather than a
- * map, so the JSON round-trip stays trivial for the settings serializer.
+ * the skip-if-unchanged check — and the discovered Sent/Archive/Drafts folder
+ * names, so a routine sync stops re-scanning the whole folder list ({@code LIST
+ * *}) every period just to re-find folders that never move. Flat fields rather
+ * than a map, so the JSON round-trip stays trivial for the settings serializer.
  */
 @Data
 @NoArgsConstructor
@@ -46,6 +46,21 @@ public class MailboxSyncState {
 
   private String             archiveFolderName;
 
+  // The discovered Drafts folder, remembered for the same reason as the two above:
+  // the draft save path resolves it on every save, and re-walking the whole folder
+  // list to re-find a folder that never moves would put a LIST * in front of every
+  // autosave. Declared last so the Lombok all-args constructor only grows a trailing
+  // argument.
+  private String             draftsFolderName;
+
+  // The Drafts folder's own change snapshot. It earns its place for the same reason
+  // the other three do — a Drafts folder nobody has touched since the last sync must
+  // not be re-listed and re-fetched every period — and it is the cheapest of the four
+  // to keep honest: the folder is small, so the rare wrong "changed" costs almost
+  // nothing, while the wrong "unchanged" is the one that would leave a draft written
+  // on the user's phone invisible here.
+  private FolderSyncSnapshot draftsSnapshot;
+
   /**
    * The stored snapshot of a bulk-synced folder.
    *
@@ -58,6 +73,7 @@ public class MailboxSyncState {
       case MailFolder.INBOX -> inboxSnapshot;
       case MailFolder.SENT -> sentSnapshot;
       case MailFolder.ARCHIVE -> archiveSnapshot;
+      case MailFolder.DRAFTS -> draftsSnapshot;
       default -> null;
     };
   }
@@ -74,6 +90,7 @@ public class MailboxSyncState {
       case MailFolder.INBOX -> inboxSnapshot = snapshot;
       case MailFolder.SENT -> sentSnapshot = snapshot;
       case MailFolder.ARCHIVE -> archiveSnapshot = snapshot;
+      case MailFolder.DRAFTS -> draftsSnapshot = snapshot;
       default -> {
         // ALL_MAIL is an on-demand completion store, never bulk-synced: nothing to track.
       }
