@@ -2201,24 +2201,65 @@ public class EmailBoxService {
     jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
   }
 
+  /**
+   * The bytes of one attachment, fetched live from the mail server, together with the
+   * name and content type the message actually declares for it.
+   * <p>
+   * The FOLDER is the parameter that makes this work at all. It used to open
+   * {@code INBOX} unconditionally, which is right for exactly one of the five folders
+   * this cache holds: an attachment on a message in Sent or Archive was looked for
+   * under a UID that either names nothing there (a 500 the user reads as "the file is
+   * broken") or, worse, names an unrelated inbox message whose part "2" happens to
+   * exist — so the download quietly hands back somebody else's file. The cached row
+   * is now read under the same folder, for the reason
+   * {@link EmailAttachmentDAO#findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder}
+   * gives: the two halves of one answer must not be looked up under different keys.
+   * <p>
+   * A blank folder means INBOX, which is what every caller written before folders
+   * existed meant.
+   *
+   * @param mailRemoteId the message's IMAP UID within that folder
+   * @param attachmentId the attachment's MIME part path
+   * @param username the mailbox owner
+   * @param folder the {@link MailFolder} the message is listed in; blank means INBOX
+   * @return the attachment with its bytes loaded
+   * @throws IllegalAccessException if the user has no connected mailbox
+   */
   public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId,
                                                                   String attachmentId,
-                                                                  String username) throws IllegalAccessException {
+                                                                  String username,
+                                                                  String folder) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT, username));
     }
+    String cachedFolder = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
     Store store = null;
     Folder inbox = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting);
-      inbox = store.getFolder("INBOX");
+      inbox = resolveCachedFolder(store, cachedFolder, username);
+      if (inbox == null) {
+        // The mailbox has no such folder any more (renamed, deleted, or never had one
+        // and the rows came from an account that did). Nothing to read; the caller
+        // answers 404 rather than reporting a server fault.
+        return null;
+      }
       inbox.open(Folder.READ_ONLY);
       Message message = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
       EmailAttachment emailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(mailRemoteId,
                                                                                                  attachmentId,
-                                                                                                 username);
+                                                                                                 username,
+                                                                                                 cachedFolder);
+      if (emailAttachment == null) {
+        // The user has no such attachment in that folder. An answer, not a fault: the
+        // caller turns it into a 404. It used to be reachable only through a deleted
+        // row, and the code below then failed on a null with a 500; now that the lookup
+        // is folder-scoped it is also what a caller asking under the wrong folder gets,
+        // which is worth saying plainly rather than reporting as a broken mailbox.
+        return null;
+      }
       BodyPart bodyPart = getPartByPath(message, attachmentId);
       if (bodyPart == null) {
         throw new RuntimeException("Attachment not found in the email");
@@ -5247,6 +5288,54 @@ public class EmailBoxService {
       return resolveSentFolder(store, loadMailboxSyncState(username));
     }
     return findArchiveFolder(store);
+  }
+
+  /**
+   * The remote folder a cached row of a given {@link MailFolder} came from — the
+   * inverse of the discriminator the sync writes, and what any read that has to go
+   * back to the server for one message needs.
+   * <p>
+   * Each arm goes through the SAME resolver the rows were cached by, which is the
+   * whole point of having this in one place rather than a folder name at each call
+   * site: ARCHIVE takes the syncable {@code \Archive} folder, while ALL_MAIL takes
+   * Gmail's {@code \All} superset, and the two are deliberately different folders
+   * (see {@link #findSyncableArchiveFolder}). Resolving ARCHIVE through
+   * {@link #findArchiveFolder} instead — which answers {@code \All} on Gmail —
+   * would look right and read the wrong mailbox, under UIDs that belong to another
+   * one.
+   * <p>
+   * The sync state is loaded but deliberately NOT written back, the same rule
+   * {@link #resolveSearchFolder} follows: a read must never save the state a running
+   * sync is about to save, so a rediscovery here costs one extra {@code LIST} and
+   * nothing else.
+   *
+   * @param store the connected store (this read's own)
+   * @param folder the {@link MailFolder} discriminator the row carries
+   * @param username the mailbox owner, to load the remembered folder names
+   * @return the remote folder, or null when the mailbox has no such folder
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private Folder resolveCachedFolder(Store store, String folder, String username) throws MessagingException {
+    if (StringUtils.isBlank(folder) || MailFolder.INBOX.equals(folder)) {
+      return store.getFolder("INBOX");
+    }
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    if (MailFolder.SENT.equals(folder)) {
+      return resolveSentFolder(store, syncState);
+    }
+    if (MailFolder.ARCHIVE.equals(folder)) {
+      return resolveArchiveFolder(store, syncState);
+    }
+    if (MailFolder.DRAFTS.equals(folder)) {
+      return resolveDraftsFolder(store, syncState);
+    }
+    if (MailFolder.ALL_MAIL.equals(folder)) {
+      return findAllMailFolder(store);
+    }
+    // An unknown discriminator is a caller passing something this schema never wrote.
+    // Answering INBOX would silently read the wrong mailbox; answering nothing lets
+    // the caller say so.
+    return null;
   }
 
   /**

@@ -899,13 +899,31 @@ public class EmailBoxStorage {
     return StringUtils.defaultString(storedName(sender.getName())) + "," + StringUtils.defaultString(sender.getAddress());
   }
 
-  public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId, String attachmentId, String userId) {
-    EmailAttachmentEntity emailAttachmentEntity = emailAttachmentDAO
-                                                                    .findByMailRemoteIdAndAttachmentIdAndUserId(mailRemoteId,
-                                                                                                                attachmentId,
-                                                                                                                userId)
-                                                                    .orElse(null);
-    ;
+  /**
+   * One cached attachment row of one message of one folder.
+   * <p>
+   * The folder is mandatory rather than defaulted, and deliberately so: see
+   * {@link EmailAttachmentDAO#findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder}
+   * for what a lookup without it answers. A default here would put the old collision
+   * back one layer up, where nobody would see it.
+   *
+   * @param mailRemoteId the message's IMAP UID within its folder
+   * @param attachmentId the attachment's MIME part path
+   * @param userId the mailbox owner
+   * @param folder the {@link MailFolder} the message is cached under
+   * @return the attachment, or null when the user has no such attachment there
+   */
+  public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId,
+                                                                  String attachmentId,
+                                                                  String userId,
+                                                                  String folder) {
+    EmailAttachmentEntity emailAttachmentEntity =
+                                                emailAttachmentDAO.findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder(mailRemoteId,
+                                                                                                                       attachmentId,
+                                                                                                                       userId,
+                                                                                                                       StringUtils.defaultIfBlank(folder,
+                                                                                                                                                  MailFolder.INBOX))
+                                                                  .orElse(null);
     return fromEmailAttachmentEntity(emailAttachmentEntity);
   }
 
@@ -1056,6 +1074,19 @@ public class EmailBoxStorage {
     }
   }
 
+  /**
+   * Maps one attachment row, carrying its message's UID and FOLDER with it.
+   * <p>
+   * The folder travels on the attachment because a UID is meaningless without one
+   * (IMAP numbers them per folder), and every consumer that goes back for the bytes
+   * addresses the attachment rather than the message it came from. Reading it here,
+   * in the one mapper, is what stops each of those consumers having to remember —
+   * and reading it wrong is exactly how an attachment on a Sent message could not be
+   * downloaded at all.
+   *
+   * @param emailAttachmentEntity the row, may be null
+   * @return the attachment, or null when the row is
+   */
   private EmailAttachment fromEmailAttachmentEntity(EmailAttachmentEntity emailAttachmentEntity) {
     if (emailAttachmentEntity == null) {
       return null;
@@ -1065,7 +1096,8 @@ public class EmailBoxStorage {
                                  emailAttachmentEntity.getAttachmentRemoteId(),
                                  emailAttachmentEntity.getName(),
                                  emailAttachmentEntity.getMimeType(),
-                                 null);
+                                 null,
+                                 emailAttachmentEntity.getEmail().getFolder());
     }
   }
 

@@ -49,6 +49,7 @@ import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -649,7 +650,8 @@ public class EmailBoxRest {
 
   @GetMapping("/attachments/{mailRemoteId}/{attachmentId}")
   @Secured("users")
-  @Operation(summary = "Gets attachment by mail remote id and attachment id", method = "GET", description = "This will get attachment by mail remote id and attachment id")
+  @Operation(summary = "Gets attachment by mail remote id and attachment id", method = "GET",
+             description = "This will get attachment by mail remote id and attachment id. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder, so the same id names a different message in INBOX and in SENT. It defaults to INBOX, which is what every caller written before the mailbox held other folders meant.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -662,16 +664,24 @@ public class EmailBoxRest {
                                                                 @Parameter(description = "Attachment id", required = true)
                                                                 @PathVariable("attachmentId")
                                                                 String attachmentId,
+                                                                @Parameter(description = "The folder the message is listed in (INBOX, SENT, ARCHIVE, ALL_MAIL, DRAFTS); INBOX when omitted")
+                                                                @RequestParam(value = "folder", required = false,
+                                                                              defaultValue = MailFolder.INBOX)
+                                                                String folder,
                                                                 @RequestHeader(value = "If-None-Match", required = false)
                                                                 String ifNoneMatch) {
     try {
-      String eTag = "\"" + Objects.hash(mailRemoteId, attachmentId, request.getRemoteUser()) + "\"";
+      // The folder joins the ETag because it joins the identity: without it, the same
+      // tag would be minted for two different files and a browser that had cached one
+      // would answer the other from its own cache, never asking us.
+      String eTag = "\"" + Objects.hash(mailRemoteId, attachmentId, folder, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
       EmailAttachment emailAttachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(mailRemoteId,
                                                                                                  attachmentId,
-                                                                                                 request.getRemoteUser());
+                                                                                                 request.getRemoteUser(),
+                                                                                                 folder);
       if (emailAttachment == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }

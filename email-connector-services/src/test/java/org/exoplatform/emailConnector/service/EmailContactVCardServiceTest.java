@@ -70,6 +70,7 @@ import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSource;
 import org.exoplatform.emailConnector.model.SyncStatus;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.storage.EmailContactStorage;
 import org.exoplatform.upload.UploadResource;
 import org.exoplatform.upload.UploadService;
@@ -980,10 +981,10 @@ public class EmailContactVCardServiceTest {
         FN:John Roe
         EMAIL:john@example.com
         END:VCARD""";
-    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8)));
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX));
 
-    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2");
+    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX);
 
     assertEquals("jane@example.com", prefill.getPrimaryEmail());
     assertEquals("Jane", prefill.getGivenName());
@@ -1013,10 +1014,10 @@ public class EmailContactVCardServiceTest {
         TEL;TYPE=WORK:+33 1 23 45 67 89
         TEL:+33 2 11 22 33 44
         END:VCARD""";
-    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8)));
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX));
 
-    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2");
+    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX);
 
     assertEquals(List.of("cell,+33 6 12 34 56 78", "work,+33 1 23 45 67 89", "+33 2 11 22 33 44"),
                  prefill.getPhones());
@@ -1032,10 +1033,10 @@ public class EmailContactVCardServiceTest {
         FN:Jane van Doe
         EMAIL:jane@example.com
         END:VCARD""";
-    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8)));
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX));
 
-    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2");
+    EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX);
 
     assertEquals("Jane", prefill.getGivenName());
     assertEquals("van Doe", prefill.getFamilyName());
@@ -1043,12 +1044,12 @@ public class EmailContactVCardServiceTest {
 
   @Test
   void anAttachmentThatIsNoVCardIsACleanRefusal() throws Exception {
-    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
         .thenReturn(new EmailAttachment(null, 7L, "2", "contact.vcf", "text/vcard",
-                                        "Nothing card-shaped in here".getBytes(StandardCharsets.UTF_8)));
+                                        "Nothing card-shaped in here".getBytes(StandardCharsets.UTF_8), MailFolder.INBOX));
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> service.getAttachmentContact(USERNAME, 7L, "2"));
+                                                    () -> service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX));
 
     assertEquals(EmailContactVCardService.ATTACHMENT_NOT_VCARD, refusal.getMessage());
   }
@@ -1056,11 +1057,11 @@ public class EmailContactVCardServiceTest {
   @Test
   void anOversizedAttachmentIsRefusedBeforeParsing() throws Exception {
     byte[] oversized = new byte[(int) EmailContactVCardService.MAX_ATTACHMENT_CARD_BYTES + 1];
-    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "huge.vcf", "text/vcard", oversized));
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "huge.vcf", "text/vcard", oversized, MailFolder.INBOX));
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> service.getAttachmentContact(USERNAME, 7L, "2"));
+                                                    () -> service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX));
 
     assertEquals(EmailContactVCardService.ATTACHMENT_TOO_LARGE, refusal.getMessage());
     // Not one byte of it met the parser — the cap's whole point.
@@ -1072,26 +1073,26 @@ public class EmailContactVCardServiceTest {
     // The mailbox reads only the caller's own INBOX and answers everything
     // else — another user's UID included — as this exception, which the REST
     // layer turns into the 404 the never-403 rule wants.
-    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
         .thenThrow(new IllegalStateException("Error when connecting store for user alice"));
 
-    assertThrows(IllegalStateException.class, () -> service.getAttachmentContact(USERNAME, 7L, "2"));
+    assertThrows(IllegalStateException.class, () -> service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX));
   }
 
   @Test
   void aUserWithoutAMailboxCannotReadAttachments() throws Exception {
-    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
         .thenThrow(new IllegalAccessException("no mailbox"));
 
-    assertThrows(IllegalAccessException.class, () -> service.getAttachmentContact(USERNAME, 7L, "2"));
+    assertThrows(IllegalAccessException.class, () -> service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX));
   }
 
   @Test
   void anEmptyAttachmentIsNotFound() throws Exception {
-    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "empty.vcf", "text/vcard", new byte[0]));
+    when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
+        .thenReturn(new EmailAttachment(null, 7L, "2", "empty.vcf", "text/vcard", new byte[0], MailFolder.INBOX));
 
-    assertNull(service.getAttachmentContact(USERNAME, 7L, "2"));
+    assertNull(service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX));
   }
 
   @Test

@@ -36,4 +36,16 @@ public class EmailAttachment {
   private String mimeType;
 
   private byte[] data;
+
+  // The folder its message is cached in (see MailFolder). Declared last so the Lombok
+  // all-args constructor only grows a trailing argument.
+  //
+  // It rides on the attachment rather than being plumbed from the message because
+  // mailRemoteId alone does not identify anything: IMAP UIDs are PER FOLDER, so
+  // (uid, part path) names one row in INBOX and a different one in SENT. Every
+  // consumer that addresses an attachment - the download REST call, the front end's
+  // getAttachmentUrl, the vCard prefill - therefore needs the folder, and there are
+  // more of them than there are places that hold the message. Same reasoning the
+  // draft read follows: a fact the row cannot be used without belongs on the row.
+  private String folder;
 }

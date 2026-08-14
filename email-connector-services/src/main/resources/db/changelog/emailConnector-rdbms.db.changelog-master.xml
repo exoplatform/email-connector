@@ -604,5 +604,37 @@
     </comment>
     <dropNotNullConstraint tableName="EMAIL_BOX" columnName="MAIL_REMOTE_ID" columnDataType="BIGINT"/>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-43" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The sequence EmailAttachmentEntity has been asking for since 1.0.0-5, and
+      which was never created. Every other entity of this schema got one — 1.0.0-1
+      for the connector, 1.0.0-3 for the mail row, 1.0.0-16 for the contact,
+      1.0.0-33 for the contact address — and the attachment was simply missed.
+
+      It is not cosmetic on the vendors listed here. The entity declares
+      @GeneratedValue(AUTO) against a named @SequenceGenerator, so on every dialect
+      that HAS sequences Hibernate draws the id from SEQ_EMAIL_ATTACHMENT_ID, and
+      the insert fails outright: "user lacks privilege or object not found". Which
+      means that on PostgreSQL and Oracle, caching a message that carries an
+      attachment cannot have been storing the attachment row at all.
+
+      MySQL is unaffected, and that is why this survived: it has no sequences, so
+      Hibernate falls back to the table's own AUTO_INCREMENT and the ids come out
+      fine. The same vendor asymmetry 1.0.0-38 documents for the contact-address
+      sequence, from the other direction — it is the reason a defect in the id
+      strategy is invisible on the vendor most deployments run.
+
+      Numbered 43 rather than 42: 42 is taken by the body-format branch, which is
+      stacked on the same drafts work and not merged either. Two branches landing on
+      one number is a reconciliation nobody should have to do twice.
+
+      Created starting at 1 rather than repaired past the existing rows, as 1.0.0-38
+      had to: no row can exist here on these vendors, precisely because the sequence
+      never did. On a database where rows DO exist (one migrated from MySQL), the
+      SequenceRepairChange of 1.0.0-38 is the tool, and it is deliberately not run
+      here — it would be one more thing to get right for a case nobody has.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_ATTACHMENT_ID" startValue="1"/>
+  </changeSet>
 
 </databaseChangeLog>
