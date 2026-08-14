@@ -54,6 +54,7 @@ import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactPage;
 import org.exoplatform.emailConnector.model.EmailContactSuggestion;
 import org.exoplatform.emailConnector.model.ContactSyncState;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.service.EmailContactCardDavSyncService;
 import org.exoplatform.emailConnector.service.EmailContactService;
 import org.exoplatform.emailConnector.service.EmailContactVCardService;
@@ -620,16 +621,21 @@ public class EmailContactRest {
       @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
   public EmailContact getContactFromAttachment(HttpServletRequest request,
-                                               @Parameter(description = "The INBOX IMAP UID of the mail", required = true)
+                                               @Parameter(description = "The IMAP UID of the mail within its folder", required = true)
                                                @RequestParam("mailRemoteId")
                                                long mailRemoteId,
                                                @Parameter(description = "The attachment's MIME part path within the mail", required = true)
                                                @RequestParam("attachmentId")
-                                               String attachmentId) {
+                                               String attachmentId,
+                                               @Parameter(description = "The folder the mail is listed in (INBOX, SENT, ARCHIVE, ALL_MAIL, DRAFTS); INBOX when omitted")
+                                               @RequestParam(value = "folder", required = false,
+                                                             defaultValue = MailFolder.INBOX)
+                                               String folder) {
     try {
       EmailContact prefill = emailContactVCardService.getAttachmentContact(request.getRemoteUser(),
                                                                            mailRemoteId,
-                                                                           attachmentId);
+                                                                           attachmentId,
+                                                                           folder);
       if (prefill == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
