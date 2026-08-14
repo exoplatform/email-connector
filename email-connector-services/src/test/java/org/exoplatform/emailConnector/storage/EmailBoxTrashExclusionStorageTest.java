@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
@@ -100,6 +101,12 @@ public class EmailBoxTrashExclusionStorageTest {
   private static final String WIPE_USER         = "frank";
 
   private static final String COUNTS_USER       = "grace";
+
+  private static final String RESUME_USER       = "heidi";
+
+  private static final String REWRITE_USER      = "ivan";
+
+  private static final String BADGE_USER        = "judy";
 
   private static final String THREAD_ID         = "<monday@example.org>";
 
@@ -263,6 +270,75 @@ public class EmailBoxTrashExclusionStorageTest {
 
     assertEquals(1, counts.get(MailFolder.INBOX));
     assertEquals(1, counts.get(MailFolder.TRASH), "a Trash tab with something in it has to be offered, not hidden");
+  }
+
+  /**
+   * A draft the user discarded keeps its local id, and the local id is how the
+   * composer reopens a draft — so the read behind that has to stop answering with it.
+   * <p>
+   * Reachable only now that a row can be in TRASH at all, which is why it is fixed in
+   * the slice that makes it reachable rather than the one that will produce the row.
+   * Unscoped, the composer would resume a draft the user threw away, an autosave would
+   * write text into the bin, and a send would transmit from a row nothing shows.
+   */
+  @Test
+  void aDiscardedDraftIsNotResumableByItsLocalId() {
+    emailBoxStorage.createEmail(discardedDraft(RESUME_USER, "draft-1", TUESDAY));
+
+    assertNull(emailBoxStorage.getDraftByLocalId(RESUME_USER, "draft-1"),
+               "a draft in the bin is not a draft the composer may reopen");
+  }
+
+  /**
+   * The other half of the same fix, and the destructive one: a save addressed to a
+   * discarded draft's id must not land ON the trashed row. It writes a new draft
+   * instead — which is what the composer's own handle means once the old one is gone
+   * — and leaves what is in the bin exactly as the user left it.
+   */
+  @Test
+  void savingAgainstADiscardedDraftDoesNotWriteIntoTheBin() {
+    emailBoxStorage.createEmail(discardedDraft(REWRITE_USER, "draft-1", TUESDAY));
+
+    Email rewritten = draftRow(REWRITE_USER, MailFolder.DRAFTS, "draft-1", WEDNESDAY);
+    rewritten.setContent(new EmailContent("<p>a second attempt</p>", null, null));
+    rewritten.setDraftRevision(2L);
+    emailBoxStorage.saveDraft(rewritten);
+
+    List<Email> rows = emailBoxStorage.getEmails(REWRITE_USER);
+    Email trashed = rows.stream().filter(email -> MailFolder.TRASH.equals(email.getFolder())).findFirst().orElse(null);
+    assertTrue(trashed != null, "the discarded draft is still in the bin");
+    assertEquals("<p>half an answer</p>",
+                 trashed.getContent().getBody(),
+                 "and still holds what the user discarded, not what they typed afterwards");
+    assertEquals("<p>a second attempt</p>",
+                 emailBoxStorage.getDraftByLocalId(REWRITE_USER, "draft-1").getContent().getBody(),
+                 "while the new words are a draft of their own");
+  }
+
+  /**
+   * The exclusion a user meets without ever opening a Trash listing. Deleting an
+   * unread mail is how most people dismiss one, the message keeps its unread flag all
+   * the way into the server's Trash, and a badge counting the whole mailbox would take
+   * that count straight back at the next sync — insisting on unread mail with nothing
+   * on any screen to account for it.
+   */
+  @Test
+  void deletingAnUnreadMessageTakesItOutOfTheBadge() {
+    emailBoxStorage.createEmail(unread(mail(BADGE_USER, MailFolder.INBOX, 1L, "<monday@example.org>", MONDAY)));
+    emailBoxStorage.createEmail(unread(mail(BADGE_USER, MailFolder.TRASH, 2L, "<deleted@example.org>", TUESDAY)));
+
+    assertEquals(1, emailBoxStorage.countUnreadEmails(BADGE_USER), "deleting an unread message is a way of reading it");
+  }
+
+  /**
+   * Marks a message unread, as it arrives and as it stays on the way to the bin.
+   *
+   * @param email the message
+   * @return the same message
+   */
+  private Email unread(Email email) {
+    email.setRead(false);
+    return email;
   }
 
   /**
