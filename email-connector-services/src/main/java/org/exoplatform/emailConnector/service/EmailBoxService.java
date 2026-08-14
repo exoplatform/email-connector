@@ -4109,7 +4109,7 @@ public class EmailBoxService {
     toStore.setRead(true);
     toStore.setRecent(false);
     toStore.setSubject(draft.getSubject());
-    toStore.setContent(draft.getContent() != null ? draft.getContent() : new EmailContent(null, null, null));
+    toStore.setContent(composedDraftContent(draft));
     toStore.setTo(draft.getTo());
     toStore.setCc(draft.getCc());
     toStore.setBcc(draft.getBcc());
@@ -4169,7 +4169,7 @@ public class EmailBoxService {
     // weeks. Recency is what this column means, and typing IS recent activity.
     toStore.setReceivedDate(now);
     toStore.setSubject(draft.getSubject());
-    toStore.setContent(draft.getContent() != null ? draft.getContent() : new EmailContent(null, null, null));
+    toStore.setContent(composedDraftContent(draft));
     toStore.setTo(draft.getTo());
     toStore.setCc(draft.getCc());
     toStore.setBcc(draft.getBcc());
@@ -4180,6 +4180,33 @@ public class EmailBoxService {
     // serverDraftCopyUid); reading the state for that left orphaned copies behind.
     toStore.setDraftState(DraftState.LOCAL_ONLY.equals(stored.getDraftState()) ? DraftState.LOCAL_ONLY : DraftState.DIRTY);
     return toStore;
+  }
+
+  /**
+   * The body to store on a draft revision, told what format it is in.
+   * <p>
+   * It is HTML, and that is settled here rather than taken from the client. The
+   * composer writes in the rich editor and {@link #buildDraftMessage} appends that
+   * same body to the Drafts folder as {@code text/html; charset=UTF-8} — so the
+   * format is a property of how this service composes and uploads a draft, not a
+   * claim the browser is trusted to make about it.
+   * <p>
+   * Saying nothing is not neutral, which is the whole reason this method exists.
+   * {@code EmailContent#html} is a primitive that defaults to false, and the
+   * composer's payload carries a body and nothing else, so a draft went to the row
+   * declaring itself plain text while the copy of it on the server declared itself
+   * HTML — the same message, two answers, depending only on which side you asked.
+   * The reader takes that answer literally now (it stopped guessing from the
+   * characters), and a body claiming to be plain text is escaped and shown
+   * preformatted: the user's formatting would come back as its own tags.
+   *
+   * @param draft the composed draft as the client sent it
+   * @return the content to store, never null
+   */
+  private EmailContent composedDraftContent(Email draft) {
+    EmailContent content = draft.getContent() != null ? draft.getContent() : new EmailContent(null, null, null);
+    content.setHtml(true);
+    return content;
   }
 
   /**
@@ -6510,9 +6537,17 @@ public class EmailBoxService {
     draft.setRecent(false);
     draft.setSubject(message.getSubject());
     EmailContent messageContent = EmailConnectorUtils.getMessageContent(messageUid, message);
-    draft.setContent(new EmailContent(messageContent != null ? StringUtils.defaultString(messageContent.getBody()) : "",
-                                      null,
-                                      null));
+    EmailContent importedContent = new EmailContent(messageContent != null ? StringUtils.defaultString(messageContent.getBody())
+                                                                           : "",
+                                                    null,
+                                                    null);
+    // The part's own Content-Type, carried across rather than dropped with the rest.
+    // The three-argument constructor leaves the flag false, and false is an answer:
+    // the reader would take a draft another client wrote in HTML for typed text and
+    // show its markup. Attachments are still deliberately left behind (above) — the
+    // format of the body is not one of them, and it costs nothing to keep.
+    importedContent.setHtml(messageContent != null && messageContent.isHtml());
+    draft.setContent(importedContent);
     draft.setSender(serverDraftSender(message, userEmailSetting));
     draft.setTo(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO), username, false));
     draft.setCc(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.CC), username, false));

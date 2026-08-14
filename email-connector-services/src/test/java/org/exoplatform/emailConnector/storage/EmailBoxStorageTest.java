@@ -484,6 +484,7 @@ public class EmailBoxStorageTest {
                                                        null,
                                                        null,
                                                        null,
+                                                       null,
                                                        null);
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
@@ -635,6 +636,47 @@ public class EmailBoxStorageTest {
     return java.util.Date.from(java.time.LocalDate.of(2026, 1, dayOfMonth)
                                                   .atStartOfDay(java.time.ZoneOffset.UTC)
                                                   .toInstant());
+  }
+
+  /**
+   * What the message said about its own body goes into the row and comes back out of it.
+   * <p>
+   * The read side is the half that was broken: the mapping rebuilt the content with the
+   * three-argument constructor, which leaves the flag false, so everything served from
+   * the cache claimed not to be HTML however it had arrived.
+   */
+  @Test
+  void theBodyFormatSurvivesTheMapping() {
+    Email htmlEmail = email("root");
+    htmlEmail.getContent().setHtml(true);
+    emailBoxStorage.createEmail(htmlEmail);
+    assertTrue(emailBoxStorage.getEmailById(ID, "root", null).getContent().isHtml());
+
+    Email plainEmail = email("root");
+    plainEmail.getContent().setHtml(false);
+    emailBoxStorage.createEmail(plainEmail);
+    assertFalse(emailBoxStorage.getEmailById(ID, "root", null).getContent().isHtml());
+  }
+
+  /**
+   * A row cached before the column existed has nothing to say, so its body is read
+   * instead — the one place the old browser-side guess still lives, and the only rows it
+   * applies to.
+   */
+  @Test
+  void aRowThatWasNeverAskedHasItsBodyRead() {
+    Email email = email("root");
+    email.getContent().setBody("<div dir=\"ltr\">Hello</div>");
+    emailBoxStorage.createEmail(email);
+    // Exactly what the upgrade leaves behind: a body, and no answer about it.
+    emailBoxDAO.findById(ID).orElseThrow().setHtml(null);
+    assertTrue(emailBoxStorage.getEmailById(ID, "root", null).getContent().isHtml());
+
+    Email plainEmail = email("root");
+    plainEmail.getContent().setBody("Hello,\n\nsee you Monday.");
+    emailBoxStorage.createEmail(plainEmail);
+    emailBoxDAO.findById(ID).orElseThrow().setHtml(null);
+    assertFalse(emailBoxStorage.getEmailById(ID, "root", null).getContent().isHtml());
   }
 
   private Email email(String username) {

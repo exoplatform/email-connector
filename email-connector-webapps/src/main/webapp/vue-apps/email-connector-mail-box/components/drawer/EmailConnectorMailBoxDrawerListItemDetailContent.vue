@@ -74,8 +74,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="expandedHeader"
       :email="email" />
     <email-connector-mail-box-drawer-list-item-detail-body
-      :expanded-drawer="expandedDrawer" 
-      :email-body="email.content?.body" />
+      :expanded-drawer="expandedDrawer"
+      :email-body="email.content?.body"
+      :html-body="email.content?.html !== false" />
     <email-connector-mail-box-drawer-list-item-detail-attachments
       :email-attachments="emailAttachments"
       v-if="hasAttachments" />
