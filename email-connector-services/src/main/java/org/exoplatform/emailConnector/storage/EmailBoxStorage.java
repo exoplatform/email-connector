@@ -45,9 +45,11 @@ import org.exoplatform.commons.utils.IOUtil;
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.dao.EmailOrphanFileDAO;
+import org.exoplatform.emailConnector.dao.EmailThreadAiSummaryDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.entity.EmailOrphanFileEntity;
+import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.upload.UploadResource;
@@ -59,6 +61,7 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -102,6 +105,9 @@ public class EmailBoxStorage {
 
   @Autowired
   private EmailOrphanFileDAO  emailOrphanFileDAO;
+
+  @Autowired
+  private EmailThreadAiSummaryDAO emailThreadAiSummaryDAO;
 
   @Autowired
   private CategoryLinkService categoryLinkService;
@@ -1032,10 +1038,147 @@ public class EmailBoxStorage {
     return emailBoxDao.findCachedMailRemoteIds(userId, folder, mailRemoteIds);
   }
 
+  /**
+   * Collapses several conversations into one: every row of {@code threadIds} is
+   * rewritten onto {@code canonicalThreadId}, and the summaries written about the ids
+   * that disappear go with them.
+   * <p>
+   * Dropping those summaries here rather than leaving them is not tidiness, and it is
+   * why this method has a body worth reading at all. A merge happens when later mail
+   * reveals that two conversations were always one — so a summary written under a
+   * merged-away id describes a FRAGMENT of what is now a single conversation, and the
+   * id it is filed under names nothing any reader will ever ask for. Left in place it
+   * would be dead weight at best; if the merge later ran the other way (the canonical
+   * id is whichever thread is oldest, which the arrival of an older message can
+   * change), it would come back to life as a partial summary of a conversation that
+   * had since absorbed everything the other one held.
+   * <p>
+   * The canonical id's own summary is deliberately kept and deliberately NOT dropped:
+   * it is out of date, which is precisely what the staleness check is for — the merge
+   * gives its conversation more messages than were counted, so the next read of it
+   * answers stale on its own, without this method having to know anything about how
+   * that is decided.
+   *
+   * @param userId the mailbox owner
+   * @param canonicalThreadId the id the others are collapsed into
+   * @param threadIds the conversation ids that disappear
+   */
   public void mergeThreads(String userId, String canonicalThreadId, List<String> threadIds) {
     if (threadIds != null && !threadIds.isEmpty()) {
       emailBoxDao.mergeThreads(userId, canonicalThreadId, threadIds);
+      List<String> mergedAwayIds = threadIds.stream().filter(threadId -> !StringUtils.equals(threadId, canonicalThreadId)).toList();
+      if (!mergedAwayIds.isEmpty()) {
+        emailThreadAiSummaryDAO.deleteByUserIdAndThreadIds(userId, mergedAwayIds);
+      }
     }
+  }
+
+  /**
+   * The stored summary of a conversation, exactly as it was written down.
+   * <p>
+   * Deliberately the raw row and not a verdict on it: whether it still describes the
+   * conversation is a business question, decided one layer up against
+   * {@link #getThreadFingerprint}, and this layer settles nothing.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @return the stored summary, or null when none has been written
+   */
+  public EmailThreadAiSummaryEntity getThreadAiSummary(String userId, String threadId) {
+    List<EmailThreadAiSummaryEntity> summaries = emailThreadAiSummaryDAO.findByUserIdAndThreadId(userId, threadId);
+    return summaries.isEmpty() ? null : summaries.get(0);
+  }
+
+  /**
+   * Writes a conversation's summary, replacing whatever was there.
+   * <p>
+   * It updates the existing row rather than inserting a second one, because the pair
+   * (owner, conversation) is unique in the database and a summary is a cache entry:
+   * there is one current answer per conversation, and the previous one is of no
+   * interest once a newer has been written. Keeping the row's id also means anything
+   * that happens to hold one still resolves.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @param summary the written summary
+   * @param fingerprint the conversation as it stood when it was written
+   * @param agentNameId which producer wrote it
+   * @return the stored row
+   */
+  public EmailThreadAiSummaryEntity saveThreadAiSummary(String userId,
+                                                        String threadId,
+                                                        String summary,
+                                                        ThreadFingerprint fingerprint,
+                                                        String agentNameId) {
+    EmailThreadAiSummaryEntity entity = getThreadAiSummary(userId, threadId);
+    if (entity == null) {
+      entity = new EmailThreadAiSummaryEntity();
+      entity.setUserId(userId);
+      entity.setThreadId(threadId);
+    }
+    entity.setSummary(summary);
+    entity.setMessageCount(fingerprint == null ? null : fingerprint.messageCount());
+    entity.setNewestMessageKey(fingerprint == null ? null : fingerprint.newestMessageKey());
+    entity.setAgentNameId(agentNameId);
+    entity.setCreatedDate(new Date());
+    return emailThreadAiSummaryDAO.save(entity);
+  }
+
+  /**
+   * Drops every summary of a mailbox — for the paths that throw the mail itself away.
+   *
+   * @param userId the mailbox owner
+   */
+  public void deleteThreadAiSummaries(String userId) {
+    emailThreadAiSummaryDAO.deleteByUserId(userId);
+  }
+
+  /**
+   * What a conversation's real mail looks like right now: its newest message's
+   * identity and how many distinct messages it holds.
+   * <p>
+   * Read off a projection rather than off {@link #getEmailsByThreadId}, and that is
+   * the difference between a cheap check and an expensive one: this runs on every read
+   * of a stored summary, and the full read pulls every body, every attachment row and
+   * every recipient string of the conversation to answer a question about a UID and a
+   * number.
+   * <p>
+   * The count is DISTINCT by Message-ID, matching what the reader shows and what
+   * {@code getThreadSummaries} counts. A message cached in two folders — the normal
+   * case for a provider whose All Mail overlaps the inbox, and the guaranteed case
+   * after thread completion — is one message. Counting rows instead would report every
+   * completed conversation as having grown, which is the one thing the count is asked
+   * about. Rows with no Message-ID at all (rare, but legitimate) fall back to their own
+   * folder+UID, so they count once each rather than collapsing together.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @return the conversation's fingerprint, never null; empty (null key, count 0) when
+   *         the conversation holds no real mail
+   */
+  public ThreadFingerprint getThreadFingerprint(String userId, String threadId) {
+    List<Object[]> rows = emailBoxDao.findThreadFingerprintRows(userId, threadId);
+    if (rows.isEmpty()) {
+      return new ThreadFingerprint(null, 0);
+    }
+    Set<String> distinctMessages = new HashSet<>();
+    for (Object[] row : rows) {
+      String mailHeaderId = (String) row[2];
+      distinctMessages.add(StringUtils.isBlank(mailHeaderId) ? messageKey(row) : mailHeaderId);
+    }
+    return new ThreadFingerprint(messageKey(rows.get(0)), distinctMessages.size());
+  }
+
+  /**
+   * A message's identity as the fingerprint stores it: its folder and its IMAP UID,
+   * which together are the only thing that names one message and not another (UIDs are
+   * per-folder, so the number alone is ambiguous).
+   *
+   * @param row a {@code [folder, mailRemoteId, mailHeaderId]} fingerprint row
+   * @return the {@code FOLDER:UID} key
+   */
+  private String messageKey(Object[] row) {
+    return StringUtils.defaultString((String) row[0], MailFolder.INBOX) + ":" + row[1];
   }
 
   public void updateThreadInfo(String userId, Long mailRemoteId, String threadId, String inReplyTo, String mailReferences, String folder, String threadIndexRoot) {

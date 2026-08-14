@@ -45,6 +45,7 @@ import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
+import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -448,6 +449,136 @@ class EmailMcpToolTest {
     assertTrue(ccAddresses.contains("erin@example.com"));
     // The current user must not be CC'd back on their own reply-all
     assertFalse(ccAddresses.contains("testuser1@example.com"));
+  }
+
+  // --- get_email_thread ----------------------------------------------------
+
+  /**
+   * The conversation comes back oldest first, attributed, with what each message said
+   * and what came with it.
+   */
+  @Test
+  void getEmailThreadReadsTheWholeConversationOldestFirst() throws Exception {
+    when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(threadMessage("<one@server>",
+                                                                                                   "Véronika",
+                                                                                                   "veronika@example.org",
+                                                                                                   "<p>The <b>contract</b></p>"),
+                                                                                     threadMessage("<two@server>",
+                                                                                                   "Gianni",
+                                                                                                   "gianni@example.org",
+                                                                                                   "<p>Thursday?</p>")));
+
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1");
+
+    assertEquals(2, thread.size());
+    assertEquals("Véronika", thread.get(0).getSenderName());
+    assertEquals("veronika@example.org", thread.get(0).getSenderAddress());
+    assertEquals("The contract", thread.get(0).getBody(), "the body is readable text, not markup");
+    assertEquals("Thursday?", thread.get(1).getBody());
+  }
+
+  /**
+   * A reply the user has not sent is not part of the conversation anyone means to have
+   * read back to them — and its text changes every time they type.
+   */
+  @Test
+  void getEmailThreadLeavesOutTheUnsentDraft() throws Exception {
+    Email draft = threadMessage("<draft@server>", "Me", "testuser1@example.com", "<p>half a sentence</p>");
+    draft.setDraftLocalId("draft-1");
+    when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME)))
+                                                                .thenReturn(List.of(threadMessage("<one@server>",
+                                                                                                  "Véronika",
+                                                                                                  "veronika@example.org",
+                                                                                                  "<p>The contract</p>"),
+                                                                                    draft));
+
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1");
+
+    assertEquals(1, thread.size(), "the draft is not one of the conversation's messages");
+    assertEquals("Véronika", thread.get(0).getSenderName());
+  }
+
+  /**
+   * A long conversation answers its most recent messages, still in reading order. The
+   * cap is what keeps a two-hundred-message thread from being answered in full; keeping
+   * the RECENT end of it is what keeps the answer useful.
+   */
+  @Test
+  void getEmailThreadAnswersTheMostRecentMessagesInReadingOrder() throws Exception {
+    List<Email> longThread = new java.util.ArrayList<>();
+    for (int index = 0; index < 40; index++) {
+      longThread.add(threadMessage("<m" + index + "@server>", "Véronika", "veronika@example.org", "<p>message " + index + "</p>"));
+    }
+    when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(longThread);
+
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1");
+
+    assertEquals(25, thread.size());
+    assertEquals("message 15", thread.get(0).getBody(), "the kept slice starts where the last twenty-five begin");
+    assertEquals("message 39", thread.get(24).getBody(), "and ends at the newest, so the conversation still reads forwards");
+  }
+
+  /**
+   * A cut body says so. A reader that cannot see where a message stopped will summarise
+   * the half it was given with the confidence of the whole.
+   */
+  @Test
+  void getEmailThreadMarksABodyItHadToCut() throws Exception {
+    String longBody = "sentence. ".repeat(400);
+    when(emailBoxService.getThread(eq("thread-1"),
+                                   eq(USERNAME))).thenReturn(List.of(threadMessage("<one@server>",
+                                                                                   "Véronika",
+                                                                                   "veronika@example.org",
+                                                                                   "<p>" + longBody + "</p>")));
+
+    String body = emailMcpTool.getEmailThread("thread-1").get(0).getBody();
+
+    assertTrue(body.length() < longBody.length(), "a whole thread of whole bodies is not what this tool answers");
+    assertTrue(body.endsWith("[truncated]"), "a message the reader has only partly been given must say so");
+  }
+
+  /**
+   * Attachments come back as names: what the conversation is about, not a way into it.
+   */
+  @Test
+  void getEmailThreadNamesTheAttachments() throws Exception {
+    Email message = threadMessage("<one@server>", "Véronika", "veronika@example.org", "<p>Attached</p>");
+    EmailAttachment attachment = new EmailAttachment();
+    attachment.setName("contract.pdf");
+    message.getContent().setAttachments(List.of(attachment));
+    when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(message));
+
+    assertEquals(List.of("contract.pdf"), emailMcpTool.getEmailThread("thread-1").get(0).getAttachmentNames());
+  }
+
+  /**
+   * A call with no conversation named is refused in words the caller can act on, since
+   * the caller is the one that has to correct it.
+   */
+  @Test
+  void getEmailThreadWithoutAThreadIdIsRefused() {
+    assertThrows(IllegalArgumentException.class, () -> emailMcpTool.getEmailThread(" "));
+  }
+
+  /**
+   * One message of a conversation, as the storage layer hands it over.
+   *
+   * @param messageId its Message-ID
+   * @param senderName the sender's display name
+   * @param senderAddress the sender's address
+   * @param bodyHtml its stored body
+   * @return the message
+   */
+  private Email threadMessage(String messageId, String senderName, String senderAddress, String bodyHtml) {
+    Email email = new Email();
+    email.setMailHeaderId(messageId);
+    email.setSubject("The contract");
+    email.setSender(new EmailSender(senderName, senderAddress, null, null));
+    email.setReceivedDate(new Date());
+    EmailContent content = new EmailContent();
+    content.setBody(bodyHtml);
+    email.setContent(content);
+    return email;
   }
 
   // --- archive_email / delete_email ----------------------------------------

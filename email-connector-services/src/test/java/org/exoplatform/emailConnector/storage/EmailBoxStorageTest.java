@@ -50,6 +50,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
+import org.exoplatform.emailConnector.dao.EmailThreadAiSummaryDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.dao.EmailOrphanFileDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
@@ -91,6 +92,11 @@ public class EmailBoxStorageTest {
   // pinned in EmailBoxDraftAttachmentStorageTest against a real database.
   @MockBean
   private EmailOrphanFileDAO  emailOrphanFileDAO;
+
+  // Nothing in this class touches a conversation summary; the storage now holds this
+  // repository, so the context would simply refuse to start without it.
+  @MockBean
+  private EmailThreadAiSummaryDAO emailThreadAiSummaryDAO;
 
   @MockBean
   private FileService         fileService;
