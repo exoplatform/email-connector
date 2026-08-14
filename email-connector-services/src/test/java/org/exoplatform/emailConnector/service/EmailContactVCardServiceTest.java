@@ -982,7 +982,7 @@ public class EmailContactVCardServiceTest {
         EMAIL:john@example.com
         END:VCARD""";
     when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX, null, null));
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX, null, null, null));
 
     EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX);
 
@@ -1015,7 +1015,7 @@ public class EmailContactVCardServiceTest {
         TEL:+33 2 11 22 33 44
         END:VCARD""";
     when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX, null, null));
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX, null, null, null));
 
     EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX);
 
@@ -1034,7 +1034,7 @@ public class EmailContactVCardServiceTest {
         EMAIL:jane@example.com
         END:VCARD""";
     when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX, null, null));
+        .thenReturn(new EmailAttachment(null, 7L, "2", "jane.vcf", "text/vcard", vcf.getBytes(StandardCharsets.UTF_8), MailFolder.INBOX, null, null, null));
 
     EmailContact prefill = service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX);
 
@@ -1046,7 +1046,7 @@ public class EmailContactVCardServiceTest {
   void anAttachmentThatIsNoVCardIsACleanRefusal() throws Exception {
     when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
         .thenReturn(new EmailAttachment(null, 7L, "2", "contact.vcf", "text/vcard",
-                                        "Nothing card-shaped in here".getBytes(StandardCharsets.UTF_8), MailFolder.INBOX, null, null));
+                                        "Nothing card-shaped in here".getBytes(StandardCharsets.UTF_8), MailFolder.INBOX, null, null, null));
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
                                                     () -> service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX));
@@ -1058,7 +1058,7 @@ public class EmailContactVCardServiceTest {
   void anOversizedAttachmentIsRefusedBeforeParsing() throws Exception {
     byte[] oversized = new byte[(int) EmailContactVCardService.MAX_ATTACHMENT_CARD_BYTES + 1];
     when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "huge.vcf", "text/vcard", oversized, MailFolder.INBOX, null, null));
+        .thenReturn(new EmailAttachment(null, 7L, "2", "huge.vcf", "text/vcard", oversized, MailFolder.INBOX, null, null, null));
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
                                                     () -> service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX));
@@ -1090,7 +1090,7 @@ public class EmailContactVCardServiceTest {
   @Test
   void anEmptyAttachmentIsNotFound() throws Exception {
     when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(7L, "2", USERNAME, MailFolder.INBOX))
-        .thenReturn(new EmailAttachment(null, 7L, "2", "empty.vcf", "text/vcard", new byte[0], MailFolder.INBOX, null, null));
+        .thenReturn(new EmailAttachment(null, 7L, "2", "empty.vcf", "text/vcard", new byte[0], MailFolder.INBOX, null, null, null));
 
     assertNull(service.getAttachmentContact(USERNAME, 7L, "2", MailFolder.INBOX));
   }
