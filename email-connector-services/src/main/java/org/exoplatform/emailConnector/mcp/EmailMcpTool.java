@@ -20,6 +20,8 @@ import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 
 import org.apache.commons.lang3.StringUtils;
@@ -32,12 +34,16 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.mcp.model.EmailAccountModel;
 import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
+import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
+import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailBoxService;
@@ -55,6 +61,20 @@ import io.meeds.mcp.server.plugin.McpToolPlugin;
 @Service
 @Profile("mcp-server")
 public class EmailMcpTool implements McpToolPlugin {
+
+  /** Hits returned when the caller names no limit: a readable page, not a dump. */
+  private static final int              DEFAULT_SEARCH_LIMIT = 20;
+
+  /**
+   * The service reports a refused search with a message code, the right currency
+   * for REST and useless to a model. These are the same refusals in words a model
+   * can act on, since it is the one that has to correct the call.
+   */
+  private static final Map<String, String> SEARCH_MESSAGES   =
+                                                            Map.of("emailConnector.search.criteriaRequired",
+                                                                   "Give at least one of query, from, unread or sinceDays: an empty search would return the whole folder.",
+                                                                   "emailConnector.folder.notBrowsable",
+                                                                   "folder must be one of INBOX, SENT or ARCHIVE.");
 
   private final EmailBoxService         emailBoxService;
 
@@ -146,26 +166,85 @@ public class EmailMcpTool implements McpToolPlugin {
   }
 
   /**
-   * Filter the synced INBOX mirror IN MEMORY (there is no server-side search):
-   * free-text query over subject/sender/body, an unread-only flag, and a sender
-   * address/name filter. Only covers already-synced emails, not the whole server.
+   * Search the mail server itself (IMAP SEARCH over the whole folder), not the
+   * locally synced mirror, so a message from months ago is found even though the
+   * add-on only caches a recent window.
+   * <p>
+   * Free text matches the subject or the sender, and the other filters narrow by
+   * sender, unread state and age. The newest matches come back with the total the
+   * server found, so the caller can tell how much of the answer it is holding.
+   * <p>
+   * A hit is only chainable into the id-based tools ({@link #getEmailFull},
+   * {@code mark_read}, {@code reply_email}) when it is an INBOX hit that is already
+   * cached. Those tools take the folder-less overloads, which resolve against the
+   * INBOX mirror, and an IMAP UID is unique only within its own folder — so a SENT
+   * or ARCHIVE hit would silently address the unrelated inbox message holding the
+   * same UID, and an uncached hit is not in the mirror at all. The tool description
+   * states this so the model does not build the broken chain; widening it means
+   * backporting the folder-aware fetch path (EXO-88990 and later).
+   *
+   * @param query free text matched against the subject or the sender, may be blank
+   * @param from text matched against the sender only, may be blank
+   * @param unread when {@code true}, only unread messages match
+   * @param sinceDays only messages received in the last N days match, null for the
+   *          whole history
+   * @param folder INBOX (default), SENT or ARCHIVE
+   * @param limit how many hits to return, newest first
+   * @return the newest matching messages and the total number that matched
+   * @throws IllegalAccessException if the user has no usable mailbox
    */
-  public List<EmailModel> searchEmails(String query, Boolean unread, String from) throws IllegalAccessException {
-    EmailBox emailBox = emailBoxService.getEmailBox(getCurrentUserName());
-    String normalizedQuery = query == null ? null : query.toLowerCase().trim();
-    String normalizedFrom = from == null ? null : from.toLowerCase().trim();
-    return emailBox.getEmails().stream().filter(email -> {
-      if (Boolean.TRUE.equals(unread) && email.isRead()) {
-        return false;
+  public EmailSearchResultsModel searchEmails(String query,
+                                              String from,
+                                              Boolean unread,
+                                              Integer sinceDays,
+                                              String folder,
+                                              Integer limit) throws IllegalAccessException {
+    try {
+      EmailSearchResultPage page = emailBoxService.searchEmails(getCurrentUserName(),
+                                                                query,
+                                                                from,
+                                                                Boolean.TRUE.equals(unread),
+                                                                sinceDays,
+                                                                StringUtils.isBlank(folder) ? MailFolder.INBOX
+                                                                                            : folder.trim().toUpperCase(Locale.ROOT),
+                                                                limit == null ? DEFAULT_SEARCH_LIMIT : limit);
+      List<EmailSearchHitModel> hits = page.getResults()
+                                           .stream()
+                                           .map(result -> new EmailSearchHitModel(result.getMailRemoteId(),
+                                                                                  result.getFolder(),
+                                                                                  result.getSubject(),
+                                                                                  result.getSender(),
+                                                                                  result.getReceivedDate(),
+                                                                                  result.isRead(),
+                                                                                  result.isCached()))
+                                           .toList();
+      return new EmailSearchResultsModel(page.getTotalMatches(), hits);
+    } catch (IllegalArgumentException e) {
+      // The service answers with a message code, which is the right currency for
+      // the REST layer and useless to a model. Say the same thing in words it can
+      // act on -- it is the one who has to correct the call.
+      //
+      // Only a KNOWN code is translated. Map.of rejects a null key, so a message-less
+      // IllegalArgumentException would make getOrDefault throw NPE inside this catch
+      // and bury the real failure; and an unmapped one is not necessarily the caller's
+      // fault -- Long.parseLong on the stored connector id raises NumberFormatException,
+      // itself an IllegalArgumentException, whose "For input string: ..." is exactly the
+      // internal noise this block exists to keep away from the model.
+      String message = SEARCH_MESSAGES.get(e.getMessage());
+      if (message == null) {
+        throw new IllegalArgumentException("The search could not be run with these arguments. Check query, from, unread, sinceDays, folder and limit.",
+                                           e);
       }
-      if (StringUtils.isNotBlank(normalizedFrom) && !matchesSender(email.getSender(), normalizedFrom)) {
-        return false;
-      }
-      if (StringUtils.isNotBlank(normalizedQuery) && !matchesQuery(email, normalizedQuery)) {
-        return false;
-      }
-      return true;
-    }).map(email -> toEmailModel(email, false)).toList();
+      throw new IllegalArgumentException(message, e);
+    } catch (IllegalStateException e) {
+      // NOT the sync-in-progress case: that code (emailConnector.search.syncInProgress)
+      // is raised by fetchSearchedEmail, which this tool never calls. Everything
+      // searchEmails can raise here is a connect or SEARCH failure -- bad credentials,
+      // unreachable server, TLS. Telling the model to retry shortly would have it loop
+      // on a call that keeps failing, and report that wrong diagnosis to the user.
+      throw new IllegalStateException("The mail server could not be reached or searched. The mailbox connection may be broken; check the mail account settings.",
+                                      e);
+    }
   }
 
   /**
@@ -429,28 +508,6 @@ public class EmailMcpTool implements McpToolPlugin {
    */
   private String buildAttachmentDownloadUrl(long mailRemoteId, String attachmentId) {
     return String.format("/portal/rest/email-box/attachments/%d/%s", mailRemoteId, attachmentId);
-  }
-
-  /**
-   * Case-insensitive match of a free-text term against subject, sender and body.
-   */
-  private boolean matchesQuery(Email email, String query) {
-    if (StringUtils.containsIgnoreCase(email.getSubject(), query)) {
-      return true;
-    }
-    if (matchesSender(email.getSender(), query)) {
-      return true;
-    }
-    return email.getContent() != null && StringUtils.containsIgnoreCase(email.getContent().getBody(), query);
-  }
-
-  /**
-   * Case-insensitive match of a term against a sender's name and address.
-   */
-  private boolean matchesSender(EmailSender sender, String term) {
-    return sender != null
-        && (StringUtils.containsIgnoreCase(sender.getAddress(), term)
-            || StringUtils.containsIgnoreCase(sender.getName(), term));
   }
 
   /**
