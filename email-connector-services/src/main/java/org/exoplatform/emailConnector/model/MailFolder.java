@@ -36,4 +36,12 @@ public final class MailFolder {
   // folder); rows land here only via on-demand thread completion, so an archived
   // message that lost its INBOX label still shows inline when its thread is opened.
   public static final String ALL_MAIL = "ALL_MAIL";
+
+  // Unsent drafts. The one folder whose rows are AUTHORED here rather than mirrored
+  // from the server, so it inverts the cache's usual direction: for INBOX / SENT /
+  // ARCHIVE the server is the truth and the local row a copy, while a draft is
+  // written locally first and pushed up afterwards. Everything that treats "not on
+  // the server" as "delete the local row" therefore has to make an exception for it
+  // — see EmailBoxService#cleanupObsoleteEmails.
+  public static final String DRAFTS   = "DRAFTS";
 }

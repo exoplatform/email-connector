@@ -19,9 +19,13 @@ package org.exoplatform.emailConnector.entity;
 import java.util.Date;
 import java.util.List;
 
+import org.exoplatform.emailConnector.model.DraftState;
+
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -146,4 +150,30 @@ public class EmailBoxEntity {
   // positional call site intact but for one trailing argument.
   @Column(name = "STARRED")
   private boolean                     starred;
+
+  // The four draft columns, null on every row that is not a draft. Appended after
+  // STARRED for the reason STARRED itself gives: Lombok's all-args constructor
+  // follows field order, and createEmails calls it positionally.
+
+  // The composer's handle on this draft, minted here and never changed. The IMAP UID
+  // cannot play this role: saving a draft means appending a new message and deleting
+  // the old one, so the UID changes under the composer mid-sentence.
+  @Column(name = "DRAFT_LOCAL_ID")
+  private String                      draftLocalId;
+
+  // Where this row stands against the copy on the server; see DraftState.
+  @Enumerated(EnumType.STRING)
+  @Column(name = "DRAFT_STATE")
+  private DraftState                  draftState;
+
+  // Counts local edits, so a save carrying text the row has already moved past can be
+  // recognised and dropped. Autosaves race on the network; without this the slowest
+  // request wins and quietly reverts the newest sentence.
+  @Column(name = "DRAFT_REVISION")
+  private Long                        draftRevision;
+
+  // When the user last typed. Deliberately not RECEIVED_DATE, which every ORDER BY
+  // sorts on and which will carry the server copy's INTERNALDATE once drafts sync.
+  @Column(name = "DRAFT_UPDATED_DATE")
+  private Date                        draftUpdatedDate;
 }

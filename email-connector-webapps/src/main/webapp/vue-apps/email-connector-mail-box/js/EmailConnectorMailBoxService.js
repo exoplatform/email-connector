@@ -143,12 +143,22 @@ export function getEmailBox(folder, favoriteOnly) {
       throw new Error('Error when getting email box');
     }
   }).then((box) => {
-    // Decorate each inbox email with its full cross-folder conversation total (from the
-    // server's per-thread counts), so the list badge shows the whole conversation size
-    // (Gmail-style), not just the messages that happen to be in the inbox.
-    const counts = box?.threadCounts || {};
+    // Decorate each listed email with what its conversation looks like from outside
+    // the folder on screen: the full cross-folder message total, so the badge shows
+    // the whole conversation size (Gmail-style) rather than only the messages the
+    // listing happens to hold, whether the conversation carries an unsent draft, and
+    // who it is with. All three come from the same server-side summary, decorated by
+    // lookup here — the row a draft belongs to is almost never the draft's own row
+    // (an inbox listing holds no DRAFTS rows at all), and a DRAFTS listing holds
+    // nothing but drafts, so there is nothing in the list itself to read either off.
+    // Participants are stamped on every row and read only by draft ones: the server
+    // only gathers them for conversations that carry a draft.
+    const summaries = box?.threadSummaries || {};
     (box?.emails || []).forEach(email => {
-      email.threadCount = counts[email.threadId];
+      const summary = summaries[email.threadId];
+      email.threadCount = summary?.messageCount;
+      email.threadHasDraft = !!summary?.hasDraft;
+      email.threadParticipants = summary?.participants || [];
     });
     return box;
   });
@@ -162,7 +172,7 @@ export function getEmailBox(folder, favoriteOnly) {
  * threads themselves come out ordered by their most recent message.
  *
  * @param {Array} emails the flat email list, newest first
- * @returns {Array} threads, each { threadId, emails, latest, mailRemoteIds, count, unreadCount }
+ * @returns {Array} threads, each { threadId, emails, latest, mailRemoteIds, count, unreadCount, hasDraft, participants }
  */
 export function groupEmailsByThread(emails) {
   const byKey = new Map();
@@ -170,7 +180,7 @@ export function groupEmailsByThread(emails) {
     const key = email.threadId || email.mailHeaderId || String(email.mailRemoteId);
     let thread = byKey.get(key);
     if (!thread) {
-      thread = { threadId: key, emails: [], latest: email, mailRemoteIds: [], count: 0, unreadCount: 0, inboxCount: 0 };
+      thread = { threadId: key, emails: [], latest: email, mailRemoteIds: [], count: 0, unreadCount: 0, inboxCount: 0, hasDraft: false, participants: [] };
       byKey.set(key, thread);
     }
     thread.emails.push(email);
@@ -180,6 +190,20 @@ export function groupEmailsByThread(emails) {
     // on each email; fall back to the inbox count until that arrives. mailRemoteIds /
     // unreadCount stay inbox-scoped since list actions act on the inbox.
     thread.count = email.threadCount || thread.inboxCount;
+    // Whether the conversation has a reply the user never sent. Server-stamped like
+    // the count and for the same reason — the draft is in DRAFTS, and this listing
+    // holds one folder's rows. Accumulated rather than assigned so a row that reached
+    // the fallback grouping key (no threadId yet, so no summary either) cannot clear
+    // what a sibling row already reported.
+    thread.hasDraft = thread.hasDraft || !!email.threadHasDraft;
+    // Who the conversation is with, out of the same summary and accumulated for the
+    // same reason: a row that fell back to the grouping key carries no summary and
+    // must not blank what a sibling row already reported. First non-empty wins —
+    // every row of a group shares one threadId and therefore one summary, so there
+    // is no second answer to choose between.
+    if (!thread.participants.length && email.threadParticipants?.length) {
+      thread.participants = email.threadParticipants;
+    }
     if (!email.read) {
       thread.unreadCount++;
     }
@@ -459,6 +483,89 @@ export function sendEmail(email) {
   }).then((resp) => {
     if (!resp?.ok) {
       throw new Error('Error when sending email');
+    }
+  });
+}
+
+/**
+ * Saves a draft.
+ *
+ * The `push` flag is the whole rhythm of the feature in one boolean. Without it
+ * the call only writes the row here, which is instant and free and is what the
+ * composer asks for on every pause in typing — that is what protects the user's
+ * words. With it, the draft also goes up to the mail server's Drafts folder, so
+ * the user's other mail clients can see it; that costs a full re-upload of the
+ * message (IMAP has no update), so the composer only asks for it on close, before
+ * a send, and after a couple of minutes of real inactivity.
+ *
+ * @param {Object} draft the composed draft; a blank draftLocalId starts a new one
+ * @param {boolean} push whether to also upload it to the mail server
+ * @returns {Promise} resolves with the draft as stored, carrying its local id,
+ *          revision and state
+ */
+export function saveDraft(draft, push) {
+  return fetch(`/email-connector/rest/email-box/drafts?push=${!!push}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(draft)
+  }).then((resp) => {
+    // 404 is not an error here, it is an answer: the draft this save was meant for
+    // has been sent or discarded since the request left. Resolving with null lets the
+    // composer forget it instead of retrying against an id that names nothing.
+    if (resp?.status === 404) {
+      return null;
+    }
+    if (!resp?.ok) {
+      throw new Error('Error when saving draft');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Sends a draft.
+ *
+ * Not the ordinary send followed by a tidy-up from here: the save, the send and the
+ * removal of both copies happen on the server, in one order, because what has to be
+ * true if a step fails halfway is not something a browser can hold together. The
+ * body is what the composer is showing — that text is written to the draft before
+ * anything is transmitted.
+ *
+ * @param {string} draftLocalId the draft's local id
+ * @param {Object} draft the composed draft as the composer is showing it
+ * @returns {Promise} resolves once the mail is out and the draft is gone
+ */
+export function sendDraft(draftLocalId, draft) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/send`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(draft)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when sending draft');
+    }
+  });
+}
+
+/**
+ * Discards a draft.
+ *
+ * @param {string} draftLocalId the draft's local id
+ * @returns {Promise} resolves once the draft is gone
+ */
+export function deleteDraft(draftLocalId) {
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}`, {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when deleting draft');
     }
   });
 }
