@@ -240,7 +240,7 @@ public class EmailBoxAttachmentFolderStorageTest {
     imported.setSender(new EmailSender("Alice", "alice@example.org", null, null));
     imported.setContent(new EmailContent("see attached", null,
                                          List.of(new EmailAttachment(null, 4242L, SHARED_PART_PATH, "from-the-phone.pdf",
-                                                                     "application/pdf", null, MailFolder.DRAFTS, null, null))));
+                                                                     "application/pdf", null, MailFolder.DRAFTS, null, null, null))));
     emailBoxStorage.createEmail(imported);
 
     EmailAttachment onTheDraft = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(4242L,
