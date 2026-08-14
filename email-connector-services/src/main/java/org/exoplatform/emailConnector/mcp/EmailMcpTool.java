@@ -20,6 +20,7 @@ import static io.meeds.mcp.server.tool.util.McpToolPluginUtils.getInteger;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -172,6 +173,15 @@ public class EmailMcpTool implements McpToolPlugin {
    * Free text matches the subject or the sender, and the other filters narrow by
    * sender, unread state and age. The newest matches come back with the total the
    * server found, so the caller can tell how much of the answer it is holding.
+   * <p>
+   * A hit is only chainable into the id-based tools ({@link #getEmailFull},
+   * {@code mark_read}, {@code reply_email}) when it is an INBOX hit that is already
+   * cached. Those tools take the folder-less overloads, which resolve against the
+   * INBOX mirror, and an IMAP UID is unique only within its own folder — so a SENT
+   * or ARCHIVE hit would silently address the unrelated inbox message holding the
+   * same UID, and an uncached hit is not in the mirror at all. The tool description
+   * states this so the model does not build the broken chain; widening it means
+   * backporting the folder-aware fetch path (EXO-88990 and later).
    *
    * @param query free text matched against the subject or the sender, may be blank
    * @param from text matched against the sender only, may be blank
@@ -196,7 +206,7 @@ public class EmailMcpTool implements McpToolPlugin {
                                                                 Boolean.TRUE.equals(unread),
                                                                 sinceDays,
                                                                 StringUtils.isBlank(folder) ? MailFolder.INBOX
-                                                                                            : folder.trim().toUpperCase(),
+                                                                                            : folder.trim().toUpperCase(Locale.ROOT),
                                                                 limit == null ? DEFAULT_SEARCH_LIMIT : limit);
       List<EmailSearchHitModel> hits = page.getResults()
                                            .stream()
@@ -213,9 +223,27 @@ public class EmailMcpTool implements McpToolPlugin {
       // The service answers with a message code, which is the right currency for
       // the REST layer and useless to a model. Say the same thing in words it can
       // act on -- it is the one who has to correct the call.
-      throw new IllegalArgumentException(SEARCH_MESSAGES.getOrDefault(e.getMessage(), e.getMessage()));
+      //
+      // Only a KNOWN code is translated. Map.of rejects a null key, so a message-less
+      // IllegalArgumentException would make getOrDefault throw NPE inside this catch
+      // and bury the real failure; and an unmapped one is not necessarily the caller's
+      // fault -- Long.parseLong on the stored connector id raises NumberFormatException,
+      // itself an IllegalArgumentException, whose "For input string: ..." is exactly the
+      // internal noise this block exists to keep away from the model.
+      String message = SEARCH_MESSAGES.get(e.getMessage());
+      if (message == null) {
+        throw new IllegalArgumentException("The search could not be run with these arguments. Check query, from, unread, sinceDays, folder and limit.",
+                                           e);
+      }
+      throw new IllegalArgumentException(message, e);
     } catch (IllegalStateException e) {
-      throw new IllegalStateException("The mailbox is synchronizing right now, so it cannot be searched. Try again in a moment.");
+      // NOT the sync-in-progress case: that code (emailConnector.search.syncInProgress)
+      // is raised by fetchSearchedEmail, which this tool never calls. Everything
+      // searchEmails can raise here is a connect or SEARCH failure -- bad credentials,
+      // unreachable server, TLS. Telling the model to retry shortly would have it loop
+      // on a call that keeps failing, and report that wrong diagnosis to the user.
+      throw new IllegalStateException("The mail server could not be reached or searched. The mailbox connection may be broken; check the mail account settings.",
+                                      e);
     }
   }
 
