@@ -370,6 +370,101 @@ public class EmailBoxDraftAttachmentStorageTest {
   }
 
   /**
+   * A part of a draft's SERVER copy, brought over: the row gains a file and a size,
+   * and LOSES the MIME part path it used to be addressed by.
+   * <p>
+   * The path going is the assertion worth having. It named a part of one particular
+   * message, and the push that follows replaces that message and deletes the old one —
+   * so a path kept here would, on the next read, be resolved against a DIFFERENT
+   * message and answer with whatever happens to sit at that index. An address that
+   * still looks valid and names something else is the failure this schema's own
+   * folder-scoping commit is about; a row with no address names nothing, which is
+   * honest.
+   * <p>
+   * The draft's revision is asserted UNCHANGED, and that is the other half. Bringing
+   * bytes over says nothing new about what the draft contains, so it must not look
+   * like an edit: a stepped revision here would make the composer's next autosave
+   * arrive stale and be dropped, for a write the user never made.
+   */
+  @Test
+  void bringingAServerPartOverGivesTheRowItsOwnFileAndDropsTheAddress() {
+    Email draft = emailBoxStorage.saveDraft(importedDraft("draft-imported", "from-the-phone.pdf"));
+    EmailAttachment before = emailBoxStorage.getDraftAttachments(USERNAME, "draft-imported").get(0);
+    assertNull(before.getFileId(), "the row has to start as an address or this test proves nothing");
+    assertEquals("2", before.getAttachmentRemoteId());
+
+    EmailAttachment broughtOver = emailBoxStorage.materializeDraftAttachment(USERNAME, "draft-imported", before.getId(),
+                                                                            "phone bytes".getBytes());
+
+    assertNotNull(broughtOver);
+    assertNotNull(broughtOver.getFileId(), "the bytes are on this side now");
+    assertEquals(Long.valueOf("phone bytes".length()), broughtOver.getSize());
+    assertNull(broughtOver.getAttachmentRemoteId(), "the address pointed into a message the next push destroys");
+    assertEquals("from-the-phone.pdf", broughtOver.getName());
+    EmailAttachment reread = emailBoxStorage.getDraftAttachments(USERNAME, "draft-imported").get(0);
+    assertEquals(broughtOver.getFileId(), reread.getFileId(), "and it was really written, not only answered");
+    assertNull(reread.getAttachmentRemoteId());
+    assertEquals(draft.getDraftRevision(),
+                 emailBoxStorage.getDraftByLocalId(USERNAME, "draft-imported").getDraftRevision(),
+                 "bringing bytes over is bookkeeping, not an edit the composer has to catch up with");
+  }
+
+  /**
+   * Doing it twice writes one file, not two — so a materialization that fails part way
+   * through a draft costs only the parts it did not reach when it is retried.
+   */
+  @Test
+  void bringingAPartOverTwiceStoresItOnce() {
+    emailBoxStorage.saveDraft(importedDraft("draft-twice", "twice.pdf"));
+    long attachmentId = emailBoxStorage.getDraftAttachments(USERNAME, "draft-twice").get(0).getId();
+
+    EmailAttachment first = emailBoxStorage.materializeDraftAttachment(USERNAME, "draft-twice", attachmentId,
+                                                                      "phone bytes".getBytes());
+    EmailAttachment second = emailBoxStorage.materializeDraftAttachment(USERNAME, "draft-twice", attachmentId,
+                                                                       "phone bytes".getBytes());
+
+    assertEquals(first.getFileId(), second.getFileId(), "an attachment that already has its bytes is answered, not re-written");
+  }
+
+  /**
+   * Somebody else's draft is not a draft this user can bring parts over from — the
+   * lookup IS the ownership check here, exactly as it is for a download and a detach.
+   */
+  @Test
+  void aPartOfSomebodyElsesDraftIsNotBroughtOver() {
+    emailBoxStorage.saveDraft(importedDraft("draft-mine", "mine.pdf"));
+    long attachmentId = emailBoxStorage.getDraftAttachments(USERNAME, "draft-mine").get(0).getId();
+
+    assertNull(emailBoxStorage.materializeDraftAttachment("mallory", "draft-mine", attachmentId, "phone bytes".getBytes()));
+    assertNull(emailBoxStorage.materializeDraftAttachment(USERNAME, "draft-someone-elses", attachmentId,
+                                                          "phone bytes".getBytes()));
+    assertNull(emailBoxStorage.getDraftAttachments(USERNAME, "draft-mine").get(0).getFileId(), "and nothing was written");
+  }
+
+  /**
+   * A draft as the sync imports it from another client: a row with a UID of its own and
+   * one attachment that is a MIME part path into the message at that UID, with no
+   * bytes on this side.
+   * <p>
+   * Written through {@code createEmail} rather than assembled by hand, because that is
+   * the call the import really makes and the attachment rows only exist through its
+   * cascade.
+   *
+   * @param draftLocalId the local id the import minted
+   * @param fileName the file the other client attached
+   * @return the draft as the import writes it
+   */
+  private Email importedDraft(String draftLocalId, String fileName) {
+    Email imported = draft(draftLocalId, 1L, "see attached");
+    imported.setMailRemoteId(4242L);
+    imported.setDraftState(DraftState.SYNCED);
+    imported.getContent()
+            .setAttachments(List.of(new EmailAttachment(null, 4242L, "2", fileName, "application/pdf", null, MailFolder.DRAFTS,
+                                                        null, null)));
+    return imported;
+  }
+
+  /**
    * A commons upload backed by a real temporary file, registered with the mocked
    * upload service under a fresh id.
    *
