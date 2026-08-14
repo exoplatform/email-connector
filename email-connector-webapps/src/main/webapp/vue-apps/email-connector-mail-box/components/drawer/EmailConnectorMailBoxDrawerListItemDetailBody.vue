@@ -36,8 +36,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 import { foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
 
 /**
- * Tags that open a line box of their own. One of them anywhere in a body means the
- * sender's client expressed the message's line structure in markup — so the raw
+ * Tags that open a line box of their own. One of them anywhere in an HTML body means
+ * the sender's client expressed the message's line structure in markup — so the raw
  * newlines around them are the source's own formatting, and collapsing them is what
  * a mail client is supposed to do.
  *
@@ -72,6 +72,13 @@ export default {
     emailBody: {
       type: String,
       default: null,
+    },
+    // What the message said about its own body, carried from the Content-Type of the
+    // part the sync took it from. Defaults to true so that anything reaching this
+    // component without an answer renders as it always did, rather than as escaped text.
+    htmlBody: {
+      type: Boolean,
+      default: true,
     },
     expandedDrawer: {
       type: Boolean,
@@ -141,11 +148,12 @@ export default {
         }
         .ec-quoted-toggle:hover { text-decoration: underline; }
         .ec-quoted-history { margin-top: 4px; }
-        /* A body that carried no markup keeps the only layout it ever had: its own
-           newlines and indentation. pre-wrap rather than a <br> pass because a mail
-           signature, a quoted "> " block or an ASCII table also lean on leading
-           spaces, which converting newlines alone would still collapse. Its own
-           class rather than <pre>, whose rule below force-aligns to the right. */
+        /* A body whose line structure lives in its newlines keeps the only layout it
+           ever had: those newlines, and its indentation. pre-wrap rather than a <br>
+           pass because a mail signature, a quoted "> " block or an ASCII table also
+           lean on leading spaces, which converting newlines alone would still
+           collapse. Its own class rather than <pre>, whose rule below force-aligns to
+           the right. */
         .ec-plain-text {
           white-space: pre-wrap;
           word-wrap: break-word;
@@ -183,39 +191,29 @@ export default {
       `;
     },
     /**
-     * Decide how the body reaches the iframe. Three shapes, because mail comes in
-     * three and they want opposite whitespace handling:
+     * Decide how the body reaches the iframe, from what the message said it was.
      * <p>
-     * 1. no markup at all — the sender's newlines are the whole layout, so the text
-     *    is escaped and shown preformatted, and folding is skipped;<br>
-     * 2. markup that draws no lines of its own (typed text in an envelope, the shape
-     *    a reply arrives in) — same whitespace treatment, but the markup is kept
-     *    rather than escaped, and it still folds;<br>
-     * 3. real HTML — untouched, and folded as before.
+     * A plain-text body is escaped and shown preformatted: its newlines and its
+     * indentation are the whole layout it has, and HTML would collapse both.
      * <p>
-     * Only 1 skips folding, and only because it has nothing to fold: the fold looks
-     * for a gmail_quote, a blockquote or an element holding the "On … wrote:" line,
-     * and a body with no elements at all offers none of them. It never folded such a
-     * body, so skipping it changes nothing — while letting it run would hand it the
-     * one element on the page, our own wrapper, to fold from. Plain-text quoting (the
-     * leading "&gt; ") is therefore still not folded; it never was.
-     * <p>
-     * Shape 2 keeps its fold, because it is not markup-free: its own elements are
-     * intact and are what the fold works on. It is folded *before* being wrapped, so
-     * the fold sees exactly the body it saw before any of this existed and never sees
-     * the wrapper.
+     * An HTML body is served as it always was, except for one shape — typed text
+     * inside a lone wrapper, which the flag cannot and should not tell apart from any
+     * other HTML: the part really is text/html, and the sender's client simply left the
+     * message's line structure in raw newlines instead of markup. So that one stays a
+     * question about the markup, and only about the markup.
      *
      * @param {string} html the raw email body
      * @returns {string} the markup to place in the iframe's body
      */
     renderBody(html) {
-      if (this.isPlainTextBody(html)) {
+      if (!this.htmlBody) {
         return this.wrapPlainText(html);
       }
       if (this.isTextInWrapper(html)) {
         // Not escaped, and deliberately: this exact string is what already went into
         // the iframe for such a body. Only the whitespace rule around it changes, so
-        // nothing can render here that did not render before.
+        // nothing can render here that did not render before. Folded before being
+        // wrapped, so the fold sees the body's own elements and never our wrapper.
         return `<div class="ec-plain-text">${this.foldHistory(html)}</div>`;
       }
       return this.foldHistory(html);
@@ -234,9 +232,15 @@ export default {
       });
     },
     /**
-     * Whether a body that *does* carry markup is really typed text inside an
-     * envelope — the shape a reply arrives in, where a lone wrapper holds a message
-     * whose only line structure is its newlines.
+     * Whether an HTML body is really typed text inside an envelope — the shape a reply
+     * arrives in, where a lone wrapper holds a message whose only line structure is its
+     * newlines.
+     * <p>
+     * This is the one question the server's flag cannot answer, and the reason it stays
+     * here: the flag reports the part's Content-Type, which for such a body correctly
+     * says text/html. What it cannot report is that the sender's client put no line
+     * structure in the markup, and that is precisely what has to be known to keep the
+     * message's lines.
      * <p>
      * Three things must hold together, and each one rules out a class of real HTML
      * mail: the body has newlines to save at all; it holds no tag that opens a line
@@ -283,58 +287,6 @@ export default {
      */
     countTextLines(text) {
       return (text || '').split('\n').filter(line => line.trim() !== '').length;
-    },
-    /**
-     * Whether the body arrived as plain text, i.e. carries no HTML the reader is
-     * meant to see rendered.
-     * <p>
-     * Keyed on whether parsing the body yields a *known* HTML element, not on
-     * whether it contains a "&lt;". Plain text mentioning "a &lt; b" never opens a
-     * tag at all (the parser needs a letter right after the "&lt;"), and the common
-     * "&lt;someone@example.com&gt;" does tokenize as a tag but as one no browser
-     * recognises — so both stay plain, which is the whole point. Conversely a mail
-     * with a single &lt;br&gt; is markup and is left alone.
-     * <p>
-     * A plain-text mail where somebody typed "&lt;b&gt;" by hand is read as HTML
-     * here. That is the same call every mail client makes, and the safe direction to
-     * be wrong in: it renders as it did before this fix rather than as escaped noise.
-     *
-     * @param {string} html the raw email body
-     * @returns {boolean} true when the body should be shown as preformatted text
-     */
-    isPlainTextBody(html) {
-      if (!html) {
-        return false;
-      }
-      try {
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        if (!doc || !doc.body) {
-          return false;
-        }
-        return !Array.from(doc.body.querySelectorAll('*')).some(el => this.isKnownHtmlElement(el.tagName));
-      } catch (e) {
-        // Unparseable is not a reason to mangle the mail: fall back to the previous
-        // behaviour and let it through as HTML.
-        return false;
-      }
-    },
-    /**
-     * Whether a tag name is one the browser actually implements.
-     * <p>
-     * An unrecognised name yields an HTMLUnknownElement, which is exactly how we tell
-     * a real tag from the angle brackets around an email address.
-     *
-     * @param {string} tagName the parsed element's tag name
-     * @returns {boolean} true when the browser has a real element for it
-     */
-    isKnownHtmlElement(tagName) {
-      try {
-        return !(document.createElement(tagName) instanceof HTMLUnknownElement);
-      } catch (e) {
-        // createElement rejects names it considers invalid; nothing the browser
-        // refuses to build is markup we should honour.
-        return false;
-      }
     },
     /**
      * Put a plain-text body into a container that keeps its line breaks.
