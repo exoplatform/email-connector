@@ -77,6 +77,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
+import javax.activation.DataHandler;
 import javax.mail.Address;
 import javax.mail.Authenticator;
 import javax.mail.BodyPart;
@@ -93,7 +94,10 @@ import javax.mail.Store;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.InternetAddress;
+import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
+import javax.mail.internet.MimeMultipart;
+import javax.mail.util.ByteArrayDataSource;
 import javax.mail.search.AndTerm;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
@@ -3438,6 +3442,161 @@ public class EmailBoxServiceTest {
     verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
   }
 
+  /**
+   * A draft written on the user's phone, edited here, still carries the phone's file
+   * when the edit goes back up — and the bytes are on THIS side before the copy that
+   * held them is deleted.
+   * <p>
+   * This is the whole slice in one test. Such a draft's attachment is an ADDRESS: part
+   * "2" of one message at one UID. A push rebuilds the message from the row and then
+   * deletes the previous copy, because IMAP has no update — so a rebuild from the
+   * address alone appends a mail with no file and then destroys the only thing that
+   * had one. Both halves are asserted: the appended message really contains the bytes
+   * (read off the serialized message, since an empty part named after a file looks
+   * identical until you look there), and the removal of the old copy happens strictly
+   * AFTER the bytes were written down.
+   * <p>
+   * The ordering assertion is not decoration. Fetching the parts during the APPEND
+   * instead would also work most of the time and would leave a window in which the
+   * only holder of the file is a message being removed.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWrittenElsewhereKeepsItsFileThroughAnEditHere() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    byte[] phoneFile = "the bytes the phone attached".getBytes();
+    MimeMessage serverCopy = serverDraftCarryingAFile("<draft@example.org>", "from-the-phone.pdf", phoneFile);
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 5555L) });
+    givenAnImportedDraftCarrying(remotePartRow("from-the-phone.pdf"));
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+
+    emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
+
+    ArgumentCaptor<byte[]> broughtOver = ArgumentCaptor.forClass(byte[].class);
+    verify(emailBoxStorage).materializeDraftAttachment(eq(TEST_USER), eq("draft-1"), eq(3L), broughtOver.capture());
+    assertArrayEquals(phoneFile, broughtOver.getValue(), "the part is read out of the server copy, not guessed at");
+
+    ArgumentCaptor<Message[]> appended = ArgumentCaptor.forClass(Message[].class);
+    verify(draftsFolder).appendUIDMessages(appended.capture());
+    Message appendedMessage = appended.getValue()[0];
+    assertTrue(appendedMessage.getContent() instanceof Multipart,
+               "the rebuilt draft carries the phone's file, so it is a multipart");
+    Multipart multipart = (Multipart) appendedMessage.getContent();
+    assertEquals(2, multipart.getCount(), "the body, then the file that came from the phone");
+    assertEquals("from-the-phone.pdf", multipart.getBodyPart(1).getFileName());
+    ByteArrayOutputStream written = new ByteArrayOutputStream();
+    appendedMessage.writeTo(written);
+    String serialized = written.toString();
+    assertTrue(serialized.contains(new String(phoneFile))
+        || serialized.contains(Base64.getEncoder().encodeToString(phoneFile)),
+               "the bytes are really in the appended message rather than an empty part named after the file");
+
+    // The order the whole design turns on: the file is on this side before anything
+    // removes the message it came from. Asserted on the expunge rather than on the
+    // \Deleted flag because the copy being removed is a real message here, and the
+    // expunge is the moment it stops existing.
+    InOrder order = inOrder(emailBoxStorage, draftsFolder);
+    order.verify(emailBoxStorage).materializeDraftAttachment(eq(TEST_USER), eq("draft-1"), eq(3L), any());
+    order.verify(draftsFolder).appendUIDMessages(any(Message[].class));
+    order.verify(draftsFolder).expunge(any(Message[].class));
+  }
+
+  /**
+   * A draft written elsewhere whose server copy has since gone is NOT uploaded — the
+   * one case where the bytes cannot be recovered at all.
+   * <p>
+   * The copy in the Drafts folder was the only thing that ever held the file: nothing
+   * was ever copied to this side, precisely so that the sync would not drag every
+   * phone attachment into the platform's file store. Once it is deleted from the phone,
+   * a push could only produce a message the user's chips are lying about. It does not
+   * happen: the row comes back unsynced, and the composer's existing "your draft lives
+   * only here" notice fires because of it.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWrittenElsewhereIsNotUploadedOnceItsServerCopyIsGone() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(null);
+    givenAnImportedDraftCarrying(remotePartRow("from-the-phone.pdf"));
+
+    Email saved = emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
+
+    assertNotNull(saved);
+    assertFalse(DraftState.SYNCED.equals(saved.getDraftState()), "a draft that cannot be assembled whole is not up there");
+    verify(draftsFolder, never()).appendUIDMessages(any(Message[].class));
+    verify(emailBoxStorage, never()).markDraftUploaded(anyString(), anyString(), anyLong(), any());
+  }
+
+  /**
+   * And it cannot be SENT either, which is the harder half: a push that does not
+   * happen costs the user nothing they can see, while a mail delivered without the
+   * file its sender attached cannot be discovered by them or taken back.
+   * <p>
+   * Refused before anything is written or claimed, exactly like the file-has-gone
+   * case, and asserted the same four ways — because there are four distinct things
+   * that must not have happened.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWrittenElsewhereWhoseServerCopyIsGoneCannotBeSent() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(null);
+    givenAnImportedDraftCarrying(remotePartRow("from-the-phone.pdf"));
+
+    IllegalStateException refused = assertThrows(IllegalStateException.class,
+                                                 () -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER));
+
+    assertEquals("emailConnector.drafts.send.attachmentGone", refused.getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any(DraftState.class));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    verify(draftsFolder, never()).appendUIDMessages(any(Message[].class));
+  }
+
+  /**
+   * A draft written elsewhere that the user then attaches a file to HERE goes up with
+   * both — the file from the phone and the one from this session, in one message.
+   * <p>
+   * The two are different kinds of row (an address into a server message, and bytes in
+   * the platform's file store) and this is the case that proves they end up as one
+   * list rather than two paths: the mixed draft is the one a partial implementation
+   * gets wrong, by carrying whichever kind it happened to be written for.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWrittenElsewhereAndAddedToHereCarriesBothFiles() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    MimeMessage serverCopy = serverDraftCarryingAFile("<draft@example.org>", "from-the-phone.pdf", "phone bytes".getBytes());
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 5555L) });
+    EmailAttachment attachedHere = new EmailAttachment(4L, 4242L, null, "typed-here.txt", "text/plain", null, MailFolder.DRAFTS,
+                                                       88L, 11L);
+    givenAnImportedDraftCarrying(remotePartRow("from-the-phone.pdf"), attachedHere);
+    givenTheFileStoreHolds(88L, "typed-here.txt", "here it is".getBytes());
+    when(emailBoxStorage.attachmentFileExists(88L)).thenReturn(true);
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+
+    emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
+
+    ArgumentCaptor<Message[]> appended = ArgumentCaptor.forClass(Message[].class);
+    verify(draftsFolder).appendUIDMessages(appended.capture());
+    Multipart multipart = (Multipart) appended.getValue()[0].getContent();
+    assertEquals(3, multipart.getCount(), "the body, the file from the phone, and the one attached here");
+    assertEquals("from-the-phone.pdf", multipart.getBodyPart(1).getFileName(), "oldest first: the phone's file was there already");
+    assertEquals("typed-here.txt", multipart.getBodyPart(2).getFileName());
+  }
+
   @Test
   void aDraftReplyJoinsTheConversationItRepliesTo() throws Exception {
     // The whole point of writing the threading headers at save time rather than at
@@ -4324,6 +4483,36 @@ public class EmailBoxServiceTest {
 
   @Test
   @SneakyThrows
+  void aDraftWrittenInAnotherClientKeepsARecordOfItsFiles() {
+    // The record is an ADDRESS, not the bytes: the MIME part path within the message
+    // at that UID, which is exactly how every received message's attachments are
+    // cached and what the folder-scoped download reads. No file is pulled here — a
+    // sync that copied every attachment out of every imported draft would cost
+    // megabytes for drafts nobody opens — and no file id is set, which is what the
+    // push and the send read to know the bytes still have to be fetched.
+    MimeMessage phoneDraft = serverDraftCarryingAFile("<phone@example.org>", "from-the-phone.pdf", "phone bytes".getBytes());
+    IMAPFolder draftsFolder = givenASyncableDraftsFolder(phoneDraft);
+    when(draftsFolder.getUID(phoneDraft)).thenReturn(77L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    Email imported = created.getValue();
+    assertNotNull(imported.getContent().getAttachments(), "the file on the phone's draft used to be thrown away here");
+    assertEquals(1, imported.getContent().getAttachments().size());
+    EmailAttachment attachment = imported.getContent().getAttachments().get(0);
+    assertEquals("from-the-phone.pdf", attachment.getName());
+    assertEquals("application/pdf", attachment.getMimeType());
+    assertEquals("2", attachment.getAttachmentRemoteId(), "the body is part 1 and the file is part 2");
+    assertEquals(Long.valueOf(77L), attachment.getMailRemoteId(), "a part path names nothing without the message it is in");
+    assertNull(attachment.getFileId(), "nothing was copied to this side; the bytes are still only on the server");
+    // The body is not disturbed by any of it.
+    assertTrue(imported.getContent().getBody().contains("see attached"));
+  }
+
+  @Test
+  @SneakyThrows
   void aDraftWithUnsavedWordsSurvivesASyncThatCannotSeeItAnyMore() {
     // The moment the cleanup's draft guard stops being theoretical. The server no
     // longer has the copy this row points at, and the row carries text that never
@@ -4603,10 +4792,22 @@ public class EmailBoxServiceTest {
    * @param fileId the file id to answer for
    * @param bytes its content
    */
-  @SneakyThrows
   private void givenTheFileStoreHolds(Long fileId, byte[] bytes) {
+    givenTheFileStoreHolds(fileId, "report.pdf", bytes);
+  }
+
+  /**
+   * The same, for a file stored under a name of its own — the mixed-draft case holds
+   * two files at once and they have to be told apart.
+   *
+   * @param fileId the file id to answer for
+   * @param name the name it is stored under
+   * @param bytes its content
+   */
+  @SneakyThrows
+  private void givenTheFileStoreHolds(Long fileId, String name, byte[] bytes) {
     when(emailBoxStorage.getAttachmentFileItem(fileId)).thenAnswer(invocation -> new FileItem(fileId,
-                                                                                             "report.pdf",
+                                                                                             name,
                                                                                              "application/pdf",
                                                                                              "emailConnector",
                                                                                              bytes.length,
@@ -4614,6 +4815,100 @@ public class EmailBoxServiceTest {
                                                                                              null,
                                                                                              false,
                                                                                              new ByteArrayInputStream(bytes)));
+  }
+
+  /**
+   * One attachment of a draft written in ANOTHER client, as the sync cached it: a MIME
+   * part path into the message sitting at that UID, and no file id at all. The bytes
+   * are on the server and nowhere else, which is the whole difficulty.
+   *
+   * @param name the file name the other client gave it
+   * @return the attachment row
+   */
+  private EmailAttachment remotePartRow(String name) {
+    return new EmailAttachment(3L, 4242L, "2", name, "application/pdf", null, MailFolder.DRAFTS, null, null);
+  }
+
+  /**
+   * A stored draft imported from another client, carrying the given rows, with the
+   * storage layer behaving as it really does across a materialization: the row stops
+   * being an address and starts carrying a file id, and every later read sees that.
+   * <p>
+   * Modelled as state rather than as a fixed answer because the service reads the
+   * draft again after bringing the bytes over — reading a row that never changed would
+   * make a test pass over a service that materialized nothing.
+   *
+   * @param remotePart the attachment that is still only an address
+   * @param alsoStored any files already stored on this side, in the order they were
+   *          attached
+   */
+  private void givenAnImportedDraftCarrying(EmailAttachment remotePart, EmailAttachment... alsoStored) {
+    List<EmailAttachment> rows = new ArrayList<>();
+    rows.add(remotePart);
+    rows.addAll(List.of(alsoStored));
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenAnswer(invocation -> {
+      Email stored = storedDraft();
+      stored.setDraftState(DraftState.DIRTY);
+      stored.setContent(new EmailContent("half a sentence", null, List.copyOf(rows)));
+      return stored;
+    });
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenAnswer(invocation -> List.copyOf(rows));
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> {
+      // What the storage layer hands back after an edit: the composer's text over the
+      // identity the row already carried — including the UID of the copy on the server,
+      // which is where this draft's files still are.
+      Email toStore = invocation.getArgument(0);
+      toStore.setMailHeaderId("<draft@example.org>");
+      toStore.setMailRemoteId(4242L);
+      toStore.setContent(new EmailContent(toStore.getContent().getBody(), null, List.copyOf(rows)));
+      return toStore;
+    });
+    when(emailBoxStorage.materializeDraftAttachment(eq(TEST_USER), eq("draft-1"), anyLong(), any())).thenAnswer(invocation -> {
+      byte[] bytes = invocation.getArgument(3);
+      if (bytes == null) {
+        return null;
+      }
+      EmailAttachment broughtOver = new EmailAttachment(remotePart.getId(), 4242L, null, remotePart.getName(),
+                                                        remotePart.getMimeType(), null, MailFolder.DRAFTS, 77L,
+                                                        (long) bytes.length);
+      rows.set(0, broughtOver);
+      return broughtOver;
+    });
+    lenient().when(emailBoxStorage.attachmentFileExists(77L)).thenReturn(true);
+    givenTheFileStoreHolds(77L, remotePart.getName(), "the bytes the phone attached".getBytes());
+  }
+
+  /**
+   * A draft as another client left it in the Drafts folder, with a file on it — a REAL
+   * {@link MimeMessage} rather than a mock, because what is under test is a walk of a
+   * MIME tree and a read of one of its parts, and a mocked tree would be a restatement
+   * of the walk rather than a test of it.
+   *
+   * @param messageId the Message-ID that client gave it
+   * @param fileName the name of the file it carries
+   * @param bytes the file's content
+   * @return the message
+   */
+  @SneakyThrows
+  private MimeMessage serverDraftCarryingAFile(String messageId, String fileName, byte[] bytes) {
+    MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+    message.setFrom(new InternetAddress("someone@example.org", "Someone"));
+    message.setSubject("half a sentence");
+    message.setSentDate(new Date());
+    MimeMultipart multipart = new MimeMultipart("mixed");
+    MimeBodyPart htmlPart = new MimeBodyPart();
+    htmlPart.setContent("<p>see attached</p>", "text/html; charset=UTF-8");
+    multipart.addBodyPart(htmlPart);
+    MimeBodyPart filePart = new MimeBodyPart();
+    filePart.setDataHandler(new DataHandler(new ByteArrayDataSource(bytes, "application/pdf")));
+    filePart.setFileName(fileName);
+    filePart.setDisposition(Part.ATTACHMENT);
+    multipart.addBodyPart(filePart);
+    message.setContent(multipart);
+    message.saveChanges();
+    // After saveChanges, which mints one of its own.
+    message.setHeader("Message-ID", messageId);
+    return message;
   }
 
   /**
