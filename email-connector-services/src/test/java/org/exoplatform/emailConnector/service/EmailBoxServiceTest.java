@@ -3342,6 +3342,37 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, never()).getMailReferencesByMailHeaderId(anyString(), anyString());
   }
 
+  /**
+   * Every revision of a draft is stored declaring itself HTML, first save and later
+   * ones alike.
+   * <p>
+   * It is the format the composer's rich editor produces and the format
+   * {@code buildDraftMessage} uploads to the Drafts folder, so a row saying anything
+   * else describes a message that does not exist. The composer sends a body and no
+   * format, and the flag is a primitive that defaults to false, so this has to be
+   * stamped rather than merely passed through — untouched, a draft went to the row
+   * as plain text and to the server as text/html.
+   *
+   * @throws Exception if the mailbox stubbing fails
+   */
+  @Test
+  void everyRevisionOfADraftIsStoredAsHtml() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+    Email firstSave = emailBoxService.saveDraft(draft(null), TEST_USER, false);
+    assertTrue(firstSave.getContent().isHtml(), "the first save of a draft says its body is HTML");
+
+    Email stored = draft("draft-1");
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setDraftRevision(2L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    Email incoming = draft("draft-1");
+    incoming.setDraftRevision(3L);
+    Email laterSave = emailBoxService.saveDraft(incoming, TEST_USER, false);
+    assertTrue(laterSave.getContent().isHtml(), "and so does every save after it");
+  }
+
   @Test
   void anEditedDraftThatWasNeverUploadedStaysLocalOnly() throws Exception {
     // LOCAL_ONLY is not merely "unsynced": it is what tells the upload path there is
@@ -4120,6 +4151,32 @@ public class EmailBoxServiceTest {
     assertFalse(imported.isRecent());
     // And ours is untouched.
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * An imported draft keeps what the message said about its own body.
+   * <p>
+   * The import reads the part with the same reader every synced message goes through
+   * — which records the part's Content-Type — and then rebuilt the content around
+   * the body alone, dropping that answer. The row went down claiming plain text, and
+   * a draft written in HTML on someone's phone came back here as its own markup.
+   */
+  @Test
+  @SneakyThrows
+  void anImportedDraftKeepsWhatTheMessageSaidAboutItsBody() {
+    MimeMessage phoneDraft = serverDraft("<phone@example.org>");
+    when(phoneDraft.isMimeType("text/*")).thenReturn(true);
+    when(phoneDraft.isMimeType("text/html")).thenReturn(true);
+    when(phoneDraft.getContent()).thenReturn("<div dir=\"ltr\">half a sentence</div>");
+    IMAPFolder draftsFolder = givenASyncableDraftsFolder(phoneDraft);
+    when(draftsFolder.getUID(phoneDraft)).thenReturn(77L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    assertTrue(created.getValue().getContent().isHtml());
+    assertEquals("<div dir=\"ltr\">half a sentence</div>", created.getValue().getContent().getBody());
   }
 
   @Test

@@ -50,6 +50,9 @@ import javax.mail.internet.MimeMultipart;
 import javax.mail.internet.MimeUtility;
 
 import org.apache.commons.lang3.StringUtils;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Element;
+import org.jsoup.parser.Tag;
 
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.container.ExoContainerContext;
@@ -395,6 +398,44 @@ public class EmailConnectorUtils {
     }
   }
 
+  /**
+   * Last-resort answer to "is this body HTML" for a row cached before the mailbox
+   * started recording the message's own answer. Those rows carry no Content-Type any
+   * more — the message it came from is long past — so the only thing left to read is
+   * the body itself.
+   * <p>
+   * Keyed on whether parsing yields a tag the HTML spec defines, not on whether the
+   * text contains a "&lt;". Plain text saying "a &lt; b" never opens a tag (a letter
+   * has to follow the "&lt;"), and the everyday "&lt;someone@example.com&gt;" does
+   * tokenize as a tag but as one no HTML vocabulary knows — so both stay text, which is
+   * the whole point of the test. A body carrying a single &lt;br&gt; is markup.
+   * <p>
+   * This is the browser-side sniffing this change exists to remove, kept for exactly
+   * one case and in exactly one place: a row whose truth was never recorded. New rows
+   * never reach it, and it is a guess where the flag is a fact — which is why it is
+   * confined to the legacy fallback rather than being the answer for everyone.
+   *
+   * @param body the cached body
+   * @return true when the body should be rendered as HTML
+   */
+  public static boolean looksLikeHtml(String body) {
+    if (StringUtils.isEmpty(body)) {
+      return false;
+    }
+    Element documentBody = Jsoup.parseBodyFragment(body).body();
+    return documentBody.select("*").stream().anyMatch(element -> element != documentBody
+        && Tag.isKnownTag(element.tagName()));
+  }
+
+  /**
+   * Reads one MIME part's body and records, from the part's own Content-Type, whether
+   * what came out is HTML or plain text. That answer is a fact carried by the message,
+   * not a guess about the characters — which is why it is captured here, at the only
+   * place it exists, and carried all the way to the reader.
+   *
+   * @param part the MIME part to read
+   * @return the part's content, flagged html when the part declares {@code text/html}
+   */
   private static EmailContent safeGetContent(Part part) {
     String emailBody = "";
     try {
@@ -427,7 +468,8 @@ public class EmailConnectorUtils {
    * @param mimeMultipart the (sub-)tree to walk
    * @param parentPartNumber the IMAP section prefix of this subtree, null at the root
    * @param fetchedParts incremented once per part body pulled, null when not measuring
-   * @return the assembled content, never null
+   * @return the assembled content, flagged html when the body came from the HTML
+   *         alternative, never null
    * @throws MessagingException if the structure cannot be read
    * @throws IOException if a part's content cannot be read
    */
@@ -490,10 +532,20 @@ public class EmailConnectorUtils {
         finalContent.getAttachments().add(emailAttachment);
       }
     }
+    // Which alternative won is the answer to "is this body HTML", and until now it was
+    // computed here and dropped on the floor. It has to be stamped on what we return for
+    // two reasons: the reader needs it, and so does the recursion above — a nested
+    // multipart (multipart/alternative inside a multipart/mixed or /related, which is
+    // what a mail with an inline image or an attachment looks like) came back unflagged,
+    // so its HTML body was filed as the plain alternative and, when the outer level held
+    // a text/plain part of its own, appended to it: the reader was shown the plain-text
+    // alternative immediately followed by the HTML one.
     if (htmlContent != null) {
       finalContent.setBody(htmlContent.getBody());
+      finalContent.setHtml(true);
     } else if (plainContent != null) {
       finalContent.setBody(plainContent.getBody());
+      finalContent.setHtml(false);
     }
     for (Map.Entry<String, String> entry : cidImageMap.entrySet()) {
       finalContent.setBody(finalContent.getBody().replace("cid:" + entry.getKey(), entry.getValue()));
