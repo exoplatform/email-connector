@@ -16,16 +16,19 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import javax.mail.internet.InternetAddress;
@@ -35,10 +38,20 @@ import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.commons.file.model.FileInfo;
+import org.exoplatform.commons.file.model.FileItem;
+import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.commons.utils.IOUtil;
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
+import org.exoplatform.emailConnector.dao.EmailOrphanFileDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.entity.EmailOrphanFileEntity;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+import org.exoplatform.upload.UploadResource;
+import org.exoplatform.upload.UploadService;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -68,6 +81,8 @@ public class EmailBoxStorage {
   // day, which is why it is also a value the READERS know by name.
   private static final String NULL_NAME = "null";
 
+  private static final Log    LOG       = ExoLogger.getLogger(EmailBoxStorage.class);
+
   @Autowired
   private EmailBoxDAO         emailBoxDao;
 
@@ -75,7 +90,16 @@ public class EmailBoxStorage {
   private EmailAttachmentDAO  emailAttachmentDAO;
 
   @Autowired
+  private EmailOrphanFileDAO  emailOrphanFileDAO;
+
+  @Autowired
   private CategoryLinkService categoryLinkService;
+
+  @Autowired
+  private FileService         fileService;
+
+  @Autowired
+  private UploadService       uploadService;
 
   public Email createEmail(Email email) {
     if (email == null) {
@@ -357,6 +381,303 @@ public class EmailBoxStorage {
       return;
     }
     emailBoxDao.detachDraftFromServerCopy(userId, draftLocalId, DraftState.LOCAL_ONLY);
+  }
+
+  /**
+   * Writes a file the user attached to a draft: the bytes into the platform's file
+   * store, then a row of {@code EMAIL_ATTACHMENTS} pointing at it.
+   * <p>
+   * The row is written through {@link EmailAttachmentDAO} DIRECTLY, and never by
+   * adding to the draft entity's {@code attachments} collection and saving the draft.
+   * That is not a style preference, it is the defect this branch has already shipped
+   * once: nothing in this class is {@code @Transactional}, so the draft entity is
+   * detached by the time it gets here, {@code save} on it is a MERGE returning a
+   * different instance whose collection is an uninitialised proxy over a session that
+   * closes as it returns, and the first read of that collection throws. It also would
+   * not work for a second reason — the collection is {@code cascade = PERSIST}, so
+   * adding to it persists the new element but REMOVING from it persists nothing at
+   * all, and the detach below would silently do nothing.
+   * <p>
+   * The draft's own row is touched separately, by {@link #touchDraft}, and that is
+   * load-bearing: a draft that has already been uploaded skips its next upload when
+   * nothing has changed, so a file attached without stepping the revision would be
+   * accepted by a synced draft and then never sent. Attaching IS an edit.
+   * <p>
+   * Order: the file first, the row second, the draft's revision last. A failure part
+   * way through leaves at worst a stored file nothing references — which the orphan
+   * marker exists to describe, and which is the direction to fail in. The reverse
+   * would leave a row pointing at a file that was never written, which every reader
+   * would then have to handle.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param uploadId the commons upload the browser produced
+   * @param name the file name to show and to send it under
+   * @param mimeType its content type, as the client declared it
+   * @return the stored attachment, or null when the user has no such draft or the
+   *         upload is gone
+   */
+  public EmailAttachment addDraftAttachment(String userId, String draftLocalId, String uploadId, String name, String mimeType) {
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    if (existing.isEmpty()) {
+      return null;
+    }
+    EmailBoxEntity draft = existing.get(0);
+    UploadResource uploadResource = uploadService.getUploadResource(uploadId);
+    if (uploadResource == null || uploadResource.getStoreLocation() == null) {
+      // Expired, already consumed, or never there. Not an incident and not something
+      // to fail the draft over: the user's words are stored, only their file is not.
+      LOG.warn("Upload {} is gone; nothing was attached to the draft of user {}", uploadId, userId);
+      return null;
+    }
+    byte[] bytes = readUpload(uploadResource);
+    if (bytes == null) {
+      return null;
+    }
+    Long fileId = saveAttachmentFileItem(bytes, StringUtils.defaultIfBlank(name, uploadResource.getFileName()), mimeType);
+    if (fileId == null) {
+      return null;
+    }
+    EmailAttachmentEntity attachment = new EmailAttachmentEntity();
+    attachment.setEmail(draft);
+    // No MIME part path: this file is not part of any message yet. See changeset
+    // 1.0.0-44, which had to relax the NOT NULL this line would otherwise violate.
+    attachment.setAttachmentRemoteId(null);
+    attachment.setName(StringUtils.defaultIfBlank(name, uploadResource.getFileName()));
+    attachment.setMimeType(StringUtils.defaultIfBlank(mimeType, "application/octet-stream"));
+    attachment.setFileId(fileId);
+    attachment.setFileSize((long) bytes.length);
+    attachment = emailAttachmentDAO.save(attachment);
+    touchDraft(userId, draftLocalId);
+    return fromEmailAttachmentEntity(attachment);
+  }
+
+  /**
+   * Removes one file from a draft: the row goes, and the file it pointed at is
+   * recorded as unreferenced.
+   * <p>
+   * Recorded rather than deleted, deliberately, and it is the same rule the bulk
+   * delete follows — one mechanism frees files, and it is the sweep. Deleting here
+   * as well would be a second path with its own ordering to get right, for bytes that
+   * are not urgent. The cost is that the bytes outlive the row until the sweep ships;
+   * the marker is the record that they do.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param attachmentId the attachment row id
+   * @return true when an attachment of that draft was found and removed
+   */
+  public boolean removeDraftAttachment(String userId, String draftLocalId, long attachmentId) {
+    EmailAttachmentEntity attachment = emailAttachmentDAO.findByIdAndDraftLocalIdAndUserId(attachmentId, draftLocalId, userId)
+                                                         .orElse(null);
+    if (attachment == null) {
+      return false;
+    }
+    Long fileId = attachment.getFileId();
+    emailAttachmentDAO.delete(attachment);
+    if (fileId != null) {
+      recordOrphanFiles(List.of(fileId), userId);
+    }
+    touchDraft(userId, draftLocalId);
+    return true;
+  }
+
+  /**
+   * One attachment of one draft, addressed by its row id — what a download and a
+   * detach both resolve first.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param attachmentId the attachment row id
+   * @return the attachment without its bytes, or null when there is no such one
+   */
+  public EmailAttachment getDraftAttachment(String userId, String draftLocalId, long attachmentId) {
+    return fromEmailAttachmentEntity(emailAttachmentDAO.findByIdAndDraftLocalIdAndUserId(attachmentId, draftLocalId, userId)
+                                                       .orElse(null));
+  }
+
+  /**
+   * Every attachment of one draft, oldest first — what the send path reads to put the
+   * files back onto the message.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @return the attachments, oldest first, never null
+   */
+  public List<EmailAttachment> getDraftAttachments(String userId, String draftLocalId) {
+    if (StringUtils.isBlank(draftLocalId)) {
+      return List.of();
+    }
+    return emailAttachmentDAO.findByDraftLocalIdAndUserId(draftLocalId, userId)
+                             .stream()
+                             .map(this::fromEmailAttachmentEntity)
+                             .filter(Objects::nonNull)
+                             .toList();
+  }
+
+  /**
+   * Marks a draft as edited: a stepped revision, a fresh edit time, and a state that
+   * will make the next push re-upload it.
+   * <p>
+   * This is what makes attaching and detaching count as changes. A draft that is
+   * already {@link DraftState#SYNCED} skips its next upload when nothing moved, so
+   * without this a synced draft would accept a file and never send it — which the
+   * design plan named as the most likely bug in the feature, and it is: everything
+   * on screen looks right.
+   * <p>
+   * The revision is stepped from the ROW rather than from anything the client sent,
+   * because the client did not send one — attaching is not an autosave and carries no
+   * composed state. Stepping it here is also what makes the composer's next autosave,
+   * which will carry the revision it believed in, land on the correct side of the
+   * revision guard: it arrives stale, is dropped, and the composer picks the row's
+   * revision back up out of the answer.
+   * <p>
+   * {@link DraftState#LOCAL_ONLY} is preserved rather than overwritten with DIRTY,
+   * the same rule {@code buildNextDraftRevision} follows: LOCAL_ONLY means "no copy
+   * has ever been up there", which stays true, and it is what the composer reads to
+   * tell the user their words live only here.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   */
+  private void touchDraft(String userId, String draftLocalId) {
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    if (existing.isEmpty()) {
+      return;
+    }
+    EmailBoxEntity entity = existing.get(0);
+    Date now = new Date();
+    entity.setDraftRevision(entity.getDraftRevision() == null ? 1L : entity.getDraftRevision() + 1);
+    entity.setDraftUpdatedDate(now);
+    // Recency, which is what this column means, and attaching a file is activity: the
+    // Drafts listing and the conversation list are both newest-first, and the sync
+    // cleanup trims the oldest end of the cache.
+    entity.setReceivedDate(now);
+    entity.setDraftState(DraftState.LOCAL_ONLY.equals(entity.getDraftState()) ? DraftState.LOCAL_ONLY : DraftState.DIRTY);
+    emailBoxDao.save(entity);
+  }
+
+  /**
+   * Writes attachment bytes into the add-on's file namespace — the same shape the
+   * contact photo and the connector illustration use, and deliberately the same
+   * namespace ({@link EmailConnectorStorage#NAME_SPACE}).
+   * <p>
+   * That the namespace is SHARED with those two is worth stating where the writing
+   * happens, because it forbids a whole family of cleanups: nothing may ever sweep
+   * this namespace by "which files the mail tables do not reference", since the other
+   * two owners' files do not appear there and would all be deleted. A file is freed
+   * because something recorded it as unreferenced, never because a scan failed to
+   * find it.
+   * <p>
+   * Always a fresh file, never an update in place: an attachment is not replaced, it
+   * is removed and another is attached.
+   *
+   * @param bytes the file content
+   * @param name the file name to store it under
+   * @param mimeType its content type
+   * @return the stored file id, or null when the file service wrote nothing
+   */
+  private Long saveAttachmentFileItem(byte[] bytes, String name, String mimeType) {
+    try {
+      FileItem fileItem = new FileItem(null,
+                                       name,
+                                       StringUtils.defaultIfBlank(mimeType, "application/octet-stream"),
+                                       EmailConnectorStorage.NAME_SPACE,
+                                       bytes.length,
+                                       new Date(),
+                                       null,
+                                       false,
+                                       new ByteArrayInputStream(bytes));
+      FileItem stored = fileService.writeFile(fileItem);
+      return stored == null || stored.getFileInfo() == null ? null : stored.getFileInfo().getId();
+    } catch (Exception e) {
+      // A file that cannot be stored costs a file, not the draft the user is writing.
+      LOG.warn("A draft attachment could not be written to the file store", e);
+      return null;
+    }
+  }
+
+  /**
+   * Reads a stored draft attachment back, bytes and content type together — the REST
+   * layer needs both to answer with an honest header.
+   *
+   * @param fileId the file id
+   * @return the file item, or null when nothing is stored under that id
+   */
+  public FileItem getAttachmentFileItem(Long fileId) {
+    if (fileId == null || fileId <= 0) {
+      return null;
+    }
+    try {
+      FileItem fileItem = fileService.getFile(fileId);
+      return fileItem == null || fileItem.getAsByte() == null ? null : fileItem;
+    } catch (Exception e) {
+      LOG.warn("The stored draft attachment {} could not be read", fileId, e);
+      return null;
+    }
+  }
+
+  /**
+   * Whether the file behind a stored attachment is still there — the cheap question,
+   * asked before a draft is assembled into a message.
+   * <p>
+   * Metadata only, and deliberately: {@link #getAttachmentFileItem} reads the whole
+   * file into memory, and asking "can this 20 MB file be read" by reading 20 MB is a
+   * poor way to answer a question whose real subject is whether a row outlived its
+   * file. What is checked is what can go wrong here — the file was freed while the
+   * attachment row still names it — and a file whose metadata is present but whose
+   * bytes are not fails one layer down, where the part is written.
+   * <p>
+   * A deleted file counts as gone. The file service keeps the row and flips a flag
+   * rather than removing it, so "there is a FileInfo" is not the same question as
+   * "there is a file".
+   *
+   * @param fileId the file id an attachment row carries
+   * @return true when a live file sits behind it
+   */
+  public boolean attachmentFileExists(Long fileId) {
+    if (fileId == null || fileId <= 0) {
+      return false;
+    }
+    try {
+      FileInfo fileInfo = fileService.getFileInfo(fileId);
+      return fileInfo != null && !fileInfo.isDeleted();
+    } catch (Exception e) {
+      LOG.warn("The stored draft attachment {} could not be looked up", fileId, e);
+      return false;
+    }
+  }
+
+  /**
+   * Records files as no longer referenced by anything, so that a later sweep can free
+   * them.
+   * <p>
+   * Already-recorded ids are read and skipped rather than left to the unique index to
+   * reject: this runs on a delete path, and a constraint violation would abort the
+   * surrounding statement rather than the one row — losing an entire cleanup because
+   * one file had already been recorded by an overlapping one is the wrong trade for a
+   * race that is entirely ordinary here.
+   *
+   * @param fileIds the files to record; nulls and duplicates are tolerated
+   * @param userId the owner the files hung off, for scoping and attribution
+   */
+  public void recordOrphanFiles(List<Long> fileIds, String userId) {
+    if (fileIds == null || fileIds.isEmpty()) {
+      return;
+    }
+    Set<Long> candidates = new HashSet<>(fileIds);
+    candidates.remove(null);
+    if (candidates.isEmpty()) {
+      return;
+    }
+    candidates.removeAll(new HashSet<>(emailOrphanFileDAO.findRecordedFileIds(new ArrayList<>(candidates))));
+    if (candidates.isEmpty()) {
+      return;
+    }
+    Date now = new Date();
+    emailOrphanFileDAO.saveAll(candidates.stream()
+                                         .map(fileId -> new EmailOrphanFileEntity(null, fileId, userId, now))
+                                         .toList());
   }
 
   /**
@@ -756,8 +1077,69 @@ public class EmailBoxStorage {
     return emailBoxDao.countUnreadByUserIdAndFolder(userId, MailFolder.INBOX);
   }
 
+  /**
+   * Deletes mail rows, having first written down the stored files they were the only
+   * reference to.
+   * <p>
+   * The two statements cannot be one, and the order between them is the design rather
+   * than a detail. {@link EmailBoxDAO#deleteEmailsByIds} is a bulk JPQL DELETE: no
+   * JPA cascade, no entity callback, no loaded instance — the attachment rows go with
+   * it through the database's own {@code ON DELETE CASCADE} (changeset 1.0.0-6), and
+   * nothing in Java ever observes that happening. So there is nowhere to hang "and
+   * free the file", and once the rows are gone nothing anywhere knows which files
+   * they named. They have to be read first.
+   * <p>
+   * Recording BEFORE deleting means a crash in between leaves a marker for a file
+   * that is still referenced — harmless, because the sweep verifies before it
+   * deletes. The other order would leave bytes in the file store that nothing names
+   * and nothing can find: a leak with no record of itself. A note nobody needed beats
+   * a file nobody can reach.
+   * <p>
+   * The owner is not passed in because the caller's rows may span users (the
+   * disconnect cleanup) and the marker's user is bookkeeping rather than a key. It is
+   * read off the rows about to go.
+   *
+   * @param emailsIds the mail rows to delete
+   */
   public void deleteEmailsByIds(List<Long> emailsIds) {
+    if (emailsIds == null || emailsIds.isEmpty()) {
+      return;
+    }
+    List<Long> fileIds = emailAttachmentDAO.findFileIdsByEmailIds(emailsIds);
+    if (!fileIds.isEmpty()) {
+      recordOrphanFiles(fileIds, ownerOf(emailsIds));
+    }
     emailBoxDao.deleteEmailsByIds(emailsIds);
+  }
+
+  /**
+   * The owner of the first of a set of rows, for the orphan marker's bookkeeping.
+   * <p>
+   * One lookup for the whole batch rather than one per file: every caller that
+   * deletes rows carrying files deletes one user's rows (a draft discarded, a draft
+   * sent, one mailbox's sync cleanup), and the marker's user is an attribution, not a
+   * key — the sweep frees a file because it was recorded, not because of whose it was.
+   *
+   * @param emailsIds the rows about to be deleted
+   * @return the owner, or null when the rows are already gone
+   */
+  private String ownerOf(List<Long> emailsIds) {
+    return emailBoxDao.findById(emailsIds.get(0)).map(EmailBoxEntity::getUserId).orElse(null);
+  }
+
+  /**
+   * The bytes behind a commons upload.
+   *
+   * @param uploadResource the upload the browser produced
+   * @return its content, or null when the temporary file cannot be read
+   */
+  private byte[] readUpload(UploadResource uploadResource) {
+    try {
+      return IOUtil.getFileContentAsBytes(uploadResource.getStoreLocation());
+    } catch (Exception e) {
+      LOG.warn("The upload backing a draft attachment could not be read", e);
+      return null;
+    }
   }
 
   /**
@@ -899,13 +1281,31 @@ public class EmailBoxStorage {
     return StringUtils.defaultString(storedName(sender.getName())) + "," + StringUtils.defaultString(sender.getAddress());
   }
 
-  public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId, String attachmentId, String userId) {
-    EmailAttachmentEntity emailAttachmentEntity = emailAttachmentDAO
-                                                                    .findByMailRemoteIdAndAttachmentIdAndUserId(mailRemoteId,
-                                                                                                                attachmentId,
-                                                                                                                userId)
-                                                                    .orElse(null);
-    ;
+  /**
+   * One cached attachment row of one message of one folder.
+   * <p>
+   * The folder is mandatory rather than defaulted, and deliberately so: see
+   * {@link EmailAttachmentDAO#findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder}
+   * for what a lookup without it answers. A default here would put the old collision
+   * back one layer up, where nobody would see it.
+   *
+   * @param mailRemoteId the message's IMAP UID within its folder
+   * @param attachmentId the attachment's MIME part path
+   * @param userId the mailbox owner
+   * @param folder the {@link MailFolder} the message is cached under
+   * @return the attachment, or null when the user has no such attachment there
+   */
+  public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId,
+                                                                  String attachmentId,
+                                                                  String userId,
+                                                                  String folder) {
+    EmailAttachmentEntity emailAttachmentEntity =
+                                                emailAttachmentDAO.findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder(mailRemoteId,
+                                                                                                                       attachmentId,
+                                                                                                                       userId,
+                                                                                                                       StringUtils.defaultIfBlank(folder,
+                                                                                                                                                  MailFolder.INBOX))
+                                                                  .orElse(null);
     return fromEmailAttachmentEntity(emailAttachmentEntity);
   }
 
@@ -1013,7 +1413,12 @@ public class EmailBoxStorage {
                               emailBoxEntity.getDraftLocalId(),
                               emailBoxEntity.getDraftState(),
                               emailBoxEntity.getDraftRevision(),
-                              emailBoxEntity.getDraftUpdatedDate());
+                              emailBoxEntity.getDraftUpdatedDate(),
+                              // Stored attachments are not read here. They live on
+                              // content.attachments like every other attachment of a
+                              // row; this field exists only so the send path can hand
+                              // the draft's own files to the message builder.
+                              null);
 
       // A draft carries its recipients on EVERY read, whatever the caller asked for.
       //
@@ -1048,14 +1453,33 @@ public class EmailBoxStorage {
     if (emailAttachment == null || emailAttachment.getName() == null) {
       return null;
     } else {
+      // No file id and no size: this path builds the attachments of a message MIRRORED
+      // from the server, whose bytes stay on the server and are fetched on demand. A
+      // draft's own file goes through addDraftAttachment, which is the only writer of
+      // those two columns.
       return new EmailAttachmentEntity(emailAttachment.getId(),
                                        emailBoxEntity,
                                        emailAttachment.getAttachmentRemoteId(),
                                        emailAttachment.getName(),
-                                       emailAttachment.getMimeType());
+                                       emailAttachment.getMimeType(),
+                                       null,
+                                       null);
     }
   }
 
+  /**
+   * Maps one attachment row, carrying its message's UID and FOLDER with it.
+   * <p>
+   * The folder travels on the attachment because a UID is meaningless without one
+   * (IMAP numbers them per folder), and every consumer that goes back for the bytes
+   * addresses the attachment rather than the message it came from. Reading it here,
+   * in the one mapper, is what stops each of those consumers having to remember —
+   * and reading it wrong is exactly how an attachment on a Sent message could not be
+   * downloaded at all.
+   *
+   * @param emailAttachmentEntity the row, may be null
+   * @return the attachment, or null when the row is
+   */
   private EmailAttachment fromEmailAttachmentEntity(EmailAttachmentEntity emailAttachmentEntity) {
     if (emailAttachmentEntity == null) {
       return null;
@@ -1065,7 +1489,10 @@ public class EmailBoxStorage {
                                  emailAttachmentEntity.getAttachmentRemoteId(),
                                  emailAttachmentEntity.getName(),
                                  emailAttachmentEntity.getMimeType(),
-                                 null);
+                                 null,
+                                 emailAttachmentEntity.getEmail().getFolder(),
+                                 emailAttachmentEntity.getFileId(),
+                                 emailAttachmentEntity.getFileSize());
     }
   }
 
