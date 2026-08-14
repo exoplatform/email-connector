@@ -162,7 +162,12 @@ export default {
       }
       emails.filter(id => {
         const email = this.emails.find(e => e.mailRemoteId === id);
-        if (email && email.read !== read) {
+        // A row in a read-only folder is left bold. The mailbox drawer refuses to
+        // push a read status for one (see its updateEmailsReadStatus), so showing it
+        // turn read here would show a state nothing is saving — and opening a mail
+        // is enough to get here, so every trashed mail merely LOOKED at would have
+        // lost its unread mark until the list next reloaded.
+        if (email && !this.$emailConnectorMailBoxService.isReadOnlyFolder(email.folder) && email.read !== read) {
           this.$set(email, 'read', read);
         }
       });

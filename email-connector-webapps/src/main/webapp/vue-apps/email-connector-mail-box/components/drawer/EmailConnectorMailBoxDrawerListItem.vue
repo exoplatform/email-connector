@@ -338,9 +338,15 @@ export default {
       return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
     },
     // The favorite is pushed through the INBOX folder, so only inbox rows can toggle
-    // it; in Sent/Archive it stays a read-only indicator.
+    // it; in Sent/Archive/Trash it stays a read-only indicator.
     canToggleFavorite() {
       return (this.email.folder || 'INBOX') === 'INBOX';
+    },
+    // Whether this row sits in a folder the interface may only read (Trash), which is
+    // what takes the swipe's delete/archive away from it. Off the ROW's own folder,
+    // like canToggleFavorite above, and the same rule the row's context menu reads.
+    readOnly() {
+      return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
     selected() {
       return this.threadIds.every(id => this.selectedEmails.includes(id));
@@ -460,7 +466,12 @@ export default {
       // Delete and archive both address messages by IMAP UID, and a draft that has
       // not been uploaded has none. Discarding a draft is its own action, in the
       // composer, where the user can see what they are throwing away.
-      if (this.isDraft) {
+      //
+      // A Trash row has a UID, and that is exactly the danger: the backend resolves
+      // it against the inbox, so a swipe here would delete or archive whichever inbox
+      // message happens to be numbered the same. The row snaps back instead — the
+      // same nothing a swipe on a draft already does.
+      if (this.isDraft || this.readOnly) {
         this.reset();
         return;
       }
