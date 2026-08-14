@@ -778,14 +778,26 @@ public class EmailBoxServiceTest {
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    // No cached row under that folder and that UID. An answer, not a fault: the REST
+    // layer turns it into a 404. It used to be an IllegalStateException, because the
+    // code went straight on to set the bytes on the null it had just been handed and
+    // the NullPointerException was swallowed into "error connecting to the store" —
+    // a 500 blaming the mail server for a row this side does not have. The folder
+    // being part of the lookup makes this reachable in the ordinary way (a caller
+    // asking under the wrong one), so it is worth answering honestly.
+    assertNull(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX));
+    EmailAttachment emailAtatchment = mock(EmailAttachment.class);
+    when(emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX)).thenReturn(emailAtatchment);
+    // The row exists but the message does not have the part it names: a genuine
+    // fault, still reported as one.
     assertThrows(IllegalStateException.class,
-                 () -> emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER));
+                 () -> emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX));
     when(message.isMimeType("multipart/*")).thenReturn(true);
     Multipart multipart = mock(Multipart.class);
     when(message.getContent()).thenReturn(multipart);
     when(multipart.getCount()).thenReturn(1);
     assertThrows(IllegalStateException.class,
-                 () -> emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER));
+                 () -> emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX));
     when(multipart.getCount()).thenReturn(2);
     BodyPart bodyPart = mock(BodyPart.class);
     when(multipart.getBodyPart(anyInt())).thenReturn(bodyPart);
@@ -794,12 +806,42 @@ public class EmailBoxServiceTest {
     when(bodyPart.getContentType()).thenReturn("application/pdf");
     when(bodyPart.getFileName()).thenReturn("attachment.pdf");
     when(is.read(any(byte[].class))).thenReturn(1024).thenReturn(-1);
-    EmailAttachment emailAtatchment = mock(EmailAttachment.class);
-    when(emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER)).thenReturn(emailAtatchment);
-    emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER);
-    verify(emailBoxStorage, times(3)).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER);
+    emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX);
+    verify(emailBoxStorage, times(4)).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX);
     verify(emailAtatchment).setName("attachment.pdf");
     verify(emailAtatchment).setMimeType("application/pdf");
+  }
+
+  /**
+   * The folder is resolved through the same resolver the rows were cached by, and
+   * not assumed to be the inbox — which is the whole of slice 1 on the service side.
+   * <p>
+   * Before this change, an attachment on a message the user had SENT was looked for
+   * in {@code INBOX}: either no message carries that UID there (a 500) or an
+   * unrelated one does, and the user is handed a completely different message's file.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void getAttachmentOfASentMessageOpensTheSentFolder() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    IMAPFolder sent = mock(IMAPFolder.class);
+    when(sent.exists()).thenReturn(true);
+    when(sent.getFullName()).thenReturn("Sent");
+    when(sent.getAttributes()).thenReturn(new String[] { "\\Sent" });
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.listSubscribed("*")).thenReturn(new Folder[] { sent });
+
+    emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.SENT);
+
+    verify(sent).open(Folder.READ_ONLY);
+    verify(store, never()).getFolder("INBOX");
+    verify(emailBoxStorage).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.SENT);
   }
 
   @Test

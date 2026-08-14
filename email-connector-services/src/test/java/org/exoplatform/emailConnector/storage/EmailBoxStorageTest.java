@@ -412,7 +412,7 @@ public class EmailBoxStorageTest {
 
   @Test
   void getAttachmentByIdAndMailRemoteId() {
-    EmailAttachment retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", "root");
+    EmailAttachment retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", "root", MailFolder.INBOX);
     assertNull(retrievedEmailAttachment);
     EmailBoxEntity emailBoxEntity = new EmailBoxEntity(null,
                                                        1212l,
@@ -449,10 +449,10 @@ public class EmailBoxStorageTest {
                                                                                                           "2",
                                                                                                           "attachment.pdf",
                                                                                                           "application/pdf"));
-    when(emailAttachmentDAO.findByMailRemoteIdAndAttachmentIdAndUserId(1212l, "2", "root")).thenReturn(emailAttachmentEntity);
-    retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", "root");
+    when(emailAttachmentDAO.findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder(1212l, "2", "root", MailFolder.INBOX)).thenReturn(emailAttachmentEntity);
+    retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", "root", MailFolder.INBOX);
     assertNotNull(retrievedEmailAttachment);
-    retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212L, "2", "root");
+    retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212L, "2", "root", MailFolder.INBOX);
     assertNotNull(retrievedEmailAttachment);
     assertEquals("attachment.pdf", retrievedEmailAttachment.getName());
     assertEquals("application/pdf", retrievedEmailAttachment.getMimeType());
@@ -680,6 +680,6 @@ public class EmailBoxStorageTest {
   }
 
   private EmailAttachment emailAttachment() {
-    return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null);
+    return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null, MailFolder.INBOX);
   }
 }

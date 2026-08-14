@@ -694,9 +694,7 @@ export function getAttachmentIcon(mimeType) {
 }
 
 export async function downloadAttachment(attachment, signal) {
-  const mailId = attachment.mailRemoteId;
-  const attachId = attachment.attachmentRemoteId;
-  const url = `/email-connector/rest/email-box/attachments/${mailId}/${attachId}`;
+  const url = getAttachmentUrl(attachment);
   try {
     const response = await fetch(url, { signal });
     if (!response.ok) {
@@ -779,11 +777,24 @@ export function isDocumentsDeployed() {
  * add-on mounts its own REST context, and prefixing it lands on the portal itself,
  * which answers a page with 200 instead of the file.
  *
+ * The folder is part of the address rather than a detail: IMAP numbers messages per
+ * folder, so the same mailRemoteId names a different message in the inbox and in
+ * Sent. Without it, an attachment on a message the user sent or archived could not
+ * be downloaded at all. It rides on the attachment itself (the server stamps it on
+ * every attachment it maps) so that every caller here — the download, the preview,
+ * the OnlyOffice hand-off — is addressed correctly without each one having to hold
+ * the message its file came from.
+ *
+ * Omitted rather than defaulted to INBOX when the attachment does not carry one, so
+ * an older cached payload keeps meaning what it always meant: the server's own
+ * default is the inbox.
+ *
  * @param {Object} attachment the received attachment
  * @returns {String} the URL its content can be read from
  */
 export function getAttachmentUrl(attachment) {
-  return `/email-connector/rest/email-box/attachments/${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
+  const base = `/email-connector/rest/email-box/attachments/${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
+  return attachment.folder ? `${base}?folder=${encodeURIComponent(attachment.folder)}` : base;
 }
 
 /**
@@ -1274,6 +1285,11 @@ export function addAttachmentToContacts(attachment, messages = {}) {
     mailRemoteId: attachment.mailRemoteId,
     attachmentId: attachment.attachmentRemoteId,
   });
+  // Same reason as getAttachmentUrl: the UID alone does not name a message. A card
+  // attached to something the user sent is read from Sent or from nowhere.
+  if (attachment.folder) {
+    params.set('folder', attachment.folder);
+  }
   return fetch(`/email-connector/rest/contacts/from-attachment?${params}`, {
     credentials: 'include',
     method: 'GET',
