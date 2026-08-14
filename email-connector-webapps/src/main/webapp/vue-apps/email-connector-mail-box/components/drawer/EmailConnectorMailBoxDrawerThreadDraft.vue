@@ -53,6 +53,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { personLabel } from '../../js/EmailRecipientDisplay.js';
+import { unquotedText } from '../../js/EmailQuotedHistoryFold.js';
 
 export default {
   props: {
@@ -79,18 +80,20 @@ export default {
         : this.$t('emailConnector.mailBox.list.drawer.thread.draft.noRecipient');
     },
     /**
-     * The first line of what has been written, stripped of markup — the same
-     * treatment a collapsed thread message gives its body.
+     * The first line of what the user has written, stripped of markup and of the
+     * quoted message underneath it.
+     *
+     * A reply opens with the message it answers quoted below the cursor, so the raw
+     * body of every unfinished reply in a conversation now starts with the same
+     * words — and this row sits directly under the message those words are a copy
+     * of. Showing them here would make each draft read like the mail above it and
+     * tell the user nothing about which unfinished reply they are looking at. What
+     * distinguishes it is the sentence above the quote, which is what this shows.
      *
      * @returns {string} the one-line preview
      */
     snippet() {
-      const body = this.draft?.content?.body || '';
-      if (typeof DOMParser === 'undefined') {
-        return '';
-      }
-      const text = new DOMParser().parseFromString(body, 'text/html').body?.textContent || '';
-      return text.replace(/\s+/g, ' ').trim();
+      return unquotedText(this.draft?.content?.body || '');
     },
   },
 };

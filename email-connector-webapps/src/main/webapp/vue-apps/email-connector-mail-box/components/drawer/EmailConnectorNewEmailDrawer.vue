@@ -77,7 +77,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           content-link-enabled
           :tag-enabled="false"
           disable-suggester
-          hide-chars-count />
+          hide-chars-count
+          @ready="onEditorReady" />
       </div>
       <email-connector-new-email-drawer-attachments
         v-model="attachments"
@@ -109,6 +110,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { personName } from '../../js/EmailRecipientDisplay.js';
+import { escapeHtml, replyQuoteBody } from '../../js/EmailReplyQuote.js';
 
 const DEFAULT_EDITOR_MAX_HEIGHT = 300;
 
@@ -200,6 +202,9 @@ export default {
       // draft" notice: it is true until the next push puts a new copy up, so an
       // unthrottled version would repeat on every autosave in between.
       serverCopyGoneNotified: false,
+      // True for the instant in which the editor hands the prefill back (see
+      // onEditorReady), so that echo is not mistaken for the user typing.
+      editorEchoing: false,
     };
   },
   created() {
@@ -301,6 +306,10 @@ export default {
               .filter(item => item.address !== email.userEmail));
           }
           this.email.mailHeaderId = email.mailHeaderId;
+          // The message being answered, quoted under the cursor. Built the same way
+          // whether this is a reply or a reply-all: those two differ in who receives
+          // the answer, never in what is being answered.
+          this.email.content.body = replyQuoteBody(this.replyAttribution(email), email.content?.body);
         }
         else {
           const bodyParts = [ 
@@ -603,13 +612,53 @@ export default {
      * @returns {void}
      */
     onComposeChanged() {
-      if (!this.newEmailDrawer || this.savedSignature === null) {
+      // editorEchoing: the editor handing the prefill back is not somebody typing,
+      // and must not start the clock on a save (see onEditorReady).
+      if (!this.newEmailDrawer || this.savedSignature === null || this.editorEchoing) {
         return;
       }
       clearTimeout(this.localSaveTimer);
       this.localSaveTimer = setTimeout(() => this.saveDraft(false), LOCAL_SAVE_DEBOUNCE_MS);
       clearTimeout(this.serverPushTimer);
       this.serverPushTimer = setTimeout(() => this.saveDraft(true), SERVER_PUSH_IDLE_MS);
+    },
+    /**
+     * The editor has taken the prefill and gone live.
+     *
+     * CKEditor does not hand back what it was given. The value is run through
+     * DOMPurify and the editor's own normalisation on the way in, and echoed
+     * straight back out through v-model the moment the instance is ready — so the
+     * body can come back subtly different from the string open() wrote. It hardly
+     * showed while a reply opened empty, because an empty body survives any
+     * normalisation unchanged. A reply that opens with a quoted block in it is a
+     * different matter: one rewritten attribute is a change of the body, and the
+     * close handler would read that change as something the user had written and
+     * leave behind a draft of a reply they only glanced at.
+     *
+     * Whatever the editor made of the prefill is still the draft's starting point,
+     * not an edit of it. The flag keeps the echo from starting a save, and the
+     * re-stamp records what is now really on screen as the thing to compare against.
+     *
+     * A macrotask rather than $nextTick, and this is the whole reason it is one: the
+     * echo arrives through v-model and wakes the field watchers, and Vue runs those
+     * on its own nextTick queue. A $nextTick registered here would be queued ahead
+     * of them and would stamp the signature before the echo had been applied —
+     * which is precisely the bug it exists to prevent.
+     *
+     * @returns {void}
+     */
+    onEditorReady() {
+      // Captured, like every other deferred piece of work in this composer: by the
+      // time the callback runs the drawer may have closed, or opened on another
+      // message, and this editor's starting point is not that one's.
+      const session = this.draftSession;
+      this.editorEchoing = true;
+      setTimeout(() => {
+        this.editorEchoing = false;
+        if (this.newEmailDrawer && session === this.draftSession) {
+          this.savedSignature = this.composeSignature();
+        }
+      });
     },
     /**
      * Saves the draft, optionally pushing it to the mail server.
@@ -899,6 +948,38 @@ export default {
       }).catch(() => {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.send.error'), 'error');
       }).finally(() => this.loading = false);
+    },
+    /**
+     * The "On <date>, <sender> wrote:" line above a reply's quoted block.
+     *
+     * Every part of it is somebody else's: the date the message arrived and the name
+     * and address it came from. So every part of it is escaped on the way into
+     * markup, and the only thing this composer contributes is the sentence around
+     * them — which is UI text, so it comes from the bundle and not from here.
+     *
+     * The date is formatted by the same helper the forward header and the message
+     * header use, in full, so a quote reads in the reader's language and clock
+     * rather than in a format invented for this one line. The word between the day
+     * and the time is the forward header's: it is the same word, already translated
+     * into every locale this addon ships, and a second key for it would only ask
+     * translators to say "at" twice and read as the untranslated key until they had.
+     *
+     * @param {object} email - the message being replied to
+     * @returns {string} the attribution line, ready to sit in markup
+     */
+    replyAttribution(email) {
+      const at = this.$t('emailConnector.mailBox.forwardEmail.drawer.date.at');
+      const date = this.$emailConnectorMailBoxService.formatDateString(email.receivedDate, '', at, true);
+      const name = personName(email.sender);
+      const address = email.sender?.address?.trim();
+      // Name and address together, the way a mail header reads, and whichever one
+      // exists when only one does — never a dangling pair of empty angle brackets.
+      const sender = name && address ? `${escapeHtml(name)} &lt;${escapeHtml(address)}&gt;`
+        : escapeHtml(name || address || '');
+      return this.$t('emailConnector.mailBox.replyEmail.drawer.quote.attribution', {
+        0: escapeHtml(date),
+        1: sender,
+      });
     },
     /**
      * One addressed person in the quoted header a forward carries: their name in
