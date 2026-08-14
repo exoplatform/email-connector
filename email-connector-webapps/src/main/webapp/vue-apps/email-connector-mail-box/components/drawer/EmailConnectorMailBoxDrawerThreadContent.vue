@@ -25,18 +25,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-list-item>
     <!-- Room for somebody else to say something about this conversation as a whole,
          directly under its subject and above everything that is about its individual
-         messages. Nothing in this add-on registers here, so nothing renders and the
-         subject sits against the category bar exactly as before; a module that can
-         summarise a conversation fills it by registering into
-         ('EmailThread', 'email-thread-summary'). See summaryExtensions below for the
-         contract and for why the list is not read once and kept. -->
-    <template v-for="extension in summaryExtensions">
-      <component
-        :is="extension.vueComponent"
-        v-if="extension.vueComponent"
-        :key="extension.id"
-        v-bind="summaryExtensionParams" />
-    </template>
+         messages — the same seam the mail toolbars already offer, in the same shape
+         (see EmailConnectorMailBoxDrawerListItemDetailActions). A module that can
+         summarise a conversation fills it with
+         extensionRegistry.registerComponent('EmailThread', 'email-thread-summary', …)
+         and is rendered here with the params below as props.
+
+         Nothing in this add-on registers into it, so the component renders NOTHING at
+         all — not even its own wrapper — and the subject sits against the category bar
+         exactly as before. -->
+    <extension-registry-components
+      :params="summaryExtensionParams"
+      name="EmailThread"
+      type="email-thread-summary"
+      parent-element="div"
+      element="div"
+      class="my-auto" />
     <!-- Assign the conversation to the add-on's email categories (Important / Invitation
          / Notification) and show the ones already applied. Drafts are kept out of it:
          categories are assigned by IMAP UID, which a draft may not have, and an unsent
@@ -110,28 +114,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 // (which is expanded): matches Gmail showing the message just before the latest.
 const TAIL_STRIPS = 1;
 
-// The extension point this reader offers for anything that has something to say about
-// the conversation as a whole rather than about one of its messages — a summary of it,
-// today. Registered into as:
-//
-//   extensionRegistry.registerExtension('EmailThread', 'email-thread-summary', {
-//     id: 'my-summary',           // unique; also the render key
-//     rank: 10,                   // order, ascending, when there is more than one
-//     vueComponent: 'my-thread-summary',   // a globally registered component name
-//   });
-//
-// The component is rendered with the params below as props: `threadId`, `messages`
-// (the conversation's real mail, drafts excluded) and `subject`. It gets no callbacks
-// and no service: everything it needs is reachable from the thread id through the
-// add-on's own REST, and a contributor that had to be handed a function would be
-// coupled to this component's internals rather than to its conversation.
-const SUMMARY_EXTENSION_APP = 'EmailThread';
-
-const SUMMARY_EXTENSION_TYPE = 'email-thread-summary';
-
-// The registry fires this on every registration into that pair; see created().
-const SUMMARY_EXTENSION_EVENT = `extension-${SUMMARY_EXTENSION_APP}-${SUMMARY_EXTENSION_TYPE}-updated`;
-
 export default {
   data() {
     return {
@@ -140,13 +122,6 @@ export default {
       revealedKeys: [],
       loadingThread: false,
       loadingOlder: false,
-      // Who has registered to say something about this conversation as a whole.
-      //
-      // Held in data and refreshed on the registry's own event rather than computed
-      // from the registry, because the registry is a plain array that Vue cannot
-      // watch: a module registering after this reader was created would otherwise
-      // never appear, and module load order across webapps is nobody's to decide.
-      summaryExtensions: [],
     };
   },
   props: {
@@ -184,10 +159,16 @@ export default {
       const ids = (this.emails || []).filter(e => this.threadKey(e) === key).map(e => e.mailRemoteId);
       return ids.length ? ids : [this.email.mailRemoteId];
     },
-    // What a registered component is rendered with. The conversation's real mail and
-    // not `messages`, for the reason the category bar is given the same list: a draft
-    // is a sentence the user is in the middle of writing, and nothing that describes
-    // the conversation back to them should be describing that.
+    // What a component registered into the conversation slot is handed: the thread id,
+    // its messages and its subject. No callbacks and no service — everything else is
+    // reachable from the thread id through the add-on's own REST, and a contributor
+    // handed a function would be coupled to this component's internals rather than to
+    // the conversation.
+    //
+    // `categorizableMessages` and not `messages`, for the reason the category bar is
+    // given the same list: a draft is a sentence the user is in the middle of writing,
+    // and nothing that describes the conversation back to them should be describing
+    // that.
     summaryExtensionParams() {
       return {
         threadId: this.email && this.resolveThreadId(),
@@ -255,28 +236,13 @@ export default {
     // as well as in the list. Reusing it rather than inventing a second signal is what
     // keeps the two views from ever disagreeing about whether a draft exists.
     this.$root.$on('refresh-email-box', this.reloadFromCache);
-    // Whoever is already registered, plus the registry's own "somebody registered"
-    // event for whoever is not yet: it is the only thing that can bring a late-loading
-    // extension on screen without the user closing and reopening the conversation.
-    this.refreshSummaryExtensions();
-    document.addEventListener(SUMMARY_EXTENSION_EVENT, this.refreshSummaryExtensions);
   },
   beforeDestroy() {
     this.$root.$off('update-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('refresh-email-box', this.reloadFromCache);
-    document.removeEventListener(SUMMARY_EXTENSION_EVENT, this.refreshSummaryExtensions);
   },
   methods: {
-    /**
-     * Re-reads the conversation slot's registrations, at creation and whenever one
-     * arrives afterwards.
-     *
-     * @returns {void}
-     */
-    refreshSummaryExtensions() {
-      this.summaryExtensions = extensionRegistry?.loadExtensions(SUMMARY_EXTENSION_APP, SUMMARY_EXTENSION_TYPE) || [];
-    },
     // Patch the favorite flag on this conversation's INBOX messages (favorite ids are
     // INBOX UIDs; the same number in another folder is a different message).
     applyFavoriteStatus(favorite, mailRemoteIds = []) {
