@@ -6488,6 +6488,14 @@ public class EmailBoxService {
    * are CLOB columns, and HSQLDB refuses {@code LOCATE} on a CLOB, so a database-side
    * text search would work on MySQL and fail on a developer's machine. The set is
    * bounded by the mailbox cache size, so filtering it in memory is cheap.
+   * <p>
+   * What it reads is the mailbox minus its Trash
+   * ({@link EmailBoxStorage#getEmailsForSearch}). A search result carries a
+   * subject, a sender and a date and says nothing about which folder it came out of,
+   * so a deleted message returned here is indistinguishable from a live one — the
+   * quietest way there is to hand somebody back what they threw away. The remote
+   * {@link #searchEmails} agrees, by covering INBOX / SENT / ARCHIVE and no other
+   * folder.
    *
    * @param username the mailbox owner
    * @param query free text matched against the subject, the sender and the body
