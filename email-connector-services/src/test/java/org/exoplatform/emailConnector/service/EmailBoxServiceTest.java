@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -69,6 +70,8 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
@@ -107,6 +110,8 @@ import javax.mail.search.SubjectTerm;
 
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -211,6 +216,29 @@ public class EmailBoxServiceTest {
 
   @Autowired
   private EmailBoxService         emailBoxService;
+
+  /**
+   * Switches the post-send Sent-folder refresh off for every test in this class.
+   * <p>
+   * It is a real background timer that fires a second after any send, against the very
+   * mocks these tests count interactions on — a send test asserting {@code store.close()}
+   * happened once would start failing whenever the timer landed inside its window. The
+   * tests that are ABOUT the refresh turn it back on explicitly, or drive
+   * {@link EmailBoxService#refreshSentFolder} on this thread instead.
+   */
+  @BeforeEach
+  void disableThePostSendSentRefresh() {
+    System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
+  }
+
+  /**
+   * Puts the property back the way the JVM had it, so a test class running after this
+   * one sees the shipped default.
+   */
+  @AfterEach
+  void restoreThePostSendSentRefresh() {
+    System.clearProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY);
+  }
 
   @Test
   @SneakyThrows
@@ -773,6 +801,321 @@ public class EmailBoxServiceTest {
       org.junit.jupiter.api.Assertions.assertEquals("<parent@host>", sent.getHeader("In-Reply-To")[0]);
       org.junit.jupiter.api.Assertions.assertEquals("<root@host> <parent@host>", sent.getHeader("References")[0]);
     }
+  }
+
+  /**
+   * A send has to leave the message in the sender's OWN Sent list, not only on the
+   * server. Filing the copy (deliver -&gt; copyToSentFolder) and knowing about it are
+   * two different things, and until this mailbox re-reads the folder the message is
+   * nowhere the user can see it — for up to a whole sync period.
+   */
+  @Test
+  @SneakyThrows
+  void aSendQueuesARefreshOfTheSentFolder() {
+    ScheduledExecutorService scheduler = mockSentRefreshScheduler();
+    sendAnOrdinaryEmail();
+    ArgumentCaptor<Runnable> queued = ArgumentCaptor.forClass(Runnable.class);
+    verify(scheduler).schedule(queued.capture(), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    assertNotNull(queued.getValue(), "the send must leave a refresh behind it, not run one inline");
+  }
+
+  /**
+   * A draft is the send path the defect was first noticed on, and it goes through the
+   * same choke point as every other one — which is the point of putting the refresh
+   * there rather than at each call site.
+   */
+  @Test
+  @SneakyThrows
+  void sendingADraftQueuesTheSameRefresh() {
+    ScheduledExecutorService scheduler = mockSentRefreshScheduler();
+    mockDraftSendFixture();
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER);
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+    }
+    verify(scheduler).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+  }
+
+  /**
+   * Replying to five mails in a row must cost one refresh, not five logins: the queued
+   * entry IS the coalescing window, and a send landing inside it rides on the refresh
+   * already waiting.
+   */
+  @Test
+  @SneakyThrows
+  void aBurstOfSendsQueuesOneRefreshRatherThanOnePerMessage() {
+    ScheduledExecutorService scheduler = mockSentRefreshScheduler();
+    sendAnOrdinaryEmail();
+    sendAnOrdinaryEmail();
+    sendAnOrdinaryEmail();
+    verify(scheduler, times(1)).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+  }
+
+  /**
+   * The interleaving decision, stated as a test: a refresh that finds the mailbox held
+   * by a scheduled sync WAITS ITS TURN.
+   * <p>
+   * Running alongside is not available — two readers of one folder both create rows
+   * keyed on (user, folder, UID), which is why the guard exists. Skipping is worse than
+   * doing nothing: the scheduled sync reads Sent second, so one that has already passed
+   * that folder will not pick this message up either, and the user would be back to
+   * waiting a whole period with a log line claiming everything was fine.
+   */
+  @Test
+  @SneakyThrows
+  void theRefreshWaitsItsTurnWhileASynchronizationHoldsTheMailbox() {
+    ScheduledExecutorService scheduler = mockSentRefreshScheduler();
+    syncingUsers().add(TEST_USER);
+    try {
+      ReflectionTestUtils.invokeMethod(emailBoxService, "runSentFolderRefresh", TEST_USER, 1);
+    } finally {
+      syncingUsers().remove(TEST_USER);
+    }
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(scheduler).schedule(any(Runnable.class), eq(5000L), eq(TimeUnit.MILLISECONDS));
+  }
+
+  /**
+   * The wait is bounded. A sync that has held the mailbox for the whole window is one
+   * that will bring the message in itself, so the refresh stands down instead of
+   * retrying forever.
+   */
+  @Test
+  @SneakyThrows
+  void aRefreshThatWaitedOutItsWholeWindowStandsDown() {
+    ScheduledExecutorService scheduler = mockSentRefreshScheduler();
+    syncingUsers().add(TEST_USER);
+    try {
+      ReflectionTestUtils.invokeMethod(emailBoxService, "runSentFolderRefresh", TEST_USER, 36);
+    } finally {
+      syncingUsers().remove(TEST_USER);
+    }
+    verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+  }
+
+  /**
+   * The refresh reads the folder through the SCHEDULED SYNC'S window, not a narrower
+   * "just the newest few".
+   * <p>
+   * Narrowing is not a smaller version of the same operation. The folder sync trims the
+   * cache to the window it read, so a ten-message refresh would delete every older
+   * cached Sent row; and the window size is stored in the snapshot, so a refresh using a
+   * different one would make the next scheduled sync see "window size changed" and
+   * re-download the whole folder, every period, forever.
+   */
+  @Test
+  @SneakyThrows
+  void theRefreshReadsTheSentFolderThroughTheScheduledSyncsOwnWindow() {
+    IMAPFolder sent = mockSentFolderForRefresh(1000);
+    emailBoxService.refreshSentFolder(TEST_USER);
+    // cache size 500, capped at the non-inbox limit of 100 -> the last 100 of 1000.
+    verify(sent).getMessages(901, 1000);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.SENT);
+  }
+
+  /**
+   * A failed refresh must stay a failed refresh. Marking the mailbox FAILURE would feed
+   * the escalation to BLOCKED and could stop a perfectly healthy mailbox syncing at all
+   * — over a bookkeeping read the user never asked for. Nor may one folder announce
+   * itself as a completed mailbox run: consumers start whole-run work on that event.
+   */
+  @Test
+  @SneakyThrows
+  void theRefreshNeverTouchesTheMailboxSyncStatusNorClaimsARunIsComplete() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new MessagingException("imap refused"));
+
+    emailBoxService.refreshSentFolder(TEST_USER);
+
+    verify(userEmailSettingService, never()).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED), any(), any());
+    assertNull(userEmailSetting.getEmailSyncStatus(), "a bookkeeping read must not rewrite the mailbox's sync status");
+  }
+
+  /**
+   * The single most important property of this whole feature: the mail has already
+   * gone by the time the refresh runs, so nothing it does may surface as a failure.
+   */
+  @Test
+  @SneakyThrows
+  void aFailedRefreshIsSwallowedBecauseTheMailHasAlreadyGone() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new MessagingException("mailbox unreachable"));
+    assertDoesNotThrow(() -> emailBoxService.refreshSentFolder(TEST_USER));
+  }
+
+  /**
+   * Some providers file no copy of an SMTP send at all, and some mailboxes expose no
+   * Sent folder to file it in. Finding nothing must cost nothing: no rows created, no
+   * cache touched, and the connection closed behind it.
+   */
+  @Test
+  @SneakyThrows
+  void aMailboxWithNoSentFolderIsRefreshedHarmlessly() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+
+    assertDoesNotThrow(() -> emailBoxService.refreshSentFolder(TEST_USER));
+
+    verify(emailBoxStorage, never()).getSyncEmails(anyString(), anyString());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    verify(store).close();
+  }
+
+  /**
+   * A user whose connector was withdrawn between the send and the refresh gets no
+   * refresh — the permission is re-checked on the scheduler thread rather than
+   * inherited from a send that happened a moment earlier on another one.
+   */
+  @Test
+  @SneakyThrows
+  void theRefreshRechecksThatTheUserMayStillUseTheirMailbox() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+
+    emailBoxService.refreshSentFolder(TEST_USER);
+
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  /**
+   * The administrator's kill switch: with the refresh withdrawn, a send queues nothing
+   * and the mailbox behaves exactly as it did before this feature existed.
+   */
+  @Test
+  @SneakyThrows
+  void theAdministratorCanWithdrawTheRefreshWithoutBreakingTheSend() {
+    ScheduledExecutorService scheduler = mockSentRefreshScheduler();
+    System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
+    sendAnOrdinaryEmail();
+    verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+  }
+
+  /**
+   * Replaces the service's real background scheduler with a mock, and switches the
+   * refresh on. The real one is a live timer: driving it would make every assertion
+   * below a race, so the tests capture what WOULD have been queued instead.
+   *
+   * @return the scheduler mock, stubbed to hand back a handle so the coalescing map
+   *         actually records the queued entry
+   */
+  private ScheduledExecutorService mockSentRefreshScheduler() {
+    System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "true");
+    // The service is a singleton for the whole class, so its coalescing map survives
+    // from one test to the next -- and a leftover entry for this user would make the
+    // next send ride on a refresh queued by a test that has already finished.
+    pendingSentRefreshes().clear();
+    ScheduledExecutorService scheduler = mock(ScheduledExecutorService.class);
+    lenient().when(scheduler.schedule(any(Runnable.class), anyLong(), any(TimeUnit.class)))
+             .thenReturn(mock(ScheduledFuture.class));
+    ReflectionTestUtils.setField(emailBoxService, "sentRefreshScheduler", scheduler);
+    return scheduler;
+  }
+
+  /**
+   * The service's per-user map of queued-but-not-started Sent refreshes — the
+   * coalescing window itself.
+   *
+   * @return the live map, keyed by mailbox owner
+   */
+  @SuppressWarnings("unchecked")
+  private Map<String, ScheduledFuture<?>> pendingSentRefreshes() {
+    return (Map<String, ScheduledFuture<?>>) ReflectionTestUtils.getField(emailBoxService, "pendingSentRefreshes");
+  }
+
+  /**
+   * The service's per-user "a sync is running" guard, so a test can state that case.
+   *
+   * @return the live set of mailbox owners currently synchronizing
+   */
+  @SuppressWarnings("unchecked")
+  private Set<String> syncingUsers() {
+    return (Set<String>) ReflectionTestUtils.getField(emailBoxService, "syncingUsers");
+  }
+
+  /**
+   * Sends one ordinary mail end to end, with the SMTP session and the transport mocked
+   * out — the shape shared by the tests that only care about what a SUCCESSFUL send
+   * leaves behind it.
+   */
+  @SneakyThrows
+  private void sendAnOrdinaryEmail() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Session session = mock(Session.class);
+    lenient().when(session.getProperties()).thenReturn(new Properties());
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder defaultFolder = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    lenient().when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    lenient().when(store.isConnected()).thenReturn(true);
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      emailBoxService.sendEmail(email(TEST_USER), TEST_USER);
+      transportMock.verify(() -> Transport.send(any(Message.class)));
+    }
+  }
+
+  /**
+   * A mailbox holding one local-only draft that is ready to be sent — the shortest
+   * fixture that reaches {@code deliver} through the draft path.
+   */
+  @SneakyThrows
+  private void mockDraftSendFixture() {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    givenADraftsFolder();
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setMailRemoteId(null);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+  }
+
+  /**
+   * Wires a mailbox whose Sent folder holds {@code totalMessages} messages and whose
+   * cache window is the shipped one, for the tests that drive
+   * {@link EmailBoxService#refreshSentFolder} on the calling thread.
+   *
+   * @param totalMessages how many messages the server reports in the Sent folder
+   * @return the Sent folder mock
+   */
+  @SneakyThrows
+  private IMAPFolder mockSentFolderForRefresh(int totalMessages) {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(500);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder sent = mock(IMAPFolder.class);
+    lenient().when(sent.getFullName()).thenReturn("Sent");
+    lenient().when(sent.exists()).thenReturn(true);
+    lenient().when(sent.getAttributes()).thenReturn(new String[] { "\\Sent" });
+    lenient().when(sent.getMessageCount()).thenReturn(totalMessages);
+    lenient().when(sent.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    lenient().when(sent.isOpen()).thenReturn(true);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { sent });
+    lenient().when(emailBoxStorage.getSyncEmails(TEST_USER, MailFolder.SENT)).thenReturn(new ArrayList<>());
+    return sent;
   }
 
   @Test
