@@ -24,8 +24,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item-content>
     </v-list-item>
     <!-- Assign the conversation to the add-on's email categories (Important / Invitation
-         / Notification / To review) and show the ones already applied. -->
-    <email-connector-mail-box-drawer-category-bar :emails="messages" />
+         / Notification) and show the ones already applied. Drafts are kept out of it:
+         categories are assigned by IMAP UID, which a draft may not have, and an unsent
+         message is not a thing anyone means to categorise. -->
+    <email-connector-mail-box-drawer-category-bar :emails="categorizableMessages" />
     <!-- A thin progress bar while the archived tail is fetched in the background. -->
     <v-progress-linear
       v-if="loadingOlder"
@@ -65,6 +67,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ item.count }}
         </span>
       </div>
+      <!-- The reply in progress, in place at the bottom of the conversation it
+           answers — the whole point of keeping drafts in the same table as mail. -->
+      <email-connector-mail-box-drawer-thread-draft
+        v-else-if="item.type === 'draft'"
+        :key="item.key"
+        :draft="item.message"
+        @resume="resumeDraft(item.message)"
+        @discard="discardDraft(item.message)" />
       <email-connector-mail-box-drawer-thread-message
         v-else
         :key="item.key"
@@ -113,6 +123,11 @@ export default {
     subject() {
       return this.email?.subject || this.$t('emailConnector.mailBox.list.drawer.noSubject');
     },
+    // What the reader is open ON, as an identity the row cannot be without: a draft's
+    // local id, any other message's folder + UID. See the watcher.
+    openedKey() {
+      return this.email ? this.msgKey(this.email) : null;
+    },
     // The message ids of this conversation, matching Phase 2's grouping key so the
     // reader and the collapsed list row agree on what a thread is.
     threadMailRemoteIds() {
@@ -122,6 +137,12 @@ export default {
       const key = this.threadKey(this.email);
       const ids = (this.emails || []).filter(e => this.threadKey(e) === key).map(e => e.mailRemoteId);
       return ids.length ? ids : [this.email.mailRemoteId];
+    },
+    // Everything in the conversation that is actual mail. Drafts are in `messages`
+    // because they belong in the conversation, but they are not messages: anything
+    // that acts on one by its IMAP UID has to work off this instead.
+    categorizableMessages() {
+      return this.messages.filter(message => !this.isDraft(message));
     },
     // The reader's display list: each message shown on its own, except runs of
     // consecutive collapsed middle messages, which fold into one "bubble" item
@@ -144,7 +165,7 @@ export default {
       this.messages.forEach((message, index) => {
         if (this.isShown(index)) {
           flush();
-          items.push({ type: 'message', message, key: this.msgKey(message) });
+          items.push({ type: this.isDraft(message) ? 'draft' : 'message', message, key: this.msgKey(message) });
         } else {
           run.push(message);
         }
@@ -154,8 +175,12 @@ export default {
     },
   },
   watch: {
-    // Reload whenever a different conversation is opened.
-    'email.mailRemoteId': {
+    // Reload whenever a different conversation is opened. Keyed on the row's own
+    // identity rather than on its IMAP UID: a conversation can now be opened from
+    // its draft, and a draft may have no UID at all — two unpushed ones would then
+    // both watch null, and opening the second would leave the first one's
+    // conversation on screen.
+    openedKey: {
       immediate: true,
       handler() {
         this.loadThread();
@@ -168,10 +193,16 @@ export default {
     // the mail server refused the push — must be mirrored on them here.
     this.$root.$on('update-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.applyFavoriteStatus);
+    // The same event the folder list reloads on, for the same reason: the composer is
+    // the one writer outside the sync, and what it writes lands in this conversation
+    // as well as in the list. Reusing it rather than inventing a second signal is what
+    // keeps the two views from ever disagreeing about whether a draft exists.
+    this.$root.$on('refresh-email-box', this.reloadFromCache);
   },
   beforeDestroy() {
     this.$root.$off('update-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyFavoriteStatus);
+    this.$root.$off('refresh-email-box', this.reloadFromCache);
   },
   methods: {
     // Patch the favorite flag on this conversation's INBOX messages (favorite ids are
@@ -196,9 +227,20 @@ export default {
       const listRow = (this.emails || []).find(e => this.msgKey(e) === openedKey);
       return (listRow && listRow.threadId) || this.email.threadId;
     },
+    // Whether a row is a draft rather than mail. Keyed on the local id, not on the
+    // folder: the local id is the one thing only a draft has, and it is what the
+    // composer addresses it by.
+    isDraft(message) {
+      return !!message.draftLocalId;
+    },
     // A message is identified across the reader by its folder + IMAP UID: UIDs are
-    // per-folder, so the same number can appear in INBOX and SENT/ARCHIVE.
+    // per-folder, so the same number can appear in INBOX and SENT/ARCHIVE. A draft
+    // takes its local id instead — it may have no UID at all yet, and two unpushed
+    // drafts of the same conversation would otherwise share one key and render once.
     msgKey(message) {
+      if (this.isDraft(message)) {
+        return `DRAFT-${message.draftLocalId}`;
+      }
       return `${message.folder || 'INBOX'}-${message.mailRemoteId}`;
     },
     isLast(message) {
@@ -208,12 +250,49 @@ export default {
     // Which messages stay visible: the first, the last few (tail), any still-unread
     // one, and any the user revealed by clicking a badge. The rest fold into badges.
     isShown(index) {
+      const message = this.messages[index];
+      // A draft is never folded away behind a count badge. It is the one item here the
+      // user is in the middle of writing, and hiding it inside "3 more messages" would
+      // lose exactly the thing this feature exists to show. In practice a draft is
+      // last and would be shown anyway; this is the rule, not the coincidence.
+      if (this.isDraft(message)) {
+        return true;
+      }
       const total = this.messages.length;
       if (index === 0 || index >= total - 1 - TAIL_STRIPS) {
         return true;
       }
-      const message = this.messages[index];
       return !message.read || this.revealedKeys.includes(this.msgKey(message));
+    },
+    /**
+     * Reopens a draft in the composer, which is what "opening" one means — a draft
+     * has no reader.
+     *
+     * @param {object} draft - the draft row
+     * @returns {void}
+     */
+    resumeDraft(draft) {
+      this.$root.$emit('resume-draft', draft);
+    },
+    /**
+     * Throws a draft away from inside the conversation it sits in.
+     *
+     * The row is only removed from the list once the server says it is gone, so a
+     * discard that fails leaves the draft where it is rather than making it vanish
+     * from the screen and come back on the next read.
+     *
+     * @param {object} draft - the draft row
+     * @returns {void}
+     */
+    discardDraft(draft) {
+      this.$emailConnectorMailBoxService.deleteDraft(draft.draftLocalId).then(() => {
+        this.$root.$emit('refresh-email-box');
+      }).catch(() => {
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: 'error',
+          alertMessage: this.$t('emailConnector.mailBox.newEmail.drawer.draft.discard.error'),
+        }}));
+      });
     },
     /**
      * Loads the conversation in two passes so the drawer never blocks on IMAP:
@@ -244,6 +323,51 @@ export default {
           this.completeInBackground(threadId);
         });
     },
+    /**
+     * Re-reads the conversation after the composer has written to it — a draft saved,
+     * discarded, or sent out from under it.
+     *
+     * The cached pass only, deliberately, where opening the reader runs both. The
+     * second pass exists to recover an archived tail from the provider's All Mail,
+     * which cannot have changed because someone typed a sentence here; running it on
+     * every draft push would put an IMAP round-trip behind an autosave.
+     *
+     * @returns {void}
+     */
+    reloadFromCache() {
+      // Nothing is open here: the reader sits between conversations, or the drawer
+      // behind the composer has been closed. There is no conversation to bring up to
+      // date, and resolveThreadId reads a message that is not there.
+      if (!this.email) {
+        return;
+      }
+      const threadId = this.resolveThreadId();
+      if (!threadId) {
+        return;
+      }
+      // What the user had opened is theirs, not ours to close: a draft being autosaved
+      // must not collapse the message they are reading it against.
+      const wasExpanded = this.expandedIds.slice();
+      this.$emailConnectorMailBoxService.getThreadByThreadId(threadId)
+        .then(fetched => {
+          if (!fetched?.length) {
+            // An answer with nothing in it is not this conversation being emptied — the
+            // messages on screen were read from the same table a moment ago. It is the
+            // id they were read under no longer naming them: saving a draft resolves
+            // its conversation the way a synced message does, and a resolution that
+            // finds the thread split collapses every part of it into the OLDEST id.
+            // Applying this would fall back to the single opened message and take the
+            // rest of the conversation off the screen. Keeping what is shown is both
+            // truthful and recoverable — reopening the conversation reads it whole,
+            // under the id the folder list now carries.
+            return;
+          }
+          this.applyMessages(fetched);
+          const stillHere = wasExpanded.filter(key => this.messages.some(message => this.msgKey(message) === key));
+          this.expandedIds = Array.from(new Set(this.expandedIds.concat(stillHere)));
+        })
+        .catch(() => { /* best-effort: keep what is on screen */ });
+    },
     // Second pass: pull the archived tail from All Mail without blocking the open.
     completeInBackground(threadId) {
       if (!threadId) {
@@ -262,20 +386,80 @@ export default {
     },
     // Normalize a fetched thread into the reader's state: dedupe by Message-ID, sort
     // oldest first, keep the latest message expanded.
+    //
+    // Mail sorts by date. A DRAFT does not, and the date sort is exactly what put it
+    // wrong: its row is re-dated every time the user types, so a reply to Monday's
+    // message resumed tonight sorted below a mail that arrived at 20:57 and answered
+    // nothing. The server places drafts under what they answer and this repeats the
+    // rule rather than trusting the order it was handed, because the list here is not
+    // always the server's: a single opened message and a background completion are
+    // merged into it, and a sort of the union has to know where a draft belongs.
     applyMessages(fetched) {
       const sorted = (fetched && fetched.length ? fetched : [this.email])
         .filter(Boolean)
         .sort((first, second) => new Date(first.receivedDate) - new Date(second.receivedDate));
-      const messages = this.dedupeByHeader(sorted);
+      // Positioned AFTER the dedupe, not before it: a sent copy takes the place of the
+      // draft it came from (see dedupeByHeader), and it is mail once it has — its place
+      // is the one its date earns, not the one the draft was holding.
+      const messages = this.positionDrafts(this.dedupeByHeader(sorted));
       this.messages = messages;
-      const latest = messages[messages.length - 1];
+      // The last real message stays open, not the draft: the draft renders as its own
+      // strip with no expanded form, and expanding nothing would leave the reader with
+      // every message collapsed.
+      const readable = messages.filter(message => !this.isDraft(message));
+      const latest = readable[readable.length - 1];
       this.expandedIds = latest ? [this.msgKey(latest)] : [];
+    },
+    /**
+     * Moves each draft directly under the message it answers, and leaves the mail
+     * around it in the order it was given.
+     *
+     * A draft with nothing to answer, or one whose parent is not in this
+     * conversation — evicted from the cache, or not yet completed from the archive —
+     * stays at the end, which is also where a draft answering the newest message
+     * lands. That is what most replies are, so the common conversation looks
+     * unchanged.
+     *
+     * @param {Array} messages - the conversation, mail in date order
+     * @returns {Array} the same messages in reading order
+     */
+    positionDrafts(messages) {
+      if (messages.length < 2 || !messages.some(message => this.isDraft(message))) {
+        return messages;
+      }
+      const ordered = messages.filter(message => !this.isDraft(message));
+      messages.filter(message => this.isDraft(message)).forEach(draft => {
+        // The LAST copy of the parent: the same mail can be cached once per folder,
+        // and a reply belongs after all of its copies rather than between two of them.
+        const parentIndex = draft.inReplyTo
+          ? ordered.map(message => message.mailHeaderId).lastIndexOf(draft.inReplyTo)
+          : -1;
+        if (parentIndex < 0) {
+          ordered.push(draft);
+          return;
+        }
+        // Past the drafts already placed under this same parent, so two unsent replies
+        // to one message keep the order they were written in.
+        let insertAt = parentIndex + 1;
+        while (insertAt < ordered.length && this.isDraft(ordered[insertAt])) {
+          insertAt++;
+        }
+        ordered.splice(insertAt, 0, draft);
+      });
+      return ordered;
     },
     // The same message can be present in more than one folder (e.g. a provider
     // whose Archive/All-Mail overlaps the inbox), so show it once, preferring the
     // INBOX copy. Messages without a Message-ID are always kept.
+    //
+    // DRAFTS ranks last on purpose, and that is what makes a sent draft disappear
+    // cleanly. A draft goes out under the Message-ID it minted at its first save, so
+    // the copy that lands in Sent carries the SAME header as the draft row — for as
+    // long as both exist, they are two rows for one message. Ranking the draft lowest
+    // means the sent copy wins the moment it arrives, and the reply the user was
+    // writing turns into the reply they sent, in place.
     dedupeByHeader(messages) {
-      const priority = { INBOX: 0, SENT: 1, ARCHIVE: 2, ALL_MAIL: 3 };
+      const priority = { INBOX: 0, SENT: 1, ARCHIVE: 2, ALL_MAIL: 3, DRAFTS: 4 };
       const rank = message => (message.folder in priority ? priority[message.folder] : 9);
       const seen = new Map();
       const deduped = [];

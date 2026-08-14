@@ -93,10 +93,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               height="8"
               class="my-0 me-1 error-color-background" />
             <v-list-item-content :class="['py-0', { 'font-weight-bold': threadUnread }]">
+              <!-- The participants line, and after them the conversation's size.
+                   A conversation the user has a reply half-written in says so right
+                   here, last among the participants and in the platform's error
+                   colour — the point being that you can see a reply is unfinished
+                   without opening anything, which is what stops it being forgotten.
+                   A plain span with no listener of its own: this list streams
+                   thousands of rows, and one handler per row is a real cost. -->
               <v-list-item-title>
-                {{ email.sender.name }}<span
-                  v-if="threadCount > 1"
-                  class="text-light-color ms-1 font-weight-regular">{{ threadCount }}</span>
+                {{ participants }}<span
+                  v-if="showDraftMarker"
+                  class="error--text font-weight-regular">{{ draftMarker }}</span><span
+                    v-if="threadCount > 1"
+                    class="text-light-color ms-1 font-weight-regular">{{ threadCount }}</span>
               </v-list-item-title>
             </v-list-item-content>
             <v-list-item-action class="my-0 flex-row align-center">
@@ -233,6 +242,92 @@ export default {
     threadCount() {
       return this.thread ? this.thread.count : 1;
     },
+    // Whether this row IS a draft, as opposed to a message whose conversation holds
+    // one. The two are different rows on different screens and are labelled by
+    // different rules; the local id is the same thing the reader, the swipe and the
+    // context menu already key on, rather than which folder happens to be listed.
+    isDraft() {
+      return !!this.email.draftLocalId;
+    },
+    // Who the row names, which is not the same question for a draft as for a message.
+    //
+    // A message names its sender, as it always has. A DRAFT's sender is the account
+    // owner — always, that is what a draft is — so naming it named the user to
+    // themselves on every draft they had, and never named the person the
+    // conversation was actually with: a reply to Véronika read "benjamin benjamin,
+    // Draft 2". A draft is named after its CONVERSATION instead, by the other people
+    // in it, which is what Gmail shows and what the product owner asked for.
+    //
+    // Out of the same per-conversation summary the count and the marker come from,
+    // deliberately: three facts about one conversation rendered side by side, from
+    // one server answer, so a name cannot appear beside a marker that disagrees with
+    // it. NOT out of the draft's own recipients, which are what the user has typed so
+    // far and say nothing about who wrote the mail being answered.
+    //
+    // A draft that answers nothing has no other participants and is named by nothing
+    // at all — the row is then the marker alone, again Gmail's shape. The owner's own
+    // name never appears: Gmail's word for that is "me", and only ever alongside
+    // somebody else, which is a change to how every row of this list is labelled
+    // rather than to how a draft's is. The server leaves the owner out; nothing here
+    // has to know their address.
+    participants() {
+      return this.isDraft ? this.threadParticipants.join(', ') : this.email.sender.name;
+    },
+    // Server-stamped, read off the thread the grouping built or off the lone row,
+    // exactly like the draft flag beside it.
+    threadParticipants() {
+      return (this.thread ? this.thread.participants : this.email.threadParticipants) || [];
+    },
+    // Whether this draft answers a conversation there is something to show of.
+    //
+    // Deliberately NOT "does it have a threadId": every draft has one, because a
+    // draft that references nothing threads as a conversation of one, so the id is
+    // present either way and says nothing. What tells the two apart is whether the
+    // conversation holds anything BESIDES the draft, and that is exactly what the
+    // count beside the participants already is — the server's per-conversation
+    // aggregate, DISTINCT by Message-ID across every folder, so a plain draft counts
+    // 1 and a reply counts the mail it answers too. Read off the same number the row
+    // renders, so what the user sees and what the click does cannot disagree.
+    //
+    // It is also right in the awkward case rather than merely safe: when the parent
+    // has fallen out of the cache window the count drops back to 1 and this says
+    // "no conversation" — which is the truth, since opening the reader would show an
+    // empty one.
+    draftHasConversation() {
+      return this.isDraft && this.threadCount > 1;
+    },
+    // Whether this conversation carries a reply the user never sent. Server-stamped
+    // (the draft is a DRAFTS row and this list holds one folder's rows), so it is
+    // read off the thread the grouping built, or off the lone row when there is no
+    // thread.
+    threadHasDraft() {
+      return this.thread ? !!this.thread.hasDraft : !!this.email.threadHasDraft;
+    },
+    // Shown wherever the conversation carries one, the Drafts folder's own listing
+    // included. This reverses what slice 6 chose — it suppressed the marker on a row
+    // that IS a draft, on the reasoning that saying so on every row of Drafts is
+    // noise — and it is a product decision, not something the code discovered: in a
+    // list of CONVERSATIONS the marker says "this thread has an unfinished reply",
+    // which is information about the thread rather than about the row, and that is
+    // worth reading inside Drafts as much as outside it. There is nothing left to
+    // decide per row, so the whole rule is now the flag.
+    showDraftMarker() {
+      return this.threadHasDraft;
+    },
+    // ", Draft" — built here rather than in the template so the separator sits
+    // against the name with no margin of its own, the way a list separator reads.
+    // The label is a key of its own and not the thread strip's: the two are separate
+    // surfaces (the strip names a thing on screen, this qualifies a participant
+    // list), and sharing one key would let a change to either silently rewrite the
+    // other.
+    //
+    // The separator goes with a name and not without one. A draft that answers
+    // nothing has nobody to be listed after, and Gmail renders it as the bare word:
+    // a leading comma there would be punctuation attaching a marker to an absence.
+    draftMarker() {
+      const label = this.$t('emailConnector.mailBox.list.drawer.draft.label');
+      return this.participants ? `, ${label}` : label;
+    },
     // A thread is unread when any of its messages is unread; a lone email falls back to its own flag.
     threadUnread() {
       return this.thread ? this.thread.unreadCount > 0 : !this.email.read;
@@ -265,7 +360,13 @@ export default {
       }
       return '';
     },
+    // A draft has no sender worth announcing — it is the user's own — and routinely
+    // no subject either, so it is announced as what it is and by the fallback title
+    // the row itself shows rather than by "from me about undefined".
     ariaLabel() {
+      if (this.isDraft) {
+        return `Open unsent draft about ${this.subject}`;
+      }
       return `Open email from ${this.email.sender.name} about ${this.email.subject}`;
     },
   },
@@ -283,6 +384,9 @@ export default {
       if (this.selectMode) {
         this.emitSelect(!this.selected);
       }
+      else if (this.isDraft) {
+        this.openDraft();
+      }
       else {
         if (this.expanded) {
           this.$root.$emit('open-email-detail-content', this.email.mailRemoteId);
@@ -293,7 +397,45 @@ export default {
         }
       }
     },
+    /**
+     * Opens a draft, which means one of two different things — Gmail's rule, asked
+     * for by name.
+     *
+     * A plain draft, a message that answers nothing, goes straight back to the
+     * composer: there is no conversation to put it in and a reader would have one
+     * item in it, the unfinished thing the user came back to write.
+     *
+     * A reply lands in the conversation it answers instead, where the reader already
+     * renders it at the bottom as its own strip and it is resumed from there. Getting
+     * there means opening the reader on the DRAFT's own row — deliberately, rather
+     * than hunting the conversation for a real message to open it on: the reader only
+     * ever needs the row's thread id, it fetches the conversation itself, and looking
+     * for an anchor would mean a second thread request and a message that may be in
+     * any folder. The one thing it costs is the toolbar's mail actions, which address
+     * a message by IMAP UID and are hidden for a draft anchor for exactly the reason
+     * every other mail action already stays off a draft row.
+     *
+     * @returns {void}
+     */
+    openDraft() {
+      if (!this.draftHasConversation) {
+        this.$root.$emit('resume-draft', this.email);
+      }
+      else if (this.expanded) {
+        this.$root.$emit('open-email-thread-content', this.email);
+        this.$root.$emit('set-opened', this.email.mailRemoteId);
+      }
+      else {
+        this.$root.$emit('open-email-thread-drawer', this.email, this.emails, this.syncInProgress, this.webmailUrl);
+      }
+    },
     openActionMenuDrawer() {
+      // Every action in that menu — reply, forward, archive, delete, categorize —
+      // addresses a message by its IMAP UID, which a draft may not have yet, and none
+      // of them means anything for an unsent message anyway.
+      if (this.isDraft) {
+        return;
+      }
       if (!this.selectMode && !this.isSwiping) {
         this.$root.$emit('open-email-action-menu-drawer', this.email, this.thread);
       }
@@ -315,6 +457,13 @@ export default {
       this.minWidth = Math.max(this.minWidth, this.$refs?.mail?.$el?.offsetWidth);
     },
     moveEnd() {
+      // Delete and archive both address messages by IMAP UID, and a draft that has
+      // not been uploaded has none. Discarding a draft is its own action, in the
+      // composer, where the user can see what they are throwing away.
+      if (this.isDraft) {
+        this.reset();
+        return;
+      }
       const deleteEmail = this.left > 0;
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
       if (confirm) {

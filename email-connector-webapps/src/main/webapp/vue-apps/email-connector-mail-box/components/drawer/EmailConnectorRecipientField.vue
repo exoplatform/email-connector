@@ -160,6 +160,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { personLabel } from '../../js/EmailRecipientDisplay.js';
+
 // Long enough that typing a name does not fire a request per letter, short
 // enough that the list feels attached to the keyboard. Same value as the
 // Contacts drawer's own filter, on purpose.
@@ -262,7 +264,7 @@ export default {
      * @returns {string} the chip label
      */
     chipLabel(recipient) {
-      return recipient.name || recipient.address;
+      return personLabel(recipient);
     },
     /**
      * The initials standing in for a suggestion with no avatar.
