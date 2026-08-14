@@ -132,6 +132,24 @@
       }
     },
     {
+      "name": "get_email_thread",
+      "title": "Read a whole conversation",
+      "description": "Read every message of one conversation at once, oldest first, identified by the thread_id carried by every email returned by list_emails, search_emails, get_email_by_id and get_email_full. Each message comes back with its sender name and address, its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, and never assume the missing part agrees with the part you can see.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "thread_id": { "type": "string" }
+        },
+        "required": ["thread_id"]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "mark_read",
       "title": "Mark emails read",
       "description": "Mark one or more emails as read, both locally and on the IMAP server. Identify emails by their IMAP mail_remote_id (from list_emails/search_emails).",
