@@ -114,6 +114,32 @@ const attachmentMapIconsExtensions = new Map([
   ['folder', folder],
 ]);
  
+// Folders whose messages the interface may only READ.
+//
+// Every mutating action the mailbox offers — delete, archive, read status — addresses
+// a message by its IMAP UID, and the backend resolves that UID against the INBOX
+// (EXO-89367). UIDs are numbered PER FOLDER, so firing one of those from a row that
+// is not an inbox row either does nothing or acts on the unrelated inbox message that
+// happens to carry the same number. Trash is browsable from this slice on, so it is
+// the one folder that must not offer them; Sent and Archive stay as they are, and are
+// EXO-89367's to fix.
+//
+// One list, asked for in one place: the row menu, the swipe, the reader's toolbar and
+// the bulk toolbar all read it, so a folder cannot be read-only in one of them and
+// writable in the next.
+const READ_ONLY_FOLDERS = ['TRASH'];
+
+/**
+ * Whether a folder's messages may only be read, never acted on.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX, which is what
+ *        every row written before folders existed meant
+ * @returns {Boolean} true when no mutating action may be offered on those messages
+ */
+export function isReadOnlyFolder(folder) {
+  return READ_ONLY_FOLDERS.includes(folder || 'INBOX');
+}
+
 export function getEmailBox(folder, favoriteOnly) {
   const params = new URLSearchParams();
   if (folder && folder !== 'INBOX') {

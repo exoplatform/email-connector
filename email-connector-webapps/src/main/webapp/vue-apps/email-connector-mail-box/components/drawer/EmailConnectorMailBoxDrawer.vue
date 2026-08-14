@@ -448,7 +448,7 @@ export default {
     hasEmails() {
       return this.emails?.length > 0;
     },
-    // INBOX plus any of SENT/ARCHIVE that actually hold mail, for the ⋮ folder switch.
+    // INBOX plus any of SENT/ARCHIVE/DRAFTS/TRASH that actually hold mail, for the ⋮ folder switch.
     /**
      * The folders offered in the 3-dots menu: the inbox always, the others only
      * once they hold something.
@@ -458,11 +458,15 @@ export default {
      * one and the other has to change with it, or this offers a folder the backend
      * refuses (or hides one it would happily serve).
      *
+     * Trash is count-gated like the rest, which is what keeps it off the menu of a
+     * mailbox that has no Trash folder at all, or an empty one — the entry appears
+     * only once the sync has actually cached something to look at.
+     *
      * @returns {Array} the folder ids to offer
      */
     availableFolders() {
       const counts = this.emailBox?.folderCounts || {};
-      return ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
+      return ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
     },
     syncBlocked() {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';
@@ -476,6 +480,8 @@ export default {
           title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.archive')}`;
         } else if (this.currentFolder === 'DRAFTS') {
           title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.drafts')}`;
+        } else if (this.currentFolder === 'TRASH') {
+          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.trash')}`;
         }
         // The favorite view reads as one more folder-like narrowing of the list.
         if (this.favoriteOnly) {
@@ -694,12 +700,28 @@ export default {
         this.startAutoRefresh();
       }
     },
+    /**
+     * Opens one listed message in the expanded reader.
+     *
+     * The folder comes off the clicked ROW. An IMAP UID numbers messages within one
+     * folder, and this read is answered from the cache under the folder it is asked
+     * for — so letting it default to the inbox, as it did, asked for a message that
+     * is not there and the click did nothing at all. It was invisible while the
+     * expanded pane only ever listed the inbox; it takes any non-inbox folder to
+     * show, and Trash is the third to arrive. Both paths that open a message from
+     * OUTSIDE the list (a search hit, a favorite) already pass the folder — this is
+     * the same lookup the narrow drawer does in its own folderOf.
+     *
+     * @param {Number} mailRemoteId the message's IMAP UID within the listed folder
+     * @returns {void}
+     */
     openEmailDetailContent(mailRemoteId) {
       // Opening from the list is the user choosing again: whatever was pinned open
       // from elsewhere gives way to it.
       this.pinnedEmail = false;
       this.loading = true;
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
+      const listed = this.emails.find(e => e.mailRemoteId === mailRemoteId);
+      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, listed?.folder || 'INBOX').then((email) => {
         this.updateEmailsReadStatus(true, [mailRemoteId]);
         this.email = email;
         this.selectEmailPlaceHolder = false;
@@ -923,10 +945,33 @@ export default {
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
     },
+    /**
+     * Marks listed messages read or unread, locally and on the mail server.
+     *
+     * The one place in the mailbox that pushes a read status, which is why the
+     * read-only folders are held back HERE rather than at each of the four places
+     * that ask for one. And they have to be held back, for a reason stronger than
+     * the write being pointless: the push opens the INBOX and sets \Seen on whatever
+     * message carries that UID there (EXO-89367). Since simply OPENING a message
+     * marks it read, browsing the Trash would otherwise quietly clear the unread
+     * flag of unrelated inbox mail, one message per trashed mail read — with nothing
+     * on any screen to account for it.
+     *
+     * Not marked read locally either, deliberately: showing a trashed message turn
+     * read would promise a state nothing is saving, and the next sync would take it
+     * back.
+     *
+     * @param {Boolean} read the status to apply
+     * @param {Array} emailIds the IMAP UIDs to apply it to
+     * @returns {void}
+     */
     updateEmailsReadStatus(read, emailIds = []) {
       const emailIdsToUpdate = emailIds.filter(id => {
         const email = this.emails.find(e => e.mailRemoteId === id);
-        if (email && email.read !== read) {
+        if (!email || this.$emailConnectorMailBoxService.isReadOnlyFolder(email.folder)) {
+          return false;
+        }
+        if (email.read !== read) {
           this.$set(email, 'read', read);
           return true;
         }

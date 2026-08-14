@@ -58,12 +58,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
       </v-btn>
       <v-btn
+        v-if="canMutateSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
         @click="archiveEmails()"
         icon>
         <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
       </v-btn>
       <v-btn
+        v-if="canMutateSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
         @click="deleteEmails()"
         icon>
@@ -98,6 +100,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
       </v-btn>
       <v-btn
+        v-if="canMutateSelection"
         @click="archiveEmails()"
         outlined
         class="btn btn-primary font-weight-bold">
@@ -110,6 +113,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.archive.label') }}
       </v-btn>
       <v-btn
+        v-if="canMutateSelection"
         @click="deleteEmails()"
         outlined
         class="btn error font-weight-bold">
@@ -179,12 +183,41 @@ export default {
     hasWebmailAccess() {
       return !!this.webmailUrl;
     },
+    /**
+     * Whether the selected messages may be acted on at all.
+     *
+     * Read off the SELECTED ROWS rather than off the listed folder, because this
+     * toolbar is mounted twice — once over the mailbox list, once over the reader —
+     * and only one of the two is told which folder is listed. The rows always carry
+     * their own, and they are what the action would be sent for.
+     *
+     * Any read-only row disqualifies the whole selection: a listing holds one
+     * folder's rows, so in practice it is all of them or none, and the conservative
+     * reading is the one that cannot fire an inbox-keyed delete on a Trash message.
+     *
+     * @returns {Boolean} true when archive/delete/read-status may be offered
+     */
+    canMutateSelection() {
+      return !this.selectedEmails.some(emailId =>
+        this.$emailConnectorMailBoxService.isReadOnlyFolder(this.emailsMap[emailId]?.folder));
+    },
   },
   created() {
     this.$root.$on('open-webmail', this.openWebmail);
   },
   methods: {
+    /**
+     * Whether a bulk read/unread is worth offering: at least one selected message
+     * would actually change, and none of them is in a read-only folder (read-status
+     * writes are inbox-scoped server-side, so offering it there would do nothing).
+     *
+     * @param {Boolean} read the status the button would apply
+     * @returns {Boolean} true when the button should be shown
+     */
     canUpdateEmailsReadStatus(read) {
+      if (!this.canMutateSelection) {
+        return false;
+      }
       return this.selectedEmails.some(emailId => {
         const email = this.emailsMap[emailId];
         return email && email.read !== read;

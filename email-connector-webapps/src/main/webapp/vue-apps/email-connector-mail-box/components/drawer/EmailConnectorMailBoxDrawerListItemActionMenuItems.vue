@@ -33,7 +33,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.select.label') }}
       </span>
     </v-list-item>
+    <!-- Read/unread is a write to the mail server, so it stays off a read-only
+         folder's rows: the backend scopes read-status writes to the inbox, and a
+         menu entry that reliably does nothing is worse than no entry at all. -->
     <v-list-item
+      v-if="!readOnly"
       class="ps-2 pe-3 height-auto"
       @click.stop="updateEmailReadStatus">
       <v-sheet
@@ -85,8 +89,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       parent-element="div"
       element="div"
       class="my-auto" /> 
+    <!-- `restricted` is the mobile long-press drawer saying "the swipe already offers
+         these two"; `readOnly` is the folder saying they must not be offered at all. -->
     <v-list-item
-      v-if="!restricted"
+      v-if="!restricted && !readOnly"
       class="ps-2 pe-3 height-auto"
       @click.stop="archiveEmail">
       <v-sheet
@@ -104,7 +110,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <v-list-item
-      v-if="!restricted"
+      v-if="!restricted && !readOnly"
       class="ps-2 pe-3 height-auto"
       @click.stop="deleteEmail">
       <v-sheet
@@ -153,9 +159,18 @@ export default {
     threadFavorite() {
       return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
     },
-    // The favorite is pushed through the INBOX folder, so only inbox rows offer it.
+    // The favorite is pushed through the INBOX folder, so only inbox rows offer it —
+    // which already keeps it off a Trash row, before readOnly below has any say.
     canFavorite() {
       return (this.email.folder || 'INBOX') === 'INBOX';
+    },
+    // Whether this row sits in a folder the interface may only read (Trash), in which
+    // case every action that writes to the mail server stays off the menu. Read off
+    // the ROW's own folder rather than off the listed one, the same way canFavorite
+    // above already is: the row is the thing being acted on, and it is also what the
+    // mobile long-press drawer and the search results hand over.
+    readOnly() {
+      return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
   },
   methods: {

@@ -25,25 +25,31 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       parent-element="div"
       element="div"
       class="my-auto" />
-    <v-btn
-      :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
-      @click="updateEmailReadStatus()"
-      icon>
-      <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
-    </v-btn>
-    <v-btn
-      :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
-      @click="archiveEmail()"
-      icon>
-      <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
-    </v-btn>
-    <v-btn
-      :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
-      color="error"
-      @click="deleteEmail()"
-      icon>
-      <v-icon size="20">fa-trash</v-icon>
-    </v-btn>
+    <!-- All three write to the mail server by IMAP UID, which the backend resolves
+         against the inbox — so a message opened out of a read-only folder offers
+         none of them. The extension seam above stays: it is somebody else's toolbar
+         and its actions are not this one's to withdraw. -->
+    <template v-if="!readOnly">
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
+        @click="updateEmailReadStatus()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
+        @click="archiveEmail()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+        color="error"
+        @click="deleteEmail()"
+        icon>
+        <v-icon size="20">fa-trash</v-icon>
+      </v-btn>
+    </template>
   </v-layout>
 </template>
 
@@ -53,6 +59,17 @@ export default {
     email: {
       type: Object,
       default: () => null,
+    },
+  },
+  computed: {
+    /**
+     * Whether the opened message sits in a folder the interface may only read
+     * (Trash), in which case this toolbar offers nothing that writes.
+     *
+     * @returns {Boolean} true when the mail actions must stay hidden
+     */
+    readOnly() {
+      return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email?.folder);
     },
   },
   methods: {
