@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.util.Date;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,7 +40,11 @@ import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.model.DraftState;
+import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
+import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 
 import org.exoplatform.commons.file.services.FileService;
@@ -191,6 +196,64 @@ public class EmailBoxAttachmentFolderStorageTest {
     assertNotNull(attachment);
     assertEquals(MailFolder.SENT, attachment.getFolder(), "a UID without its folder names nothing; the pair has to travel together");
     assertEquals(Long.valueOf(77L), attachment.getMailRemoteId());
+  }
+
+  /**
+   * A draft imported from another client is cached WITH its attachment rows, and they
+   * are found under the Drafts folder — which is the whole of "the chips are there and
+   * they download".
+   * <p>
+   * Written through {@code createEmail}, the call the import really makes, rather than
+   * by saving attachment rows by hand: the rows exist only through that method's
+   * cascade, and whether a cascade really writes them is a question about a real
+   * database. Nothing under a mock would have noticed if it did not.
+   * <p>
+   * The INBOX half is asserted alongside for the reason this whole class exists: a UID
+   * without its folder names nothing, and the download only reaches a Drafts row
+   * because the folder is part of the key.
+   */
+  @Test
+  void anImportedDraftsAttachmentIsCachedAndFoundUnderTheDraftsFolder() {
+    EmailBoxEntity ignoredCollision = new EmailBoxEntity();
+    ignoredCollision.setUserId(USERNAME);
+    ignoredCollision.setFolder(MailFolder.INBOX);
+    ignoredCollision.setMailRemoteId(4242L);
+    ignoredCollision.setMailHeaderId("<inbox-4242@example.org>");
+    ignoredCollision.setSubject("An unrelated message that happens to share the number");
+    ignoredCollision.setBody("body");
+    ignoredCollision.setSender("Bob,bob@example.org");
+    ignoredCollision.setReceivedDate(new Date());
+    emailBoxDao.save(ignoredCollision);
+
+    Email imported = new Email();
+    imported.setUserId(USERNAME);
+    imported.setFolder(MailFolder.DRAFTS);
+    imported.setMailRemoteId(4242L);
+    imported.setMailHeaderId("<phone@example.org>");
+    imported.setDraftLocalId("draft-from-the-phone");
+    imported.setDraftState(DraftState.SYNCED);
+    imported.setDraftRevision(1L);
+    imported.setDraftUpdatedDate(new Date());
+    imported.setReceivedDate(new Date());
+    imported.setRead(true);
+    imported.setSubject("half a sentence");
+    imported.setSender(new EmailSender("Alice", "alice@example.org", null, null));
+    imported.setContent(new EmailContent("see attached", null,
+                                         List.of(new EmailAttachment(null, 4242L, SHARED_PART_PATH, "from-the-phone.pdf",
+                                                                     "application/pdf", null, MailFolder.DRAFTS, null, null))));
+    emailBoxStorage.createEmail(imported);
+
+    EmailAttachment onTheDraft = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(4242L,
+                                                                                          SHARED_PART_PATH,
+                                                                                          USERNAME,
+                                                                                          MailFolder.DRAFTS);
+
+    assertNotNull(onTheDraft, "the import's cascade has to have written the row, or there is nothing to download");
+    assertEquals("from-the-phone.pdf", onTheDraft.getName());
+    assertEquals(MailFolder.DRAFTS, onTheDraft.getFolder());
+    assertNull(onTheDraft.getFileId(), "an imported draft's file is an address into the server copy, not bytes on this side");
+    assertNull(emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(4242L, SHARED_PART_PATH, USERNAME, MailFolder.INBOX),
+               "the inbox message sharing that UID must not answer for the draft's file");
   }
 
   /**
