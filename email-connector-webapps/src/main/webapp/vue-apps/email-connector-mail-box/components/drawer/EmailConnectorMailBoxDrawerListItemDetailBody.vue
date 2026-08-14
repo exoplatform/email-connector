@@ -33,7 +33,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
+import { foldPlainTextQuotedHistory, foldQuotedHistory } from '../../js/EmailQuotedHistoryFold.js';
 
 /**
  * Tags that open a line box of their own. One of them anywhere in an HTML body means
@@ -194,7 +194,10 @@ export default {
      * Decide how the body reaches the iframe, from what the message said it was.
      * <p>
      * A plain-text body is escaped and shown preformatted: its newlines and its
-     * indentation are the whole layout it has, and HTML would collapse both.
+     * indentation are the whole layout it has, and HTML would collapse both. Its quoted
+     * history folds too, from the attribution line above the "&gt; " block — the markup
+     * fold cannot see it, there being no markup, so such a reply used to show its whole
+     * thread.
      * <p>
      * An HTML body is served as it always was, except for one shape — typed text
      * inside a lone wrapper, which the flag cannot and should not tell apart from any
@@ -207,7 +210,7 @@ export default {
      */
     renderBody(html) {
       if (!this.htmlBody) {
-        return this.wrapPlainText(html);
+        return this.foldPlainTextHistory(html) || this.wrapPlainText(html);
       }
       if (this.isTextInWrapper(html)) {
         // Not escaped, and deliberately: this exact string is what already went into
@@ -226,10 +229,28 @@ export default {
      * @returns {string} the folded body, or the original when nothing was folded
      */
     foldHistory(html) {
-      return foldQuotedHistory(html, {
+      return foldQuotedHistory(html, this.quotedHistoryLabels());
+    },
+    /**
+     * Collapse the quoted history of a plain-text body, where the boundary is an
+     * attribution line above a run of "&gt; " lines rather than any markup.
+     *
+     * @param {string} text the plain-text email body
+     * @returns {string|null} the folded body, or null when there is nothing to fold
+     */
+    foldPlainTextHistory(text) {
+      return foldPlainTextQuotedHistory(text, this.quotedHistoryLabels());
+    },
+    /**
+     * The toggle's two texts, in the reader's language.
+     *
+     * @returns {{show: string, hide: string}} the collapsed and expanded link texts
+     */
+    quotedHistoryLabels() {
+      return {
         show: this.$t('emailConnector.mailBox.list.drawer.detail.showQuotedText'),
         hide: this.$t('emailConnector.mailBox.list.drawer.detail.hideQuotedText'),
-      });
+      };
     },
     /**
      * Whether an HTML body is really typed text inside an envelope — the shape a reply

@@ -87,6 +87,19 @@ function isForwarded(el) {
 const MAX_INTRO_LENGTH = 400;
 
 /**
+ * How many consecutive source lines a plain-text attribution may span. Mail clients
+ * wrap it when the address is long ("On … Gianni Falzone\n<gianni@example.org> wrote:"),
+ * so testing one line at a time would miss exactly the replies people actually send.
+ */
+const MAX_INTRO_LINES = 3;
+
+/**
+ * A line of quoted history, in the convention plain-text mail has always used: one or
+ * more "&gt;" markers, possibly indented. Nesting ("&gt; &gt;") is just more of them.
+ */
+const QUOTED_LINE_PATTERN = /^\s*>/;
+
+/**
  * The unique ids/classes of the injected wrapper and toggle, shared with the CSS
  * added by the host component and with the toggle script below.
  */
@@ -308,6 +321,153 @@ function hasVisibleContentOutsideHistory(body) {
 }
 
 /**
+ * Fill in the default toggle texts, so a caller that has no bundle at hand still gets a
+ * usable toggle rather than an empty one.
+ *
+ * @param {{show: string, hide: string}} [labels] localized link texts
+ * @returns {{show: string, hide: string}} the texts to render
+ */
+function toSafeLabels(labels) {
+  return {
+    show: (labels && labels.show) || 'Show quoted text',
+    hide: (labels && labels.hide) || 'Hide quoted text',
+  };
+}
+
+/**
+ * Where the quoted history starts in a plain-text body, as the line index of its
+ * attribution line.
+ * <p>
+ * Two things have to hold, and the second is what keeps this from folding the message
+ * itself: a line (or up to {@link MAX_INTRO_LINES} of them, since clients wrap it) reads
+ * as a reply-intro, and the next line carrying anything is quoted. An attribution with
+ * nothing quoted under it is a sentence, not a boundary — somebody writing "as Bob wrote:"
+ * before quoting nothing at all.
+ * <p>
+ * The lines forming the intro must not themselves be quoted, or a one-level-deeper
+ * "&gt; he wrote:" could be joined to the real message's last line and pass for one.
+ *
+ * @param {string[]} lines the body's lines
+ * @returns {number} the attribution's line index, or -1 when nothing is clearly quoted
+ */
+function findPlainTextBoundary(lines) {
+  for (let start = 0; start < lines.length; start++) {
+    if (QUOTED_LINE_PATTERN.test(lines[start])) {
+      continue;
+    }
+    for (let span = 1; span <= MAX_INTRO_LINES && start + span <= lines.length; span++) {
+      if (QUOTED_LINE_PATTERN.test(lines[start + span - 1])) {
+        break;
+      }
+      const intro = lines.slice(start, start + span).join('\n').trim();
+      if (intro.length > MAX_INTRO_LENGTH) {
+        break;
+      }
+      if (intro && REPLY_INTRO_PATTERNS.some(pattern => pattern.test(intro)) && quotesSomething(lines, start + span)) {
+        return start;
+      }
+    }
+  }
+  return -1;
+}
+
+/**
+ * Whether the first line carrying anything, from the given position on, is a quoted one.
+ * Blank lines are skipped because every client leaves one between the attribution and the
+ * quote it introduces.
+ *
+ * @param {string[]} lines the body's lines
+ * @param {number} from the first line to look at
+ * @returns {boolean} true when a quoted block follows
+ */
+function quotesSomething(lines, from) {
+  for (let index = from; index < lines.length; index++) {
+    if (lines[index].trim() !== '') {
+      return QUOTED_LINE_PATTERN.test(lines[index]);
+    }
+  }
+  return false;
+}
+
+/**
+ * Build one preformatted block of plain text. The text goes in as text, never as markup:
+ * this is the sender's message, so a line reading "&lt;script&gt;" has to show those
+ * characters.
+ *
+ * @param {Document} doc the owner document
+ * @param {string} text the block's text
+ * @param {string} [id] the element id, for the collapsible one
+ * @returns {Element} the block
+ */
+function buildPlainTextBlock(doc, text, id) {
+  const block = doc.createElement('div');
+  block.className = id ? 'ec-plain-text ec-quoted-history' : 'ec-plain-text';
+  if (id) {
+    block.id = id;
+  }
+  block.textContent = text;
+  return block;
+}
+
+/**
+ * Fold the quoted history of a plain-text mail body.
+ * <p>
+ * The markup fold below has nothing to work with here: a plain-text reply quotes with an
+ * attribution line and a run of "&gt;"-prefixed lines, and carries no blockquote, no
+ * gmail_quote, no element at all. So the whole history was shown, every time, on exactly
+ * the shape we now generate ourselves for plain-text replies.
+ * <p>
+ * Same red line as the markup fold: a fold that would leave the reader nothing to read is
+ * not worth having, so a boundary with only blank lines before it is discarded and the
+ * caller shows the message whole. A forwarded message is never folded either — it is
+ * content the sender chose to include.
+ *
+ * @param {string} text the plain-text email body
+ * @param {{show: string, hide: string}} [labels] localized toggle texts
+ * @param {DOMParser} [parser] an injected parser (tests); defaults to a browser one
+ * @returns {string|null} the folded body markup, or null when there is nothing to fold
+ */
+export function foldPlainTextQuotedHistory(text, labels, parser) {
+  if (!text || typeof text !== 'string') {
+    return null;
+  }
+  try {
+    const dp = parser || (typeof DOMParser !== 'undefined' ? new DOMParser() : null);
+    if (!dp) {
+      return null;
+    }
+    if (FORWARD_MARKERS.some(pattern => pattern.test(text))) {
+      return null;
+    }
+    const lines = text.split('\n');
+    const boundary = findPlainTextBoundary(lines);
+    if (boundary < 0) {
+      return null;
+    }
+    // Trailing blank lines belong to the gap the sender left before the quote, and
+    // pre-wrap would render every one of them above the toggle.
+    const visible = lines.slice(0, boundary).join('\n').replace(/\s+$/, '');
+    if (visible === '') {
+      return null;
+    }
+    const doc = dp.parseFromString('<!doctype html><html><body></body></html>', 'text/html');
+    if (!doc || !doc.body) {
+      return null;
+    }
+    const safeLabels = toSafeLabels(labels);
+    const history = buildPlainTextBlock(doc, lines.slice(boundary).join('\n'), HISTORY_ID);
+    history.style.display = 'none';
+    doc.body.appendChild(buildPlainTextBlock(doc, visible));
+    doc.body.appendChild(buildToggle(doc, safeLabels));
+    doc.body.appendChild(history);
+    return doc.body.innerHTML + buildToggleScript(safeLabels);
+  } catch (e) {
+    // Same rule as everywhere here: on any doubt, the message is shown untouched.
+    return null;
+  }
+}
+
+/**
  * Fold the quoted history of a received mail body, if any is clearly detected.
  *
  * The boundary node and every node after it (to the end of the body) are moved
@@ -324,10 +484,7 @@ export function foldQuotedHistory(html, labels, parser) {
   if (!html || typeof html !== 'string') {
     return html;
   }
-  const safeLabels = {
-    show: (labels && labels.show) || 'Show quoted text',
-    hide: (labels && labels.hide) || 'Hide quoted text',
-  };
+  const safeLabels = toSafeLabels(labels);
   try {
     const dp = parser || (typeof DOMParser !== 'undefined' ? new DOMParser() : null);
     if (!dp) {
