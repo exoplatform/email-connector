@@ -1062,6 +1062,20 @@ public class EmailBoxStorage {
     return fromEntity(emailBoxEntity, true, false, userId, userEmail, true, true);
   }
 
+  /**
+   * Every cached message of a mailbox, every folder, TRASH included — the TOTAL
+   * read, and the one a caller has to want on purpose.
+   * <p>
+   * Its only legitimate use is deleting a mailbox's data: the disconnect and rebind
+   * cleanup, which must reach every row or leave deleted mail behind, outliving the
+   * account it belonged to. Anything that puts mail in front of a user reads
+   * {@link #getEmailsForSearch(String)} instead — see
+   * {@link EmailBoxDAO#findByUserIdWithAttachments} for why the two are separate
+   * queries rather than one with a flag.
+   *
+   * @param userId the mailbox owner
+   * @return every one of the user's cached messages, newest first
+   */
   public List<Email> getEmails(String userId) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(userId);
     return emailBoxEntities.stream()
@@ -1071,7 +1085,11 @@ public class EmailBoxStorage {
 
   /**
    * The cached mailbox as the search over cached mail needs it: subject, sender, body,
-   * dates and flags, and nothing else.
+   * dates and flags, and nothing else -- minus the mail the user deleted.
+   * <p>
+   * Trash is left out because search is the read where a deleted message is hardest to
+   * recognise as one: a hit carries a subject, a sender and a date, and nothing about it
+   * says it came out of the bin.
    * <p>
    * Deliberately not {@link #getEmails(String)}. That one fetches every attachment, asks
    * the category service for the linked ids of every single message, and builds an HTML
@@ -1083,7 +1101,7 @@ public class EmailBoxStorage {
    * @return the cached messages, newest first, carrying only what a search reads
    */
   public List<Email> getEmailsForSearch(String userId) {
-    return emailBoxDao.findByUserIdForSearch(userId).stream().map(this::fromEntityForSearch).toList();
+    return emailBoxDao.findByUserIdForSearch(userId, MailFolder.TRASH).stream().map(this::fromEntityForSearch).toList();
   }
 
   @SneakyThrows
@@ -1161,7 +1179,7 @@ public class EmailBoxStorage {
   public Map<String, ThreadSummary> getThreadSummaries(String userId, String userEmail) {
     Map<String, List<String>> participants = getDraftThreadParticipants(userId, userEmail);
     Map<String, ThreadSummary> summaries = new HashMap<>();
-    for (Object[] row : emailBoxDao.summarizeThreadsByUserId(userId)) {
+    for (Object[] row : emailBoxDao.summarizeThreadsByUserId(userId, MailFolder.TRASH)) {
       String threadId = (String) row[0];
       // The draft column is a SUM, so it can be null on a dialect that returns no
       // rows to add up; "no drafts" is the honest reading of that.
@@ -1211,7 +1229,7 @@ public class EmailBoxStorage {
    *         conversations that carry a draft, never null
    */
   private Map<String, List<String>> getDraftThreadParticipants(String userId, String userEmail) {
-    List<Object[]> rows = new ArrayList<>(emailBoxDao.findDraftThreadParticipantsByUserId(userId));
+    List<Object[]> rows = new ArrayList<>(emailBoxDao.findDraftThreadParticipantsByUserId(userId, MailFolder.TRASH));
     rows.sort(Comparator.comparing((Object[] row) -> (Date) row[2], Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(row -> StringUtils.defaultString((String) row[1])));
     Map<String, Map<String, String>> namesByAddress = new HashMap<>();
@@ -1277,8 +1295,15 @@ public class EmailBoxStorage {
 
   /**
    * All cached messages of a conversation, across every folder (INBOX, SENT,
-   * ARCHIVE), oldest first — the read model for the conversation reader. Bodies
-   * and recipients are loaded so each message renders in full.
+   * ARCHIVE, DRAFTS) but never TRASH, oldest first — the read model for the
+   * conversation reader. Bodies and recipients are loaded so each message renders in
+   * full.
+   * <p>
+   * The one folder left out is the one the user emptied a message into. Deleting a
+   * message from a conversation and finding it still in that conversation is the
+   * defect this read would produce on its own, and it is why the exclusion went in
+   * before the folder that fills it — see
+   * {@link EmailBoxDAO#findByUserIdAndThreadIdWithAttachments}.
    * <p>
    * Mail reads in the order the query returns it, by date. A DRAFT reads after the
    * message it answers, which its date cannot say and its In-Reply-To can: see
@@ -1294,7 +1319,9 @@ public class EmailBoxStorage {
    * @return the conversation's messages in reading order, never null
    */
   public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail) {
-    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndThreadIdWithAttachments(userId, threadId);
+    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndThreadIdWithAttachments(userId,
+                                                                                               threadId,
+                                                                                               MailFolder.TRASH);
     return EmailThreadingUtils.positionDraftsAfterTheirParent(emailBoxEntities.stream()
                                                                              .map(emailBoxEntity -> fromEntity(emailBoxEntity,
                                                                                                                true,
