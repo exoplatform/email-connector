@@ -141,6 +141,7 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
@@ -3750,6 +3751,342 @@ public class EmailBoxService {
     } finally {
       lock.unlock();
     }
+  }
+
+  /**
+   * Puts the files of a message being FORWARDED onto the draft that forwards it, so
+   * the forward arrives carrying what the original carried.
+   * <p>
+   * <b>The defect this exists for.</b> Forwarding was a prefill and nothing else: the
+   * composer assembled a quoted header and the original's body, and never looked at its
+   * files. The forward went out with the text of a message and none of its attachments,
+   * and nothing said so — the sender saw a composer with no chips and had no reason to
+   * think anything was missing, and the recipient received a mail referring to a
+   * document that was not on it.
+   * <p>
+   * <b>When the bytes are copied: now, on opening the forward.</b> The alternative —
+   * recording the parts as addresses into the original and fetching them at send time,
+   * which is what an imported draft does (see {@link #materializeRemoteDraftParts}) —
+   * is wrong HERE for one reason that outweighs the saving. The message being forwarded
+   * belongs to the mailbox, not to the draft, and "forward this, then archive or delete
+   * it" is an ordinary thing to do in the seconds that follow. A late copy would resolve
+   * addresses into a message the user has since moved or deleted, and the failure would
+   * land at the moment of sending, when the original is gone and nothing can be
+   * recovered. Copying at open time moves the only possible failure to the moment the
+   * user is still looking at the message, can see that the chips did not appear, and can
+   * do something about it. It costs a copy on a forward the user may abandon; an
+   * abandoned forward is a draft they can discard, which is a recoverable cost, and the
+   * other one is not.
+   * <p>
+   * <b>Per forward, never shared.</b> Every forward copies the bytes again rather than
+   * pointing at a file another draft owns — see {@code EmailBoxStorage#copyDraftAttachment}
+   * for why sharing would let one draft's removal free the other's file. Forwarding one
+   * message twice therefore produces two independent forwards.
+   * <p>
+   * <b>Forwarding a draft, or anything whose bytes are already here.</b> A row that
+   * already carries a file id is read out of the file store instead of the mail server,
+   * with no IMAP connection opened at all when NO row needs one. That is what a draft's
+   * own files are, so a forward of a draft works rather than silently producing nothing.
+   * <p>
+   * <b>Size.</b> The cap is the send path's, counted across what the draft already
+   * carries — so a forward the user then adds their own file to cannot creep over it.
+   * A file that would take the draft over is not stored, and is NAMED in the answer:
+   * attaching it anyway would produce a draft that can never be sent, and dropping it
+   * quietly would be this very defect one layer up. The remaining files are still
+   * attached, because a 30 MB video should not stop the three documents beside it from
+   * being forwarded.
+   * <p>
+   * <b>Nothing throws for a file.</b> A part that cannot be read — the message moved
+   * between the click and this call, the mailbox will not answer — is named in the
+   * answer too, and the rest are still copied. The user then sees exactly what the
+   * forward will carry, as chips, and exactly what it will not, as a notice. Failing
+   * the whole call would strand the files already copied and tell them less.
+   * <p>
+   * Under the draft's lock and stepping its revision, like every other write to a
+   * draft: attaching IS an edit, and a synced draft that did not notice one would be
+   * sent without the files it shows.
+   * <p>
+   * Inline images referenced from the body by {@code cid:} are deliberately not part of
+   * this: they are not attachments here — the MIME walk turns them into data URLs
+   * inside the body — so a forward carries them already, embedded in the quoted text.
+   *
+   * @param draftLocalId the composer's handle on the draft the forward is written in
+   * @param username the mailbox owner
+   * @param mailRemoteId the IMAP UID of the message being forwarded
+   * @param folder the {@link MailFolder} that message is listed in; blank means INBOX
+   * @return the draft as it now stands with the files that were left behind, or null
+   *         when the user has no such draft or no such message in that folder
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws IllegalArgumentException if no draft was named
+   */
+  public ForwardedAttachments addForwardedAttachments(String draftLocalId,
+                                                      String username,
+                                                      long mailRemoteId,
+                                                      String folder) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    if (StringUtils.isBlank(draftLocalId)) {
+      throw new IllegalArgumentException("emailConnector.drafts.forward.draftMandatory");
+    }
+    String cachedFolder = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      if (emailBoxStorage.getDraftByLocalId(username, draftLocalId) == null) {
+        LOG.warn("Forward for user {}: draft {} does not exist, nothing was attached", username, draftLocalId);
+        return null;
+      }
+      // The message is read from the CACHE, under this user and this folder, and the
+      // caller never says which parts to take. That is the whole of the access check:
+      // a UID is not a name, and a caller that could hand in a part path would be
+      // asking this method to read an arbitrary part of an arbitrary message and
+      // attach it to their own draft. The rows this answers with are the ones the
+      // sync already wrote for a message that is theirs.
+      Email source = emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId,
+                                                                     username,
+                                                                     userEmailSetting.getEmailAddress(),
+                                                                     cachedFolder,
+                                                                     true,
+                                                                     false,
+                                                                     false);
+      if (source == null) {
+        LOG.warn("Forward for user {}: message {} is not cached in folder {}, so its files could not be carried over",
+                 username,
+                 mailRemoteId,
+                 cachedFolder);
+        return null;
+      }
+      List<EmailAttachment> forwarded = forwardableAttachments(source);
+      List<String> notAttached = forwarded.isEmpty() ? new ArrayList<>()
+                                                     : copyForwardedAttachments(forwarded,
+                                                                                draftLocalId,
+                                                                                username,
+                                                                                userEmailSetting,
+                                                                                cachedFolder,
+                                                                                mailRemoteId);
+      // Said once, on the way out, and said even when there was nothing to carry.
+      // A forward that worked and a forward that never ran used to look identical
+      // from the outside: the whole path was silent unless a single file failed. On
+      // an acceptance server, where nobody can watch a browser's network tab, that
+      // silence is the difference between "it works" and "no evidence either way" -
+      // and it cost an afternoon of testing to notice. The per-file reasons are
+      // already warned about individually; this is the line that says the operation
+      // happened at all.
+      LOG.info("Forward for user {}: {} of {} file(s) of message {} in folder {} carried onto draft {}, {} refused",
+               username,
+               forwarded.size() - notAttached.size(),
+               forwarded.size(),
+               mailRemoteId,
+               cachedFolder,
+               draftLocalId,
+               notAttached.size());
+      return new ForwardedAttachments(emailBoxStorage.getDraftByLocalId(username, draftLocalId), notAttached);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * The attachments of a message that a forward can actually carry: the ones this can
+   * find bytes for.
+   * <p>
+   * A row is usable when it has either a file of its own (a draft's file, already in
+   * the platform's file store) or a MIME part path (a received message's file, still on
+   * the server). A row with neither addresses nothing — it can be neither downloaded
+   * nor copied — so it is dropped here rather than reported to the user as a file that
+   * was left behind, which would be a notice about a row rather than about a file.
+   *
+   * @param source the message being forwarded, read with its attachments
+   * @return the attachments to copy, in the order the message carries them, never null
+   */
+  private List<EmailAttachment> forwardableAttachments(Email source) {
+    if (source == null || source.getContent() == null || CollectionUtils.isEmpty(source.getContent().getAttachments())) {
+      return List.of();
+    }
+    return source.getContent()
+                 .getAttachments()
+                 .stream()
+                 .filter(attachment -> attachment != null
+                     && (attachment.getFileId() != null || StringUtils.isNotBlank(attachment.getAttachmentRemoteId())))
+                 .toList();
+  }
+
+  /**
+   * Copies each of a forwarded message's files onto the draft, one at a time, and
+   * answers with the names of the ones that did not make it.
+   * <p>
+   * <b>One connection at most, and only if one is needed.</b> The store is opened on
+   * the first row whose bytes are on the server and reused for the rest; a forward of a
+   * message whose files are all in the file store opens nothing. A connection that
+   * cannot be opened is not retried per file — it is one failure, and it makes every
+   * remaining row unreadable rather than one.
+   * <p>
+   * <b>One part at a time in memory</b>, read, written to the file store and forgotten
+   * before the next is fetched, which is the same limit
+   * {@link #materializeRemoteDraftParts} and the attachment download already work
+   * under. The peak is the single largest file of the message — including one that is
+   * then refused by the cap, which is read before its size is known for certain and
+   * discarded. The declared part size would avoid that read, but it is the ENCODED
+   * size: using it would refuse a 20 MB file that base64 declares as 27 MB, and
+   * refusing a file that fits is the worse error here.
+   * <p>
+   * The running total starts from what the draft already carries rather than from zero,
+   * so the cap holds across a forward whose files the user then adds to, and across a
+   * second forward into the same draft.
+   *
+   * @param forwarded the attachments to copy, in the message's own order
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param folder the folder the forwarded message is listed in
+   * @param mailRemoteId the IMAP UID of the forwarded message within that folder
+   * @return the names of the files that were not attached, never null
+   */
+  private List<String> copyForwardedAttachments(List<EmailAttachment> forwarded,
+                                                String draftLocalId,
+                                                String username,
+                                                UserEmailSetting userEmailSetting,
+                                                String folder,
+                                                long mailRemoteId) {
+    List<String> notAttached = new ArrayList<>();
+    long total = storedAttachmentsSize(username, draftLocalId);
+    ForwardSource source = new ForwardSource();
+    try {
+      for (EmailAttachment attachment : forwarded) {
+        String name = StringUtils.defaultIfBlank(attachment.getName(), DEFAULT_ATTACHMENT_NAME);
+        byte[] bytes = forwardedAttachmentBytes(attachment, source, username, userEmailSetting, folder, mailRemoteId);
+        if (bytes == null) {
+          LOG.warn("The file {} of message {} in {} could not be read for the forward of user {}",
+                   name,
+                   mailRemoteId,
+                   folder,
+                   username);
+          notAttached.add(name);
+          continue;
+        }
+        if (total + bytes.length > MAX_OUTGOING_ATTACHMENTS_SIZE) {
+          // Named rather than attached: a draft over the cap is a draft that cannot
+          // leave, and a file dropped in silence is the defect this feature is about.
+          notAttached.add(name);
+          continue;
+        }
+        if (emailBoxStorage.copyDraftAttachment(username, draftLocalId, name, attachment.getMimeType(), bytes) == null) {
+          LOG.warn("The file {} of the forward of user {} could not be written to the file store", name, username);
+          notAttached.add(name);
+          continue;
+        }
+        total += bytes.length;
+      }
+    } finally {
+      closeQuietly(source.folder, source.store, username);
+    }
+    return notAttached;
+  }
+
+  /**
+   * The bytes of one file the forward has to carry, from wherever that file lives.
+   * <p>
+   * Two kinds of row, and they are told apart by the file id rather than by where the
+   * message came from: a row with one already has its bytes in the platform's file
+   * store (a draft's own file), and a row without one is a MIME part of a message on
+   * the server, which is what every received attachment is. The two are mutually
+   * exclusive by construction.
+   * <p>
+   * Answers null for every way this can fail, because the caller's reaction is the same
+   * for all of them — name the file as one the forward will not carry — and because
+   * throwing would strand the files already copied.
+   *
+   * @param attachment the row to read
+   * @param source the lazily opened connection to the forwarded message, carried across
+   *          the loop so it is opened at most once
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param folder the folder the forwarded message is listed in
+   * @param mailRemoteId the IMAP UID of the forwarded message within that folder
+   * @return its content, or null when it cannot be read
+   */
+  private byte[] forwardedAttachmentBytes(EmailAttachment attachment,
+                                          ForwardSource source,
+                                          String username,
+                                          UserEmailSetting userEmailSetting,
+                                          String folder,
+                                          long mailRemoteId) {
+    try {
+      if (attachment.getFileId() != null) {
+        FileItem fileItem = emailBoxStorage.getAttachmentFileItem(attachment.getFileId());
+        return fileItem == null ? null : fileItem.getAsByte();
+      }
+      Message message = openForwardSource(source, userEmailSetting, folder, mailRemoteId, username);
+      if (message == null) {
+        return null;
+      }
+      BodyPart bodyPart = getPartByPath(message, attachment.getAttachmentRemoteId());
+      return bodyPart == null ? null : readPartBytes(bodyPart);
+    } catch (Exception e) {
+      LOG.warn("A file of message {} in {} could not be read for the forward of user {}", mailRemoteId, folder, username, e);
+      return null;
+    }
+  }
+
+  /**
+   * The message a forward is copying from, opened at most once and closed by the loop
+   * that used it.
+   * <p>
+   * A holder rather than three local variables because the opening is lazy — a forward
+   * of files that are all in the file store must not connect to the mail server at all
+   * — and a failure to open must be remembered, or every remaining file would retry a
+   * connection that has already been refused.
+   */
+  private static final class ForwardSource {
+
+    private Store   store;
+
+    private Folder  folder;
+
+    private Message message;
+
+    private boolean attempted;
+  }
+
+  /**
+   * The forwarded message, connecting and opening its folder on the first call and
+   * answering what the first call found on every one after it.
+   * <p>
+   * The "attempted" flag is what makes a refused connection cost one failure rather
+   * than one per file: without it, a mailbox that will not answer would be dialled once
+   * for every attachment of the message, each with its own timeout, before the user is
+   * told anything.
+   *
+   * @param source the holder carrying the connection across the loop
+   * @param userEmailSetting the user's connector binding
+   * @param folderName the folder the forwarded message is listed in
+   * @param mailRemoteId its IMAP UID within that folder
+   * @param username the mailbox owner
+   * @return the message, or null when it cannot be reached
+   * @throws MessagingException if the mailbox refuses the connection or the folder
+   */
+  private Message openForwardSource(ForwardSource source,
+                                    UserEmailSetting userEmailSetting,
+                                    String folderName,
+                                    long mailRemoteId,
+                                    String username) throws MessagingException {
+    if (source.attempted) {
+      return source.message;
+    }
+    source.attempted = true;
+    source.store = userEmailSettingService.connect(userEmailSetting);
+    source.folder = resolveCachedFolder(source.store, folderName, username);
+    if (source.folder == null) {
+      return null;
+    }
+    // READ_ONLY: a forward reads the message it copies from and changes nothing about
+    // it. The original stays exactly where it was, unread flags and all.
+    source.folder.open(Folder.READ_ONLY);
+    source.message = ((UIDFolder) source.folder).getMessageByUID(mailRemoteId);
+    return source.message;
   }
 
   /**
