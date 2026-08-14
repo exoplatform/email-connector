@@ -17,8 +17,10 @@
 package org.exoplatform.emailConnector.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
 import java.util.List;
@@ -235,6 +237,32 @@ public class EmailBoxDraftStorageTest {
   }
 
   /**
+   * A save replaces the body, so it has to replace what the row says about that
+   * body. The update path is the one that does not go through the mapper — it
+   * mutates the loaded row column by column — and the format was not one of the
+   * columns it wrote, so a draft's very first save was the only one that ever
+   * answered the question.
+   * <p>
+   * The case is the ordinary one, not a contrived one: a draft written in plain text
+   * elsewhere is imported as plain text, and the moment its author resumes it here
+   * they are typing in the rich editor, so the next save is HTML. Left unwritten,
+   * the row goes on claiming plain text — and the reader takes that literally now,
+   * having stopped guessing from the characters, so it escapes the markup and shows
+   * the user their own tags.
+   */
+  @Test
+  void aSaveWritesTheFormatOfTheBodyItWrites() {
+    Email plain = emailBoxStorage.saveDraft(draft("draft-html", 1L, "the first half, typed on a phone"));
+    assertFalse(plain.getContent().isHtml());
+
+    Email edited = emailBoxStorage.saveDraft(htmlDraft("draft-html", 2L, "<div dir=\"ltr\">and the sentence <b>finished</b></div>"));
+
+    assertTrue(edited.getContent().isHtml(), "the update path writes the format alongside the body it describes");
+    assertTrue(emailBoxStorage.getDraftByLocalId(USERNAME, "draft-html").getContent().isHtml(),
+               "and the row in the database says so too, not just the answer");
+  }
+
+  /**
    * A draft as the composer saves it: the user's text and recipients, filed in
    * DRAFTS, with no copy on the server yet.
    *
@@ -259,6 +287,21 @@ public class EmailBoxDraftStorageTest {
     draft.setDraftState(DraftState.LOCAL_ONLY);
     draft.setDraftRevision(revision);
     draft.setDraftUpdatedDate(now);
+    return draft;
+  }
+
+  /**
+   * The same draft, declaring its body HTML — which is what the composer actually
+   * sends, its text coming from the rich editor.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param revision the local edit counter this save carries
+   * @param body the markup the user has typed so far
+   * @return the draft to write
+   */
+  private Email htmlDraft(String draftLocalId, long revision, String body) {
+    Email draft = draft(draftLocalId, revision, body);
+    draft.getContent().setHtml(true);
     return draft;
   }
 }
