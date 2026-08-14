@@ -763,6 +763,6 @@ public class EmailBoxStorageTest {
   }
 
   private EmailAttachment emailAttachment() {
-    return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null, MailFolder.INBOX, null, null);
+    return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null, MailFolder.INBOX, null, null, null);
   }
 }

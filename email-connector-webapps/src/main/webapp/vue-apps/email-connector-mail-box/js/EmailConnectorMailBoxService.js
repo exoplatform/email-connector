@@ -875,8 +875,27 @@ export function isDocumentsDeployed() {
  * @returns {String} the URL its content can be read from
  */
 export function getAttachmentUrl(attachment) {
+  if (isDraftOwnFile(attachment)) {
+    return getDraftAttachmentUrl(attachment.draftLocalId, attachment.id);
+  }
   const base = `/email-connector/rest/email-box/attachments/${attachment.mailRemoteId}/${attachment.attachmentRemoteId}`;
   return attachment.folder ? `${base}?folder=${encodeURIComponent(attachment.folder)}` : base;
+}
+
+/**
+ * Whether the bytes of this attachment are the draft's own, held by the platform,
+ * rather than a part of a message sitting on the mail server.
+ *
+ * The absence of a part path is what says so, not the folder: a draft imported from
+ * another client still HAS one until the file is copied over here, and until then it
+ * really is read from the server's copy. Asking 'is this in DRAFTS' would send those
+ * to the draft address, which serves the file store only, and 404 on every one.
+ *
+ * @param {Object} attachment the attachment being addressed
+ * @returns {Boolean} true when it must be addressed by its draft
+ */
+function isDraftOwnFile(attachment) {
+  return !attachment?.attachmentRemoteId && !!attachment?.draftLocalId && !!attachment?.id;
 }
 
 /**
@@ -923,7 +942,10 @@ export function isEditorPreviewable(attachment) {
  * @returns {void}
  */
 export function previewAttachmentFromUrl(attachment) {
-  const id = String(attachment.attachmentRemoteId);
+  // The dialog only needs this to tell one attachment from another, but a draft's
+  // own file has no part path, so every one of them would answer to the same "null"
+  // and the dialog would treat two different files as the same one.
+  const id = String(attachment.attachmentRemoteId || attachment.id);
   document.dispatchEvent(new CustomEvent('open-attachments-preview', {
     detail: {
       id,
