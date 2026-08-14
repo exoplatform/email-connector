@@ -309,7 +309,7 @@ class EmailMcpToolTest {
   @Test
   void listAttachmentsReturnsMetadataAndDownloadUrlWithoutBytes() throws Exception {
     Email email = buildEmail(EMAIL_ID);
-    EmailAttachment attachment = new EmailAttachment(1L, REMOTE_ID, "1.2", "invoice.pdf", "application/pdf", new byte[] { 1, 2, 3 }, MailFolder.INBOX, null, null);
+    EmailAttachment attachment = new EmailAttachment(1L, REMOTE_ID, "1.2", "invoice.pdf", "application/pdf", new byte[] { 1, 2, 3 }, MailFolder.INBOX, null, null, null);
     email.getContent().setAttachments(List.of(attachment));
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
 
