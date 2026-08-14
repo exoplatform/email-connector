@@ -3,3 +3,4 @@ org.exoplatform.emailConnector.entity.EmailBoxEntity
 org.exoplatform.emailConnector.entity.EmailContactEntity
 org.exoplatform.emailConnector.entity.EmailContactAddressEntity
 org.exoplatform.emailConnector.entity.EmailOrphanFileEntity
+org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity

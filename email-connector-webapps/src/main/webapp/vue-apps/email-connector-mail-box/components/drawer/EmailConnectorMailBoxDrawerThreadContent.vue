@@ -23,6 +23,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item-title>
       </v-list-item-content>
     </v-list-item>
+    <!-- Room for somebody else to say something about this conversation as a whole,
+         directly under its subject and above everything that is about its individual
+         messages — the same seam the mail toolbars already offer, in the same shape
+         (see EmailConnectorMailBoxDrawerListItemDetailActions). A module that can
+         summarise a conversation fills it with
+         extensionRegistry.registerComponent('EmailThread', 'email-thread-summary', …)
+         and is rendered here with the params below as props.
+
+         Nothing in this add-on registers into it, so the component renders NOTHING at
+         all — not even its own wrapper — and the subject sits against the category bar
+         exactly as before. -->
+    <extension-registry-components
+      :params="summaryExtensionParams"
+      name="EmailThread"
+      type="email-thread-summary"
+      parent-element="div"
+      element="div"
+      class="my-auto" />
     <!-- Assign the conversation to the add-on's email categories (Important / Invitation
          / Notification) and show the ones already applied. Drafts are kept out of it:
          categories are assigned by IMAP UID, which a draft may not have, and an unsent
@@ -137,6 +155,23 @@ export default {
       const key = this.threadKey(this.email);
       const ids = (this.emails || []).filter(e => this.threadKey(e) === key).map(e => e.mailRemoteId);
       return ids.length ? ids : [this.email.mailRemoteId];
+    },
+    // What a component registered into the conversation slot is handed: the thread id,
+    // its messages and its subject. No callbacks and no service — everything else is
+    // reachable from the thread id through the add-on's own REST, and a contributor
+    // handed a function would be coupled to this component's internals rather than to
+    // the conversation.
+    //
+    // `categorizableMessages` and not `messages`, for the reason the category bar is
+    // given the same list: a draft is a sentence the user is in the middle of writing,
+    // and nothing that describes the conversation back to them should be describing
+    // that.
+    summaryExtensionParams() {
+      return {
+        threadId: this.email && this.resolveThreadId(),
+        messages: this.categorizableMessages,
+        subject: this.subject,
+      };
     },
     // Everything in the conversation that is actual mail. Drafts are in `messages`
     // because they belong in the conversation, but they are not messages: anything
