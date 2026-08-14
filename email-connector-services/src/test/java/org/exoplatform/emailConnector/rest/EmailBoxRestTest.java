@@ -68,6 +68,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
+import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -325,6 +326,75 @@ public class EmailBoxRestTest {
     org.junit.jupiter.api.Assertions.assertTrue(response.andReturn().getResponse().getContentAsString().contains("too-big.zip"),
                                                 "the sender is told which file the forward will not carry");
     verify(emailBoxService, never()).addDraftAttachment(anyString(), anyString(), any());
+  }
+
+  /**
+   * A conversation nobody has summarised answers 404, not 200 with nothing in it.
+   * <p>
+   * This is the answer EVERY conversation gives on a deployment with no producer
+   * installed, which is most of them, so it is the normal path rather than an error one
+   * — and 404 is what lets the client tell "there is none" from "there is one and it is
+   * empty" without inspecting a body.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void getThreadAiSummaryWithoutOneAnswersNotFound() throws Exception {
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1/ai-summary").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
+  }
+
+  /**
+   * A stored summary comes back with its words and its staleness — the two things a
+   * reader has to render, and the only two it is given.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void getThreadAiSummaryAnswersTheSummaryAndItsStaleness() throws Exception {
+    when(emailBoxService.getThreadAiSummary("thread-1",
+                                            SIMPLE_USER)).thenReturn(new ThreadAiSummary("They agreed on Thursday.",
+                                                                                         true,
+                                                                                         new java.util.Date()));
+
+    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1/ai-summary").with(testSimpleUser()));
+
+    response.andExpect(status().isOk());
+    String body = response.andReturn().getResponse().getContentAsString();
+    org.junit.jupiter.api.Assertions.assertTrue(body.contains("They agreed on Thursday."));
+    org.junit.jupiter.api.Assertions.assertTrue(body.contains("\"stale\":true"),
+                                                "a reader has to be able to say the summary is behind the conversation");
+  }
+
+  /**
+   * Asking for one is accepted, not fulfilled: 202 and not 200, because nothing on this
+   * side can promise a summary will be written at all.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void refreshThreadAiSummaryIsAcceptedRatherThanFulfilled() throws Exception {
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/thread/thread-1/ai-summary/refresh").with(testSimpleUser()))
+           .andExpect(status().isAccepted());
+
+    verify(emailBoxService).requestThreadAiSummary("thread-1", SIMPLE_USER);
+  }
+
+  /**
+   * A mailbox the user may not read answers neither its summaries nor requests for
+   * them, and answers the same 401 the conversation read itself answers.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void anUnreadableMailboxAnswersUnauthorizedOnBothSummaryEndpoints() throws Exception {
+    when(emailBoxService.getThreadAiSummary(anyString(), anyString())).thenThrow(new IllegalAccessException());
+    doThrow(new IllegalAccessException()).when(emailBoxService).requestThreadAiSummary(anyString(), anyString());
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1/ai-summary").with(testSimpleUser()))
+           .andExpect(status().isUnauthorized());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/thread/thread-1/ai-summary/refresh").with(testSimpleUser()))
+           .andExpect(status().isUnauthorized());
   }
 
   private RequestPostProcessor testSimpleUser() {
