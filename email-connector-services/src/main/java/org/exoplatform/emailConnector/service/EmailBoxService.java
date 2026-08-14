@@ -125,6 +125,7 @@ import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
+import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
@@ -143,6 +144,8 @@ import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.SyncStatus;
+import org.exoplatform.emailConnector.model.ThreadAiSummary;
+import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
@@ -745,6 +748,14 @@ public class EmailBoxService {
     // body per row -- on a 100-message mailbox that is minutes of waiting for folders the
     // inbox view, the notifications and the AI categorization never read.
     deleteUserEmails(username, MailFolder.INBOX);
+    // The summaries too, and all of them rather than the inbox's share: a summary is
+    // keyed by conversation, a conversation spans folders, and the resync re-mints
+    // thread ids from the messages it re-downloads -- so what survives a reset is a
+    // summary filed under an id the rebuilt cache may never produce again. A reset is
+    // also what a user reaches for when the mailbox looks wrong, and leaving the one
+    // thing that is not re-derived from the server behind would make it the one thing
+    // a reset cannot fix.
+    emailBoxStorage.deleteThreadAiSummaries(username);
     // Clear any BLOCKED / failed-attempt backoff so the immediate resync is not refused.
     userEmailSetting.setEmailSyncFailedAttemps(0);
     userEmailSetting.setEmailSyncStatus(SyncStatus.SUCCESS);
@@ -2247,6 +2258,13 @@ public class EmailBoxService {
   public void deleteUserEmails(String username) {
     List<Email> emails = emailBoxStorage.getEmails(username);
     deleteEmails(emails);
+    // The summaries go with the mail they were written about. Not because they take
+    // room, but because they are keyed by thread id and a thread id belongs to the
+    // mailbox that minted it: the next account bound here mints its own from its own
+    // Message-IDs, and nothing stops one of them from colliding with one left behind.
+    // A summary of the previous account's conversation, served for a conversation of
+    // the new one, is the only outcome worse than having no summary at all.
+    emailBoxStorage.deleteThreadAiSummaries(username);
     // The whole cache is gone, so the whole sync memory must go with it: a surviving
     // snapshot would let the next sync skip folders whose local rows no longer exist.
     try {
@@ -2515,6 +2533,150 @@ public class EmailBoxService {
     // (and the already-rendered inbox list) holds stays valid on the next open.
     completeThreadFromArchive(username, threadId, userEmailSetting);
     return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
+  }
+
+  /**
+   * The stored summary of a conversation, and whether it still describes it.
+   * <p>
+   * The staleness is decided HERE, on the way out, and never written down. Nothing
+   * schedules a job, nothing invalidates a row when mail arrives, and no listener has
+   * to remember this table exists: the conversation's current fingerprint is compared
+   * against the one stored beside the summary at the only moment the answer is of any
+   * use to anybody. A summary is therefore never wrong for longer than it takes to
+   * read it.
+   * <p>
+   * Two of the three consequences of that comparison are the point of it, and both are
+   * easy to get backwards:
+   * <ul>
+   * <li>A conversation whose local cache has been TRIMMED — its oldest messages aged
+   * out of the sync window — is not stale. Its count has fallen, not risen, and the
+   * summary was written from the fuller conversation, which makes it the better answer
+   * rather than an out-of-date one. Hence "greater than" and not "different from".</li>
+   * <li>A DRAFT changes neither half of the fingerprint, because the fingerprint is
+   * built from real mail only. It has to be: a draft's row is re-dated and re-saved on
+   * every keystroke, so a summary would go stale while the user typed, and the thing
+   * that would then be re-summarised for them is the half-finished sentence they are
+   * in the middle of writing.</li>
+   * </ul>
+   *
+   * @param threadId the conversation id
+   * @param username the mailbox owner
+   * @return the summary and its staleness, or null when none has been written
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public ThreadAiSummary getThreadAiSummary(String threadId, String username) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    EmailThreadAiSummaryEntity stored = emailBoxStorage.getThreadAiSummary(username, threadId);
+    if (stored == null) {
+      return null;
+    }
+    ThreadFingerprint current = emailBoxStorage.getThreadFingerprint(username, threadId);
+    return new ThreadAiSummary(stored.getSummary(), isStale(stored, current), stored.getCreatedDate());
+  }
+
+  /**
+   * Whether a conversation has moved on since a summary of it was written.
+   * <p>
+   * Either the newest message is a different message — mail arrived, or the newest one
+   * was deleted and an older one is now last — or there are simply more messages than
+   * were counted. The second is not implied by the first: a message that lands with an
+   * older date than the newest one already there (a delayed delivery, a message
+   * recovered from the archive) leaves the newest key untouched and still means the
+   * summary describes less than the whole conversation.
+   * <p>
+   * A summary written before this fingerprint existed, or written of a conversation
+   * that had no real mail in it, carries no key to compare and is treated as still
+   * standing rather than as permanently stale: refusing to serve it would mean the
+   * request to write it again, every time it is read, for a conversation that may not
+   * have changed at all.
+   *
+   * @param stored the stored summary with the fingerprint it was written against
+   * @param current the conversation as it stands now
+   * @return whether the stored summary no longer describes the whole conversation
+   */
+  private boolean isStale(EmailThreadAiSummaryEntity stored, ThreadFingerprint current) {
+    if (stored.getNewestMessageKey() != null && !StringUtils.equals(stored.getNewestMessageKey(), current.newestMessageKey())) {
+      return true;
+    }
+    return stored.getMessageCount() != null && current.messageCount() > stored.getMessageCount();
+  }
+
+  /**
+   * Asks for a conversation to be summarised, and says nothing about whether it will
+   * be.
+   * <p>
+   * This add-on cannot write a summary and does not try to. It broadcasts
+   * {@link EmailConnectorUtils#THREAD_AI_SUMMARY_REQUESTED} with the conversation's id
+   * and lets whoever can write one answer by calling
+   * {@link #saveThreadAiSummary(String, String, String, String)}. A deployment where
+   * nothing is listening is a supported deployment: the request goes nowhere, the read
+   * keeps answering what it answered before, and nothing here blocks on a reply that
+   * may never come.
+   *
+   * @param threadId the conversation to summarise
+   * @param username the mailbox owner asking
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public void requestThreadAiSummary(String threadId, String username) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    try {
+      listenerService.broadcast(EmailConnectorUtils.THREAD_AI_SUMMARY_REQUESTED, username, threadId);
+    } catch (Exception e) {
+      LOG.warn("Could not broadcast the summary request of conversation {} for user {}", threadId, username, e);
+    }
+  }
+
+  /**
+   * Stores a summary somebody else wrote about one of this user's conversations.
+   * <p>
+   * The fingerprint is computed HERE rather than taken from the caller, and that is a
+   * refusal rather than a convenience: the fingerprint is what every later read trusts
+   * to decide whether the words still hold, so a caller that got it wrong — or that
+   * simply reported what it had READ rather than what is now stored — would make a
+   * summary claim to be current forever. The narrow cost is a race: a message arriving
+   * between the read and this write is folded into a summary that does not mention it,
+   * and stays that way until the next one arrives. That is a summary one message
+   * behind, which is what this whole cache is; the alternative is one that can be
+   * wrong without limit.
+   * <p>
+   * The conversation must be one of the user's own, and it is checked by asking for it
+   * rather than by trusting the id: every read of this table is scoped by owner, so a
+   * conversation the user has no message in is indistinguishable from one that does not
+   * exist — which is the right answer to give in both cases.
+   *
+   * @param threadId the conversation summarised
+   * @param summary the written summary
+   * @param agentNameId which producer wrote it
+   * @param username the mailbox owner
+   * @throws IllegalAccessException if the user may not read their mailbox, or the
+   *           conversation is not one of theirs
+   */
+  public void saveThreadAiSummary(String threadId,
+                                  String summary,
+                                  String agentNameId,
+                                  String username) throws IllegalAccessException {
+    checkCanReadMailbox(username);
+    ThreadFingerprint fingerprint = emailBoxStorage.getThreadFingerprint(username, threadId);
+    if (fingerprint.newestMessageKey() == null) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
+    emailBoxStorage.saveThreadAiSummary(username, threadId, summary, fingerprint, agentNameId);
+  }
+
+  /**
+   * The guard every conversation read already applies, as one thing rather than as
+   * three copies of itself: a user may read their mailbox when they have bound a
+   * connector and are still allowed to connect to it.
+   *
+   * @param username the mailbox owner
+   * @throws IllegalAccessException if they may not
+   */
+  private void checkCanReadMailbox(String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
   }
 
   @Transactional

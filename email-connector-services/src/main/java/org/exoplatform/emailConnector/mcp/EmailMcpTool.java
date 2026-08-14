@@ -35,7 +35,9 @@ import org.exoplatform.emailConnector.mcp.model.EmailAttachmentModel;
 import org.exoplatform.emailConnector.mcp.model.EmailModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchHitModel;
 import org.exoplatform.emailConnector.mcp.model.EmailSearchResultsModel;
+import org.exoplatform.emailConnector.mcp.model.EmailThreadMessageModel;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailContent;
@@ -63,6 +65,25 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /** Hits returned when the caller names no limit: a readable page, not a dump. */
   private static final int              DEFAULT_SEARCH_LIMIT = 20;
+
+  /**
+   * How many of a conversation's messages are returned — the most recent ones. A long
+   * thread is mostly its latest turns, and the older ones are usually quoted inside
+   * them; twenty-five is where a conversation stops being a conversation and starts
+   * being an archive.
+   */
+  private static final int              THREAD_MAX_MESSAGES  = 25;
+
+  /**
+   * How much of each message's body is returned. Mail bodies are largely quoted
+   * history and signatures — the same sentences repeated once per message, growing
+   * with the thread — so the whole of twenty-five of them is mostly the same text
+   * twenty-five times.
+   */
+  private static final int              THREAD_BODY_MAX_CHARS = 1500;
+
+  /** What a cut body ends with, so nobody mistakes half a message for all of it. */
+  private static final String           TRUNCATION_MARKER    = "… [truncated]";
 
   /**
    * The service reports a refused search with a message code, the right currency
@@ -230,6 +251,46 @@ public class EmailMcpTool implements McpToolPlugin {
       throw new ObjectNotFoundException("Email with mail_remote_id %s not found");
     }
     return toEmailModel(email, true);
+  }
+
+  /**
+   * Read a whole conversation at once, oldest message first, so it can be summarised
+   * or answered with the history in hand rather than one message at a time.
+   * <p>
+   * Three things are deliberately left out, and each of them is the difference between
+   * a usable answer and an unusable one:
+   * <ul>
+   * <li>DRAFTS. A conversation can hold a reply the user is still writing, and
+   * describing somebody's half-finished sentence back to them is worse than not
+   * mentioning it. It is also unstable: the row changes every time they type.</li>
+   * <li>Everything but the most recent {@link #THREAD_MAX_MESSAGES} messages. A long
+   * thread is mostly its recent turns; the older ones are usually quoted inside them
+   * anyway.</li>
+   * <li>Most of each body. HTML is flattened to text and cut at
+   * {@link #THREAD_BODY_MAX_CHARS} characters, because mail bodies are largely quoted
+   * history and signatures — the same sentences, once per message, growing with the
+   * thread.</li>
+   * </ul>
+   * The truncation is marked in the text rather than silent: a reader that cannot see
+   * where a message stopped will summarise the missing half with the same confidence
+   * as the rest.
+   *
+   * @param threadId the conversation id, as carried by every listed or fetched email
+   * @return the conversation's real messages, oldest first
+   * @throws IllegalAccessException if the user has no usable mailbox
+   */
+  public List<EmailThreadMessageModel> getEmailThread(String threadId) throws IllegalAccessException {
+    if (StringUtils.isBlank(threadId)) {
+      throw new IllegalArgumentException("thread_id is required: it is carried by every email returned by the other tools.");
+    }
+    List<Email> thread = emailBoxService.getThread(threadId, getCurrentUserName());
+    List<Email> messages = thread.stream().filter(email -> StringUtils.isBlank(email.getDraftLocalId())).toList();
+    // The most recent ones, and still oldest-first once kept: a conversation read
+    // backwards is a conversation nobody can follow.
+    if (messages.size() > THREAD_MAX_MESSAGES) {
+      messages = messages.subList(messages.size() - THREAD_MAX_MESSAGES, messages.size());
+    }
+    return messages.stream().map(this::toThreadMessageModel).toList();
   }
 
   /**
@@ -447,6 +508,61 @@ public class EmailMcpTool implements McpToolPlugin {
     model.setCc(email.getCc());
     model.setBcc(email.getBcc());
     return model;
+  }
+
+  /**
+   * Map one message of a conversation to what a reader of the whole conversation
+   * needs: who wrote it, when, about what, what it said, and what came with it.
+   *
+   * @param email the cached message
+   * @return its conversation-reading shape
+   */
+  private EmailThreadMessageModel toThreadMessageModel(Email email) {
+    EmailSender sender = email.getSender();
+    return new EmailThreadMessageModel(sender == null ? null : sender.getName(),
+                                       sender == null ? null : sender.getAddress(),
+                                       email.getReceivedDate(),
+                                       email.getSubject(),
+                                       plainTextBody(email),
+                                       attachmentNames(email));
+  }
+
+  /**
+   * A message's body as readable text, cut to length.
+   * <p>
+   * Flattened out of HTML rather than sent as it is stored, for the same reason
+   * {@link #toEmailModel} does it: markup is most of a mail body's size and none of
+   * its meaning. Cutting comes after flattening, so the limit counts words rather
+   * than tags — a 1500-character budget spent on a style attribute would return a
+   * message that says nothing.
+   *
+   * @param email the cached message
+   * @return its body as plain text, truncated and marked as such when it was cut
+   */
+  private String plainTextBody(Email email) {
+    EmailContent content = email.getContent();
+    if (content == null || content.getBody() == null) {
+      return null;
+    }
+    String text = Jsoup.parse(content.getBody()).text().trim();
+    if (text.length() <= THREAD_BODY_MAX_CHARS) {
+      return text;
+    }
+    return text.substring(0, THREAD_BODY_MAX_CHARS) + TRUNCATION_MARKER;
+  }
+
+  /**
+   * What was attached to a message, by name.
+   *
+   * @param email the cached message
+   * @return the attachment names, empty when there were none
+   */
+  private List<String> attachmentNames(Email email) {
+    EmailContent content = email.getContent();
+    if (content == null || content.getAttachments() == null) {
+      return List.of();
+    }
+    return content.getAttachments().stream().map(EmailAttachment::getName).filter(StringUtils::isNotBlank).toList();
   }
 
   /**
