@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -66,6 +67,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -292,6 +294,37 @@ public class EmailBoxRestTest {
     when(emailAttachment.getMimeType()).thenReturn("application/pdf");
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));
     response.andExpect(status().isOk());
+  }
+
+  /**
+   * The forward's own address under a draft's attachments: it answers the draft plus the
+   * files that were left behind, and it is NOT the upload endpoint one segment up.
+   * <p>
+   * That last part is worth an assertion rather than a reading of the annotations. A
+   * literal segment sitting where {@code POST /drafts/{id}/attachments} already lives is
+   * exactly the shape that resolves to the wrong handler when something changes, and the
+   * wrong handler here would read the query string as an upload and answer 400 on a
+   * forward that is perfectly valid.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void addForwardedAttachments() throws Exception {
+    String path = EMAIL_BOX_PATH + "/drafts/draft-1/attachments/forwarded";
+    // No message named at all: the caller has to say what is being forwarded.
+    mockMvc.perform(post(path).with(testSimpleUser())).andExpect(status().isBadRequest());
+    // Named, but the user has no draft under that id or no such message in that folder.
+    mockMvc.perform(post(path + "?mailRemoteId=1212&folder=INBOX").with(testSimpleUser())).andExpect(status().isNotFound());
+
+    when(emailBoxService.addForwardedAttachments(anyString(), anyString(), anyLong(),
+                                                 any())).thenReturn(new ForwardedAttachments(new Email(),
+                                                                                             List.of("too-big.zip")));
+    ResultActions response = mockMvc.perform(post(path + "?mailRemoteId=1212&folder=INBOX").with(testSimpleUser()));
+
+    response.andExpect(status().isOk());
+    org.junit.jupiter.api.Assertions.assertTrue(response.andReturn().getResponse().getContentAsString().contains("too-big.zip"),
+                                                "the sender is told which file the forward will not carry");
+    verify(emailBoxService, never()).addDraftAttachment(anyString(), anyString(), any());
   }
 
   private RequestPostProcessor testSimpleUser() {

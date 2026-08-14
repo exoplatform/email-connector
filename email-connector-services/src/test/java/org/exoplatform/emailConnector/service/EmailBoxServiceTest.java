@@ -151,6 +151,7 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -3407,6 +3408,201 @@ public class EmailBoxServiceTest {
     assertEquals("typed-here.txt", multipart.getBodyPart(2).getFileName());
   }
 
+  /**
+   * A forward carries the original's files: the bytes are read out of the message being
+   * forwarded and written onto the draft, as the draft's OWN files.
+   * <p>
+   * This is the slice in one test. Forwarding was a prefill and nothing else — a quoted
+   * header, the original's body, and not a glance at its attachments — so a forward of
+   * a mail with a contract on it went out with the words about the contract and no
+   * contract, with nothing on screen to say so.
+   * <p>
+   * The bytes are asserted, not the call: a row named after a file is indistinguishable
+   * from a row carrying it until you look at what was written. And they are asserted to
+   * have been read out of the real message rather than guessed at, which is why the
+   * source here is a real {@link MimeMessage} and the part path really is walked.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aForwardCarriesTheFilesOfTheMessageBeingForwarded() throws Exception {
+    byte[] contract = "the bytes of the contract".getBytes();
+    Folder inbox = givenAForwardableMessage(1212L,
+                                            MailFolder.INBOX,
+                                            receivedMessageCarrying("contract.pdf", contract),
+                                            cachedPart("2", "contract.pdf"));
+    givenTheDraftBeingWrittenInto();
+
+    ForwardedAttachments forwarded = emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 1212L, MailFolder.INBOX);
+
+    assertNotNull(forwarded);
+    assertNotNull(forwarded.getDraft());
+    assertTrue(forwarded.getNotAttached().isEmpty(), "nothing was left behind");
+    ArgumentCaptor<byte[]> copied = ArgumentCaptor.forClass(byte[].class);
+    verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("contract.pdf"), eq("application/pdf"),
+                                                copied.capture());
+    assertArrayEquals(contract, copied.getValue(), "the file is read out of the forwarded message, not named after it");
+    verify(inbox).open(Folder.READ_ONLY);
+  }
+
+  /**
+   * A file that would take the forward over the size a message may carry is NAMED rather
+   * than attached, and the files beside it still are.
+   * <p>
+   * Both halves matter. Attaching it anyway would produce a draft that can never be
+   * sent — the send path enforces the same cap — and the user would find that out at
+   * the moment they pressed Send. Dropping it in silence would be this very defect one
+   * layer up: a sender who believes their file went. And a 30 MB video must not stop the
+   * document beside it from being forwarded, which is why this is a per-file decision
+   * rather than a refusal of the whole forward.
+   * <p>
+   * The cap is counted from what the draft ALREADY carries, which is what this asserts:
+   * the forwarded file is small, and it is refused because the draft is nearly full.
+   * That is the case a check written against the message alone would get wrong.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aForwardedFileThatWouldNotFitIsNamedRatherThanAttached() throws Exception {
+    givenAForwardableMessage(1212L,
+                             MailFolder.INBOX,
+                             receivedMessageCarrying("contract.pdf", "small".getBytes()),
+                             cachedPart("2", "contract.pdf"));
+    givenTheDraftBeingWrittenInto();
+    // The draft is already within a few bytes of the cap, because the user attached
+    // something large before forwarding into it.
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1"))
+                                                                   .thenReturn(List.of(new EmailAttachment(9L, null, null,
+                                                                                                           "big.zip",
+                                                                                                           "application/zip",
+                                                                                                           null,
+                                                                                                           MailFolder.DRAFTS,
+                                                                                                           99L,
+                                                                                                           25L * 1024 * 1024, null)));
+
+    ForwardedAttachments forwarded = emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 1212L, MailFolder.INBOX);
+
+    assertEquals(List.of("contract.pdf"), forwarded.getNotAttached(), "the sender is told which file is not on the forward");
+    verify(emailBoxStorage, never()).copyDraftAttachment(anyString(), anyString(), anyString(), anyString(), any());
+  }
+
+  /**
+   * A file that cannot be read is named, and the files beside it are still carried.
+   * <p>
+   * The message may have been moved or deleted between the click and this call, or the
+   * mailbox may simply not answer for one part. Failing the whole forward would strand
+   * the files already copied and tell the user less than this does: what is on the draft
+   * is what the forward will carry, and what is named is what it will not.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aForwardedFileThatCannotBeReadIsNamedAndTheRestAreStillCarried() throws Exception {
+    // Two cached rows, and the second one addresses a part the message does not have —
+    // which is exactly what a row left over from a message that has since changed is.
+    givenAForwardableMessage(1212L,
+                             MailFolder.INBOX,
+                             receivedMessageCarrying("contract.pdf", "the contract".getBytes()),
+                             cachedPart("2", "contract.pdf"),
+                             cachedPart("7", "gone.pdf"));
+    givenTheDraftBeingWrittenInto();
+
+    ForwardedAttachments forwarded = emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 1212L, MailFolder.INBOX);
+
+    assertEquals(List.of("gone.pdf"), forwarded.getNotAttached());
+    verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("contract.pdf"), anyString(), any());
+    verify(emailBoxStorage, never()).copyDraftAttachment(anyString(), anyString(), eq("gone.pdf"), anyString(), any());
+  }
+
+  /**
+   * Forwarding something whose files are already on this side — a draft — reads them out
+   * of the file store and does not connect to the mail server at all.
+   * <p>
+   * A draft's attachment is bytes in the platform's file store with no MIME part path,
+   * and a forward that only knew how to read parts of a server message would silently
+   * carry nothing for it. Asserting that NO connection is opened is the half that would
+   * otherwise rot: a version that connected first and then found it had nothing to read
+   * there would pass every other assertion here.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aForwardOfSomethingWhoseFilesAreAlreadyHereReadsThemWithoutTheMailServer() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(4242L), eq(TEST_USER), any(), eq(MailFolder.DRAFTS), eq(true),
+                                                         eq(false), eq(false)))
+                                                                               .thenReturn(messageCarryingRows(new EmailAttachment(5L,
+                                                                                                                                   4242L,
+                                                                                                                                   null,
+                                                                                                                                   "typed-here.txt",
+                                                                                                                                   "text/plain",
+                                                                                                                                   null,
+                                                                                                                                   MailFolder.DRAFTS,
+                                                                                                                                   88L,
+                                                                                                                                   10L, null)));
+    givenTheFileStoreHolds(88L, "typed-here.txt", "here it is".getBytes());
+
+    ForwardedAttachments forwarded = emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 4242L, MailFolder.DRAFTS);
+
+    assertTrue(forwarded.getNotAttached().isEmpty());
+    ArgumentCaptor<byte[]> copied = ArgumentCaptor.forClass(byte[].class);
+    verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("typed-here.txt"), eq("text/plain"),
+                                                copied.capture());
+    assertArrayEquals("here it is".getBytes(), copied.getValue());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  /**
+   * A message the user has none of in that folder is not something they can forward the
+   * files of — answered as nothing, which the REST layer turns into a 404.
+   * <p>
+   * This IS the access check, and it is worth pinning as such: the caller names a UID and
+   * a folder and never a part path, so the only files this can ever reach are the ones
+   * the sync cached for a message of this user's, in the folder they named. A UID is not
+   * a name — the same number names a different message in another mailbox and in another
+   * folder — so a lookup that was not scoped by user would attach a stranger's file to
+   * this user's draft and then send it.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aMessageTheUserDoesNotHaveHasNoFilesToForward() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L), eq(TEST_USER), any(), eq(MailFolder.INBOX), eq(true),
+                                                         eq(false), eq(false))).thenReturn(null);
+
+    assertNull(emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 1212L, MailFolder.INBOX));
+
+    verify(emailBoxStorage, never()).copyDraftAttachment(anyString(), anyString(), anyString(), anyString(), any());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  /**
+   * Forwarding a message with no files touches nothing and connects to nothing.
+   * <p>
+   * The common case by a wide margin, and the one an eager implementation makes
+   * expensive: opening a store and selecting a folder to discover there was never
+   * anything to read would put an IMAP round trip on every forward of every plain
+   * message.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aForwardOfAMessageWithNoFilesReachesNothing() throws Exception {
+    givenAUsableMailbox();
+    givenTheDraftBeingWrittenInto();
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L), eq(TEST_USER), any(), eq(MailFolder.INBOX), eq(true),
+                                                         eq(false), eq(false))).thenReturn(messageCarryingRows());
+
+    ForwardedAttachments forwarded = emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 1212L, MailFolder.INBOX);
+
+    assertNotNull(forwarded.getDraft());
+    assertTrue(forwarded.getNotAttached().isEmpty());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
   @Test
   void aDraftReplyJoinsTheConversationItRepliesTo() throws Exception {
     // The whole point of writing the threading headers at save time rather than at
@@ -4719,6 +4915,102 @@ public class EmailBoxServiceTest {
     // After saveChanges, which mints one of its own.
     message.setHeader("Message-ID", messageId);
     return message;
+  }
+
+  /**
+   * A message sitting in a folder of the user's, with a file on it — what a forward
+   * copies from.
+   * <p>
+   * The same shape as a draft another client left behind, because at the level that
+   * matters here they are the same thing: a multipart whose first part is the body and
+   * whose second is the file. Delegated rather than written twice so the two slices
+   * cannot drift into disagreeing about what part "2" is.
+   *
+   * @param fileName the name of the file it carries
+   * @param bytes the file's content
+   * @return the message
+   */
+  private MimeMessage receivedMessageCarrying(String fileName, byte[] bytes) {
+    return serverDraftCarryingAFile("<forwarded@example.org>", fileName, bytes);
+  }
+
+  /**
+   * One attachment of a message as the SYNC cached it: a MIME part path into the message
+   * at that UID, and no file of its own — which is what every received attachment is.
+   *
+   * @param partPath the MIME part path within the message
+   * @param name the file name the message declares
+   * @return the cached row
+   */
+  private EmailAttachment cachedPart(String partPath, String name) {
+    return new EmailAttachment(null, 1212L, partPath, name, "application/pdf", null, MailFolder.INBOX, null, null, null);
+  }
+
+  /**
+   * A cached message carrying the given attachment rows, and nothing else that matters
+   * here — a forward reads its attachments and its UID, never its text.
+   *
+   * @param rows the attachment rows the sync wrote for it
+   * @return the message as the cache holds it
+   */
+  private Email messageCarryingRows(EmailAttachment... rows) {
+    Email source = new Email();
+    source.setUserId(TEST_USER);
+    source.setMailRemoteId(1212L);
+    source.setSubject("the one with the contract");
+    source.setContent(new EmailContent("please find attached", null, List.of(rows)));
+    return source;
+  }
+
+  /**
+   * A message the user can forward: cached under their name in that folder with the
+   * given rows, and really sitting at that UID in the mailbox.
+   * <p>
+   * Both halves are stubbed on purpose. The rows are what decides WHICH files a forward
+   * takes — the caller never says — and the message is what the bytes are really read
+   * out of, through a walk of a real MIME tree.
+   *
+   * @param mailRemoteId the message's IMAP UID
+   * @param folder the folder it is listed in
+   * @param message the message as it sits in the mailbox
+   * @param rows the attachment rows the sync cached for it
+   * @return the mocked folder, to assert how it was opened
+   */
+  @SneakyThrows
+  private Folder givenAForwardableMessage(long mailRemoteId, String folder, MimeMessage message, EmailAttachment... rows) {
+    UserEmailSetting userEmailSetting = givenAUsableMailbox();
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder sourceFolder = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(sourceFolder);
+    when(((UIDFolder) sourceFolder).getMessageByUID(mailRemoteId)).thenReturn(message);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(mailRemoteId),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(folder),
+                                                         eq(true),
+                                                         eq(false),
+                                                         eq(false))).thenReturn(messageCarryingRows(rows));
+    return sourceFolder;
+  }
+
+  /**
+   * The draft a forward is written into: an existing row with no files of its own yet,
+   * and a storage layer that really writes what it is handed.
+   * <p>
+   * The copy is modelled as answering a row rather than as a bare mock, because the
+   * service reads the answer to decide whether the file made it — a stub answering null
+   * would make every file look like one that could not be stored.
+   */
+  private void givenTheDraftBeingWrittenInto() {
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenAnswer(invocation -> storedDraft());
+    lenient().when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of());
+    lenient().when(emailBoxStorage.copyDraftAttachment(eq(TEST_USER), eq("draft-1"), anyString(), any(), any()))
+             .thenAnswer(invocation -> {
+               byte[] bytes = invocation.getArgument(4);
+               return new EmailAttachment(7L, null, null, invocation.getArgument(2), invocation.getArgument(3), null,
+                                          MailFolder.DRAFTS, 55L, (long) bytes.length, null);
+             });
   }
 
   /**
