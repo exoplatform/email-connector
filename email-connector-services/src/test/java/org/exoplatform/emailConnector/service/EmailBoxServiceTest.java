@@ -26,10 +26,13 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -64,8 +67,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
+import javax.mail.Address;
 import javax.mail.Authenticator;
 import javax.mail.BodyPart;
+import javax.mail.FetchProfile;
 import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
@@ -76,7 +81,17 @@ import javax.mail.Session;
 import javax.mail.Store;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
+import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeMessage;
+import javax.mail.search.AndTerm;
+import javax.mail.search.ComparisonTerm;
+import javax.mail.search.FlagTerm;
+import javax.mail.search.FromStringTerm;
+import javax.mail.search.OrTerm;
+import javax.mail.search.ReceivedDateTerm;
+import javax.mail.search.SearchException;
+import javax.mail.search.SearchTerm;
+import javax.mail.search.SubjectTerm;
 
 import org.apache.commons.lang3.ArrayUtils;
 import org.junit.jupiter.api.Test;
@@ -110,6 +125,8 @@ import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchResult;
+import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -1864,6 +1881,533 @@ public class EmailBoxServiceTest {
     return inbox;
   }
 
+  /**
+   * The IMAP criteria the search endpoint builds: null when nothing at all was
+   * asked (an empty SEARCH would match the whole mailbox), a bare term for a
+   * single criterion, an AND of all of them otherwise — with the free-text query
+   * expanding to subject OR sender.
+   */
+  @Test
+  void buildEmailSearchTerm() {
+    // No criterion at all must yield null, not an empty AND.
+    assertNull(EmailBoxService.buildEmailSearchTerm(null, " ", false, null));
+
+    // Free text alone: subject OR sender, trimmed.
+    SearchTerm queryTerm = EmailBoxService.buildEmailSearchTerm(" weekly report ", null, false, null);
+    assertTrue(queryTerm instanceof OrTerm);
+    SearchTerm[] alternatives = ((OrTerm) queryTerm).getTerms();
+    assertEquals(2, alternatives.length);
+    assertEquals("weekly report", ((SubjectTerm) alternatives[0]).getPattern());
+    assertEquals("weekly report", ((FromStringTerm) alternatives[1]).getPattern());
+
+    // Sender alone: a single FROM term, no needless AND wrapper.
+    SearchTerm fromTerm = EmailBoxService.buildEmailSearchTerm(null, "alice@example.com", false, null);
+    assertTrue(fromTerm instanceof FromStringTerm);
+    assertEquals("alice@example.com", ((FromStringTerm) fromTerm).getPattern());
+
+    // Unread alone: messages WITHOUT the \Seen flag.
+    SearchTerm unreadTerm = EmailBoxService.buildEmailSearchTerm(null, null, true, null);
+    assertTrue(unreadTerm instanceof FlagTerm);
+    assertTrue(((FlagTerm) unreadTerm).getFlags().contains(Flags.Flag.SEEN));
+    assertFalse(((FlagTerm) unreadTerm).getTestSet());
+
+    // Date bound alone: received on or after the bound.
+    Date since = new Date();
+    SearchTerm sinceTerm = EmailBoxService.buildEmailSearchTerm(null, null, false, since);
+    assertTrue(sinceTerm instanceof ReceivedDateTerm);
+    assertEquals(ComparisonTerm.GE, ((ReceivedDateTerm) sinceTerm).getComparison());
+
+    // Everything at once: the four criteria ANDed together.
+    SearchTerm combined = EmailBoxService.buildEmailSearchTerm("weekly", "alice@", true, since);
+    assertTrue(combined instanceof AndTerm);
+    assertEquals(4, ((AndTerm) combined).getTerms().length);
+  }
+
+  /**
+   * The search happy path: ACL and validation first, then one IMAP SEARCH, ONE
+   * batched fetch for the whole hit page (the per-message round-trip regression
+   * this verification exists to catch), one bulk cached-flag lookup, and hits
+   * returned newest first with the folder's read/cached flags filled in.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmails() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, "weekly", null, false, null, "INBOX", 20));
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    // Unknown folders and criterion-less searches are refused before any IMAP work.
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, "weekly", null, false, null, "TRASH", 20));
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.searchEmails(TEST_USER, " ", null, false, null, "INBOX", 20));
+
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    Date now = new Date();
+    // The server returns matches oldest first; UID 12 is the one already cached.
+    MimeMessage oldest = searchHit("weekly report 1", "alice@example.com", new Date(now.getTime() - 2000), true);
+    MimeMessage middle = searchHit("weekly report 2", "bob@example.com", new Date(now.getTime() - 1000), false);
+    MimeMessage newest = searchHit("weekly report 3", null, now, true);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { oldest, middle, newest });
+    when(((UIDFolder) inbox).getUID(oldest)).thenReturn(11L);
+    when(((UIDFolder) inbox).getUID(middle)).thenReturn(12L);
+    when(((UIDFolder) inbox).getUID(newest)).thenReturn(13L);
+    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(11L, 12L, 13L))).thenReturn(List.of(12L));
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "weekly", null, false, null, "INBOX", 20);
+
+    assertEquals(3, page.getTotalMatches());
+    assertEquals(List.of(13L, 12L, 11L),
+                 page.getResults().stream().map(EmailSearchResult::getMailRemoteId).collect(Collectors.toList()));
+    EmailSearchResult first = page.getResults().get(0);
+    assertEquals("weekly report 3", first.getSubject());
+    assertNull(first.getSender());
+    assertTrue(first.isRead());
+    assertFalse(first.isCached());
+    EmailSearchResult second = page.getResults().get(1);
+    assertFalse(second.isRead());
+    assertTrue(second.isCached());
+    assertEquals("bob@example.com", second.getSender().getAddress());
+    // ONE batched fetch for the whole page, never one FETCH per hit.
+    verify(inbox, times(1)).fetch(any(Message[].class), any(FetchProfile.class));
+    verify(inbox).open(Folder.READ_ONLY);
+    // The search connection is its own and short-lived: closed before returning.
+    verify(inbox).close(false);
+    verify(store).close();
+  }
+
+  /**
+   * When the SEARCH matches more than the requested limit, only the newest tail of
+   * the match list is fetched — the batched FETCH must stay bounded by the limit,
+   * not by the match count — while the total still reports every match.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsCapsThePageToTheNewestHits() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    MimeMessage[] matches = new MimeMessage[5];
+    for (int i = 0; i < matches.length; i++) {
+      matches[i] = searchHit("hit " + i, "alice@example.com", new Date(), false);
+    }
+    when(inbox.search(any(SearchTerm.class))).thenReturn(matches);
+    // Only the two newest ever get their UID read: the older three are never fetched.
+    when(((UIDFolder) inbox).getUID(matches[3])).thenReturn(14L);
+    when(((UIDFolder) inbox).getUID(matches[4])).thenReturn(15L);
+    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(14L, 15L))).thenReturn(List.of());
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, null, "alice", false, 30, "INBOX", 2);
+
+    assertEquals(5, page.getTotalMatches());
+    assertEquals(List.of(15L, 14L),
+                 page.getResults().stream().map(EmailSearchResult::getMailRemoteId).collect(Collectors.toList()));
+    ArgumentCaptor<Message[]> fetchedPage = ArgumentCaptor.forClass(Message[].class);
+    verify(inbox, times(1)).fetch(fetchedPage.capture(), any(FetchProfile.class));
+    assertArrayEquals(new Message[] { matches[3], matches[4] }, fetchedPage.getValue());
+  }
+
+  /**
+   * A search with no match costs nothing beyond the SEARCH itself: no batched
+   * fetch, no cached-flag query, an empty page with a zero total.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsReturnsEmptyPageWithoutFetching() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[0]);
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "nothing", null, false, null, "INBOX", 20);
+
+    assertEquals(0, page.getTotalMatches());
+    assertTrue(page.getResults().isEmpty());
+    verify(inbox, never()).fetch(any(Message[].class), any(FetchProfile.class));
+    verify(emailBoxStorage, never()).getCachedMailRemoteIds(anyString(), anyString(), anyList());
+    verify(inbox).close(false);
+    verify(store).close();
+  }
+
+  /**
+   * ARCHIVE must be searched in the folder that OWNS the ARCHIVE UID keyspace — the
+   * one the sync caches from — not in the archive destination. On a mailbox carrying
+   * both a dedicated {@code \Archive} and an All-Mail-type folder the two differ, and
+   * because IMAP UIDs are per-folder the mismatch would make the cached flag, the
+   * fetch pre-check and the eventual sync cleanup all compare UIDs across folders.
+   * All Mail is listed FIRST here, so the destination lookup would have picked it.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsResolvesArchiveTheWayTheSyncDoes() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(allMail.exists()).thenReturn(true);
+    lenient().when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
+    lenient().when(allMail.getFullName()).thenReturn("[Gmail]/All Mail");
+    IMAPFolder archive = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(archive.exists()).thenReturn(true);
+    when(archive.getAttributes()).thenReturn(new String[] { "\\Archive" });
+    lenient().when(archive.getFullName()).thenReturn("Archive");
+    when(archive.isOpen()).thenReturn(true);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { allMail, archive });
+    when(archive.search(any(SearchTerm.class))).thenReturn(new Message[0]);
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "report", null, false, null, "ARCHIVE", 20);
+
+    assertEquals(0, page.getTotalMatches());
+    verify(archive).open(Folder.READ_ONLY);
+    verify(archive).search(any(SearchTerm.class));
+    // The All-Mail superset owns a DIFFERENT UID space: it must never be searched
+    // while a syncable Archive exists.
+    verify(allMail, never()).open(anyInt());
+    verify(allMail, never()).search(any(SearchTerm.class));
+  }
+
+  /**
+   * The Gmail shape: no {@code \Archive} to sync, archived mail living in the
+   * {@code \All} superset. Reach must be unchanged — the superset is still searched —
+   * and the ARCHIVE keyspace is then exclusively search-fed, so it stays consistent.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsFallsBackToTheAllMailSupersetWithoutASyncableArchive() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(allMail.exists()).thenReturn(true);
+    when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
+    lenient().when(allMail.getFullName()).thenReturn("[Gmail]/All Mail");
+    when(allMail.isOpen()).thenReturn(true);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { allMail });
+    when(allMail.search(any(SearchTerm.class))).thenReturn(new Message[0]);
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "report", null, false, null, "ARCHIVE", 20);
+
+    assertEquals(0, page.getTotalMatches());
+    verify(allMail).open(Folder.READ_ONLY);
+  }
+
+  /**
+   * A mailbox with no Sent folder yet: the null-folder path returns an empty page
+   * without opening or searching anything.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsReturnsEmptyPageWhenTheFolderDoesNotExist() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "anything", null, false, null, "SENT", 20);
+
+    assertEquals(0, page.getTotalMatches());
+    assertTrue(page.getResults().isEmpty());
+    verify(store).close();
+  }
+
+  /**
+   * A negative day window is a future-dated lower bound that silently matches
+   * nothing; it is rejected as a bad request rather than returning a confusing
+   * empty page.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsRejectsANegativeDayWindow() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+
+    IllegalArgumentException thrown =
+                                    assertThrows(IllegalArgumentException.class,
+                                                 () -> emailBoxService.searchEmails(TEST_USER,
+                                                                                    "weekly",
+                                                                                    null,
+                                                                                    false,
+                                                                                    -3,
+                                                                                    "INBOX",
+                                                                                    20));
+    assertEquals("emailConnector.search.invalidSinceDays", thrown.getMessage());
+    // Refused before any connection is opened.
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  /**
+   * A server refusing the search CRITERIA (the charset path, which an accented query
+   * takes) is a rejected input, not a broken mailbox: it owes the caller a 400 with a
+   * message code, never the generic 500 the catch-all would produce.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsMapsRefusedCriteriaToABadRequest() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(inbox.search(any(SearchTerm.class))).thenThrow(new SearchException("Search failed"));
+
+    IllegalArgumentException thrown =
+                                    assertThrows(IllegalArgumentException.class,
+                                                 () -> emailBoxService.searchEmails(TEST_USER,
+                                                                                    "réunion",
+                                                                                    null,
+                                                                                    false,
+                                                                                    null,
+                                                                                    "INBOX",
+                                                                                    20));
+    assertEquals("emailConnector.search.criteriaNotSupported", thrown.getMessage());
+    // Still closed cleanly on the refusal path.
+    verify(inbox).close(false);
+    verify(store).close();
+  }
+
+  /**
+   * Opening a search hit that is already in the local cache must not touch the
+   * server at all — the row comes straight from the database.
+   */
+  @Test
+  @SneakyThrows
+  void fetchSearchedEmailReturnsCachedRowWithoutImap() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email email = email(TEST_USER);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212L, TEST_USER, "testEmail", "INBOX", true, true, true))
+                                                                                                                  .thenReturn(email);
+
+    assertSame(email, emailBoxService.fetchSearchedEmail(1212L, "INBOX", TEST_USER));
+
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  /**
+   * The not-held-locally path: a hit outside the cache window is fetched from the
+   * server in one batched call and cached through the ordinary createEmails
+   * pipeline, then served from the database; the sync mutex is released afterwards
+   * (the second call must not be refused as sync-in-progress).
+   */
+  @Test
+  @SneakyThrows
+  void fetchSearchedEmailCachesAnOutOfWindowMessage() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cachedAfterCreate = email(TEST_USER);
+    // Miss on the pre-check, miss again on the under-mutex re-check, hit once created.
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(9999L, TEST_USER, "testEmail", "INBOX", true, true, true))
+                                                                                                                  .thenReturn(null,
+                                                                                                                              null,
+                                                                                                                              cachedAfterCreate);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    MimeMessage message = mock(MimeMessage.class);
+    when(((UIDFolder) inbox).getMessageByUID(9999L)).thenReturn(message);
+    when(((UIDFolder) inbox).getUID(message)).thenReturn(9999L);
+
+    Email fetched = emailBoxService.fetchSearchedEmail(9999L, "INBOX", TEST_USER);
+
+    assertSame(cachedAfterCreate, fetched);
+    // The single message is prefetched in one batched call before createEmails
+    // reads its headers -- never one round-trip per header.
+    verify(inbox, times(1)).fetch(any(Message[].class), any(FetchProfile.class));
+    verify(emailBoxStorage).createEmail(any(Email.class));
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(inbox).close(false);
+    verify(store).close();
+    // The mutex is released: this second call short-circuits on the cache.
+    assertSame(cachedAfterCreate, emailBoxService.fetchSearchedEmail(9999L, "INBOX", TEST_USER));
+    verify(userEmailSettingService, times(1)).connect(userEmailSetting);
+    // INBOX is bulk-synced, so the documented self-restoring eviction applies and the
+    // search-fed trim must keep its hands off it.
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * On a provider with no syncable {@code \Archive} — Gmail, where archived mail
+   * lives only in the unsynced {@code \All} superset — no bulk sync ever visits
+   * ARCHIVE, so {@code cleanupObsoleteEmails} never runs for it and search-fetched
+   * rows would pile up for good in a folder whose list and counts the user sees.
+   * The overflow is trimmed here instead, and the row just fetched is exempt: it is
+   * what the caller is about to read, and being old it sorts last.
+   */
+  @Test
+  @SneakyThrows
+  void fetchSearchedEmailTrimsTheSearchFedArchiveCache() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cachedAfterCreate = email(TEST_USER);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(7000L, TEST_USER, "testEmail", "ARCHIVE", true, true, true))
+                                                                                                                    .thenReturn(null,
+                                                                                                                                null,
+                                                                                                                                cachedAfterCreate);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    // Gmail shape: an All-Mail superset and NO syncable \Archive.
+    IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(allMail.exists()).thenReturn(true);
+    when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
+    lenient().when(allMail.getFullName()).thenReturn("[Gmail]/All Mail");
+    when(allMail.isOpen()).thenReturn(true);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { allMail });
+    MimeMessage message = mock(MimeMessage.class);
+    when(((UIDFolder) allMail).getMessageByUID(7000L)).thenReturn(message);
+    lenient().when(((UIDFolder) allMail).getUID(message)).thenReturn(7000L);
+    // A 100-message window, so 103 cached rows means three of overflow — one of
+    // which is the row just fetched.
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    List<Email> cachedRows = new ArrayList<>();
+    for (int i = 0; i < 103; i++) {
+      Email row = new Email();
+      row.setId((long) i);
+      row.setMailRemoteId(i == 101 ? 7000L : (long) i);
+      cachedRows.add(row);
+    }
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "ARCHIVE")).thenReturn(cachedRows);
+
+    Email fetched = emailBoxService.fetchSearchedEmail(7000L, "ARCHIVE", TEST_USER);
+
+    assertSame(cachedAfterCreate, fetched);
+    ArgumentCaptor<List<Long>> trimmed = ArgumentCaptor.forClass(List.class);
+    verify(emailBoxStorage).deleteEmailsByIds(trimmed.capture());
+    // Rows 100 and 102 go; row 101 is the one just fetched and stays.
+    assertEquals(List.of(100L, 102L), trimmed.getValue());
+  }
+
+  /**
+   * A hit deleted from the server between the search and the open: null, and
+   * nothing is written to the cache.
+   */
+  @Test
+  @SneakyThrows
+  void fetchSearchedEmailReturnsNullWhenGoneFromServer() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    when(((UIDFolder) inbox).getMessageByUID(4242L)).thenReturn(null);
+
+    assertNull(emailBoxService.fetchSearchedEmail(4242L, "INBOX", TEST_USER));
+
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * While a synchronization holds the {@code syncingUsers} mutex, the on-demand
+   * fetch must refuse with the retryable {@code syncInProgress} code instead of
+   * racing the sync's known-UIDs snapshot into duplicate (user, folder, UID) rows.
+   */
+  @Test
+  @SneakyThrows
+  void fetchSearchedEmailRefusedWhileASyncIsRunning() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    CountDownLatch syncStarted = new CountDownLatch(1);
+    CountDownLatch releaseSync = new CountDownLatch(1);
+    // The sync thread parks inside connect() -- i.e. AFTER it acquired the mutex --
+    // until the assertion below has run, then aborts (the sync outcome is irrelevant).
+    when(userEmailSettingService.connect(userEmailSetting)).thenAnswer(invocation -> {
+      syncStarted.countDown();
+      releaseSync.await(10, TimeUnit.SECONDS);
+      throw new MessagingException("test: abort the sync");
+    });
+    Thread sync = new Thread(() -> {
+      try {
+        emailBoxService.synchronize(TEST_USER);
+      } catch (Exception e) {
+        // The aborted connect is the expected way out.
+      }
+    });
+    sync.start();
+    try {
+      assertTrue(syncStarted.await(10, TimeUnit.SECONDS));
+      IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                   () -> emailBoxService.fetchSearchedEmail(4242L, "INBOX", TEST_USER));
+      assertEquals("emailConnector.search.syncInProgress", refusal.getMessage());
+    } finally {
+      releaseSync.countDown();
+      sync.join(10000);
+    }
+  }
+
+  /**
+   * A stubbed search hit carrying just what a result row renders: subject, sender,
+   * received date and read flag. Lenient because the capped-page test deliberately
+   * never reads the hits that fall outside the returned tail.
+   *
+   * @param subject the message subject
+   * @param fromAddress the sender address, null for a sender-less message
+   * @param receivedDate the received date
+   * @param seen whether the message carries the \Seen flag
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private MimeMessage searchHit(String subject, String fromAddress, Date receivedDate, boolean seen) {
+    MimeMessage message = mock(MimeMessage.class);
+    lenient().when(message.getSubject()).thenReturn(subject);
+    lenient().when(message.getFrom())
+             .thenReturn(fromAddress == null ? null : new Address[] { new InternetAddress(fromAddress) });
+    lenient().when(message.getReceivedDate()).thenReturn(receivedDate);
+    lenient().when(message.isSet(Flags.Flag.SEEN)).thenReturn(seen);
+    return message;
+  }
+
   private Email emailWithCategories(List<Long> categoryIds) {
     Email email = email(TEST_USER);
     email.setCategoryIds(categoryIds);
@@ -2084,6 +2628,97 @@ public class EmailBoxServiceTest {
                                                          anyBoolean(),
                                                          anyBoolean(),
                                                          anyBoolean())).thenReturn(email);
+  }
+
+  /**
+   * The badge mirrors the inbox unread count, so every operation that changes
+   * it has to announce it — and none that does not change it may, or every
+   * online user pays an eviction, a frame and a re-fetch for nothing. These
+   * cases are what a later refactor of this service could silently break.
+   */
+  @Test
+  void readStatusChangeBroadcastsTheUnreadCountChange() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+
+    emailBoxService.updateEmailReadStatus(List.of(1212l), TEST_USER, true, false);
+
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  @Test
+  void aNoOpReadStatusCallBroadcastsNothing() throws Exception {
+    emailBoxService.updateEmailReadStatus(List.of(), TEST_USER, true, false);
+    emailBoxService.updateEmailReadStatus(null, TEST_USER, true, false);
+
+    // Nothing changed, so nothing to announce
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
+  @Test
+  void deletingEmailsBroadcastsTheUnreadCountChange() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false))
+                                                                                                            .thenReturn(email(TEST_USER));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    IMAPFolder trashFolder = mock(IMAPFolder.class);
+    when(trashFolder.getFullName()).thenReturn("trash");
+    when(folder.listSubscribed("*")).thenReturn(new Folder[] { trashFolder });
+    when(trashFolder.exists()).thenReturn(true);
+    when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(mock(Message.class));
+
+    emailBoxService.deleteEmail(List.of(1212l), TEST_USER);
+
+    // Removing rows the badge counts changes it just as reading them does
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  @Test
+  void syncStaysSilentWhenTheUnreadCountDidNotMove() throws Exception {
+    mockEmptySync();
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    // A cycle that changed nothing must stay silent: the badge cache would
+    // otherwise be defeated for every connected user on every sync period
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
+  @Test
+  void syncBroadcastsWhenTheUnreadCountMoved() throws Exception {
+    mockEmptySync();
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L, 5L);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  /** A synchronisation that reaches its success path with no message to import. */
+  @SneakyThrows
+  private void mockEmptySync() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    lenient().when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new MimeMessage[0]);
+    lenient().when(emailBoxStorage.getEmails(anyString(), anyString())).thenReturn(new ArrayList<Email>());
+    Folder defaultFolder = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    lenient().when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
   }
 
   private UserEmailSetting userEmailSetting() {

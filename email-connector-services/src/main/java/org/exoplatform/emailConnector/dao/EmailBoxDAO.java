@@ -56,6 +56,26 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   void deleteEmailsByIds(@Param("ids")
   List<Long> ids);
 
+  /**
+   * Counts the unread emails of the locally synced mirror. Never reaches the
+   * IMAP server: the badge reflects what the platform already knows.
+   * <p>
+   * Scoped to one folder, and the caller passes the inbox: SENT and ARCHIVE
+   * rows carry the server's SEEN flag too, so an archived message that was
+   * never read would otherwise be counted forever — the client can only mark
+   * inbox messages read, so nothing could ever clear it. ALL_MAIL is a
+   * thread-completion cache that duplicates the other folders and must never be
+   * counted at all.
+   *
+   * @param  userId the mailbox owner
+   * @param  folder the folder to count in
+   * @return        the number of unread emails in that folder
+   */
+  @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read = FALSE)")
+  long countUnreadByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
   @Transactional
   @Modifying
   @Query("UPDATE EmailBoxEntity email SET email.read = :readStatus WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read <> :readStatus)")
@@ -180,6 +200,23 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> findThreadIdsOrderedByAge(@Param("userId")
   String userId, @Param("threadIds")
   List<String> threadIds);
+
+  /**
+   * Of the given IMAP UIDs, the ones already cached in a folder — one IN query
+   * for the whole search result list, so decorating hits with their "already
+   * openable locally" flag costs a single statement rather than one lookup per
+   * hit (the same per-row discipline the sync reconcile follows).
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   * @param mailRemoteIds the candidate IMAP UIDs
+   * @return the subset of {@code mailRemoteIds} present in the local cache
+   */
+  @Query("SELECT email.mailRemoteId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
+  List<Long> findCachedMailRemoteIds(@Param("userId")
+  String userId, @Param("folder")
+  String folder, @Param("mailRemoteIds")
+  List<Long> mailRemoteIds);
 
   @Transactional
   @Modifying
