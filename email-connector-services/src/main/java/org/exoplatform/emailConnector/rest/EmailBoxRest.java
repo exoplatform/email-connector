@@ -30,6 +30,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -48,6 +49,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
+import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.service.EmailBoxService;
@@ -641,6 +643,100 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       return ResponseEntity.ok().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @PostMapping("/drafts/{draftLocalId}/attachments")
+  @Secured("users")
+  @Operation(summary = "Attaches an uploaded file to a draft", method = "POST",
+             description = "Copies a commons upload into the platform's file store and records it on the draft, so the file survives the browser session, the tab and a server restart - which a temporary upload does not. Answers the draft as it now stands, attachments included, with its revision stepped: attaching is an edit, and a draft that did not notice one would accept a file and never send it. Answers 404 for an id the caller has no draft under, and 400 when the upload is gone or the draft would go over the size a message may carry. While a draft carries a file it is deliberately NOT uploaded to the mail server - a copy up there without the files would look complete and would not be.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "The upload is gone, or the draft would be too large to send"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public Email addDraftAttachment(HttpServletRequest request,
+                                  @Parameter(description = "The draft's local id", required = true)
+                                  @PathVariable("draftLocalId")
+                                  String draftLocalId,
+                                  @RequestBody
+                                  EmailOutgoingAttachment attachment) {
+    try {
+      Email draft = emailBoxService.addDraftAttachment(draftLocalId, request.getRemoteUser(), attachment);
+      if (draft == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return draft;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @DeleteMapping("/drafts/{draftLocalId}/attachments/{attachmentId}")
+  @Secured("users")
+  @Operation(summary = "Removes a file from a draft", method = "DELETE",
+             description = "Removes the attachment row and records its stored file as unreferenced, for a later sweep to free. Answers the draft as it now stands, with its revision stepped for the same reason attaching steps it. Answers 404 both for a draft the caller does not have and for an attachment that is not on it, so neither id can be probed for existence.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public Email removeDraftAttachment(HttpServletRequest request,
+                                     @Parameter(description = "The draft's local id", required = true)
+                                     @PathVariable("draftLocalId")
+                                     String draftLocalId,
+                                     @Parameter(description = "The attachment's own id", required = true)
+                                     @PathVariable("attachmentId")
+                                     long attachmentId) {
+    try {
+      Email draft = emailBoxService.removeDraftAttachment(draftLocalId, request.getRemoteUser(), attachmentId);
+      if (draft == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return draft;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @GetMapping("/drafts/{draftLocalId}/attachments/{attachmentId}")
+  @Secured("users")
+  @Operation(summary = "Downloads a file attached to a draft", method = "GET",
+             description = "Reads the bytes back from the platform's file store. Deliberately a separate address from /attachments/{mailRemoteId}/{attachmentId}, which cannot reach a draft's file at all: that one addresses a message by its IMAP UID, and an unpushed draft has none - its MAIL_REMOTE_ID is null, which is the column that lookup joins on.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public ResponseEntity<byte[]> getDraftAttachment(HttpServletRequest request,
+                                                   @Parameter(description = "The draft's local id", required = true)
+                                                   @PathVariable("draftLocalId")
+                                                   String draftLocalId,
+                                                   @Parameter(description = "The attachment's own id", required = true)
+                                                   @PathVariable("attachmentId")
+                                                   long attachmentId) {
+    try {
+      EmailAttachment attachment = emailBoxService.getDraftAttachment(draftLocalId, request.getRemoteUser(), attachmentId);
+      if (attachment == null || attachment.getData() == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      String filename = StringUtils.defaultIfBlank(attachment.getName(), "attachment");
+      String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
+      // No ETag, unlike the received-attachment download. That one is safe to cache
+      // because the bytes behind a (folder, UID, part path) never change; a draft's
+      // attachment id is reused by nothing, but the draft around it is edited
+      // constantly, and a cached answer is not worth the reasoning.
+      return ResponseEntity.ok()
+                           .contentType(MediaType.parseMediaType(StringUtils.defaultIfBlank(attachment.getMimeType(),
+                                                                                            "application/octet-stream")))
+                           .header(HttpHeaders.CONTENT_DISPOSITION,
+                                   "attachment; filename=\"" + filename + "\"; filename*=UTF-8''" + encodedFilename)
+                           .body(attachment.getData());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {

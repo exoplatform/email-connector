@@ -48,6 +48,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 
 import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
+import org.exoplatform.emailConnector.dao.EmailOrphanFileDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.DraftState;
@@ -56,6 +57,9 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
+
+import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.upload.UploadService;
 
 import io.meeds.social.category.service.CategoryLinkService;
 
@@ -77,6 +81,19 @@ public class EmailBoxStorageTest {
 
   @MockBean
   private CategoryLinkService categoryLinkService;
+
+  // The storage records a file as unreferenced before deleting the rows that named it,
+  // and writes attachment bytes through the platform's file service. Both are mocked
+  // here: this class is the fully-mocked rig, and the behaviours that use them are
+  // pinned in EmailBoxDraftAttachmentStorageTest against a real database.
+  @MockBean
+  private EmailOrphanFileDAO  emailOrphanFileDAO;
+
+  @MockBean
+  private FileService         fileService;
+
+  @MockBean
+  private UploadService       uploadService;
 
   @Autowired
   private EmailBoxStorage     emailBoxStorage;
@@ -448,7 +465,7 @@ public class EmailBoxStorageTest {
                                                                                                           emailBoxEntity,
                                                                                                           "2",
                                                                                                           "attachment.pdf",
-                                                                                                          "application/pdf"));
+                                                                                                          "application/pdf", null, null));
     when(emailAttachmentDAO.findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder(1212l, "2", "root", MailFolder.INBOX)).thenReturn(emailAttachmentEntity);
     retrievedEmailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", "root", MailFolder.INBOX);
     assertNotNull(retrievedEmailAttachment);
@@ -629,7 +646,7 @@ public class EmailBoxStorageTest {
                      null,
                      null,
                      null,
-                     null);
+                     null, null);
   }
 
   /**
@@ -680,6 +697,6 @@ public class EmailBoxStorageTest {
   }
 
   private EmailAttachment emailAttachment() {
-    return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null, MailFolder.INBOX);
+    return new EmailAttachment(null, 1212l, "2", "attachment.pdf", "application/pdf", null, MailFolder.INBOX, null, null);
   }
 }

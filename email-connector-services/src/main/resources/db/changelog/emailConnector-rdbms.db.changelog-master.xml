@@ -636,5 +636,133 @@
     </comment>
     <createSequence sequenceName="SEQ_EMAIL_ATTACHMENT_ID" startValue="1"/>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-44">
+    <comment>
+      Attachments on drafts, changesets 44 through 47. On the numbering, since it has
+      already cost one reconciliation: the drafts work this is stacked on holds 39 to
+      41, the body-format branch — stacked on the same unmerged drafts work — holds
+      42, and 43 is the missing attachment sequence this branch's previous commit had
+      to add before an attachment row could be written at all. So this group starts at
+      44. Anything landing after it starts at 48.
+
+      ATTACHMENT_REMOTE_ID is a MIME part path — "2" is the second part of the
+      message this row belongs to — and it has been NOT NULL since 1.0.0-5 because
+      every attachment that had ever existed here was a part OF a received message,
+      and the path was how it was addressed.
+
+      A file the user attaches to a draft is the first one that is not. It is
+      uploaded HERE, stored in the platform's file service, and only becomes a MIME
+      part when the mail is finally sent — so between the paperclip and the Send
+      button there is no part path to carry, which is the premise of the design
+      rather than an edge case.
+
+      Exactly the reasoning 1.0.0-41 applied to MAIL_REMOTE_ID one changeset group
+      earlier, for the same feature and the same reason: a locally authored row is
+      not a copy of anything, so the columns that address the thing it copies are
+      empty until it becomes one.
+
+      A sentinel path ("", "0") was considered and rejected on 1.0.0-41's grounds:
+      the code asks "does this row name a part of a message" in several places, and
+      a sentinel has to be excluded again at every one of them, while a null answers
+      the question by being one.
+
+      Dropping the constraint is additive and reversible: every existing row keeps
+      its path, and nothing that reads one starts having to handle a null it could
+      not already get — the attachment lookups all match ON the path, so a null one
+      is simply never returned by them.
+    </comment>
+    <dropNotNullConstraint tableName="EMAIL_ATTACHMENTS" columnName="ATTACHMENT_REMOTE_ID" columnDataType="VARCHAR(250)"/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-45">
+    <comment>
+      Where a draft's attachment actually lives. FILE_ID is the platform
+      FileService id under the add-on's own namespace (EmailConnectorStorage
+      NAME_SPACE), the same store contact photos and connector illustrations use —
+      which is why nothing may ever sweep that namespace by "what the mail tables do
+      not reference": it is shared, and the other two owners would lose their files.
+
+      The bytes are deliberately NOT a column. A BLOB here would put every
+      attachment of every draft into the row a conversation read joins, and the
+      thread query already fetches this table; the file service exists precisely so
+      binary content is addressed by id and read on demand.
+
+      FILE_SIZE is denormalised from the file rather than joined for. The composer
+      renders a size beside every chip and the send path caps a message's total, so
+      it is read on every list and every send, and asking the file service per
+      attachment for a number we already knew when we wrote it is a round trip per
+      chip.
+
+      The index is on FILE_ID alone, and it is not there for the read path — nothing
+      looks an attachment up by its file. It is for the sweep (a later slice), which
+      has to answer "is this file still referenced by any row" for each marker it
+      considers, and would otherwise scan the table once per marker.
+    </comment>
+    <addColumn tableName="EMAIL_ATTACHMENTS">
+      <column name="FILE_ID" type="BIGINT"/>
+      <column name="FILE_SIZE" type="BIGINT"/>
+    </addColumn>
+    <createIndex tableName="EMAIL_ATTACHMENTS" indexName="IDX_EMAIL_ATTACHMENTS_FILE">
+      <column name="FILE_ID"/>
+    </createIndex>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-46">
+    <comment>
+      The orphan marker: a file that no row references any more, written down so
+      that something can free it later.
+
+      It exists because of exactly how mail rows are deleted. EmailBoxDAO's
+      deleteEmailsByIds is a bulk JPQL DELETE — no JPA cascade, no entity
+      callbacks, no loaded instances — and the attachment rows go with it through
+      the DATABASE-level ON DELETE CASCADE declared in 1.0.0-6. Nothing in Java ever
+      observes that happening. So there is no lifecycle hook to hang "and free the
+      file" on: it has to be explicit, and it has to read the file ids BEFORE the
+      rows are gone, because afterwards nothing anywhere knows which files those
+      were.
+
+      Two statements that cannot be one, therefore, and the order between them is
+      the whole design. Recording first means a crash in between leaves a marker for
+      a file that is still referenced — harmless, because the sweep verifies before
+      it deletes. Deleting first would mean a crash leaves bytes in the file store
+      that nothing names and nothing can ever find: a leak with no record of itself.
+      A note nobody needed beats a file nobody can reach.
+
+      USER_ID is carried so the sweep can be scoped and its work attributed; it is
+      deliberately not a foreign key, since the point of the row is to outlive
+      everything it refers to.
+
+      FILE_ID is unique: recording the same file twice is a normal race (two
+      cleanups over overlapping rows), and the second one should be a no-op rather
+      than a second marker to process.
+
+      This changeset only creates the table, and this slice only WRITES to it. The
+      sweep that reads it is a later slice; until then the markers accumulate, which
+      is the point — they are the record that the work is outstanding.
+    </comment>
+    <createTable tableName="EMAIL_ORPHAN_FILE">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_ORPHAN_FILE"/>
+      </column>
+      <column name="FILE_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)"/>
+      <column name="RECORDED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <createIndex tableName="EMAIL_ORPHAN_FILE" indexName="UQ_EMAIL_ORPHAN_FILE" unique="true">
+      <column name="FILE_ID"/>
+    </createIndex>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-47" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The orphan marker's sequence, on the vendors that have sequences — created in
+      the same breath as its table, which is the lesson 1.0.0-43 paid for.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_ORPHAN_FILE_ID" startValue="1"/>
+  </changeSet>
 
 </databaseChangeLog>
