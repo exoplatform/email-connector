@@ -27,6 +27,7 @@ const config = {
     emailConnectorUserSetting : './src/main/webapp/vue-apps/email-connector-user-setting/main.js',
     emailConnectorCommon : './src/main/webapp/vue-apps/email-connector-common/main.js',
     emailConnectorMailBox: './src/main/webapp/vue-apps/email-connector-mail-box/main.js',
+    emailConnectorContacts: './src/main/webapp/vue-apps/email-connector-contacts/main.js',
     emailConnectorNotificationExtension: './src/main/webapp/vue-apps/email-connector-notification-extension/main.js',
     emailConnectorDocumentsExtension: './src/main/webapp/vue-apps/email-connector-documents-extension/main.js',
   },

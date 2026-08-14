@@ -38,6 +38,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -347,6 +348,65 @@ public class EmailBoxStorage {
 
   public void deleteEmailsByIds(List<Long> emailsIds) {
     emailBoxDao.deleteEmailsByIds(emailsIds);
+  }
+
+  /**
+   * The light view contact collection reads: for each cached message of a
+   * folder, its sender, To/Cc recipients, the distribution headers and the
+   * received date — mapped into partial {@link Email} DTOs (body, attachments
+   * and categories left null) so the collection rules run on the same shapes
+   * {@link EmailConnectorUtils#getMailType} judges. No profile resolution: the
+   * store joins the directory at read time, never at collection time.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @param mailRemoteIds the IMAP UIDs to restrict to, or null for the whole
+   *          folder (the backfill pass)
+   * @return light {@link Email} DTOs, never null
+   */
+  public List<Email> getContactSourceEmails(String userId, String folder, List<Long> mailRemoteIds) {
+    List<Object[]> rows = mailRemoteIds == null ? emailBoxDao.findContactSourceRowsByUserIdAndFolder(userId, folder)
+                                                : mailRemoteIds.isEmpty() ? List.of()
+                                                                          : emailBoxDao.findContactSourceRowsByUserIdAndFolderAndUids(userId,
+                                                                                                                                      folder,
+                                                                                                                                      mailRemoteIds);
+    return rows.stream().map(row -> {
+      Email email = new Email();
+      email.setUserId(userId);
+      email.setFolder(folder);
+      email.setSender(toLightSender((String) row[0]));
+      email.setTo(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses((String) row[1]), userId, false));
+      email.setCc(EmailConnectorUtils.getEmailRecipients(toRecipientsInternetAddresses((String) row[2]), userId, false));
+      email.setAutoSubmitted(Boolean.TRUE.equals(row[3]));
+      email.setHasListId(Boolean.TRUE.equals(row[4]));
+      email.setHasListPost(Boolean.TRUE.equals(row[5]));
+      email.setHasListUnsubscribe(Boolean.TRUE.equals(row[6]));
+      email.setOriginalSender((String) row[7]);
+      email.setReceivedDate((java.util.Date) row[8]);
+      return email;
+    }).toList();
+  }
+
+  /**
+   * Decodes the stored {@code name,address} sender string without touching the
+   * directory. Split on the LAST comma: the address cannot contain one, while a
+   * display name legitimately can ("Doe, Jane") — the first-comma split the full
+   * mapper inherited would hand the rules a truncated address.
+   *
+   * @param stored the stored sender string
+   * @return the sender, or null for a blank value
+   */
+  private EmailSender toLightSender(String stored) {
+    if (StringUtils.isBlank(stored)) {
+      return null;
+    }
+    int lastComma = stored.lastIndexOf(',');
+    if (lastComma < 0) {
+      return new EmailSender(stored, stored, null, null);
+    }
+    String name = stored.substring(0, lastComma);
+    String address = stored.substring(lastComma + 1);
+    return new EmailSender(StringUtils.isBlank(name) ? address : name, address, null, null);
   }
 
   public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId, String attachmentId, String userId) {

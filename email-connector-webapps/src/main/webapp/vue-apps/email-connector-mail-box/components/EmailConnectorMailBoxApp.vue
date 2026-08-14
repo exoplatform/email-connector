@@ -46,10 +46,12 @@ export default {
   mounted() {
     document.addEventListener('quick-action-mailBox-drawer', this.openDrawer);
     document.addEventListener('open-email-compose-with-attachment', this.openComposeWithAttachment);
+    document.addEventListener('open-email-composer', this.openComposer);
   },
   beforeDestroy() {
     document.removeEventListener('quick-action-mailBox-drawer', this.openDrawer);
     document.removeEventListener('open-email-compose-with-attachment', this.openComposeWithAttachment);
+    document.removeEventListener('open-email-composer', this.openComposer);
   },
   methods: {
     openDrawer(event) {
@@ -82,6 +84,21 @@ export default {
             detail: { attachment },
           })), 400));
         }
+      });
+    },
+    // Entry point used by other apps (the Contacts drawer's "compose to") to open
+    // a NEW email with the recipients prefilled. Same connected gate as the other
+    // entry points; the prefill travels as the composer open event's 4th argument
+    // so reply/forward stay untouched.
+    openComposer(event) {
+      const prefill = event?.detail;
+      this.$emailConnectorCommonService.getUserEmailSetting().then(userEmailSetting => {
+        this.userEmailSetting = userEmailSetting;
+        if (!this.userEmailSetting.connected) {
+          this.$root.$emit('open-user-setting-connectors-drawer');
+          return;
+        }
+        this.$root.$emit('open-new-email-drawer', null, false, false, prefill);
       });
     },
   }

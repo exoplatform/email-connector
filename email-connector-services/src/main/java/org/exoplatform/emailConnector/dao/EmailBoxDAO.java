@@ -238,4 +238,40 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String folder, @Param("threadIndexRoot")
   String threadIndexRoot);
 
+  /**
+   * The light per-folder view contact collection reads: sender, recipients, the
+   * distribution headers that tell a human correspondent from a robot, and the
+   * received date — WITHOUT the body CLOB and without the attachments join, the
+   * same discipline as {@link #findSyncViewByUserIdAndFolder}. Collection runs
+   * after every sync group and over the whole cache at backfill, so dragging
+   * bodies through the persistence layer here would tax every routine sync for
+   * columns nobody reads.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return rows of {@code [sender, to, cc, autoSubmitted, hasListId, hasListPost,
+   *         hasListUnsubscribe, originalSender, receivedDate]}
+   */
+  @Query("SELECT email.sender, email.to, email.cc, email.autoSubmitted, email.hasListId, email.hasListPost, email.hasListUnsubscribe, email.originalSender, email.receivedDate FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder")
+  List<Object[]> findContactSourceRowsByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
+   * The {@link #findContactSourceRowsByUserIdAndFolder} view restricted to the
+   * given IMAP UIDs — the per-sync-group variant, one IN query for the whole
+   * group rather than a per-message statement.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   * @param mailRemoteIds the IMAP UIDs of the group
+   * @return rows of {@code [sender, to, cc, autoSubmitted, hasListId, hasListPost,
+   *         hasListUnsubscribe, originalSender, receivedDate]}
+   */
+  @Query("SELECT email.sender, email.to, email.cc, email.autoSubmitted, email.hasListId, email.hasListPost, email.hasListUnsubscribe, email.originalSender, email.receivedDate FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds")
+  List<Object[]> findContactSourceRowsByUserIdAndFolderAndUids(@Param("userId")
+  String userId, @Param("folder")
+  String folder, @Param("mailRemoteIds")
+  List<Long> mailRemoteIds);
+
 }
