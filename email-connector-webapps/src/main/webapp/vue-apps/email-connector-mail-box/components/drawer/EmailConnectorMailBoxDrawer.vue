@@ -301,6 +301,12 @@ export default {
     this.$root.$on('enter-select-mode', this.onEnterSelectMode);
     this.$root.$on('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
+    this.onRefreshEmailBox = () => {
+      if (!this.emailBoxDrawer) {
+        return;
+      }
+      this.loadEmailBox();
+    };
     this.onOpenEmailDetailContent = (mailRemoteId) => {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
@@ -337,12 +343,22 @@ export default {
         this.cancelSelectMode();
       }
     };
+    // A draft was saved to (or discarded from) the Drafts folder. The list is a
+    // mirror of the local cache and the composer has just changed it, so it has to
+    // be re-read — this is the only writer outside the sync.
+    this.$root.$on('refresh-email-box', this.onRefreshEmailBox);
     this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$on('delete-email', this.onDeleteEmail);
     this.$root.$on('archive-email', this.onArchiveEmail);
     this.$root.$on('email-categories-updated', this.onCategoriesUpdated);
     this.$root.$on('open-email-detail-drawer', () => {
+      this.email = null;
+    });
+    // The reader opened on a row it was handed rather than on a UID — a draft's
+    // conversation. Same consequence here: this drawer is no longer the one showing a
+    // message.
+    this.$root.$on('open-email-thread-drawer', () => {
       this.email = null;
     });
     // Opening the mailbox, optionally straight onto one message — that is how the
@@ -397,6 +413,7 @@ export default {
   },
   beforeDestroy() {
     document.removeEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
+    this.$root.$off('refresh-email-box', this.onRefreshEmailBox);
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$off('delete-email', this.onDeleteEmail);
@@ -413,9 +430,20 @@ export default {
       return this.emails?.length > 0;
     },
     // INBOX plus any of SENT/ARCHIVE that actually hold mail, for the ⋮ folder switch.
+    /**
+     * The folders offered in the 3-dots menu: the inbox always, the others only
+     * once they hold something.
+     *
+     * This list and the browsable-folder check in EmailBoxService#getEmailBox are
+     * the same list expressed twice, with no shared constant between them — change
+     * one and the other has to change with it, or this offers a folder the backend
+     * refuses (or hides one it would happily serve).
+     *
+     * @returns {Array} the folder ids to offer
+     */
     availableFolders() {
       const counts = this.emailBox?.folderCounts || {};
-      return ['INBOX', 'SENT', 'ARCHIVE'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
+      return ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
     },
     syncBlocked() {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';
@@ -427,6 +455,8 @@ export default {
           title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.sent')}`;
         } else if (this.currentFolder === 'ARCHIVE') {
           title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.archive')}`;
+        } else if (this.currentFolder === 'DRAFTS') {
+          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.drafts')}`;
         }
         // The favorite view reads as one more folder-like narrowing of the list.
         if (this.favoriteOnly) {

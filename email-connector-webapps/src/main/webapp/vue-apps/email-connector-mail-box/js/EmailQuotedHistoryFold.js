@@ -334,3 +334,70 @@ export function foldQuotedHistory(html, labels, parser) {
     return html;
   }
 }
+
+/**
+ * The text a message carries above its quoted history — what its author actually
+ * wrote — collapsed onto one line for a preview.
+ *
+ * A one-line preview exists to answer "which message is this", and since a reply now
+ * opens with the message it answers quoted under the cursor, the raw body of every
+ * unfinished reply in a conversation begins with the same words. Taking the body's
+ * first line would make each of them read like the mail being replied to; what tells
+ * them apart is the sentence above the quote, and that is all a preview has room for.
+ *
+ * The boundary is found by exactly the rules the fold above uses, so the preview and
+ * the reader can never disagree about where a quote starts. Including the default:
+ * on no clear boundary, or on any trouble, the whole body is shown. An untidy
+ * preview is a nuisance; a preview that lost the words is a defect.
+ *
+ * @param {string} html the body markup
+ * @param {DOMParser} [parser] an injected parser (tests); defaults to a browser one
+ * @returns {string} the whitespace-collapsed text written above the quote
+ */
+export function unquotedText(html, parser) {
+  if (!html || typeof html !== 'string') {
+    return '';
+  }
+  const dp = parser || (typeof DOMParser !== 'undefined' ? new DOMParser() : null);
+  if (!dp) {
+    return '';
+  }
+  let doc = null;
+  try {
+    doc = dp.parseFromString(html, 'text/html');
+  } catch (e) {
+    return '';
+  }
+  if (!doc || !doc.body) {
+    return '';
+  }
+  try {
+    removeQuotedHistory(doc);
+  } catch (e) {
+    // Deliberately silent, and deliberately not a rethrow: whatever went wrong, the
+    // body is still parsed and its text is still worth showing.
+  }
+  return (doc.body.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Strips the quoted history — the boundary node and every node after it — out of a
+ * parsed body, leaving what was written above it. Does nothing when no boundary is
+ * clearly detected, which is how "no quote here" and "not sure" reach the same,
+ * safe answer.
+ *
+ * @param {Document} doc the parsed body document
+ * @returns {void}
+ */
+function removeQuotedHistory(doc) {
+  const rawBoundary = findBoundary(doc);
+  if (!rawBoundary) {
+    return;
+  }
+  let node = liftBoundary(rawBoundary, doc.body);
+  while (node) {
+    const next = node.nextSibling;
+    node.parentNode.removeChild(node);
+    node = next;
+  }
+}
