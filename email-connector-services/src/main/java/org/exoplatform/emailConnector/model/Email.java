@@ -136,4 +136,12 @@ public class Email {
 
   // When the user last typed. The reader shows this, not receivedDate.
   private Date                 draftUpdatedDate;
+
+  // The files this draft already carries, stored in the platform's file service and
+  // read off its row. Backend-only, and set only on the send path: the composer's own
+  // `attachments` above are the files added in THIS session, carried as commons upload
+  // ids, and a draft resumed after a restart has none of those. Built as one message,
+  // the two together are what the user sees on screen.
+  @JsonIgnore
+  private List<EmailAttachment> storedAttachments;
 }

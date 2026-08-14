@@ -502,16 +502,25 @@ public class EmailContactVCardService {
    * refused whole over {@link #MAX_ATTACHMENT_CARD_BYTES}, before parsing.
    *
    * @param username the acting user, owner of the mailbox being read
-   * @param mailRemoteId the INBOX IMAP UID of the mail
+   * @param mailRemoteId the IMAP UID of the mail within {@code folder}
    * @param attachmentId the attachment's MIME part path within the mail
+   * @param folder the {@link org.exoplatform.emailConnector.model.MailFolder} the
+   *          mail is listed in; blank means INBOX. IMAP UIDs are per folder, so a
+   *          card attached to a message the user sent could not be read at all while
+   *          this path assumed the inbox
    * @return the prefill, or null when the caller has no such attachment
    * @throws IllegalAccessException when the caller has no connected mailbox
    * @throws IllegalArgumentException with {@link #ATTACHMENT_TOO_LARGE} or
    *           {@link #ATTACHMENT_NOT_VCARD}
    */
-  public EmailContact getAttachmentContact(String username, long mailRemoteId, String attachmentId)
-                                                                                                    throws IllegalAccessException {
-    EmailAttachment attachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(mailRemoteId, attachmentId, username);
+  public EmailContact getAttachmentContact(String username,
+                                           long mailRemoteId,
+                                           String attachmentId,
+                                           String folder) throws IllegalAccessException {
+    EmailAttachment attachment = emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(mailRemoteId,
+                                                                                          attachmentId,
+                                                                                          username,
+                                                                                          folder);
     if (attachment == null || attachment.getData() == null || attachment.getData().length == 0) {
       return null;
     }

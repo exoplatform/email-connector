@@ -294,6 +294,7 @@ public class EmailBoxRestTest {
     EmailAttachment emailAttachment = mock(EmailAttachment.class);
     when(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(anyLong(),
                                                                   anyString(),
+                                                                  anyString(),
                                                                   anyString())).thenReturn(emailAttachment);
     when(emailAttachment.getName()).thenReturn("attachment.pdf");
     when(emailAttachment.getMimeType()).thenReturn("application/pdf");
