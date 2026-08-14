@@ -371,7 +371,168 @@ export default {
       // reply does not immediately write a draft nobody has typed a word into.
       this.$nextTick(() => {
         this.savedSignature = this.composeSignature();
+        if (forward) {
+          this.carryForwardedFiles(email);
+        }
       });
+    },
+    /**
+     * Brings the files of the message being forwarded onto this forward, as the same
+     * chips the user's own attached files produce — removable, counted against the
+     * same size cap, and carried by the draft if the composer is closed and reopened.
+     *
+     * Forwarding used to be a prefill and nothing else: a quoted header, the original's
+     * body, and not a glance at its files. The forward went out with none of them and
+     * nothing said so.
+     *
+     * Three things happen here, in this order and for a reason each:
+     *
+     * - A placeholder chip per file appears IMMEDIATELY, in the "uploading" state. It
+     *   is not decoration: it is what the Send button reads to stay disabled. Without
+     *   it a fast user could address the forward and send it in the second the copy
+     *   takes, and the mail would go out without the files — the very defect, moved
+     *   into a smaller window.
+     *
+     * - A draft is forced into existence, through the same queued save the paperclip
+     *   uses, because a stored file has nowhere to live but a draft. This is what makes
+     *   an opened forward a draft in the Drafts folder even if the user closes it
+     *   without typing — deliberate, and the same thing Gmail does: the files really
+     *   were copied, and a draft they can see and discard is the honest record of that.
+     *
+     * - The chips are rebuilt from the draft the server answers with, so what is on
+     *   screen is what the draft actually carries — including a file the user attached
+     *   by hand while the copy was in flight, which the answer already knows about.
+     *   Anything still going up on this side is kept, since the draft does not know
+     *   about it yet.
+     *
+     * Closing the drawer while the copy is in flight is safe rather than lucky. The
+     * closing save and the copy both take the draft's lock server-side, so they cannot
+     * interleave; if the save wins the race it puts a copy in the Drafts folder without
+     * the forwarded files, and the copy that follows marks the row edited again, so the
+     * next push replaces it. What is sent is built from the row, never from that copy.
+     *
+     * @param {object} email - the message being forwarded
+     * @returns {void}
+     */
+    carryForwardedFiles(email) {
+      const files = email?.content?.attachments || [];
+      if (!files.length) {
+        return;
+      }
+      const session = this.draftSession;
+      this.attachments = files.map((file, index) => ({
+        key: `forwarded-${index}`,
+        id: null,
+        name: file.name,
+        title: file.name,
+        mimeType: file.mimeType,
+        mimetype: file.mimeType,
+        size: file.size || 0,
+        uploadId: null,
+        // Both true until the server answers: "uploading" is what disables Send, and
+        // "forwarded" is how the rebuild below tells these placeholders apart from a
+        // file the user is really uploading at the same moment.
+        uploading: true,
+        forwarded: true,
+      }));
+      this.forceDraft(session)
+        .then(() => {
+          if (!session.localId || session !== this.draftSession) {
+            // No draft could be created, or the composer has moved on to another
+            // message while this was starting. Either way these files have nothing to
+            // belong to.
+            throw new Error('No draft to forward onto');
+          }
+          return this.$emailConnectorMailBoxService.addForwardedAttachments(session.localId, email.mailRemoteId, email.folder);
+        })
+        .then(forwarded => {
+          if (session !== this.draftSession) {
+            return;
+          }
+          this.applyDraftRevision(session, forwarded?.draft);
+          // Only onto a composer that is still on screen. A drawer closed while the copy
+          // was in flight has already emptied its chips, and writing them back would put
+          // the closed forward's files in front of whatever is opened next.
+          if (this.newEmailDrawer) {
+            this.adoptStoredAttachments(forwarded?.draft);
+          }
+          // Said whether or not the drawer is still open: the draft was saved, and which
+          // files it does NOT carry is worth knowing either way.
+          this.notifyFilesLeftBehind(forwarded?.notAttached);
+        })
+        .catch(() => {
+          if (session !== this.draftSession) {
+            return;
+          }
+          // The placeholders stood for files that are not on the draft. They go, so the
+          // composer shows only what the forward will really carry, and the user is
+          // told rather than left to notice.
+          if (this.newEmailDrawer) {
+            this.attachments = this.attachments.filter(attachment => !attachment.forwarded);
+          }
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.forward.attach.error'), 'error');
+        });
+    },
+    /**
+     * Puts the files a draft carries on screen as chips, keeping anything of this
+     * session's that is still on its way up.
+     *
+     * The draft is the authority on what is stored — it knows about a file attached
+     * from another tab, and about one attached here while a forward's copy was in
+     * flight — but it cannot know about a chip whose upload has not landed yet, and
+     * dropping that one would hide a file that is about to be on the draft.
+     *
+     * @param {object} draft - the draft as the server answered with it
+     * @returns {void}
+     */
+    adoptStoredAttachments(draft) {
+      const stillGoingUp = this.attachments.filter(attachment => attachment.uploading && !attachment.forwarded);
+      this.attachments = [...this.storedAttachmentChips(draft), ...stillGoingUp];
+    },
+    /**
+     * The files a draft carries, as the chips the composer shows.
+     *
+     * One mapping for the two ways a draft's files reach the screen — resuming a draft
+     * and answering a forward — because they are the same chips: they carry an id and
+     * no upload id, which is what tells every path apart. They are already on the server
+     * side of the draft, so they are downloaded from it, removed through it, and left
+     * out of the send payload, since the send path reads them off the row itself.
+     *
+     * @param {object} draft - the draft as stored
+     * @returns {Array} the chips
+     */
+    storedAttachmentChips(draft) {
+      return (draft?.content?.attachments || []).map((attachment, index) => ({
+        key: `stored-${attachment.id || index}`,
+        id: attachment.id,
+        name: attachment.name,
+        title: attachment.name,
+        mimeType: attachment.mimeType,
+        mimetype: attachment.mimeType,
+        size: attachment.size || 0,
+        uploadId: null,
+        uploading: false,
+        stored: true,
+      }));
+    },
+    /**
+     * Names the files of the forwarded message that are NOT on the forward.
+     *
+     * Said out loud, and naming them, because the alternative is the defect this whole
+     * change is about: a sender who believes the files went with their forward. Which
+     * ones matters — "two files were left behind" does not tell them whether the one
+     * that mattered is among them.
+     *
+     * @param {Array} names - the names of the files that were not attached
+     * @returns {void}
+     */
+    notifyFilesLeftBehind(names) {
+      if (!names?.length) {
+        return;
+      }
+      this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.forward.attach.leftBehind', {
+        0: names.join(', '),
+      }), 'warning');
     },
     /**
      * Reopens a draft the user saved earlier — from the Drafts folder, or from the
@@ -388,22 +549,7 @@ export default {
      */
     resume(draft) {
       // The files the draft was stored with, as chips the user can see and remove.
-      // They carry an id and no upload id, which is what tells every path apart: they
-      // are already on the server side of the draft, so they are downloaded from it,
-      // removed through it, and left out of the send payload — the send path reads
-      // them off the row itself.
-      this.attachments = (draft.content?.attachments || []).map((attachment, index) => ({
-        key: `stored-${attachment.id || index}`,
-        id: attachment.id,
-        name: attachment.name,
-        title: attachment.name,
-        mimeType: attachment.mimeType,
-        mimetype: attachment.mimeType,
-        size: attachment.size || 0,
-        uploadId: null,
-        uploading: false,
-        stored: true,
-      }));
+      this.attachments = this.storedAttachmentChips(draft);
       this.resetDraftTracking();
       this.title = this.$t('emailConnector.mailBox.newEmail.drawer.draft.title');
       this.to = this.toRecipients(draft.to);
