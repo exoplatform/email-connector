@@ -79,9 +79,17 @@ public class EmailBoxStorage {
   // one: the word itself, in the name half of a stored name,address pair. The writers
   // no longer produce it; the rows that already hold it are still being read every
   // day, which is why it is also a value the READERS know by name.
-  private static final String NULL_NAME = "null";
+  private static final String NULL_NAME                   = "null";
 
-  private static final Log    LOG       = ExoLogger.getLogger(EmailBoxStorage.class);
+  // What a file is called and what it is declared as when whatever it came from says
+  // neither. Both are load-bearing rather than cosmetic: a blank name reaches the
+  // Content-Disposition of the message that is eventually sent, and a blank content
+  // type reaches the data handler, which is a difference the recipient sees.
+  private static final String DEFAULT_ATTACHMENT_NAME      = "attachment";
+
+  private static final String DEFAULT_ATTACHMENT_MIME_TYPE = "application/octet-stream";
+
+  private static final Log    LOG                          = ExoLogger.getLogger(EmailBoxStorage.class);
 
   @Autowired
   private EmailBoxDAO         emailBoxDao;
@@ -434,7 +442,102 @@ public class EmailBoxStorage {
     if (bytes == null) {
       return null;
     }
-    Long fileId = saveAttachmentFileItem(bytes, StringUtils.defaultIfBlank(name, uploadResource.getFileName()), mimeType);
+    return writeDraftAttachmentRow(draft,
+                                   userId,
+                                   draftLocalId,
+                                   StringUtils.defaultIfBlank(name, uploadResource.getFileName()),
+                                   mimeType,
+                                   bytes);
+  }
+
+  /**
+   * Puts a file the user never uploaded onto a draft: bytes this side already holds,
+   * copied out of somewhere else and given to the draft as its own.
+   * <p>
+   * What that "somewhere else" is, is a message being FORWARDED — a file that arrived
+   * on someone else's mail, which the forward has to carry. The row it produces is
+   * indistinguishable from one {@link #addDraftAttachment} writes, and that is the
+   * point: from here on the size cap, the chip, the removal, the send's part builder
+   * and the orphan bookkeeping are all the code that already exists, with no second
+   * notion of a forwarded file anywhere.
+   * <p>
+   * <b>A copy per forward, never a share.</b> The bytes are written to the file store
+   * again rather than pointing a second row at the file some other draft already owns.
+   * Sharing would be cheaper and would corrupt both: taking the chip off one draft
+   * records that file as unreferenced ({@link #removeDraftAttachment}), and a later
+   * sweep would then free it under the draft that still shows it. Forwarding the same
+   * message twice therefore produces two independent files, and removing either leaves
+   * the other whole.
+   * <p>
+   * <b>No MIME part path</b>, the same as an uploaded file and for the reason
+   * {@link #materializeDraftAttachment} sets out at length: a path is read against the
+   * message the row's draft points at, and this file came from a DIFFERENT message
+   * entirely — so a path kept here would be resolved against the draft's own copy and
+   * answer with whatever happens to sit at that index.
+   * <p>
+   * The draft IS touched, unlike a materialization: this is a new file on the draft,
+   * exactly as if the user had attached it, so a draft already synced has to notice
+   * and re-upload. A forward that did not step the revision would be accepted by a
+   * synced draft and then sent without the files it shows.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param name the file name to show and to send it under
+   * @param mimeType its content type, as the message it came from declared it
+   * @param bytes its content
+   * @return the attachment as stored, or null when the user has no such draft, no
+   *         bytes were offered, or the file store wrote nothing
+   */
+  public EmailAttachment copyDraftAttachment(String userId, String draftLocalId, String name, String mimeType, byte[] bytes) {
+    if (bytes == null) {
+      return null;
+    }
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    if (existing.isEmpty()) {
+      return null;
+    }
+    return writeDraftAttachmentRow(existing.get(0), userId, draftLocalId, name, mimeType, bytes);
+  }
+
+  /**
+   * The one place a draft's own file is written: the bytes into the platform's file
+   * store, then a row of {@code EMAIL_ATTACHMENTS} pointing at it, then the draft's
+   * revision.
+   * <p>
+   * Shared by the upload path and the forward path deliberately. The branch has already
+   * paid once for two implementations of one idea — {@code attachmentBodyPart} exists
+   * because the send and the draft push had drifted apart — and a second writer here
+   * would be the same mistake in the same place: the row's shape (no part path, a
+   * defaulted name and content type, a denormalised size) and the stepped revision are
+   * not incidental details, they are what makes every reader downstream work.
+   * <p>
+   * Order: the file first, the row second, the draft's revision last. A failure part
+   * way through leaves at worst a stored file nothing references — which the orphan
+   * marker exists to describe, and which is the direction to fail in. The reverse would
+   * leave a row pointing at a file that was never written, which every reader would
+   * then have to handle.
+   * <p>
+   * The row goes in through {@link EmailAttachmentDAO} directly and never by adding to
+   * the draft entity's collection, for the reason {@link #addDraftAttachment} gives:
+   * nothing in this class is {@code @Transactional}, so that collection is an
+   * uninitialised proxy over a closed session.
+   *
+   * @param draft the draft entity the row belongs to
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param name the file name, already resolved by the caller
+   * @param mimeType its content type
+   * @param bytes its content
+   * @return the attachment as stored, or null when the file store wrote nothing
+   */
+  private EmailAttachment writeDraftAttachmentRow(EmailBoxEntity draft,
+                                                  String userId,
+                                                  String draftLocalId,
+                                                  String name,
+                                                  String mimeType,
+                                                  byte[] bytes) {
+    String fileName = StringUtils.defaultIfBlank(name, DEFAULT_ATTACHMENT_NAME);
+    Long fileId = saveAttachmentFileItem(bytes, fileName, mimeType);
     if (fileId == null) {
       return null;
     }
@@ -443,8 +546,8 @@ public class EmailBoxStorage {
     // No MIME part path: this file is not part of any message yet. See changeset
     // 1.0.0-44, which had to relax the NOT NULL this line would otherwise violate.
     attachment.setAttachmentRemoteId(null);
-    attachment.setName(StringUtils.defaultIfBlank(name, uploadResource.getFileName()));
-    attachment.setMimeType(StringUtils.defaultIfBlank(mimeType, "application/octet-stream"));
+    attachment.setName(fileName);
+    attachment.setMimeType(StringUtils.defaultIfBlank(mimeType, DEFAULT_ATTACHMENT_MIME_TYPE));
     attachment.setFileId(fileId);
     attachment.setFileSize((long) bytes.length);
     attachment = emailAttachmentDAO.save(attachment);
@@ -510,7 +613,7 @@ public class EmailBoxStorage {
     if (bytes == null) {
       return null;
     }
-    String name = StringUtils.defaultIfBlank(attachment.getName(), "attachment");
+    String name = StringUtils.defaultIfBlank(attachment.getName(), DEFAULT_ATTACHMENT_NAME);
     Long fileId = saveAttachmentFileItem(bytes, name, attachment.getMimeType());
     if (fileId == null) {
       return null;
@@ -654,7 +757,7 @@ public class EmailBoxStorage {
     try {
       FileItem fileItem = new FileItem(null,
                                        name,
-                                       StringUtils.defaultIfBlank(mimeType, "application/octet-stream"),
+                                       StringUtils.defaultIfBlank(mimeType, DEFAULT_ATTACHMENT_MIME_TYPE),
                                        EmailConnectorStorage.NAME_SPACE,
                                        bytes.length,
                                        new Date(),

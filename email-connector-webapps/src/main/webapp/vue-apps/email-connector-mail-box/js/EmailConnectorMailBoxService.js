@@ -591,6 +591,40 @@ export function addDraftAttachment(draftLocalId, attachment) {
 }
 
 /**
+ * Carries the files of a message being forwarded onto the draft that forwards it.
+ *
+ * The caller names the MESSAGE and never its parts: which files are taken is decided
+ * server-side from the cached rows of a message that is the caller's own. There is no
+ * upload and no client-side size arithmetic either — a received attachment's size is
+ * not cached anywhere, so only the server can weigh a forward against the cap.
+ *
+ * Answers { draft, notAttached }: the draft as it now stands, attachments included and
+ * revision stepped, and the names of the files that were NOT attached — too large to
+ * send, or unreadable. Nothing fails for one file; what came across is on the draft and
+ * what did not is named, so the caller can show both.
+ *
+ * @param {string} draftLocalId the draft's local id
+ * @param {Number} mailRemoteId the IMAP UID of the message being forwarded
+ * @param {string} folder the folder that message is listed in; blank means INBOX
+ * @returns {Promise} resolves with { draft, notAttached }
+ */
+export function addForwardedAttachments(draftLocalId, mailRemoteId, folder) {
+  const params = new URLSearchParams({mailRemoteId});
+  if (folder) {
+    params.append('folder', folder);
+  }
+  return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}/attachments/forwarded?${params}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when carrying the forwarded files onto the draft');
+    }
+    return resp.json();
+  });
+}
+
+/**
  * Removes a file from a draft.
  *
  * @param {string} draftLocalId the draft's local id
