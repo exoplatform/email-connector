@@ -37,6 +37,22 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("folder")
   String folder);
 
+  /**
+   * The starred subset of a folder, for the list's starred filter. A dedicated query
+   * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
+   * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of
+   * dragging the whole folder (bodies included) through the persistence layer to keep
+   * a fraction of it.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return the folder's starred messages with their attachments, newest first
+   */
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder = :folder AND email.starred = true ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findStarredByUserIdAndFolderWithAttachments(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
   @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.threadId = :threadId ORDER BY email.receivedDate ASC")
   List<EmailBoxEntity> findByUserIdAndThreadIdWithAttachments(@Param("userId")
   String userId, @Param("threadId")
@@ -85,6 +101,26 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   boolean readStatus, @Param("folder")
   String folder);
 
+  /**
+   * Bulk starred-flag companion of {@link #updateReadStatusByMailRemoteIds}, and the
+   * same shape on purpose: one statement for any number of messages, guarded so rows
+   * already carrying the target value are not rewritten. Used by both the sync
+   * reconcile (server value wins) and the user toggle (optimistic local write).
+   *
+   * @param mailRemoteIds the IMAP UIDs to update
+   * @param userId the mailbox owner
+   * @param starred the target starred value
+   * @param folder the folder discriminator scoping the UIDs
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.starred = :starred WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :userId AND email.folder = :folder AND (email.starred IS NULL OR email.starred <> :starred)")
+  void updateStarredStatusByMailRemoteIds(@Param("mailRemoteIds")
+  List<Long> mailRemoteIds, @Param("userId")
+  String userId, @Param("starred")
+  boolean starred, @Param("folder")
+  String folder);
+
   @Transactional
   @Modifying
   @Query("UPDATE EmailBoxEntity email SET email.recent = false WHERE email.mailRemoteId = :mailRemoteId AND email.userId = :userId AND email.folder = :folder")
@@ -115,19 +151,22 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   /**
    * The light per-folder view the sync reconcile runs on: row id, IMAP UID,
-   * threading state and the two flags — WITHOUT the body CLOB and without the
+   * threading state and the flags — WITHOUT the body CLOB and without the
    * attachments join. The sync used to load the full entities through
    * {@link #findByUserIdAndFolderWithAttachments}: at 5000 cached messages that
    * dragged 5000 bodies out of the database every routine sync just to compare
    * UIDs and flags. Ordered newest-first because cleanupObsoleteEmails trims the
-   * cache overflow off the END of the list, exactly as the full query did.
+   * cache overflow off the END of the list, exactly as the full query did. The
+   * starred flag rides in this projection because the reconcile diffs it exactly
+   * like the read flag; loading it any other way would mean a second per-folder
+   * query every sync.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator
-   * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read, recent]},
+   * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read, recent, starred]},
    *         newest first
    */
-  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
+  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
   List<Object[]> findSyncViewByUserIdAndFolder(@Param("userId")
   String userId, @Param("folder")
   String folder);

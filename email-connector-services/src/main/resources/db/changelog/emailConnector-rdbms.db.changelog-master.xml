@@ -300,4 +300,15 @@
       <column name="RECEIVED_DATE"/>
     </createIndex>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-26">
+    <!-- Local mirror of the IMAP Flagged flag (the "star"). The flag on the server is the
+         source of truth: the sync overwrites this column with whatever the server says, so
+         a star set in any other mail client shows here and a star set here is pushed back.
+         Existing rows default to false and are corrected on their next sync. -->
+    <addColumn tableName="EMAIL_BOX">
+      <column name="STARRED" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>
