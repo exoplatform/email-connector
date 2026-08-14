@@ -1587,7 +1587,8 @@ public class EmailBoxStorage {
   }
 
   /**
-   * Maps one attachment row, carrying its message's UID and FOLDER with it.
+   * Maps one attachment row, carrying its message's UID and FOLDER with it, and the
+   * local id of its draft when it belongs to one.
    * <p>
    * The folder travels on the attachment because a UID is meaningless without one
    * (IMAP numbers them per folder), and every consumer that goes back for the bytes
@@ -1595,6 +1596,12 @@ public class EmailBoxStorage {
    * in the one mapper, is what stops each of those consumers having to remember —
    * and reading it wrong is exactly how an attachment on a Sent message could not be
    * downloaded at all.
+   * <p>
+   * The draft's local id travels for the same reason and answers the same kind of
+   * failure. A draft's file is addressed by its draft, not by (UID, part path): a
+   * draft never uploaded has no UID, and a file attached here has no part path. Left
+   * off, the front end could only build the message address out of the two nulls, and
+   * a draft's image previewed blank.
    *
    * @param emailAttachmentEntity the row, may be null
    * @return the attachment, or null when the row is
@@ -1611,7 +1618,8 @@ public class EmailBoxStorage {
                                  null,
                                  emailAttachmentEntity.getEmail().getFolder(),
                                  emailAttachmentEntity.getFileId(),
-                                 emailAttachmentEntity.getFileSize());
+                                 emailAttachmentEntity.getFileSize(),
+                                 emailAttachmentEntity.getEmail().getDraftLocalId());
     }
   }
 
