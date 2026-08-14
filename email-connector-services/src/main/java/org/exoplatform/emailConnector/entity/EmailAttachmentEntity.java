@@ -47,6 +47,9 @@ public class EmailAttachmentEntity {
   @JoinColumn(name = "MAIL_ID")
   private EmailBoxEntity email;
 
+  // The MIME part path within the message ("2" being its second part). Null on a file
+  // the user attached to a draft: it is not a part of anything until the mail is sent.
+  // See changeset 1.0.0-44.
   @Column(name = "ATTACHMENT_REMOTE_ID")
   private String         attachmentRemoteId;
 
@@ -55,4 +58,19 @@ public class EmailAttachmentEntity {
 
   @Column(name = "MIME_TYPE")
   private String         mimeType;
+
+  // The platform FileService id holding the bytes, under the add-on's own namespace.
+  // Set only on a draft's own attachment; null on every row mirroring a part of a
+  // message on the server, whose bytes are fetched from the server on demand. The two
+  // are mutually exclusive by construction and that is the whole distinction between
+  // them. Declared after the original columns so the Lombok all-args constructor only
+  // grows trailing arguments.
+  @Column(name = "FILE_ID")
+  private Long           fileId;
+
+  // Denormalised from the file. Read on every list (the composer renders it beside
+  // each chip) and on every send (the total is capped), which is a round trip per
+  // attachment if it has to be asked of the file service each time.
+  @Column(name = "FILE_SIZE")
+  private Long           fileSize;
 }
