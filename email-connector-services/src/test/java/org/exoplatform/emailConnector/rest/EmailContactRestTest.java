@@ -300,7 +300,7 @@ public class EmailContactRestTest {
 
   @Test
   void getFromAttachmentAnswersThePrefill() throws Exception {
-    when(emailContactVCardService.getAttachmentContact(anyString(), eq(7L), eq("2"))).thenReturn(contact(null));
+    when(emailContactVCardService.getAttachmentContact(anyString(), eq(7L), eq("2"), anyString())).thenReturn(contact(null));
     mockMvc.perform(get(CONTACTS_PATH + "/from-attachment?mailRemoteId=7&attachmentId=2").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.primaryEmail").isNotEmpty());
@@ -308,7 +308,7 @@ public class EmailContactRestTest {
 
   @Test
   void getFromAttachmentThatIsNoVCardAnswersBadRequestWithTheCode() throws Exception {
-    when(emailContactVCardService.getAttachmentContact(anyString(), anyLong(), anyString()))
+    when(emailContactVCardService.getAttachmentContact(anyString(), anyLong(), anyString(), anyString()))
         .thenThrow(new IllegalArgumentException(EmailContactVCardService.ATTACHMENT_NOT_VCARD));
     mockMvc.perform(get(CONTACTS_PATH + "/from-attachment?mailRemoteId=7&attachmentId=2").with(testSimpleUser()))
            .andExpect(status().isBadRequest());
@@ -319,7 +319,7 @@ public class EmailContactRestTest {
     // The mailbox answers "not yours", "not there" and "unreachable" with the
     // same exception, and every one of them must read 404 — never 403 — so a
     // mail id cannot be probed for existence.
-    when(emailContactVCardService.getAttachmentContact(anyString(), anyLong(), anyString()))
+    when(emailContactVCardService.getAttachmentContact(anyString(), anyLong(), anyString(), anyString()))
         .thenThrow(new IllegalStateException("Error when connecting store for user simple"));
     mockMvc.perform(get(CONTACTS_PATH + "/from-attachment?mailRemoteId=7&attachmentId=2").with(testSimpleUser()))
            .andExpect(status().isNotFound());
@@ -327,7 +327,7 @@ public class EmailContactRestTest {
 
   @Test
   void getFromAttachmentWithoutAMailboxAnswersUnauthorized() throws Exception {
-    when(emailContactVCardService.getAttachmentContact(anyString(), anyLong(), anyString()))
+    when(emailContactVCardService.getAttachmentContact(anyString(), anyLong(), anyString(), anyString()))
         .thenThrow(new IllegalAccessException("no mailbox"));
     mockMvc.perform(get(CONTACTS_PATH + "/from-attachment?mailRemoteId=7&attachmentId=2").with(testSimpleUser()))
            .andExpect(status().isUnauthorized());
