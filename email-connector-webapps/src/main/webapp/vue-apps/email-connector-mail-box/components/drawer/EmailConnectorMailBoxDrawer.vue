@@ -307,6 +307,24 @@ export default {
       }
       this.loadEmailBox();
     };
+    // A message was just sent. Its copy in Sent is written by the mail server, and the
+    // add-on re-reads that folder in the background a second or two later — so the ONE
+    // reload the send triggers is always too early to show it, and a user standing in
+    // their Sent folder would watch nothing happen. Re-arming the watch below is what
+    // makes the list re-read itself for the next minute, until the copy lands.
+    //
+    // Re-arming rather than starting a second timer, and that is deliberate: the drawer
+    // already polls itself after a load (that is how categories appear), and a parallel
+    // timer with its own stop condition would give the two of them one interval to fight
+    // over. Clearing the deadline makes the reload below open a fresh watch instead of
+    // counting towards the end of the one already running — which, landing on the last
+    // quiet poll of a watch about to expire, would otherwise stop the polling at exactly
+    // the moment the sent copy needed it.
+    this.onEmailSent = () => {
+      this.categoryWatchDeadline = null;
+      this.stableCategoryPolls = 0;
+    };
+    this.$root.$on('email-sent', this.onEmailSent);
     this.onOpenEmailDetailContent = (mailRemoteId) => {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
@@ -414,6 +432,7 @@ export default {
   beforeDestroy() {
     document.removeEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
     this.$root.$off('refresh-email-box', this.onRefreshEmailBox);
+    this.$root.$off('email-sent', this.onEmailSent);
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$off('delete-email', this.onDeleteEmail);

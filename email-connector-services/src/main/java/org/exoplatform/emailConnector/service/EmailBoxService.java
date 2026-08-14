@@ -167,6 +167,7 @@ import io.meeds.social.category.service.CategoryService;
 import io.meeds.social.html.utils.HtmlUtils;
 import io.meeds.social.util.JsonUtils;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 
 /**
  * A Service to manage and synchronize email box
@@ -408,6 +409,35 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE                     =
                                                                                               "User %s is not allowed to save a draft";
 
+  /**
+   * The administrator's kill switch for the post-send Sent-folder refresh, in the
+   * same style as {@link #DRAFTS_SERVER_ENABLED_PROPERTY}: a JVM property read at
+   * every send, so flipping it needs no restart. Default ON. Turning it off costs
+   * nothing but latency — the user's sent mail then surfaces at the next scheduled
+   * sync, which is exactly the behaviour that existed before this refresh did. It
+   * exists because the refresh is the one thing here that opens an IMAP connection
+   * per SEND rather than per sync period, and a provider that rate-limits logins is
+   * a failure an administrator has to be able to withdraw from in a hurry.
+   */
+  public static final String      SENT_REFRESH_ENABLED_PROPERTY                               =
+                                                                "email.connector.sent.refresh.enabled";
+
+  // How long a send waits before its Sent folder is re-read. Short enough that the
+  // copy is there by the time the user looks, long enough to be a coalescing window:
+  // a burst of sends inside it rides on ONE refresh (see scheduleSentFolderRefresh).
+  // It is not a wait for the copy to exist -- deliver() has already APPENDed it, and
+  // a provider that files its own does so at SMTP accept time.
+  private static final long       SENT_REFRESH_DELAY_MS                                       = 1000L;
+
+  // How long the queued refresh waits between attempts to get past the per-user sync
+  // guard, and how many attempts it makes. The product (3 minutes) is the budget for
+  // "a scheduled sync of this mailbox is running right now": long enough to outlast
+  // an ordinary run of one, short enough that the retry chain cannot outlive the
+  // period that would start the next one anyway.
+  private static final long       SENT_REFRESH_RETRY_DELAY_MS                                 = 5000L;
+
+  private static final int        SENT_REFRESH_MAX_ATTEMPTS                                   = 36;
+
   private static final String     USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE                     =
                                                                           "User %s is not allowed to send email";
 
@@ -457,6 +487,28 @@ public class EmailBoxService {
                                                                          return thread;
                                                                        });
 
+  // Post-send Sent-folder refreshes queued but not started, keyed by mailbox owner.
+  // The KEY's presence is the coalescing rule: a second send while one is queued
+  // rides on it instead of adding a second IMAP connection. The handle is kept so a
+  // retry can replace it (see rescheduleSentFolderRefresh) rather than leave a stale
+  // entry blocking the next send's refresh forever.
+  private final Map<String, ScheduledFuture<?>>  pendingSentRefreshes  = new ConcurrentHashMap<>();
+
+  // One daemon thread for every user's post-send Sent refresh. Deliberately NOT the
+  // notification scheduler above: that one's work is a database read and a dispatch,
+  // measured in milliseconds, and a Sent sync is an IMAP download that can take
+  // seconds -- sharing the thread would make a slow mailbox hold up everyone's
+  // new-mail notifications. Single-threaded on purpose: it bounds the IMAP load this
+  // feature can add to a provider at one connection at a time, and the queue it
+  // creates delays a refresh rather than dropping it.
+  private final ScheduledExecutorService         sentRefreshScheduler  =
+                                                                      Executors.newSingleThreadScheduledExecutor(runnable -> {
+                                                                        Thread thread = new Thread(runnable,
+                                                                                                   "email-sent-folder-refresh");
+                                                                        thread.setDaemon(true);
+                                                                        return thread;
+                                                                      });
+
   @Autowired
   private CategoryService         categoryService;
 
@@ -483,6 +535,10 @@ public class EmailBoxService {
   @Autowired
   private ApplicationEventPublisher eventPublisher;
 
+  /**
+   * Re-registers every connected user's scheduled mailbox sync at startup, so a
+   * restart does not leave mailboxes unsynchronized until their owner reconnects.
+   */
   @PostConstruct
   public void initEmailBoxSyncJob() {
     List<Context> contexts =
@@ -499,6 +555,24 @@ public class EmailBoxService {
         LOG.warn("Error scheduling email box sync for user {}", context.getId(), e);
       }
     }
+  }
+
+  /**
+   * Stops the post-send Sent-folder refresher when the add-on is undeployed or the
+   * platform shuts down.
+   * <p>
+   * What a shutdown mid-refresh costs is deliberately nothing: a refresh that never
+   * starts, or one interrupted halfway, leaves the Sent folder exactly as it was on
+   * the server and the local cache short of one message — which the next scheduled
+   * sync brings in, the same way it did before this refresh existed. Nothing here is
+   * a write to the mailbox, so there is no half-finished state to recover. The
+   * threads are daemons besides, so a JVM exit could never be held up by one; this
+   * exists so a WAR redeploy does not leave a thread pointing at a dead container.
+   */
+  @PreDestroy
+  public void shutdownSentRefreshScheduler() {
+    sentRefreshScheduler.shutdownNow();
+    pendingSentRefreshes.clear();
   }
 
   /**
@@ -3168,6 +3242,14 @@ public class EmailBoxService {
    * The Sent copy is deliberately fenced: the mail is already delivered by then, and
    * failing the whole call over a filing problem would tell the user their message
    * did not go out when it did.
+   * <p>
+   * This is the ONE place every send passes through — the composer's new mail, reply,
+   * reply-all and forward all reach it via {@link #sendEmail}, a resumed draft via
+   * {@link #sendDraft}, and the MCP tools via {@link #sendEmail} again. So it is also
+   * the one place the Sent folder has to be told to catch up, which is what the last
+   * line does: filing the copy is not the same as KNOWING about it, and until this
+   * mailbox re-reads the folder the user's own message is on the server and nowhere
+   * they can see it.
    *
    * @param message the message to transmit
    * @param email the composed email behind it, for the sent-recipients event
@@ -3192,6 +3274,223 @@ public class EmailBoxService {
       copyToSentFolder(message, username, userEmailSetting);
     } catch (IllegalStateException e) {
       LOG.warn("Email sent but could not be copied to Sent folder for user {}", username, e);
+    }
+    scheduleSentFolderRefresh(username);
+  }
+
+  /**
+   * Whether the post-send Sent-folder refresh is switched on — see
+   * {@link #SENT_REFRESH_ENABLED_PROPERTY}. Read at every send rather than cached, so
+   * an administrator withdrawing it does not have to restart the platform.
+   *
+   * @return true when a send should queue a refresh of the user's Sent folder
+   */
+  private boolean isSentRefreshEnabled() {
+    return Boolean.parseBoolean(System.getProperty(SENT_REFRESH_ENABLED_PROPERTY, "true"));
+  }
+
+  /**
+   * Queues a background re-read of the sender's Sent folder, so the message they just
+   * sent is in their Sent list within a second or two instead of at the next scheduled
+   * sync — up to {@code emailBoxUserSyncPeriod} minutes away.
+   * <p>
+   * Background rather than inline, and that is the whole reason this is a scheduler
+   * and not a method call: the composer must close on the send, not on an IMAP
+   * round-trip that reads a folder and downloads a body. The caller is a request
+   * thread finishing a send; all it does here is drop a task and return.
+   * <p>
+   * Coalesced per user by the map key: a second send landing while a refresh is still
+   * queued rides on the queued one instead of opening a second IMAP connection, which
+   * is what keeps "reply to five mails in a row" at one refresh rather than five. The
+   * entry is released the moment the refresh STARTS, not when it ends, because a send
+   * that happens during a refresh may well be too late for the folder window that
+   * refresh is already reading — it gets its own.
+   * <p>
+   * Nothing in here may propagate: the mail is already delivered by the time this
+   * runs, and an exception from a bookkeeping task must never reach a caller that
+   * would then tell the user their message failed. The delay is not a wait for the
+   * copy to appear — {@link #deliver} has already APPENDed it — it is the coalescing
+   * window.
+   *
+   * @param username the sender, whose Sent folder is to be re-read
+   */
+  private void scheduleSentFolderRefresh(String username) {
+    if (!isSentRefreshEnabled() || StringUtils.isBlank(username)) {
+      return;
+    }
+    try {
+      pendingSentRefreshes.computeIfAbsent(username,
+                                           user -> sentRefreshScheduler.schedule(() -> runSentFolderRefresh(user, 1),
+                                                                                 SENT_REFRESH_DELAY_MS,
+                                                                                 TimeUnit.MILLISECONDS));
+    } catch (Exception e) {
+      // Includes the executor having been shut down under us (redeploy). The mail is
+      // sent either way; the scheduled sync is the fallback, exactly as before.
+      LOG.warn("Could not queue the Sent folder refresh of user {}; their sent mail will surface at the next scheduled sync",
+               username,
+               e);
+    }
+  }
+
+  /**
+   * Runs one queued Sent-folder refresh, or puts it back in the queue when the user's
+   * scheduled sync currently holds the mailbox.
+   * <p>
+   * The interleaving decision lives here, and it is QUEUE — not "skip", not "run
+   * anyway". Running anyway is not available: two readers of the same folder both
+   * create rows keyed on (user, folder, UID) and the mailbox ends up with duplicates,
+   * which is precisely why {@code syncingUsers} exists. Skipping is worse than doing
+   * nothing at all: the running sync reads Sent SECOND, so a sync that has already
+   * passed that folder will not pick up the message either, and the user would be
+   * back to waiting a whole period — the defect this refresh exists to remove, now
+   * hidden behind a log line saying a sync was running. So the refresh waits its turn
+   * and takes it. Waiting is free: this is a daemon thread, nobody is blocked on it,
+   * and the wait is a re-schedule rather than a sleep, so the thread stays available
+   * to other users meanwhile.
+   * <p>
+   * When the wait runs out ({@value #SENT_REFRESH_MAX_ATTEMPTS} attempts, three
+   * minutes), a sync has been running that whole time and the message will come in
+   * with it. That is an INFO, not a warning: it is the system working, slowly.
+   *
+   * @param username the mailbox owner
+   * @param attempt which attempt this is, starting at 1
+   */
+  private void runSentFolderRefresh(String username, int attempt) {
+    if (!syncingUsers.add(username)) {
+      LOG.debug("A synchronization is running for user {}; their post-send Sent refresh waits its turn (attempt {})",
+                username,
+                attempt);
+      rescheduleSentFolderRefresh(username, attempt);
+      return;
+    }
+    // Released before the work, not after: from here on this refresh is reading a
+    // window it has already committed to, and a send landing now needs its own pass.
+    pendingSentRefreshes.remove(username);
+    try {
+      // The refresh reads settings and writes rows; on a bare scheduler thread there is
+      // no request lifecycle for either, the same reason the notification dispatch opens
+      // one.
+      RequestLifeCycle.begin(PortalContainer.getInstance());
+      try {
+        refreshSentFolder(username);
+      } finally {
+        RequestLifeCycle.end();
+      }
+    } catch (Exception e) {
+      LOG.warn("Could not refresh the Sent folder of user {} after a send; the mail is sent, and its copy will surface at"
+          + " the next scheduled sync", username, e);
+    } finally {
+      syncingUsers.remove(username);
+    }
+  }
+
+  /**
+   * Puts a refresh that could not get past the sync guard back in the queue, or gives
+   * up once it has waited long enough.
+   *
+   * @param username the mailbox owner
+   * @param attempt the attempt that just found the mailbox busy
+   */
+  private void rescheduleSentFolderRefresh(String username, int attempt) {
+    if (attempt >= SENT_REFRESH_MAX_ATTEMPTS) {
+      LOG.info("A synchronization has held the mailbox of user {} for the whole post-send refresh window; their sent mail"
+          + " will surface with that sync", username);
+      pendingSentRefreshes.remove(username);
+      return;
+    }
+    try {
+      pendingSentRefreshes.put(username,
+                               sentRefreshScheduler.schedule(() -> runSentFolderRefresh(username, attempt + 1),
+                                                             SENT_REFRESH_RETRY_DELAY_MS,
+                                                             TimeUnit.MILLISECONDS));
+    } catch (Exception e) {
+      pendingSentRefreshes.remove(username);
+      LOG.warn("Could not re-queue the Sent folder refresh of user {}; their sent mail will surface at the next scheduled"
+          + " sync", username, e);
+    }
+  }
+
+  /**
+   * Re-reads the user's Sent folder into the local cache, through the same folder sync
+   * the scheduled run uses — {@link #syncFolderIfChanged} over
+   * {@link #resolveSentFolder}, against the same {@link MailboxSyncState}. There is
+   * deliberately no second folder-reading path here: a private one would drift from
+   * the sync's own (its skip check, its snapshot, its threading backfill, its cache
+   * trim) and the two would disagree about the same folder.
+   * <p>
+   * The window is the scheduled sync's window, NOT a narrower "just the newest few".
+   * Narrowing is not a smaller version of the same operation: the sync trims the cache
+   * to the window it read (see {@code cleanupObsoleteEmails}), so a refresh over the
+   * ten newest messages would DELETE every older cached Sent row. And the window size
+   * is stored in the snapshot, so a refresh that used a different one would make the
+   * next scheduled sync see "window size changed" and re-download the whole folder,
+   * every period, forever.
+   * <p>
+   * Three things the scheduled sync does that this one must not:
+   * <ul>
+   * <li>it never touches the mailbox's sync STATUS. A failed refresh marking the
+   * mailbox FAILURE would count towards the escalation to BLOCKED and could stop a
+   * perfectly healthy mailbox syncing at all — over a bookkeeping read the user never
+   * asked for;</li>
+   * <li>it never broadcasts {@code MAILBOX_SYNC_COMPLETED}. That event means "the
+   * whole mailbox is cached" and consumers (the contact backfill) start whole-run work
+   * on it; one folder is not a run;</li>
+   * <li>it never broadcasts the unread count, because it cannot change it — the count
+   * is the INBOX's alone (see {@code EmailBoxStorage#countUnreadEmails}).</li>
+   * </ul>
+   * <p>
+   * A mailbox whose provider files no Sent copy is a no-op and says so quietly: a
+   * server with no Sent folder at all resolves to null and returns at DEBUG, and a
+   * Sent folder that simply gained nothing goes through the ordinary skip check and
+   * logs the ordinary sync line. Neither is an incident, and neither is logged as one.
+   * <p>
+   * Package-visible so a test can run it on the calling thread rather than through the
+   * scheduler.
+   *
+   * @param username the mailbox owner
+   */
+  void refreshSentFolder(String username) {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      // Re-checked rather than inherited from the send: the send happened a moment ago
+      // on another thread, and the connector could have been disabled since.
+      LOG.debug("User {} may no longer use their mailbox; skipping the post-send Sent refresh", username);
+      return;
+    }
+    Store store = null;
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      Folder sentFolder = resolveSentFolder(store, syncState);
+      if (sentFolder == null) {
+        LOG.debug("Mailbox of user {} exposes no Sent folder; nothing to refresh after their send", username);
+        return;
+      }
+      syncFolderIfChanged(store,
+                          sentFolder,
+                          MailFolder.SENT,
+                          username,
+                          userEmailSetting,
+                          Math.min(emailConnectorService.getEmailBoxCacheSize(), NON_INBOX_FOLDER_SYNC_LIMIT),
+                          false,
+                          syncState);
+    } catch (Exception e) {
+      LOG.warn("Could not refresh the Sent folder of user {} after a send; the mail is sent, and its copy will surface at the"
+          + " next scheduled sync", username, e);
+    } finally {
+      // Saved even on the early return: resolveSentFolder remembers (or forgets) the
+      // folder's name in the state, and that discovery is worth keeping whatever the
+      // rest of the refresh did.
+      saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      try {
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing the store of the post-send Sent refresh of user {}", username, messagingException);
+      }
     }
   }
 
@@ -7742,6 +8041,31 @@ public class EmailBoxService {
     return DRAFTS_FOLDER_NAMES.contains(lastSegment.trim().toLowerCase());
   }
 
+  /**
+   * Files a copy of a just-sent message in the user's Sent folder, over an IMAP
+   * connection of its own.
+   * <p>
+   * This exists because SMTP delivery says nothing about the sender's own mailbox.
+   * Some providers (Gmail among them) file a copy of anything sent through their SMTP
+   * themselves; many do not, and on those the client is expected to APPEND one or the
+   * user simply has no record of what they sent. Doing it here covers both: on a
+   * provider that files its own, the copy carries the same Message-ID and is the same
+   * message, not a second one.
+   * <p>
+   * Failure is signalled by an {@link IllegalStateException} rather than swallowed,
+   * because the caller has to decide what a filing failure means — and
+   * {@link #deliver}, the only caller, decides it means a warning and nothing more:
+   * the mail is already on its way, and no filing problem may make a delivered message
+   * look undelivered.
+   * <p>
+   * Note what this does NOT do: it puts the copy on the SERVER, not in the local cache
+   * the user's Sent list reads. Bringing it here is {@link #refreshSentFolder}'s job.
+   *
+   * @param message the message that was just transmitted
+   * @param username the sender, for the log
+   * @param userEmailSetting the user's connector binding, to open the connection
+   * @throws IllegalStateException if the mailbox cannot be reached
+   */
   private void copyToSentFolder(Message message, String username, UserEmailSetting userEmailSetting) {
     Store store = null;
     IMAPFolder sentFolder = null;
