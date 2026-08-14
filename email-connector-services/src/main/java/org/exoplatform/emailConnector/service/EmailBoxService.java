@@ -18,7 +18,9 @@ package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -55,6 +57,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import javax.activation.DataHandler;
+import javax.activation.DataSource;
 import javax.activation.FileDataSource;
 import javax.mail.Address;
 import javax.mail.Authenticator;
@@ -110,6 +113,7 @@ import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.PluginKey;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -2201,24 +2205,65 @@ public class EmailBoxService {
     jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
   }
 
+  /**
+   * The bytes of one attachment, fetched live from the mail server, together with the
+   * name and content type the message actually declares for it.
+   * <p>
+   * The FOLDER is the parameter that makes this work at all. It used to open
+   * {@code INBOX} unconditionally, which is right for exactly one of the five folders
+   * this cache holds: an attachment on a message in Sent or Archive was looked for
+   * under a UID that either names nothing there (a 500 the user reads as "the file is
+   * broken") or, worse, names an unrelated inbox message whose part "2" happens to
+   * exist — so the download quietly hands back somebody else's file. The cached row
+   * is now read under the same folder, for the reason
+   * {@link EmailAttachmentDAO#findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder}
+   * gives: the two halves of one answer must not be looked up under different keys.
+   * <p>
+   * A blank folder means INBOX, which is what every caller written before folders
+   * existed meant.
+   *
+   * @param mailRemoteId the message's IMAP UID within that folder
+   * @param attachmentId the attachment's MIME part path
+   * @param username the mailbox owner
+   * @param folder the {@link MailFolder} the message is listed in; blank means INBOX
+   * @return the attachment with its bytes loaded
+   * @throws IllegalAccessException if the user has no connected mailbox
+   */
   public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId,
                                                                   String attachmentId,
-                                                                  String username) throws IllegalAccessException {
+                                                                  String username,
+                                                                  String folder) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT, username));
     }
+    String cachedFolder = StringUtils.defaultIfBlank(folder, MailFolder.INBOX);
     Store store = null;
     Folder inbox = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting);
-      inbox = store.getFolder("INBOX");
+      inbox = resolveCachedFolder(store, cachedFolder, username);
+      if (inbox == null) {
+        // The mailbox has no such folder any more (renamed, deleted, or never had one
+        // and the rows came from an account that did). Nothing to read; the caller
+        // answers 404 rather than reporting a server fault.
+        return null;
+      }
       inbox.open(Folder.READ_ONLY);
       Message message = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
       EmailAttachment emailAttachment = emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(mailRemoteId,
                                                                                                  attachmentId,
-                                                                                                 username);
+                                                                                                 username,
+                                                                                                 cachedFolder);
+      if (emailAttachment == null) {
+        // The user has no such attachment in that folder. An answer, not a fault: the
+        // caller turns it into a 404. It used to be reachable only through a deleted
+        // row, and the code below then failed on a null with a 500; now that the lookup
+        // is folder-scoped it is also what a caller asking under the wrong folder gets,
+        // which is worth saying plainly rather than reporting as a broken mailbox.
+        return null;
+      }
       BodyPart bodyPart = getPartByPath(message, attachmentId);
       if (bodyPart == null) {
         throw new RuntimeException("Attachment not found in the email");
@@ -3187,6 +3232,22 @@ public class EmailBoxService {
    * A push whose row is already {@link DraftState#SYNCED} does nothing at all —
    * that is the whole reason the state is stored.
    * <p>
+   * A draft carrying files goes up like any other, attachments and all — see
+   * {@link #buildDraftMessage}, which streams each one out of the file store as the
+   * APPEND writes it. One condition, and it is the invariant this feature is built
+   * around: a draft whose files cannot ALL be read is not uploaded at all (see
+   * {@link #draftFilesAreAllReadable}). A copy in the user's Drafts folder that looks
+   * complete and is not is the failure to avoid — opened on their phone it shows the
+   * text with a file silently missing, and a send from there sends that version. The
+   * row is returned unchanged, which leaves the composer saying the draft lives only
+   * here, which is true.
+   * <p>
+   * Why the arithmetic above matters more now than it did: every push re-uploads the
+   * WHOLE message, so a 20 MB file goes up again on every push. The composer answers
+   * that by not arming its idle timer at all while the draft carries a file — a draft
+   * with attachments is pushed when the drawer closes and when it is sent, and never
+   * in the middle of somebody typing.
+   * <p>
    * What the caller may change and what it may not: subject, body, recipients and
    * the revision, yes. The draft's identity — its local id, its Message-ID, the
    * conversation it belongs to, the parent it replies to — is settled at the FIRST
@@ -3229,7 +3290,8 @@ public class EmailBoxService {
       Email toStore = stored == null ? buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting)
                                      : buildNextDraftRevision(draft, stored);
       Email saved = emailBoxStorage.saveDraft(toStore);
-      if (!pushToServer || !isServerDraftsEnabled() || DraftState.SYNCED.equals(saved.getDraftState())) {
+      if (!pushToServer || !isServerDraftsEnabled() || DraftState.SYNCED.equals(saved.getDraftState())
+          || !draftFilesAreAllReadable(saved, username)) {
         return saved;
       }
       return uploadDraft(saved, username, userEmailSetting);
@@ -3267,7 +3329,17 @@ public class EmailBoxService {
    * <p>
    * <b>Send failed.</b> Nothing had been removed yet, so the draft is intact here
    * and on the server. Its state goes back to what it was, and the failure travels
-   * up for the composer to report the way it already reports a failed send.
+   * up for the composer to report the way it already reports a failed send. Its files
+   * are intact too — the send never frees them, whatever becomes of it (see
+   * {@link #transmitDraft}); they belong to the draft until the draft is gone.
+   * <p>
+   * <b>Send refused before it starts.</b> A draft that shows a file it can no longer
+   * read cannot be sent, and finding that out is the FIRST thing this does — before
+   * the composer's text is written to the row and before the row is claimed as
+   * {@link DraftState#SENDING}. Nothing is saved, nothing is claimed, nothing is
+   * removed: the draft is left exactly where it was, on both sides, for the user to
+   * take the broken chip off and try again. Delivering a mail whose attachments are
+   * missing is the one failure here that the sender cannot see and cannot take back.
    * <p>
    * A second send of the same draft cannot start while the first is in flight: the
    * row is claimed as {@link DraftState#SENDING} before the message goes out (see
@@ -3312,10 +3384,17 @@ public class EmailBoxService {
         // second copy of the same mail on the wire.
         throw new IllegalArgumentException("emailConnector.drafts.send.alreadyInFlight");
       }
+      // The files the draft has been carrying since some earlier session, read once and
+      // checked BEFORE anything is written or claimed. A send that cannot carry every
+      // file it shows must leave the draft exactly where it was: nothing saved, nothing
+      // claimed, nothing removed here or on the server, and the user still holding a
+      // draft they can fix.
+      List<EmailAttachment> storedAttachments = emailBoxStorage.getDraftAttachments(username, draftLocalId);
+      requireReadableDraftFiles(storedAttachments, username);
       DraftState stateBeforeSend = saveDraftBeforeSend(draft, stored);
       emailBoxStorage.updateDraftState(username, draftLocalId, DraftState.SENDING);
       try {
-        transmitDraft(draft, stored, username, userEmailSetting);
+        transmitDraft(draft, stored, storedAttachments, username, userEmailSetting);
       } catch (RuntimeException e) {
         // Nothing has been removed, here or on the server. Put the claim back down at
         // exactly the state the row was in and let the composer report the refusal.
@@ -3379,20 +3458,33 @@ public class EmailBoxService {
    * See {@link PinnedMessageIdMimeMessage} for why pinning it needs a subclass and
    * cannot be a {@code setHeader} call.
    * <p>
-   * Everything else — body, recipients, subject, attachments — comes from what the
-   * composer sent, because that is the text on screen. Attachments in particular
-   * only ever exist there: they are not persisted on the draft row (that is its own
-   * task), so they ride the send payload exactly as they do for an ordinary send.
+   * Everything else — body, recipients and subject — comes from what the composer
+   * sent, because that is the text on screen.
+   * <p>
+   * The attachments come from BOTH, and the difference between the two is the whole
+   * reason they do. The composer's payload carries upload ids for files attached in
+   * the session it is in; a draft resumed after a restart has none of those, so a
+   * message built from the payload alone goes out with the words and without the files
+   * — silent loss the sender cannot discover or take back. The draft's own stored
+   * files, read off the row by the caller, ride alongside them: what was attached
+   * before, and what was attached just now.
    *
    * @param draft the composed draft as the composer is showing it
    * @param stored the row, for the identity the composer does not own
+   * @param storedAttachments the draft's own files, read and checked by
+   *          {@link #sendDraft} before anything was claimed
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    */
-  private void transmitDraft(Email draft, Email stored, String username, UserEmailSetting userEmailSetting) {
+  private void transmitDraft(Email draft,
+                             Email stored,
+                             List<EmailAttachment> storedAttachments,
+                             String username,
+                             UserEmailSetting userEmailSetting) {
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
+    draft.setStoredAttachments(storedAttachments);
     try {
       MimeMessage message = buildOutgoingMessage(draft, userEmailSetting, emailConnector, stored.getMailHeaderId(), uploadIds);
       applyStoredThreadingHeaders(message, stored);
@@ -3401,9 +3493,18 @@ public class EmailBoxService {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
     } finally {
-      // Same as the ordinary send: the attachment body parts stream lazily from the
-      // temporary upload files, so they cannot be freed before the message (and its
-      // Sent-folder copy) has been written.
+      // The commons uploads, and only them. Those are this session's temporary files,
+      // consumed by the message that was just built, and they cannot be freed before it
+      // (and its Sent-folder copy) has been written, because their parts stream lazily
+      // from exactly those files. Same as the ordinary send.
+      //
+      // The draft's STORED files are deliberately NOT freed here, and that asymmetry is
+      // the point: they belong to the DRAFT, not to this attempt at sending it. A send
+      // that comes back refused leaves the draft standing, and a draft whose files had
+      // been released by the failed attempt would be one the user can open, read and
+      // never send. They are freed when the draft itself goes — recorded as
+      // unreferenced by the row delete that follows a SUCCESSFUL send (see
+      // cleanupSentDraft), which is the only place that knows the draft is over.
       removeUploadResources(uploadIds);
     }
   }
@@ -3440,6 +3541,19 @@ public class EmailBoxService {
    * that did not complete, which is what the warn lines are for. Above all the local
    * row goes either way: see {@link #sendDraft} for why a leftover server draft is
    * the better of the two failures available here.
+   * <p>
+   * <b>This is where the draft's files are released.</b> Not by this method directly —
+   * by {@link EmailBoxStorage#deleteEmailsByIds}, which reads the file ids off the
+   * attachment rows and records them as unreferenced BEFORE it deletes anything. The
+   * order is not a nicety: that delete is a bulk JPQL statement, the attachment rows go
+   * with it through the database's own {@code ON DELETE CASCADE}, nothing in Java ever
+   * observes them dying, and afterwards nothing anywhere knows which files they named.
+   * Read first or never. A marker written for a file that turns out to still be
+   * referenced is harmless (the sweep verifies); bytes with nothing naming them are a
+   * leak with no record of itself.
+   * <p>
+   * And this is the ONLY place a send frees a draft's files. The send itself does not,
+   * however it ends: see {@link #transmitDraft}.
    *
    * @param sentDraft the row that was just sent, as it was read before the send —
    *          which is where its technical id and the UID of its server copy live
@@ -3514,6 +3628,262 @@ public class EmailBoxService {
       // rather than by every draft ever written in this JVM's lifetime.
       draftLocks.remove(lockKey);
     }
+  }
+
+  /**
+   * Attaches a file to a draft: the bytes are stored in the platform's file service,
+   * a row records where, and the draft is marked as edited.
+   * <p>
+   * The bytes are kept HERE rather than left as a commons upload, and that is the
+   * whole slice. An upload is a temporary file with a lifetime measured against one
+   * browser session; a draft's whole purpose is to outlive the session, the tab and
+   * the server restart. A draft resumed tomorrow whose files were uploads would show
+   * chips that resolve to nothing and send a mail with nothing attached — the user's
+   * words kept and their files quietly dropped.
+   * <p>
+   * Under the draft's own lock, like every other write to a draft: the composer
+   * autosaves on a typing pause, so attaching a file races an autosave by
+   * construction, and both of them step the row's revision.
+   * <p>
+   * The draft is NOT pushed to the mail server from here, and that is a decision
+   * rather than an omission: a push is an IMAP round trip, and hanging one off a
+   * paperclip click would make the file appear a couple of seconds after the user
+   * attached it. The next save pushes it, which is on the drawer closing or on the
+   * send — see {@link #saveDraft} for why an attachment-carrying draft is deliberately
+   * not pushed on the idle timer either.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @param attachment the upload to attach, carrying its commons upload id, name and
+   *          content type
+   * @return the draft as it now stands, attachments included, or null when the user
+   *         has no draft under that id
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws IllegalArgumentException if the upload is gone, or the draft would go over
+   *           the size a message may carry
+   */
+  public Email addDraftAttachment(String draftLocalId,
+                                  String username,
+                                  EmailOutgoingAttachment attachment) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    if (StringUtils.isBlank(draftLocalId) || attachment == null || StringUtils.isBlank(attachment.getUploadId())) {
+      throw new IllegalArgumentException("emailConnector.drafts.attach.uploadMandatory");
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        return null;
+      }
+      // Refused before the bytes are written rather than after, so a file that cannot
+      // be sent is never stored: the cap is the one the send path already enforces,
+      // and a draft that has gone over it is a draft that cannot leave.
+      if (storedAttachmentsSize(username, draftLocalId) + Math.max(attachment.getSize(), 0) > MAX_OUTGOING_ATTACHMENTS_SIZE) {
+        throw new IllegalArgumentException("emailConnector.mailBox.newEmail.attach.maxSize.error");
+      }
+      if (emailBoxStorage.addDraftAttachment(username,
+                                             draftLocalId,
+                                             attachment.getUploadId(),
+                                             attachment.getName(),
+                                             attachment.getMimeType()) == null) {
+        throw new IllegalArgumentException("emailConnector.drafts.attach.uploadGone");
+      }
+      // The upload has been copied into the file store, so the temporary file has no
+      // further purpose. Released here rather than left to expire: the send path does
+      // the same for the attachments it consumes.
+      removeUploadResources(List.of(attachment.getUploadId()));
+      return emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Removes one file from a draft.
+   * <p>
+   * Under the draft's lock and stepping its revision, for the reason
+   * {@link #addDraftAttachment} gives: a detach is an edit, and a synced draft that
+   * does not notice one would send a file the user has taken off.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @param attachmentId the attachment row id
+   * @return the draft as it now stands, or null when the user has no such draft or no
+   *         such attachment on it
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public Email removeDraftAttachment(String draftLocalId, String username, long attachmentId) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      if (!emailBoxStorage.removeDraftAttachment(username, draftLocalId, attachmentId)) {
+        return null;
+      }
+      return emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * The bytes of one file attached to a draft, read back out of the file store.
+   * <p>
+   * Deliberately NOT reachable through {@code /attachments/{mailRemoteId}/...}, which
+   * is the endpoint every received attachment is downloaded from. That one addresses
+   * a message by its IMAP UID, and an unpushed draft has none — its MAIL_REMOTE_ID is
+   * null, which is the very column that query joins on. A draft's file is addressed
+   * the way everything else about a draft is: by the draft's local id.
+   *
+   * @param draftLocalId the composer's handle on the draft
+   * @param username the mailbox owner
+   * @param attachmentId the attachment row id
+   * @return the attachment with its bytes, or null when the user has no such one
+   * @throws IllegalAccessException if the user may not use their mailbox
+   */
+  public EmailAttachment getDraftAttachment(String draftLocalId,
+                                            String username,
+                                            long attachmentId) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_ATTACHMENT, username));
+    }
+    EmailAttachment attachment = emailBoxStorage.getDraftAttachment(username, draftLocalId, attachmentId);
+    if (attachment == null || attachment.getFileId() == null) {
+      return null;
+    }
+    FileItem fileItem = emailBoxStorage.getAttachmentFileItem(attachment.getFileId());
+    if (fileItem == null) {
+      // The row survived its file. Not something the user can act on and not a fault
+      // of the request, so it reads as "no such attachment" rather than a 500 — and it
+      // is worth a warning, because it means something freed a file that was still
+      // referenced.
+      LOG.warn("The draft attachment {} of user {} has no file behind it", attachmentId, username);
+      return null;
+    }
+    attachment.setData(fileItem.getAsByte());
+    return attachment;
+  }
+
+  /**
+   * The files a draft carries on this side: its attachments that have bytes in the
+   * platform's file store, which is what a locally authored draft's attachment is.
+   * <p>
+   * Attachments with no file id are filtered out rather than tolerated, because they
+   * are a different thing entirely: a MIME part path pointing INTO a message on the
+   * server. Nothing here can put one of those on a message it is building — the bytes
+   * are not on this side — so treating the two as one list would silently produce a
+   * message missing a part.
+   *
+   * @param draft the draft as stored, read with its attachments
+   * @return its own stored files, oldest first, never null
+   */
+  private List<EmailAttachment> storedAttachmentsOf(Email draft) {
+    if (draft == null || draft.getContent() == null || CollectionUtils.isEmpty(draft.getContent().getAttachments())) {
+      return List.of();
+    }
+    return draft.getContent()
+                .getAttachments()
+                .stream()
+                .filter(attachment -> attachment != null && attachment.getFileId() != null)
+                .toList();
+  }
+
+  /**
+   * Whether every file a draft carries is still there to be read — the condition an
+   * upload to the mail server is gated on, and the invariant this whole feature is
+   * built around.
+   * <p>
+   * An IMAP APPEND writes the ENTIRE message. A draft uploaded without one of its
+   * files puts a copy in the user's Drafts folder that looks complete and is not:
+   * opened on their phone it shows the text with a file silently missing, and — worse
+   * — a send from that client sends the incomplete version. So a draft that cannot be
+   * assembled in full is not uploaded at all. The caller returns the row unchanged,
+   * and the composer's existing "your draft lives only here" notice, which fires
+   * whenever a push leaves the row unsynced, says the true thing with nothing new
+   * built.
+   * <p>
+   * A draft that was uploaded BEFORE it lost a file keeps the copy it has: stale
+   * rather than wrong, removed when the draft is sent or discarded.
+   * <p>
+   * The check is on the file's METADATA rather than on its bytes, deliberately. It is
+   * one cheap read per file instead of pulling megabytes into memory to prove they can
+   * be pulled into memory, and it catches the failure that actually happens — the file
+   * was freed while the row still names it. A file whose metadata is there and whose
+   * bytes are not still fails, one layer down: the part throws while the message is
+   * being written, the APPEND fails, and {@link #uploadDraft} leaves the row unsynced.
+   * Same outcome, slower road.
+   *
+   * @param draft the draft as stored, read with its attachments
+   * @param username the mailbox owner, for the log
+   * @return true when the draft can be assembled whole
+   */
+  private boolean draftFilesAreAllReadable(Email draft, String username) {
+    for (EmailAttachment attachment : storedAttachmentsOf(draft)) {
+      if (!emailBoxStorage.attachmentFileExists(attachment.getFileId())) {
+        // Warn rather than debug: a row naming a file that is gone means something
+        // freed a file that was still referenced, which is a bug somewhere else and is
+        // worth seeing in a log.
+        LOG.warn("The draft of user {} references the file {} which is gone; it is not uploaded to the Drafts folder",
+                 username,
+                 attachment.getFileId());
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The same question the upload asks, asked before a SEND, and answered by refusing
+   * rather than by carrying on quietly.
+   * <p>
+   * The asymmetry with {@link #draftFilesAreAllReadable} is deliberate. An upload that
+   * does not happen costs the user nothing they can see: their words are stored, and
+   * the composer tells them the draft lives only here. A mail that goes out without
+   * the file the sender attached cannot be discovered by them and cannot be taken
+   * back, so it is the one case worth failing the whole operation for.
+   * <p>
+   * Asked BEFORE the row is claimed as {@link DraftState#SENDING} and before the
+   * composer's text is written to it, so a refused send leaves the draft exactly as it
+   * was — locally and on the server — with nothing claimed and nothing to undo.
+   *
+   * @param attachments the draft's stored files
+   * @param username the mailbox owner, for the log
+   * @throws IllegalStateException when one of them cannot be read
+   */
+  private void requireReadableDraftFiles(List<EmailAttachment> attachments, String username) {
+    for (EmailAttachment attachment : attachments) {
+      if (attachment.getFileId() == null || !emailBoxStorage.attachmentFileExists(attachment.getFileId())) {
+        LOG.warn("The draft of user {} cannot be sent: its attachment {} has no file behind it any more",
+                 username,
+                 attachment.getName());
+        throw new IllegalStateException("emailConnector.drafts.send.attachmentGone");
+      }
+    }
+  }
+
+  /**
+   * The total size of the files already attached to a draft, for the send cap.
+   *
+   * @param username the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @return the total in bytes
+   */
+  private long storedAttachmentsSize(String username, String draftLocalId) {
+    return emailBoxStorage.getDraftAttachments(username, draftLocalId)
+                          .stream()
+                          .mapToLong(attachment -> attachment.getSize() == null ? 0L : attachment.getSize())
+                          .sum();
   }
 
   /**
@@ -3971,6 +4341,26 @@ public class EmailBoxService {
    * The message is flagged {@code \Draft} (which is what makes other mail clients open
    * it in a composer instead of a reader) and {@code \Seen} (the author has, by
    * definition, read their own unfinished sentence).
+   * <p>
+   * <b>The files.</b> A draft carrying attachments is a {@code multipart/mixed}: the
+   * HTML body first, then one part per stored file, built by the very same
+   * {@link #attachmentBodyPart} the send path uses. Two places writing MIME parts
+   * their own way would drift on the things nobody notices until a recipient does —
+   * how a non-ASCII filename is encoded, whether the disposition is set, what content
+   * type goes out — and the copy in the Drafts folder is supposed to be the message
+   * that will be sent.
+   * <p>
+   * Each part reads its bytes through {@link StoredFileDataSource}, which RE-OPENS the
+   * file every time it is asked for a stream. That is not defensive, it is required:
+   * {@code IMAPFolder}'s append computes the literal's size by writing the message
+   * once and then writes it again for anything larger than its buffer, so a part
+   * backed by a one-shot stream arrives empty on the server — the exact shape of "the
+   * attachment is there and it is 0 bytes". It also means the peak memory of an append
+   * is one file rather than all of them.
+   * <p>
+   * The caller has already established that every one of those files can be read (see
+   * {@link #draftFilesAreAllReadable}); a message must never be appended with a part
+   * quietly left out.
    *
    * @param draft the stored draft
    * @param userEmailSetting the user's connector binding, for their own address
@@ -3993,7 +4383,17 @@ public class EmailBoxService {
     message.setSubject(draft.getSubject());
     message.setSentDate(draft.getDraftUpdatedDate() != null ? draft.getDraftUpdatedDate() : new Date());
     String body = draft.getContent() != null && draft.getContent().getBody() != null ? draft.getContent().getBody() : "";
-    message.setContent(body, "text/html; charset=UTF-8");
+    List<EmailAttachment> attachments = storedAttachmentsOf(draft);
+    if (attachments.isEmpty()) {
+      message.setContent(body, "text/html; charset=UTF-8");
+    } else {
+      MimeMultipart multipart = new MimeMultipart("mixed");
+      MimeBodyPart htmlPart = new MimeBodyPart();
+      htmlPart.setContent(body, "text/html; charset=UTF-8");
+      multipart.addBodyPart(htmlPart);
+      addStoredAttachmentParts(multipart, attachments);
+      message.setContent(multipart);
+    }
     if (StringUtils.isNotBlank(draft.getInReplyTo())) {
       message.setHeader("In-Reply-To", draft.getInReplyTo());
     }
@@ -4171,7 +4571,7 @@ public class EmailBoxService {
                                           Email email,
                                           String bodyHtml,
                                           List<String> uploadIds) throws MessagingException {
-    if (CollectionUtils.isEmpty(email.getAttachments())) {
+    if (CollectionUtils.isEmpty(email.getAttachments()) && CollectionUtils.isEmpty(email.getStoredAttachments())) {
       message.setContent(bodyHtml, "text/html; charset=UTF-8");
       return;
     }
@@ -4180,8 +4580,16 @@ public class EmailBoxService {
     MimeBodyPart htmlPart = new MimeBodyPart();
     htmlPart.setContent(bodyHtml, "text/html; charset=UTF-8");
     multipart.addBodyPart(htmlPart);
-    long totalSize = 0;
-    for (EmailOutgoingAttachment attachment : email.getAttachments()) {
+    // The draft's own stored files first, then this session's uploads, which is the
+    // order the user attached them in — the stored ones are by definition older. Their
+    // sizes count towards the same cap: what matters to the receiving server is the
+    // size of the message, not where each part came from.
+    long totalSize = applyStoredAttachments(multipart, email);
+    if (totalSize > MAX_OUTGOING_ATTACHMENTS_SIZE) {
+      throw new IllegalStateException("emailConnector.mailBox.newEmail.attach.maxSize.error");
+    }
+    for (EmailOutgoingAttachment attachment : email.getAttachments() == null ? List.<EmailOutgoingAttachment> of()
+                                                                            : email.getAttachments()) {
       if (attachment == null || StringUtils.isEmpty(attachment.getUploadId())) {
         continue;
       }
@@ -4195,21 +4603,212 @@ public class EmailBoxService {
       if (totalSize > MAX_OUTGOING_ATTACHMENTS_SIZE) {
         throw new IllegalStateException("emailConnector.mailBox.newEmail.attach.maxSize.error");
       }
-      MimeBodyPart attachmentPart = new MimeBodyPart();
-      attachmentPart.setDataHandler(new DataHandler(new FileDataSource(file)));
       String fileName = StringUtils.isNotBlank(attachment.getName()) ? attachment.getName() : uploadResource.getFileName();
-      try {
-        attachmentPart.setFileName(MimeUtility.encodeText(fileName, "UTF-8", null));
-      } catch (UnsupportedEncodingException e) {
-        attachmentPart.setFileName(fileName);
-      }
-      attachmentPart.setDisposition(Part.ATTACHMENT);
-      if (StringUtils.isNotBlank(attachment.getMimeType())) {
-        attachmentPart.setHeader("Content-Type", attachment.getMimeType());
-      }
-      multipart.addBodyPart(attachmentPart);
+      multipart.addBodyPart(attachmentBodyPart(new FileDataSource(file), fileName, attachment.getMimeType()));
     }
     message.setContent(multipart);
+  }
+
+  /**
+   * One file, as a body part of an outgoing message — the single place this add-on
+   * writes an attachment part, whatever the bytes come from and wherever the message
+   * is going.
+   * <p>
+   * Extracted rather than duplicated because the three lines below are exactly the
+   * ones that drift. A message being SENT and a draft being APPENDED are supposed to
+   * be the same message, so a filename encoded one way here and another way there, or
+   * a disposition set on one path and forgotten on the other, is a difference the user
+   * discovers as "the attachment has a mangled name on my phone" or "it shows inline
+   * instead of as a file". One builder, one answer.
+   * <p>
+   * The filename is RFC 2047 encoded, with the raw name as the fallback: a name that
+   * cannot be encoded is still better sent than not sent. The content type is stamped
+   * only when the caller has one — for an upload it may be blank, and the
+   * {@code DataHandler} then infers it from the file, which is a better guess than
+   * {@code application/octet-stream}.
+   *
+   * @param dataSource where the bytes come from; for anything read back from the file
+   *          store this must RE-OPEN on every call (see {@link StoredFileDataSource})
+   * @param fileName the name to send the file under
+   * @param mimeType its content type, or blank to let the data handler decide
+   * @return the body part, ready to add to a multipart
+   * @throws MessagingException if the part cannot be built
+   */
+  private MimeBodyPart attachmentBodyPart(DataSource dataSource,
+                                          String fileName,
+                                          String mimeType) throws MessagingException {
+    MimeBodyPart attachmentPart = new MimeBodyPart();
+    attachmentPart.setDataHandler(new DataHandler(dataSource));
+    String name = StringUtils.defaultIfBlank(fileName, "attachment");
+    try {
+      attachmentPart.setFileName(MimeUtility.encodeText(name, "UTF-8", null));
+    } catch (UnsupportedEncodingException e) {
+      attachmentPart.setFileName(name);
+    }
+    attachmentPart.setDisposition(Part.ATTACHMENT);
+    if (StringUtils.isNotBlank(mimeType)) {
+      attachmentPart.setHeader("Content-Type", mimeType);
+    }
+    return attachmentPart;
+  }
+
+  /**
+   * Adds a draft's own stored files to a message being assembled — the send's and the
+   * draft upload's shared step.
+   * <p>
+   * Nothing is read here. Each part carries a {@link StoredFileDataSource} that opens
+   * the file when the message is written, and again if it is written a second time,
+   * which is what an IMAP APPEND does to anything past its buffer. The size counted
+   * for the cap is the one recorded on the row when the file was stored, so counting
+   * it costs no read at all.
+   *
+   * @param multipart the message body being assembled
+   * @param attachments the draft's stored files, already filtered to the ones that
+   *          have bytes on this side
+   * @return the total size of the parts added, in bytes
+   * @throws MessagingException if a body part cannot be built
+   */
+  private long addStoredAttachmentParts(MimeMultipart multipart,
+                                        List<EmailAttachment> attachments) throws MessagingException {
+    long totalSize = 0;
+    for (EmailAttachment attachment : attachments) {
+      String mimeType = StringUtils.defaultIfBlank(attachment.getMimeType(), "application/octet-stream");
+      String fileName = StringUtils.defaultIfBlank(attachment.getName(), "attachment");
+      totalSize += attachment.getSize() == null ? 0L : attachment.getSize();
+      multipart.addBodyPart(attachmentBodyPart(new StoredFileDataSource(emailBoxStorage,
+                                                                       attachment.getFileId(),
+                                                                       fileName,
+                                                                       mimeType),
+                                               fileName,
+                                               mimeType));
+    }
+    return totalSize;
+  }
+
+  /**
+   * One file of the platform's file store, seen as a MIME part's source of bytes —
+   * and the whole point of it is that it RE-OPENS.
+   * <p>
+   * {@code IMAPFolder}'s append does not write a message once. It writes it to measure
+   * the IMAP literal's byte count, keeps what fits in its buffer, and writes the
+   * message a SECOND time when it does not fit — and {@code Transport.send} can
+   * re-write a message too. A part backed by a stream that has already been consumed
+   * contributes nothing the second time, which is how an attachment arrives on the
+   * server present, correctly named, and zero bytes long. Opening on every call is
+   * what makes that impossible.
+   * <p>
+   * It is also what keeps the memory cost of an append down to one file at a time
+   * rather than every file at once: the bytes are fetched while the part is being
+   * written and are garbage the moment it has been. That is as close to streaming as
+   * the platform's file service allows — {@code FileService#getFile} answers with a
+   * {@code FileItem} that has already read the file into a byte array, so there is no
+   * streaming read to ask for. Nothing here holds one longer than the write.
+   * <p>
+   * A file that has gone answers with an {@code IOException} rather than an empty
+   * stream, so the write fails and the message is not delivered half-assembled. Both
+   * callers check first (see {@link #draftFilesAreAllReadable} and
+   * {@link #requireReadableDraftFiles}); this is the backstop for the file that
+   * disappears between the check and the write.
+   */
+  private static final class StoredFileDataSource implements DataSource {
+
+    private final EmailBoxStorage storage;
+
+    private final Long            fileId;
+
+    private final String          name;
+
+    private final String          contentType;
+
+    /**
+     * @param storage the storage that can read the file back
+     * @param fileId the platform file id holding the bytes
+     * @param name the file name the part is sent under
+     * @param contentType the part's content type
+     */
+    private StoredFileDataSource(EmailBoxStorage storage, Long fileId, String name, String contentType) {
+      this.storage = storage;
+      this.fileId = fileId;
+      this.name = name;
+      this.contentType = contentType;
+    }
+
+    /**
+     * A fresh stream over the file, read out of the store on every call.
+     *
+     * @return the file's bytes
+     * @throws IOException when the file is no longer there to be read
+     */
+    @Override
+    public InputStream getInputStream() throws IOException {
+      FileItem fileItem = storage.getAttachmentFileItem(fileId);
+      InputStream stream = fileItem == null ? null : fileItem.getAsStream();
+      if (stream == null) {
+        throw new IOException(String.format("The stored attachment %s (file %s) could not be read", name, fileId));
+      }
+      return stream;
+    }
+
+    /**
+     * Never: a part of an outgoing message is read from, not written to.
+     *
+     * @return nothing
+     * @throws IOException always
+     */
+    @Override
+    public OutputStream getOutputStream() throws IOException {
+      throw new IOException("A stored attachment is read-only");
+    }
+
+    /**
+     * @return the part's content type
+     */
+    @Override
+    public String getContentType() {
+      return contentType;
+    }
+
+    /**
+     * @return the file's name
+     */
+    @Override
+    public String getName() {
+      return name;
+    }
+  }
+
+  /**
+   * Adds a draft's stored files to the message being sent, reading each one's bytes
+   * back out of the platform's file service.
+   * <p>
+   * This is what makes a draft resumed after a restart send what it shows. Everything
+   * else on the send path works from commons upload ids, which only exist for files
+   * attached during the browser session that is still open; the files a draft has been
+   * carrying since yesterday have none, and a message built from upload ids alone goes
+   * out with the text and without them.
+   * <p>
+   * A file that cannot be read is a hard failure rather than a part quietly left out.
+   * Sending a mail whose attachments are missing, to someone who is expecting them, is
+   * not something the sender can discover afterwards or take back — the branch's own
+   * rule for the mail server holds here too: refuse rather than deliver something that
+   * looks complete and is not. {@link #sendDraft} asks that question before it claims
+   * the row; {@link StoredFileDataSource} is what answers it again at the moment the
+   * bytes are actually written.
+   *
+   * @param multipart the message body being assembled
+   * @param email the draft being sent
+   * @return the total size of the parts added, for the cap the caller keeps counting
+   * @throws MessagingException if a body part cannot be built
+   */
+  private long applyStoredAttachments(MimeMultipart multipart, Email email) throws MessagingException {
+    if (CollectionUtils.isEmpty(email.getStoredAttachments())) {
+      return 0L;
+    }
+    return addStoredAttachmentParts(multipart,
+                                    email.getStoredAttachments()
+                                         .stream()
+                                         .filter(attachment -> attachment != null && attachment.getFileId() != null)
+                                         .toList());
   }
 
   /**
@@ -4349,6 +4948,10 @@ public class EmailBoxService {
                                                 null,
                                                 null,
                                                 null,
+                                                null,
+                                                // And no stored attachments: that field is the send path's
+                                                // way of carrying a draft's own files, and this row's
+                                                // attachments are parts of a message on the server.
                                                 null));
           newEmailIds.add(messageUid);
 
@@ -5247,6 +5850,54 @@ public class EmailBoxService {
       return resolveSentFolder(store, loadMailboxSyncState(username));
     }
     return findArchiveFolder(store);
+  }
+
+  /**
+   * The remote folder a cached row of a given {@link MailFolder} came from — the
+   * inverse of the discriminator the sync writes, and what any read that has to go
+   * back to the server for one message needs.
+   * <p>
+   * Each arm goes through the SAME resolver the rows were cached by, which is the
+   * whole point of having this in one place rather than a folder name at each call
+   * site: ARCHIVE takes the syncable {@code \Archive} folder, while ALL_MAIL takes
+   * Gmail's {@code \All} superset, and the two are deliberately different folders
+   * (see {@link #findSyncableArchiveFolder}). Resolving ARCHIVE through
+   * {@link #findArchiveFolder} instead — which answers {@code \All} on Gmail —
+   * would look right and read the wrong mailbox, under UIDs that belong to another
+   * one.
+   * <p>
+   * The sync state is loaded but deliberately NOT written back, the same rule
+   * {@link #resolveSearchFolder} follows: a read must never save the state a running
+   * sync is about to save, so a rediscovery here costs one extra {@code LIST} and
+   * nothing else.
+   *
+   * @param store the connected store (this read's own)
+   * @param folder the {@link MailFolder} discriminator the row carries
+   * @param username the mailbox owner, to load the remembered folder names
+   * @return the remote folder, or null when the mailbox has no such folder
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private Folder resolveCachedFolder(Store store, String folder, String username) throws MessagingException {
+    if (StringUtils.isBlank(folder) || MailFolder.INBOX.equals(folder)) {
+      return store.getFolder("INBOX");
+    }
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    if (MailFolder.SENT.equals(folder)) {
+      return resolveSentFolder(store, syncState);
+    }
+    if (MailFolder.ARCHIVE.equals(folder)) {
+      return resolveArchiveFolder(store, syncState);
+    }
+    if (MailFolder.DRAFTS.equals(folder)) {
+      return resolveDraftsFolder(store, syncState);
+    }
+    if (MailFolder.ALL_MAIL.equals(folder)) {
+      return findAllMailFolder(store);
+    }
+    // An unknown discriminator is a caller passing something this schema never wrote.
+    // Answering INBOX would silently read the wrong mailbox; answering nothing lets
+    // the caller say so.
+    return null;
   }
 
   /**
