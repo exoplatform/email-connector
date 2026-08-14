@@ -200,7 +200,7 @@ public class EmailBoxStorage {
     if (StringUtils.isBlank(draftLocalId)) {
       return null;
     }
-    List<EmailBoxEntity> entities = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    List<EmailBoxEntity> entities = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId, MailFolder.DRAFTS);
     return entities.isEmpty() ? null : fromEntity(entities.get(0), true, false, userId, null, true, false);
   }
 
@@ -234,7 +234,7 @@ public class EmailBoxStorage {
     if (draft == null || StringUtils.isBlank(draft.getDraftLocalId())) {
       throw new IllegalArgumentException("draftLocalId is mandatory");
     }
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(draft.getUserId(), draft.getDraftLocalId());
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(draft.getUserId(), draft.getDraftLocalId(), MailFolder.DRAFTS);
     if (existing.isEmpty()) {
       return createEmail(draft);
     }
@@ -343,7 +343,7 @@ public class EmailBoxStorage {
    * @return the row as it now stands, or null when there is no such draft
    */
   public Email markDraftUploaded(String userId, String draftLocalId, long mailRemoteId, Long uploadedRevision) {
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId, MailFolder.DRAFTS);
     if (existing.isEmpty()) {
       return null;
     }
@@ -375,7 +375,7 @@ public class EmailBoxStorage {
    * @return the row as it now stands, or null when there is no such draft
    */
   public Email updateDraftState(String userId, String draftLocalId, DraftState draftState) {
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId, MailFolder.DRAFTS);
     if (existing.isEmpty()) {
       return null;
     }
@@ -402,7 +402,7 @@ public class EmailBoxStorage {
     if (StringUtils.isBlank(draftLocalId)) {
       return;
     }
-    emailBoxDao.detachDraftFromServerCopy(userId, draftLocalId, DraftState.LOCAL_ONLY);
+    emailBoxDao.detachDraftFromServerCopy(userId, draftLocalId, DraftState.LOCAL_ONLY, MailFolder.DRAFTS);
   }
 
   /**
@@ -440,7 +440,7 @@ public class EmailBoxStorage {
    *         upload is gone
    */
   public EmailAttachment addDraftAttachment(String userId, String draftLocalId, String uploadId, String name, String mimeType) {
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId, MailFolder.DRAFTS);
     if (existing.isEmpty()) {
       return null;
     }
@@ -506,7 +506,7 @@ public class EmailBoxStorage {
     if (bytes == null) {
       return null;
     }
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId, MailFolder.DRAFTS);
     if (existing.isEmpty()) {
       return null;
     }
@@ -731,7 +731,7 @@ public class EmailBoxStorage {
    * @param draftLocalId the composer's handle on the draft
    */
   private void touchDraft(String userId, String draftLocalId) {
-    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId, MailFolder.DRAFTS);
     if (existing.isEmpty()) {
       return;
     }
@@ -1441,8 +1441,38 @@ public class EmailBoxStorage {
                                                                              .toList());
   }
 
+  /**
+   * The {@code Message-ID}s of every cached row of a conversation, TRASH included —
+   * the inventory read, deliberately not the reader's.
+   * <p>
+   * Its one caller is the on-demand thread completion, which needs to know what it
+   * already holds before it goes to the server for what it does not. See
+   * {@link EmailBoxDAO#findMailHeaderIdsByUserIdAndThreadId} for why asking
+   * {@link #getEmailsByThreadId} instead resurrected deleted mail as an
+   * {@code ALL_MAIL} row.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @return the conversation's Message-IDs, Trash included, never null
+   */
+  public List<String> getThreadMessageIdsIncludingTrash(String userId, String threadId) {
+    return emailBoxDao.findMailHeaderIdsByUserIdAndThreadId(userId, threadId);
+  }
+
+  /**
+   * How many of a mailbox's cached messages are unread — the badge.
+   * <p>
+   * TRASH is left out, and it is the one exclusion whose absence would be noticed by
+   * a user who has never opened a Trash listing: deleting an unread mail is how
+   * people dismiss it, and a badge that kept counting deleted mail would tick back up
+   * at the next sync and stay up, with the inbox showing nothing to account for it.
+   * Deleting an unread message is a way of reading it.
+   *
+   * @param userId the mailbox owner
+   * @return the number of unread messages the mailbox still holds
+   */
   public long countUnreadEmails(String userId) {
-    return emailBoxDao.countUnreadByUserId(userId);
+    return emailBoxDao.countUnreadByUserIdExcludingFolder(userId, MailFolder.TRASH);
   }
 
   /**

@@ -58,16 +58,32 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-envelope-open-text</v-icon>
       </v-btn>
       <v-btn
+        v-if="canMutateSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
         @click="archiveEmails()"
         icon>
         <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
       </v-btn>
       <v-btn
+        v-if="canMutateSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
         @click="deleteEmails()"
         icon>
         <v-icon size="20" class="error--text">fa-trash</v-icon>
+      </v-btn>
+      <v-btn
+        v-if="canApplyTrashActions"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.restore.label')"
+        @click="restoreEmails()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-trash-restore</v-icon>
+      </v-btn>
+      <v-btn
+        v-if="canApplyTrashActions"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.purge.label')"
+        @click="purgeEmails()"
+        icon>
+        <v-icon size="20" class="error--text">fa-times-circle</v-icon>
       </v-btn>
     </template>
     <template v-else>
@@ -98,6 +114,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
       </v-btn>
       <v-btn
+        v-if="canMutateSelection"
         @click="archiveEmails()"
         outlined
         class="btn btn-primary font-weight-bold">
@@ -110,13 +127,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.archive.label') }}
       </v-btn>
       <v-btn
+        v-if="canMutateSelection"
         @click="deleteEmails()"
         outlined
         class="btn error font-weight-bold">
         <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
         <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
       </v-btn>
-    </template>  
+      <v-btn
+        v-if="canApplyTrashActions"
+        @click="restoreEmails()"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-trash-restore
+        </v-icon>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.restore.label') }}
+      </v-btn>
+      <v-btn
+        v-if="canApplyTrashActions"
+        @click="purgeEmails()"
+        outlined
+        class="btn error font-weight-bold">
+        <v-icon size="16" class="error--text pe-3">fa-times-circle</v-icon>
+        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.purge.label') }} </span>
+      </v-btn>
+    </template>
   </div>
 </template>
 
@@ -179,12 +218,58 @@ export default {
     hasWebmailAccess() {
       return !!this.webmailUrl;
     },
+    /**
+     * Whether the selected messages may be acted on at all.
+     *
+     * Read off the SELECTED ROWS rather than off the listed folder, because this
+     * toolbar is mounted twice — once over the mailbox list, once over the reader —
+     * and only one of the two is told which folder is listed. The rows always carry
+     * their own, and they are what the action would be sent for.
+     *
+     * Any read-only row disqualifies the whole selection: a listing holds one
+     * folder's rows, so in practice it is all of them or none, and the conservative
+     * reading is the one that cannot fire an inbox-keyed delete on a Trash message.
+     *
+     * @returns {Boolean} true when archive/delete/read-status may be offered
+     */
+    canMutateSelection() {
+      return !this.selectedEmails.some(emailId =>
+        this.$emailConnectorMailBoxService.isReadOnlyFolder(this.emailsMap[emailId]?.folder));
+    },
+    /**
+     * Whether the selection may be restored or permanently deleted.
+     *
+     * The mirror of canMutateSelection, off the same rows and with the same all-or-none
+     * reading — but requiring EVERY row to be one the Trash actions apply to rather than
+     * none. A selection with one non-Trash row in it must not offer to restore it: the
+     * request would be answered against the Trash folder, where that row's UID names
+     * some other message entirely. `every` on an empty selection is true in JavaScript,
+     * so the emptiness is ruled out explicitly.
+     *
+     * @returns {Boolean} true when restore / delete permanently may be offered
+     */
+    canApplyTrashActions() {
+      return this.hasSelectedEmails
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.hasTrashActions(this.emailsMap[emailId]?.folder));
+    },
   },
   created() {
     this.$root.$on('open-webmail', this.openWebmail);
   },
   methods: {
+    /**
+     * Whether a bulk read/unread is worth offering: at least one selected message
+     * would actually change, and none of them is in a read-only folder (read-status
+     * writes are inbox-scoped server-side, so offering it there would do nothing).
+     *
+     * @param {Boolean} read the status the button would apply
+     * @returns {Boolean} true when the button should be shown
+     */
     canUpdateEmailsReadStatus(read) {
+      if (!this.canMutateSelection) {
+        return false;
+      }
       return this.selectedEmails.some(emailId => {
         const email = this.emailsMap[emailId];
         return email && email.read !== read;
@@ -198,6 +283,24 @@ export default {
     },
     archiveEmails() {
       this.$root.$emit('archive-email', this.selectedEmails);
+    },
+    /**
+     * Puts the whole selection back into the inbox. No confirmation — a restore is
+     * undone by deleting again.
+     *
+     * @returns {void}
+     */
+    restoreEmails() {
+      this.$root.$emit('restore-email', this.selectedEmails);
+    },
+    /**
+     * Asks first, then destroys the whole selection. The confirmation is handed the
+     * ids so it can say how many messages are about to go.
+     *
+     * @returns {void}
+     */
+    purgeEmails() {
+      this.$root.$emit('open-purge-email-confirm-popup', this.selectedEmails);
     },
     deleteEmails() {
       this.$root.$emit('delete-email', this.selectedEmails); 
