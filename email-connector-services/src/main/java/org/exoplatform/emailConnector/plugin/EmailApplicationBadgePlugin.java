@@ -53,7 +53,13 @@ public class EmailApplicationBadgePlugin implements ApplicationBadgePlugin {
 
   public static final String             BADGE_NAME = "emailUnread";
 
-  @Autowired
+  /**
+   * Optional on purpose: the badge is a nicety, not something the mailbox
+   * depends on. When the Application Center registry is absent — a deployment
+   * without the addon, or this module's own Spring test context — the plugin
+   * simply does not register instead of failing the whole context.
+   */
+  @Autowired(required = false)
   private ApplicationBadgePluginRegistry applicationBadgePluginRegistry;
 
   @Autowired
@@ -73,6 +79,10 @@ public class EmailApplicationBadgePlugin implements ApplicationBadgePlugin {
 
   @PostConstruct
   public void init() {
+    if (applicationBadgePluginRegistry == null) {
+      LOG.debug("Application Center badge registry not available, Mail badge not registered");
+      return;
+    }
     applicationBadgePluginRegistry.addPlugin(this);
   }
 
