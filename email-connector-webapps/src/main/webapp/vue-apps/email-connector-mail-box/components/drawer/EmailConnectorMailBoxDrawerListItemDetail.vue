@@ -107,6 +107,10 @@ export default {
       expanded: false,
       activeDownload: null,
       emails: [],
+      // The list on screen is a set of search results rather than the folder's
+      // cached window. Search reaches the whole mailbox, so those messages are
+      // routinely outside the window and must not be reconciled against it.
+      searchResults: false,
       selectedEmails: [],
       syncInProgress: false,
       webmailUrl: null,
@@ -117,7 +121,8 @@ export default {
     };
   },
   created() {
-    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl) => {
+    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, searchResults) => {
+      this.searchResults = !!searchResults;
       this.open(mailRemoteId, emails, syncInProgress, webmailUrl);
     };
     this.onCloseEmailDetailDrawer = () => {
@@ -189,6 +194,12 @@ export default {
       this.syncInProgress = false;
     });
     this.$root.$on('refresh-emails', (emails) => {
+      // The mailbox refreshes every couple of seconds while categories are still
+      // landing, carrying the folder's cached window. That is not what is on screen
+      // during a search: overwriting would drop every result found outside the window.
+      if (this.searchResults) {
+        return;
+      }
       this.emails = emails;
     });
   },
@@ -222,6 +233,13 @@ export default {
       this.selectedCategoryIds = val && await this.$emailConnectorMailBoxService.getSubcategoryIds(val) || [];
     },
     filteredEmails() {
+      // A message opened from a search comes from the whole mailbox, so its absence
+      // from this list means nothing and must not send the reader back to the
+      // placeholder -- which is exactly what happened on the first refresh after
+      // opening one.
+      if (this.searchResults) {
+        return;
+      }
       if (this.email && !this.filteredEmails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
         this.selectEmailPlaceHolder = true;
       }
@@ -291,6 +309,7 @@ export default {
       this.close();
     },
     close() {
+      this.searchResults = false;
       this.emailDetailDrawer = false;
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
