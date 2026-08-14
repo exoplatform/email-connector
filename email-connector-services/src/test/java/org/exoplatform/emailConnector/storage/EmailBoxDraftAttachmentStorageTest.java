@@ -282,6 +282,28 @@ public class EmailBoxDraftAttachmentStorageTest {
   }
 
   /**
+   * A file that is still there answers as such, and one that has been deleted does
+   * not — the cheap check an upload and a send are both gated on.
+   * <p>
+   * The deleted case is the one worth pinning: the file service keeps the metadata row
+   * and flips a flag rather than removing it, so "there is a FileInfo" and "there is a
+   * file" are different questions, and answering the first would let a draft be
+   * uploaded without a file it shows.
+   */
+  @Test
+  void aDeletedFileDoesNotCountAsAReadableAttachment() {
+    when(fileService.getFileInfo(500L)).thenReturn(new FileInfo(500L, "a.pdf", "application/pdf", "emailConnector", 5L,
+                                                               new Date(), null, null, false));
+    when(fileService.getFileInfo(501L)).thenReturn(new FileInfo(501L, "b.pdf", "application/pdf", "emailConnector", 5L,
+                                                               new Date(), null, null, true));
+
+    assertTrue(emailBoxStorage.attachmentFileExists(500L));
+    assertFalse(emailBoxStorage.attachmentFileExists(501L), "the file service keeps the row and flips a flag");
+    assertFalse(emailBoxStorage.attachmentFileExists(502L), "and a file that was never there is not there either");
+    assertFalse(emailBoxStorage.attachmentFileExists(null));
+  }
+
+  /**
    * Recording the same file twice leaves one marker, without the write failing.
    * <p>
    * Two cleanups over overlapping rows is an ordinary race here, and a constraint

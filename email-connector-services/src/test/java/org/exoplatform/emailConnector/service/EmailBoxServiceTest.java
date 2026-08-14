@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -47,6 +48,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -80,6 +83,7 @@ import javax.mail.Message;
 import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
+import javax.mail.Part;
 import javax.mail.Session;
 import javax.mail.Store;
 import javax.mail.Transport;
@@ -116,6 +120,7 @@ import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
 
+import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -2801,41 +2806,86 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * A draft carrying a file of its own is NOT uploaded to the mail server, even when
-   * the push is asked for and the account has drafts enabled.
+   * A draft carrying a file goes up to the Drafts folder AS A MULTIPART, with the file
+   * on it — and the message survives being written more than once.
    * <p>
-   * An IMAP APPEND writes the whole message, so a draft uploaded without its files
-   * puts a copy in the user's Drafts folder that looks complete and is not — opened on
-   * their phone it shows the text with the attachments missing, and a send from there
-   * sends the incomplete version. Suspended for this slice, and made safe in the next
-   * one; until then the composer's existing "your draft lives only here" notice is the
-   * honest thing to say, and it fires precisely because the state comes back unsynced.
+   * That second half is the assertion that matters, and it is not hypothetical.
+   * {@code IMAPFolder}'s append writes the message once to measure the IMAP literal
+   * and again to transmit anything bigger than its buffer, and JavaMail reads the part
+   * a further time while choosing a transfer encoding. A part backed by a stream that
+   * has already been consumed contributes nothing on the later passes, which is how an
+   * attachment lands on the server present, correctly named and zero bytes long — the
+   * exact failure this feature exists to avoid, in its most deniable form. So the
+   * message is written twice here and the two results are compared byte for byte, and
+   * the file store is asserted to have been asked for the file more than once, which
+   * is what "the source re-opens" actually means.
    * <p>
-   * Asserted as "no connection was ever opened", which is the observable form of it:
-   * the upload path's first act is to connect.
+   * The stub hands back a FRESH {@code FileItem} on every call, as the real file
+   * service does — a stub returning one instance would let a data source that captured
+   * a stream once pass anyway.
    *
    * @throws Exception when the mocked mail plumbing misbehaves
    */
   @Test
-  void aDraftCarryingAFileIsNotUploadedToTheMailServer() throws Exception {
+  void aDraftCarryingAFileIsAppendedAsAMultipartThatCanBeWrittenTwice() throws Exception {
     givenAUsableMailbox();
-    Email stored = storedDraft();
-    stored.setDraftState(DraftState.DIRTY);
-    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
-    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> {
-      Email toStore = invocation.getArgument(0);
-      // What the storage layer hands back after an edit: the row, read whole, with the
-      // file the user attached on it.
-      EmailAttachment attachment = new EmailAttachment(3L, null, null, "report.pdf", "application/pdf", null,
-                                                       MailFolder.DRAFTS, 77L, 12L);
-      toStore.setContent(new EmailContent(toStore.getContent().getBody(), null, List.of(attachment)));
-      return toStore;
-    });
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4242L) });
+    givenAStoredDraftCarrying(attachmentRow(), "the bytes of a report".getBytes());
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+
+    emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
+
+    ArgumentCaptor<Message[]> appended = ArgumentCaptor.forClass(Message[].class);
+    verify(draftsFolder).appendUIDMessages(appended.capture());
+    Message message = appended.getValue()[0];
+    assertTrue(message.getContent() instanceof Multipart, "a draft with a file is a multipart/mixed, not a bare body");
+    Multipart multipart = (Multipart) message.getContent();
+    assertEquals(2, multipart.getCount(), "the body, then one part per file");
+    BodyPart filePart = multipart.getBodyPart(1);
+    assertEquals("report.pdf", filePart.getFileName());
+    assertEquals(Part.ATTACHMENT, filePart.getDisposition());
+
+    ByteArrayOutputStream first = new ByteArrayOutputStream();
+    ByteArrayOutputStream second = new ByteArrayOutputStream();
+    message.writeTo(first);
+    message.writeTo(second);
+    assertArrayEquals(first.toByteArray(),
+                      second.toByteArray(),
+                      "a one-shot stream would make the second write drop the file's bytes");
+    // Read off the WRITTEN message rather than off the part's data handler: what
+    // matters is what went on the wire, and an empty part named after a file is
+    // indistinguishable from a full one until you look there.
+    String written = new String(first.toByteArray());
+    String bytes = "the bytes of a report";
+    assertTrue(written.contains(bytes) || written.contains(Base64.getEncoder().encodeToString(bytes.getBytes())),
+               "the file's bytes really are in the message rather than an empty part named after it");
+    verify(emailBoxStorage, atLeast(2)).getAttachmentFileItem(77L);
+  }
+
+  /**
+   * A draft whose file has gone is not uploaded at all, and no connection is even
+   * opened.
+   * <p>
+   * The invariant the whole feature is built around: an IMAP APPEND writes the ENTIRE
+   * message, so a draft uploaded without one of its files puts a copy in the user's
+   * Drafts folder that looks complete and is not — and a send from their phone sends
+   * that version. The row comes back unchanged and unsynced, which is what makes the
+   * composer say the draft lives only here. That is the truth, and it is said with
+   * nothing new built.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWhoseFileHasGoneIsNotUploadedAtAll() throws Exception {
+    givenAUsableMailbox();
+    givenAStoredDraftCarrying(attachmentRow(), null);
 
     Email saved = emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
 
     assertNotNull(saved);
-    assertFalse(DraftState.SYNCED.equals(saved.getDraftState()), "an unsent file means the draft is not on the server");
+    assertFalse(DraftState.SYNCED.equals(saved.getDraftState()), "a draft that cannot be assembled whole is not up there");
     verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
   }
 
@@ -3818,6 +3868,66 @@ public class EmailBoxServiceTest {
     lenient().when(draftsFolder.getFullName()).thenReturn("Drafts");
     when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { draftsFolder });
     return draftsFolder;
+  }
+
+  /**
+   * One file attached to a draft, as the row carries it: a name, a content type, the
+   * file-store id its bytes live under, and no MIME part path at all — a file the user
+   * attached is not part of any message until the draft is sent.
+   *
+   * @return the attachment row
+   */
+  private EmailAttachment attachmentRow() {
+    return new EmailAttachment(3L, null, null, "report.pdf", "application/pdf", null, MailFolder.DRAFTS, 77L, 21L);
+  }
+
+  /**
+   * A stored draft that carries one file, with the file store either holding its bytes
+   * or having lost them.
+   *
+   * @param attachment the attachment row the draft carries
+   * @param bytes the file's content, or null when the file is gone
+   */
+  private void givenAStoredDraftCarrying(EmailAttachment attachment, byte[] bytes) {
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.DIRTY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> {
+      // What the storage layer hands back after an edit: the row, read whole, with the
+      // file on it.
+      Email toStore = invocation.getArgument(0);
+      toStore.setMailHeaderId(stored.getMailHeaderId());
+      toStore.setContent(new EmailContent(toStore.getContent().getBody(), null, List.of(attachment)));
+      return toStore;
+    });
+    when(emailBoxStorage.attachmentFileExists(attachment.getFileId())).thenReturn(bytes != null);
+    if (bytes != null) {
+      givenTheFileStoreHolds(attachment.getFileId(), bytes);
+    }
+  }
+
+  /**
+   * The file store answering with a file — a FRESH {@link FileItem} on every call, as
+   * the real one does.
+   * <p>
+   * Freshness is the point rather than realism for its own sake: a stub handing back
+   * one instance forever would let a data source that captured a stream once look
+   * correct, and that is exactly the defect these tests exist to catch.
+   *
+   * @param fileId the file id to answer for
+   * @param bytes its content
+   */
+  @SneakyThrows
+  private void givenTheFileStoreHolds(Long fileId, byte[] bytes) {
+    when(emailBoxStorage.getAttachmentFileItem(fileId)).thenAnswer(invocation -> new FileItem(fileId,
+                                                                                             "report.pdf",
+                                                                                             "application/pdf",
+                                                                                             "emailConnector",
+                                                                                             bytes.length,
+                                                                                             new Date(),
+                                                                                             null,
+                                                                                             false,
+                                                                                             new ByteArrayInputStream(bytes)));
   }
 
   /**
