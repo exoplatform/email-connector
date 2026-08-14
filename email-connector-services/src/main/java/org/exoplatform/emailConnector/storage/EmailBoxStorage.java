@@ -234,6 +234,24 @@ public class EmailBoxStorage {
     return ordered.isEmpty() ? null : ordered.get(0);
   }
 
+  /**
+   * Of the given IMAP UIDs, the ones already cached in a folder — the bulk
+   * lookup behind the search results' {@code cached} flag: one IN query for the
+   * whole hit list, never a per-hit statement. No-op on an empty list.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   * @param mailRemoteIds the candidate IMAP UIDs
+   * @return the subset of {@code mailRemoteIds} present in the local cache,
+   *         never null
+   */
+  public List<Long> getCachedMailRemoteIds(String userId, String folder, List<Long> mailRemoteIds) {
+    if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+      return List.of();
+    }
+    return emailBoxDao.findCachedMailRemoteIds(userId, folder, mailRemoteIds);
+  }
+
   public void mergeThreads(String userId, String canonicalThreadId, List<String> threadIds) {
     if (threadIds != null && !threadIds.isEmpty()) {
       emailBoxDao.mergeThreads(userId, canonicalThreadId, threadIds);

@@ -46,6 +46,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
+import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -118,6 +119,80 @@ public class EmailBoxRest {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    }
+  }
+
+  @GetMapping("/search")
+  @Secured("users")
+  @Operation(summary = "Searches the mailbox on the server", method = "GET",
+             description = "Runs an IMAP SEARCH over the remote folder (INBOX by default), so it finds mail anywhere in the mailbox, not just the locally-cached window. Returns the newest hits (uid, folder, subject, sender, date, read flag, cached flag) plus the total match count. At least one criterion (query, from, unread or sinceDays) is required.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: unknown folder or no search criterion"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "500", description = "The mailbox could not be reached or searched"), })
+  public EmailSearchResultPage searchEmails(HttpServletRequest request,
+                                            @Parameter(description = "Free text matched against subject or sender")
+                                            @RequestParam(value = "query", required = false)
+                                            String query,
+                                            @Parameter(description = "Text matched against the sender only")
+                                            @RequestParam(value = "from", required = false)
+                                            String from,
+                                            @Parameter(description = "Restrict to unread messages")
+                                            @RequestParam(value = "unread", required = false, defaultValue = "false")
+                                            boolean unread,
+                                            @Parameter(description = "Restrict to messages received in the last N days")
+                                            @RequestParam(value = "sinceDays", required = false)
+                                            Integer sinceDays,
+                                            @Parameter(description = "Folder to search: INBOX, SENT or ARCHIVE")
+                                            @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                            String folder,
+                                            @Parameter(description = "Maximum number of hits to return (newest first)")
+                                            @RequestParam(value = "limit", required = false, defaultValue = "20")
+                                            int limit) {
+    try {
+      return emailBoxService.searchEmails(request.getRemoteUser(), query, from, unread, sinceDays, folder, limit);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @PostMapping("/search/{mailRemoteId}")
+  @Secured("users")
+  @Operation(summary = "Fetches a searched message into the local cache", method = "POST",
+             description = "Opens a search hit that lives outside the locally-cached window: fetches that one message from the server on demand, caches it through the regular pipeline (threading and categories work unchanged) and returns it in full. Already-cached messages are returned without touching the server. Returns 409 while a synchronization is running; retry in a few seconds.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request: unknown folder"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "The message no longer exists on the server"),
+      @ApiResponse(responseCode = "409", description = "A synchronization is running; retry shortly"),
+      @ApiResponse(responseCode = "500", description = "The mailbox could not be reached"), })
+  public ResponseEntity<Email> fetchSearchedEmail(HttpServletRequest request,
+                                                  @Parameter(description = "The message's IMAP UID in the folder", required = true)
+                                                  @PathVariable("mailRemoteId")
+                                                  long mailRemoteId,
+                                                  @Parameter(description = "Folder the search hit came from: INBOX, SENT or ARCHIVE")
+                                                  @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                  String folder) {
+    try {
+      Email email = emailBoxService.fetchSearchedEmail(mailRemoteId, folder, request.getRemoteUser());
+      if (email == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return ResponseEntity.ok(email);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      // The sync-in-progress refusal is a retryable conflict, not a server error.
+      if ("emailConnector.search.syncInProgress".equals(e.getMessage())) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+      }
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
     }
   }
 

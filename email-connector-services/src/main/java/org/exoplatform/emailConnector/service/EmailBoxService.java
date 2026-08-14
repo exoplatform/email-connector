@@ -41,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -72,9 +73,16 @@ import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
 import javax.mail.internet.MimeUtility;
+import javax.mail.search.AndTerm;
+import javax.mail.search.ComparisonTerm;
+import javax.mail.search.FlagTerm;
+import javax.mail.search.FromStringTerm;
 import javax.mail.search.MessageIDTerm;
 import javax.mail.search.OrTerm;
+import javax.mail.search.ReceivedDateTerm;
+import javax.mail.search.SearchException;
 import javax.mail.search.SearchTerm;
+import javax.mail.search.SubjectTerm;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -113,6 +121,8 @@ import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSearchResult;
+import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -210,6 +220,12 @@ public class EmailBoxService {
   // Caps the OR-of-Message-ID search when completing a thread from the archive on
   // open, so an unusually long conversation can't build a giant IMAP SEARCH.
   private static final int        ARCHIVE_COMPLETION_SEARCH_LIMIT                             = 50;
+
+  // Hard cap on the hits a mailbox search returns. A SEARCH over a 161k-message
+  // mailbox can match thousands of UIDs; only this many (the newest) get their
+  // envelope fetched, so the result list's cost stays one bounded batched FETCH
+  // whatever the match count. The full count is still reported to the caller.
+  private static final int        SEARCH_MAX_RESULTS                                          = 50;
 
   // Concurrent IMAP connections used to prefetch new message bodies during a sync.
   // Bodies are the one per-message cost the batched FETCH profile cannot absorb: each
@@ -309,6 +325,9 @@ public class EmailBoxService {
 
   private static final String     USER_NOT_ALLOWED_FOR_BROADCAST_ACCESS_WEBMAIL_EVENT_MESSAGE =
                                                                                               "User %s is not allowed to broadcast access webmail event";
+
+  private static final String     USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE                   =
+                                                                            "User %s is not allowed to search email";
 
   private static final String     USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE                   =
                                                                             "User %s is not allowed to update email";
@@ -3083,6 +3102,441 @@ public class EmailBoxService {
     }
     emailBoxStorage.mergeThreads(username, threadId, new ArrayList<>(threadIds));
     return threadId;
+  }
+
+  /**
+   * Server-side mailbox search: an IMAP {@code SEARCH} over one remote folder, so a
+   * user finds mail anywhere in that folder — a 161k-message inbox, not just the
+   * ~1000-message local cache window (0.6% of it on the reference mailbox, which is
+   * why filtering the cache was never a search).
+   * <p>
+   * Deliberately inert towards the sync: the search runs on its OWN short-lived IMAP
+   * connection (never the sync's), opens the folder READ_ONLY, writes NOTHING — no
+   * cache row, no sync state, no snapshot, no notification window — and never touches
+   * the {@code syncingUsers} guard. It can therefore run at any time, including while
+   * a synchronization is in flight, without either one noticing the other. Its single
+   * database access is one read-only IN query decorating the hits with their
+   * {@code cached} flag.
+   * <p>
+   * The cost discipline is the sync's: the SEARCH returns UIDs, the newest
+   * {@code limit} hits get their flags + envelope + UID prefetched in ONE batched
+   * {@link Folder#fetch} — never one FETCH per hit, which is the per-message
+   * round-trip mistake that once turned a sync into half an hour — and no body is
+   * ever read (a result row does not need one, and bodies are the one per-message
+   * cost a batched FETCH cannot absorb).
+   *
+   * @param username the mailbox owner
+   * @param query free text matched against the subject OR the sender (IMAP
+   *          substring, case-insensitive), may be blank
+   * @param from text matched against the sender only, may be blank
+   * @param unreadOnly when {@code true}, only unread messages match
+   * @param sinceDays only messages received in the last N days match, null for no
+   *          date bound (IMAP {@code SINCE} has day granularity anyway)
+   * @param folder the folder to search: {@code INBOX}, {@code SENT} or
+   *          {@code ARCHIVE} (on Gmail, ARCHIVE searches the "All Mail" superset —
+   *          the place archived mail actually lives)
+   * @param limit how many hits to return, clamped to [1, {@value #SEARCH_MAX_RESULTS}]
+   * @return the newest matching messages (newest first) plus the total match count
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   * @throws IllegalArgumentException if the folder is not searchable or no criterion
+   *           at all was given (an empty SEARCH would match the whole mailbox)
+   * @throws IllegalStateException if the mailbox cannot be reached or searched
+   */
+  public EmailSearchResultPage searchEmails(String username,
+                                            String query,
+                                            String from,
+                                            boolean unreadOnly,
+                                            Integer sinceDays,
+                                            String folder,
+                                            int limit) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
+    }
+    if (!isSearchableFolder(folder)) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    if (sinceDays != null && sinceDays < 0) {
+      // A negative window is a future-dated lower bound: it matches nothing, silently,
+      // and reads to the caller as "the search is broken" rather than "the input was".
+      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
+    }
+    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
+    SearchTerm searchTerm = buildEmailSearchTerm(query, from, unreadOnly, since);
+    if (searchTerm == null) {
+      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
+    }
+    int cappedLimit = Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS);
+    Store store = null;
+    Folder remoteFolder = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      remoteFolder = resolveSearchFolder(store, folder, username);
+      if (remoteFolder == null) {
+        // The mailbox has no such folder (e.g. no Sent yet): nothing to search.
+        return new EmailSearchResultPage(List.of(), 0);
+      }
+      remoteFolder.open(Folder.READ_ONLY);
+      Message[] found = remoteFolder.search(searchTerm);
+      if (found == null || found.length == 0) {
+        return new EmailSearchResultPage(List.of(), 0);
+      }
+      // The server lists matches in mailbox order (oldest first): the page is the
+      // TAIL — the newest hits — because "the mail I'm looking for" skews recent
+      // even when the query matches years of history.
+      Message[] page = found.length <= cappedLimit ? found : Arrays.copyOfRange(found, found.length - cappedLimit, found.length);
+      // One batched round-trip for the whole page: reading subject/from/date/flags
+      // below is then served from memory. Without this every getter is its own
+      // per-message FETCH — the regression that must never come back.
+      remoteFolder.fetch(page, buildSearchResultFetchProfile());
+      UIDFolder uidFolder = (UIDFolder) remoteFolder;
+      List<Long> pageUids = new ArrayList<>(page.length);
+      for (Message message : page) {
+        pageUids.add(uidFolder.getUID(message));
+      }
+      // One IN query for the whole page — never a per-hit lookup.
+      Set<Long> cachedUids = new HashSet<>(emailBoxStorage.getCachedMailRemoteIds(username, folder, pageUids));
+      List<EmailSearchResult> results = new ArrayList<>(page.length);
+      for (int i = page.length - 1; i >= 0; i--) {
+        try {
+          long messageUid = pageUids.get(i);
+          results.add(new EmailSearchResult(messageUid,
+                                            folder,
+                                            page[i].getSubject(),
+                                            page[i].getFrom() != null && page[i].getFrom().length != 0
+                                                ? EmailConnectorUtils.getEmailSender(page[i].getFrom()[0], false)
+                                                : null,
+                                            page[i].getReceivedDate(),
+                                            page[i].isSet(Flags.Flag.SEEN),
+                                            cachedUids.contains(messageUid)));
+        } catch (Exception e) {
+          // One unreadable hit must not lose the rest of the page.
+          LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);
+        }
+      }
+      return new EmailSearchResultPage(results, found.length);
+    } catch (SearchException e) {
+      // The server refused the CRITERIA, not the mailbox — the CHARSET path: a query
+      // carrying accents ("réunion") makes JavaMail issue SEARCH CHARSET UTF-8, and a
+      // server rejecting the charset makes it exhaust its charset list. A rejected
+      // input owes the caller a 400 with a code they can act on, not the generic 500
+      // the catch-all below would produce.
+      //
+      // Reachable only with mail.imaps.throwsearchexception=true, which we do NOT set
+      // today: IMAPFolder.search swallows both CommandFailedException ("unsupported
+      // charset or search criterion") and SearchException by default and falls back to
+      // Folder.search — a CLIENT-side scan that pulls the whole folder down to match
+      // locally. That fallback is silent and, on the 161k-message mailboxes this
+      // feature targets, is the linear scan the design avoids everywhere else (see
+      // buildEmailSearchTerm on why there is no BODY term); it reads as a hang, not an
+      // error. Flipping that property is the real fix but it is not search's to make
+      // alone — the same Session serves the sync and the archive thread-completion
+      // search, which would start throwing where they now degrade. Mapped here so the
+      // contract is already right the day it is flipped.
+      LOG.debug("Search criteria refused by the server for folder {} and user {}", folder, username, e);
+      throw new IllegalArgumentException("emailConnector.search.criteriaNotSupported");
+    } catch (Exception e) {
+      LOG.error("Error searching folder {} for user {}", folder, username, e);
+      throw new IllegalStateException(String.format("Error when searching mailbox of user %s", username));
+    } finally {
+      closeQuietly(remoteFolder, store, username);
+    }
+  }
+
+  /**
+   * Opens a message the search found OUTSIDE the local cache window: fetches that
+   * one message on demand from the server and caches it through the ordinary
+   * {@link #createEmails} path, so the whole reader, threading and category
+   * machinery works on it unchanged (thread id computed bidirectionally, row
+   * readable by the existing {@code (user, folder, UID)} endpoints). Already-cached
+   * messages are returned straight from the database, no IMAP at all.
+   * <p>
+   * The row is stamped with its TRUE folder — never a synthetic one — because the
+   * {@code (user, folder, UID)} key must stay unique and truthful for every read
+   * path. The consequence is a deliberate lifecycle, not corruption: a fetched
+   * message older than the sync window is treated by the next full sync of that
+   * folder as absent-from-window and evicted by {@code cleanupObsoleteEmails} (or
+   * trimmed as overflow). That is the cache-window invariant RESTORING itself; the
+   * message stays readable because this method simply re-fetches it on the next
+   * open. Until that eviction the row is visible wherever the folder's cache is
+   * (list, counts) — transient by design. A fetched message that happens to be
+   * INSIDE the window just becomes a normal window row the next sync reconciles.
+   * <p>
+   * That self-restoration needs a sync to actually visit the folder, which is not
+   * true of ARCHIVE on a provider whose archived mail lives only in an unsynced
+   * {@code \All} superset — the Gmail case this feature's ARCHIVE mapping targets.
+   * {@link #trimSearchFedFolderCache} bounds that one explicitly, so the promise
+   * above holds on every provider rather than on most of them.
+   * <p>
+   * Mutually exclusive with a synchronization of this mailbox, via the sync's own
+   * {@code syncingUsers} mutex: the sync decides "new vs known" from an in-memory
+   * snapshot of the cache taken when it started, so a row inserted here mid-sync
+   * could be created a second time by the sync — duplicate
+   * {@code (user, folder, UID)} rows break every lookup on that key. Holding the
+   * mutex (not merely reading it) closes the check-then-insert window too: a sync
+   * firing during this fetch skips that run, which is the sync's own policy for
+   * overlapping syncs and costs one period at most. When the mutex is already
+   * held, the caller retries in a few seconds (HTTP 409).
+   * <p>
+   * No {@code NEW_EMAILS_SYNCED} broadcast: that event drives the new-mail
+   * machinery (AI categorization batches, notification claims) and is a statement
+   * about a sync run, which this is not — one deliberately-opened old message must
+   * not wake either.
+   *
+   * @param mailRemoteId the message's IMAP UID in {@code folder}
+   * @param folder the folder the search hit came from (INBOX / SENT / ARCHIVE)
+   * @param username the mailbox owner
+   * @return the full cached message, or null when it no longer exists on the server
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   * @throws IllegalArgumentException if the folder is not searchable
+   * @throws IllegalStateException with message code
+   *           {@code emailConnector.search.syncInProgress} while a sync is running,
+   *           or a generic one when the mailbox cannot be reached
+   */
+  public Email fetchSearchedEmail(long mailRemoteId, String folder, String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
+    }
+    if (!isSearchableFolder(folder)) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    Email cached = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, folder, true, true, true, false);
+    if (cached != null) {
+      return cached;
+    }
+    // See the method javadoc: caching mid-sync races the sync's in-memory
+    // known-UIDs snapshot into duplicate rows. ACQUIRE the sync's own mutex
+    // rather than just reading it — a contains() check would leave a window
+    // between the check and the insert below for a sync to start, snapshot the
+    // cache without this row, and create it a second time.
+    if (!syncingUsers.add(username)) {
+      throw new IllegalStateException("emailConnector.search.syncInProgress");
+    }
+    Store store = null;
+    Folder remoteFolder = null;
+    try {
+      // Re-check the cache now that the mutex is held: a sync that finished
+      // between the miss above and the acquisition may have cached this UID.
+      cached = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, folder, true, true, true, false);
+      if (cached != null) {
+        return cached;
+      }
+      store = userEmailSettingService.connect(userEmailSetting);
+      remoteFolder = resolveSearchFolder(store, folder, username);
+      if (remoteFolder == null) {
+        return null;
+      }
+      remoteFolder.open(Folder.READ_ONLY);
+      UIDFolder uidFolder = (UIDFolder) remoteFolder;
+      Message message = uidFolder.getMessageByUID(mailRemoteId);
+      if (message == null) {
+        // Deleted (or moved) on the server since the search listed it.
+        return null;
+      }
+      // The full sync profile, not the search one: createEmails reads the threading
+      // and distribution headers, and each unfetched header is its own round-trip.
+      remoteFolder.fetch(new Message[] { message }, buildSyncFetchProfile());
+      // Empty known map: the cache miss was re-checked under the mutex just above
+      // and no sync can be inserting concurrently (mutex held). All DB writes
+      // happen here, on the calling thread, exactly like the sync and the
+      // thread-completion paths.
+      createEmails(uidFolder, new Message[] { message }, username, folder, Map.of(), Map.of(), null);
+      trimSearchFedFolderCache(store, username, folder, mailRemoteId);
+      return getEmailByMailRemoteIdAndUserId(mailRemoteId, username, folder, true, true, true, false);
+    } catch (MessagingException | RuntimeException e) {
+      LOG.error("Error fetching searched email {} of folder {} for user {}", mailRemoteId, folder, username, e);
+      throw new IllegalStateException(String.format("Error when fetching searched email for user %s", username));
+    } finally {
+      syncingUsers.remove(username);
+      closeQuietly(remoteFolder, store, username);
+    }
+  }
+
+  /**
+   * Bounds the cache of a folder that NO bulk sync reconciles, after a search-fetch
+   * has just inserted a row into it.
+   * <p>
+   * {@link #fetchSearchedEmail} documents its rows as transient: the next full sync
+   * of that folder sees a message older than the window as absent-from-window and
+   * {@code cleanupObsoleteEmails} evicts it. That holds for every folder the sync
+   * actually visits — but not for the one case this feature makes routine. On a
+   * provider with no syncable {@code \Archive} (Gmail, whose archived mail lives in
+   * the {@code \All} superset the bulk sync deliberately never caches),
+   * {@code resolveArchiveFolder} returns null, {@code syncFolderIfChanged} returns at
+   * its null-folder guard, and {@code cleanupObsoleteEmails} therefore NEVER runs for
+   * ARCHIVE. Without this, every archived message a user ever opens from search stays
+   * for good — and those rows are visible in the folder's list and counts, so the
+   * ARCHIVE tab slowly fills with search history.
+   * <p>
+   * Trims to the same window the sync gives a non-inbox folder, oldest first, and
+   * never the row just fetched: that one is what the caller is about to read, and it
+   * is precisely the row most likely to sort oldest.
+   *
+   * @param store the open store, to tell a search-fed folder from a synced one
+   * @param username the mailbox owner
+   * @param folder the folder just written to
+   * @param justFetchedUid the UID inserted by the caller, exempt from the trim
+   */
+  private void trimSearchFedFolderCache(Store store, String username, String folder, long justFetchedUid) {
+    try {
+      if (!MailFolder.ARCHIVE.equals(folder) || resolveArchiveFolder(store, loadMailboxSyncState(username)) != null) {
+        // Every other folder is bulk-synced, so the documented self-restoring
+        // eviction does happen and this must not second-guess it.
+        return;
+      }
+      int window = Math.min(emailConnectorService.getEmailBoxCacheSize(), NON_INBOX_FOLDER_SYNC_LIMIT);
+      List<Email> cachedEmails = emailBoxStorage.getSyncEmails(username, folder);
+      if (cachedEmails.size() <= window) {
+        return;
+      }
+      List<Email> overflow = cachedEmails.subList(window, cachedEmails.size())
+                                         .stream()
+                                         .filter(email -> !Objects.equals(email.getMailRemoteId(), justFetchedUid))
+                                         .toList();
+      if (!overflow.isEmpty()) {
+        LOG.debug("Trimming {} search-fetched rows from folder {} of user {}", overflow.size(), folder, username);
+        deleteEmails(overflow);
+      }
+    } catch (Exception e) {
+      // Housekeeping: a failure here must never cost the user the message they opened.
+      LOG.warn("Could not trim the search-fed cache of folder {} for user {}", folder, username, e);
+    }
+  }
+
+  /**
+   * The IMAP search criteria, combined with AND; each piece is optional. The
+   * free-text query matches subject OR sender — the two fields a result row is
+   * recognized by — while {@code from} pins the sender alone. Deliberately no
+   * BODY term: on providers without a full-text index a body search is a linear
+   * scan of the whole folder, which on a 161k-message mailbox is a timeout, not a
+   * feature. Package-visible for tests.
+   *
+   * @param query free text matched against subject OR sender, may be blank
+   * @param from text matched against the sender, may be blank
+   * @param unreadOnly when {@code true}, restrict to messages without {@code \Seen}
+   * @param since lower bound on the received date, may be null
+   * @return the combined term, or null when no criterion at all was given
+   */
+  static SearchTerm buildEmailSearchTerm(String query, String from, boolean unreadOnly, Date since) {
+    List<SearchTerm> terms = new ArrayList<>();
+    if (StringUtils.isNotBlank(query)) {
+      terms.add(new OrTerm(new SubjectTerm(query.trim()), new FromStringTerm(query.trim())));
+    }
+    if (StringUtils.isNotBlank(from)) {
+      terms.add(new FromStringTerm(from.trim()));
+    }
+    if (unreadOnly) {
+      terms.add(new FlagTerm(new Flags(Flags.Flag.SEEN), false));
+    }
+    if (since != null) {
+      terms.add(new ReceivedDateTerm(ComparisonTerm.GE, since));
+    }
+    if (terms.isEmpty()) {
+      return null;
+    }
+    return terms.size() == 1 ? terms.get(0) : new AndTerm(terms.toArray(new SearchTerm[0]));
+  }
+
+  /**
+   * The fetch profile of a search result page: flags + envelope + UID, everything a
+   * result row renders from, in one batched round-trip. Deliberately LIGHTER than
+   * {@link #buildSyncFetchProfile}: no MIME structure and none of the delivery
+   * headers, because a result list never reads a body or classifies a message —
+   * fetching them would tax every search with data nobody displays.
+   *
+   * @return the profile to pass to {@link Folder#fetch(Message[], FetchProfile)}
+   */
+  private FetchProfile buildSearchResultFetchProfile() {
+    FetchProfile fetchProfile = new FetchProfile();
+    fetchProfile.add(FetchProfile.Item.FLAGS);
+    fetchProfile.add(FetchProfile.Item.ENVELOPE);
+    fetchProfile.add(UIDFolder.FetchProfileItem.UID);
+    return fetchProfile;
+  }
+
+  /**
+   * Whether a folder key is one the search endpoints accept — the user-browsable
+   * folders only. ALL_MAIL stays internal: it is a completion store, and on Gmail
+   * the ARCHIVE mapping below already reaches the same "All Mail" superset.
+   *
+   * @param folder the requested {@link MailFolder} key
+   * @return true for INBOX / SENT / ARCHIVE
+   */
+  private boolean isSearchableFolder(String folder) {
+    return MailFolder.INBOX.equals(folder) || MailFolder.SENT.equals(folder) || MailFolder.ARCHIVE.equals(folder);
+  }
+
+  /**
+   * The remote folder a search key targets. INBOX is the protocol-guaranteed name;
+   * SENT reuses the sync's remembered-name resolution (the rediscovered name is
+   * deliberately NOT persisted here — search must never write the sync state a
+   * running sync may be about to save, so a rediscovery just costs the next search
+   * one more LIST).
+   * <p>
+   * ARCHIVE resolves the way the SYNC does, and only falls back to the archive
+   * DESTINATION lookup when the mailbox has no syncable {@code \Archive}. This is a
+   * correctness requirement, not a preference: IMAP UIDs are per-folder, and every
+   * cached row is keyed {@code (user, folder, UID)}. The rows filed under ARCHIVE are
+   * written with UIDs read from {@link #findSyncableArchiveFolder} ({@code \Archive}
+   * only), while the destination lookup {@link #findArchiveFolder} also accepts
+   * {@code \All} and any name merely CONTAINING "archive"/"all"/"tous". On a mailbox
+   * carrying both — a dedicated Archive folder and an All-Mail-type folder, where
+   * the winner is decided by {@code listSubscribed("*")} order — the two resolvers
+   * return different physical folders, and the shared ARCHIVE keyspace then mixes
+   * UIDs from both: the {@code cached} flag compares UIDs across folders, the cache
+   * pre-check in {@link #fetchSearchedEmail} can hand back a COMPLETELY DIFFERENT
+   * message on a UID collision, and the row it inserts carries a foreign UID that
+   * the next {@code \Archive} sync's {@code cleanupObsoleteEmails} misreads.
+   * <p>
+   * Resolving through the sync's own lookup removes the divergence at its source:
+   * when a syncable Archive exists, search and sync address the same folder and the
+   * keyspace has one owner. When it does not (the Gmail case — {@code \All} only),
+   * the fallback still reaches "All Mail" and reach is unchanged, and the ARCHIVE
+   * keyspace is then exclusively search-fed, hence self-consistent.
+   *
+   * @param store the connected store (the search's own, never the sync's)
+   * @param folder the {@link MailFolder} key, already validated searchable
+   * @param username the mailbox owner, to load the remembered folder names
+   * @return the remote folder, or null when the mailbox has no such folder
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private Folder resolveSearchFolder(Store store, String folder, String username) throws MessagingException {
+    if (MailFolder.INBOX.equals(folder)) {
+      return store.getFolder(INBOX_FOLDER_NAME);
+    }
+    if (MailFolder.SENT.equals(folder)) {
+      return resolveSentFolder(store, loadMailboxSyncState(username));
+    }
+    IMAPFolder syncableArchive = resolveArchiveFolder(store, loadMailboxSyncState(username));
+    return syncableArchive != null ? syncableArchive : findArchiveFolder(store);
+  }
+
+  /**
+   * Closes a search-side folder and store, best-effort — a close failure on a
+   * read-only connection is noise, never an incident.
+   *
+   * @param folder the folder to close, possibly null or already closed
+   * @param store the store to close, possibly null
+   * @param username the mailbox owner, for the log
+   */
+  private void closeQuietly(Folder folder, Store store, String username) {
+    if (folder != null && folder.isOpen()) {
+      try {
+        folder.close(false);
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing search folder for user {}", username, messagingException);
+      }
+    }
+    if (store != null && store.isConnected()) {
+      try {
+        store.close();
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing search store for user {}", username, messagingException);
+      }
+    }
   }
 
   /**
