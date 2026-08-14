@@ -3836,6 +3836,7 @@ public class EmailBoxService {
     lock.lock();
     try {
       if (emailBoxStorage.getDraftByLocalId(username, draftLocalId) == null) {
+        LOG.warn("Forward for user {}: draft {} does not exist, nothing was attached", username, draftLocalId);
         return null;
       }
       // The message is read from the CACHE, under this user and this folder, and the
@@ -3852,6 +3853,10 @@ public class EmailBoxService {
                                                                      false,
                                                                      false);
       if (source == null) {
+        LOG.warn("Forward for user {}: message {} is not cached in folder {}, so its files could not be carried over",
+                 username,
+                 mailRemoteId,
+                 cachedFolder);
         return null;
       }
       List<EmailAttachment> forwarded = forwardableAttachments(source);
@@ -3862,6 +3867,22 @@ public class EmailBoxService {
                                                                                 userEmailSetting,
                                                                                 cachedFolder,
                                                                                 mailRemoteId);
+      // Said once, on the way out, and said even when there was nothing to carry.
+      // A forward that worked and a forward that never ran used to look identical
+      // from the outside: the whole path was silent unless a single file failed. On
+      // an acceptance server, where nobody can watch a browser's network tab, that
+      // silence is the difference between "it works" and "no evidence either way" -
+      // and it cost an afternoon of testing to notice. The per-file reasons are
+      // already warned about individually; this is the line that says the operation
+      // happened at all.
+      LOG.info("Forward for user {}: {} of {} file(s) of message {} in folder {} carried onto draft {}, {} refused",
+               username,
+               forwarded.size() - notAttached.size(),
+               forwarded.size(),
+               mailRemoteId,
+               cachedFolder,
+               draftLocalId,
+               notAttached.size());
       return new ForwardedAttachments(emailBoxStorage.getDraftByLocalId(username, draftLocalId), notAttached);
     } finally {
       lock.unlock();
