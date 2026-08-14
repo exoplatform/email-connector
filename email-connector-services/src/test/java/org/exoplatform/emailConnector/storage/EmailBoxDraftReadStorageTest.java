@@ -49,6 +49,9 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 
+import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.upload.UploadService;
+
 import io.meeds.social.category.service.CategoryLinkService;
 
 /**
@@ -105,6 +108,15 @@ public class EmailBoxDraftReadStorageTest {
 
   @MockBean
   private CategoryLinkService categoryLinkService;
+
+  // The storage now writes attachment bytes through the platform's file service. Mocked
+  // rather than exercised: nothing in this class attaches a file, and an unmocked bean
+  // would simply fail to start the context.
+  @MockBean
+  private FileService         fileService;
+
+  @MockBean
+  private UploadService       uploadService;
 
   /**
    * The minimal Spring slice: the mail entities and their repositories, over Boot's
