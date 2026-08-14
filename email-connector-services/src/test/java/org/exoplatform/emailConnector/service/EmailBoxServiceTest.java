@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -47,6 +48,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -80,6 +83,7 @@ import javax.mail.Message;
 import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
+import javax.mail.Part;
 import javax.mail.Session;
 import javax.mail.Store;
 import javax.mail.Transport;
@@ -116,6 +120,7 @@ import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
 
+import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -778,14 +783,26 @@ public class EmailBoxServiceTest {
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    // No cached row under that folder and that UID. An answer, not a fault: the REST
+    // layer turns it into a 404. It used to be an IllegalStateException, because the
+    // code went straight on to set the bytes on the null it had just been handed and
+    // the NullPointerException was swallowed into "error connecting to the store" —
+    // a 500 blaming the mail server for a row this side does not have. The folder
+    // being part of the lookup makes this reachable in the ordinary way (a caller
+    // asking under the wrong one), so it is worth answering honestly.
+    assertNull(emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX));
+    EmailAttachment emailAtatchment = mock(EmailAttachment.class);
+    when(emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX)).thenReturn(emailAtatchment);
+    // The row exists but the message does not have the part it names: a genuine
+    // fault, still reported as one.
     assertThrows(IllegalStateException.class,
-                 () -> emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER));
+                 () -> emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX));
     when(message.isMimeType("multipart/*")).thenReturn(true);
     Multipart multipart = mock(Multipart.class);
     when(message.getContent()).thenReturn(multipart);
     when(multipart.getCount()).thenReturn(1);
     assertThrows(IllegalStateException.class,
-                 () -> emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER));
+                 () -> emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX));
     when(multipart.getCount()).thenReturn(2);
     BodyPart bodyPart = mock(BodyPart.class);
     when(multipart.getBodyPart(anyInt())).thenReturn(bodyPart);
@@ -794,12 +811,42 @@ public class EmailBoxServiceTest {
     when(bodyPart.getContentType()).thenReturn("application/pdf");
     when(bodyPart.getFileName()).thenReturn("attachment.pdf");
     when(is.read(any(byte[].class))).thenReturn(1024).thenReturn(-1);
-    EmailAttachment emailAtatchment = mock(EmailAttachment.class);
-    when(emailBoxStorage.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER)).thenReturn(emailAtatchment);
-    emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER);
-    verify(emailBoxStorage, times(3)).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER);
+    emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX);
+    verify(emailBoxStorage, times(4)).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.INBOX);
     verify(emailAtatchment).setName("attachment.pdf");
     verify(emailAtatchment).setMimeType("application/pdf");
+  }
+
+  /**
+   * The folder is resolved through the same resolver the rows were cached by, and
+   * not assumed to be the inbox — which is the whole of slice 1 on the service side.
+   * <p>
+   * Before this change, an attachment on a message the user had SENT was looked for
+   * in {@code INBOX}: either no message carries that UID there (a 500) or an
+   * unrelated one does, and the user is handed a completely different message's file.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void getAttachmentOfASentMessageOpensTheSentFolder() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    IMAPFolder sent = mock(IMAPFolder.class);
+    when(sent.exists()).thenReturn(true);
+    when(sent.getFullName()).thenReturn("Sent");
+    when(sent.getAttributes()).thenReturn(new String[] { "\\Sent" });
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.listSubscribed("*")).thenReturn(new Folder[] { sent });
+
+    emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.SENT);
+
+    verify(sent).open(Folder.READ_ONLY);
+    verify(store, never()).getFolder("INBOX");
+    verify(emailBoxStorage).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.SENT);
   }
 
   @Test
@@ -2758,6 +2805,90 @@ public class EmailBoxServiceTest {
     assertFalse(saved.isRecent());
   }
 
+  /**
+   * A draft carrying a file goes up to the Drafts folder AS A MULTIPART, with the file
+   * on it — and the message survives being written more than once.
+   * <p>
+   * That second half is the assertion that matters, and it is not hypothetical.
+   * {@code IMAPFolder}'s append writes the message once to measure the IMAP literal
+   * and again to transmit anything bigger than its buffer, and JavaMail reads the part
+   * a further time while choosing a transfer encoding. A part backed by a stream that
+   * has already been consumed contributes nothing on the later passes, which is how an
+   * attachment lands on the server present, correctly named and zero bytes long — the
+   * exact failure this feature exists to avoid, in its most deniable form. So the
+   * message is written twice here and the two results are compared byte for byte, and
+   * the file store is asserted to have been asked for the file more than once, which
+   * is what "the source re-opens" actually means.
+   * <p>
+   * The stub hands back a FRESH {@code FileItem} on every call, as the real file
+   * service does — a stub returning one instance would let a data source that captured
+   * a stream once pass anyway.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftCarryingAFileIsAppendedAsAMultipartThatCanBeWrittenTwice() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4242L) });
+    givenAStoredDraftCarrying(attachmentRow(), "the bytes of a report".getBytes());
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+
+    emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
+
+    ArgumentCaptor<Message[]> appended = ArgumentCaptor.forClass(Message[].class);
+    verify(draftsFolder).appendUIDMessages(appended.capture());
+    Message message = appended.getValue()[0];
+    assertTrue(message.getContent() instanceof Multipart, "a draft with a file is a multipart/mixed, not a bare body");
+    Multipart multipart = (Multipart) message.getContent();
+    assertEquals(2, multipart.getCount(), "the body, then one part per file");
+    BodyPart filePart = multipart.getBodyPart(1);
+    assertEquals("report.pdf", filePart.getFileName());
+    assertEquals(Part.ATTACHMENT, filePart.getDisposition());
+
+    ByteArrayOutputStream first = new ByteArrayOutputStream();
+    ByteArrayOutputStream second = new ByteArrayOutputStream();
+    message.writeTo(first);
+    message.writeTo(second);
+    assertArrayEquals(first.toByteArray(),
+                      second.toByteArray(),
+                      "a one-shot stream would make the second write drop the file's bytes");
+    // Read off the WRITTEN message rather than off the part's data handler: what
+    // matters is what went on the wire, and an empty part named after a file is
+    // indistinguishable from a full one until you look there.
+    String written = new String(first.toByteArray());
+    String bytes = "the bytes of a report";
+    assertTrue(written.contains(bytes) || written.contains(Base64.getEncoder().encodeToString(bytes.getBytes())),
+               "the file's bytes really are in the message rather than an empty part named after it");
+    verify(emailBoxStorage, atLeast(2)).getAttachmentFileItem(77L);
+  }
+
+  /**
+   * A draft whose file has gone is not uploaded at all, and no connection is even
+   * opened.
+   * <p>
+   * The invariant the whole feature is built around: an IMAP APPEND writes the ENTIRE
+   * message, so a draft uploaded without one of its files puts a copy in the user's
+   * Drafts folder that looks complete and is not — and a send from their phone sends
+   * that version. The row comes back unchanged and unsynced, which is what makes the
+   * composer say the draft lives only here. That is the truth, and it is said with
+   * nothing new built.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWhoseFileHasGoneIsNotUploadedAtAll() throws Exception {
+    givenAUsableMailbox();
+    givenAStoredDraftCarrying(attachmentRow(), null);
+
+    Email saved = emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true);
+
+    assertNotNull(saved);
+    assertFalse(DraftState.SYNCED.equals(saved.getDraftState()), "a draft that cannot be assembled whole is not up there");
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
   @Test
   void aDraftReplyJoinsTheConversationItRepliesTo() throws Exception {
     // The whole point of writing the threading headers at save time rather than at
@@ -3376,6 +3507,86 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
   }
 
+  /**
+   * A send whose draft shows a file that can no longer be read is refused, and refused
+   * BEFORE anything is written, claimed or removed.
+   * <p>
+   * The asymmetry with the upload is the point. An upload that does not happen costs
+   * the user nothing they can see; a mail delivered without the file its sender
+   * attached cannot be discovered by them and cannot be taken back. So this one fails
+   * the whole operation — and leaves the draft exactly where it was, on both sides, for
+   * the user to take the broken chip off and try again.
+   * <p>
+   * Four separate "nothing happened" assertions rather than one, because there are four
+   * distinct ways this could go wrong and each is its own regression: the text written
+   * to the row, the SENDING claim taken, the mail put on the wire, the row deleted.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSendRefusedOverAMissingFileClaimsNothingAndChangesNothing() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of(attachmentRow()));
+    when(emailBoxStorage.attachmentFileExists(77L)).thenReturn(false);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email draft = draft("draft-1");
+      assertThrows(IllegalStateException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+      transportMock.verifyNoInteractions();
+    }
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any(DraftState.class));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * A draft sent tomorrow carries the file attached yesterday — and the send itself
+   * never frees it.
+   * <p>
+   * The composer's payload holds upload ids for files attached in the session that is
+   * still open, and a draft resumed after a restart has none of them; a message built
+   * from the payload alone would go out with the words and without the files. So the
+   * stored file is read off the row and put on the message, which is asserted here on
+   * the message that actually reached {@code Transport.send}.
+   * <p>
+   * The second half is the slice's own rule: the files belong to the DRAFT, not to the
+   * attempt at sending it. They are freed by the row delete that follows a successful
+   * send — {@code deleteEmailsByIds}, which writes the file ids down before the bulk
+   * delete takes the attachment rows out from under Java — and by nothing else on this
+   * path. A {@code finally} that released them the way the ordinary send releases
+   * upload ids would leave a refused send with a draft the user can read and never
+   * send.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftSentTomorrowCarriesYesterdaysFileAndTheRowDeleteIsWhatFreesIt() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    givenADraftsFolder();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of(attachmentRow()));
+    when(emailBoxStorage.attachmentFileExists(77L)).thenReturn(true);
+    givenTheFileStoreHolds(77L, "yesterday's bytes".getBytes());
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      // The composer sends NO attachments at all: everything this draft carries was
+      // attached in a session that is over, which is the whole case being tested.
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER);
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      Multipart multipart = (Multipart) sent.getValue().getContent();
+      assertEquals(2, multipart.getCount(), "the body, then the file the draft has been carrying");
+      assertEquals("report.pdf", multipart.getBodyPart(1).getFileName());
+    }
+    // The one and only thing that frees a sent draft's files, and it does it by
+    // recording them before the rows go.
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
   @Test
   void aSendWhoseCleanupFailsStillTakesTheLocalRowAway() throws Exception {
     // The mail is out and cannot be recalled. Showing the user a draft of a message
@@ -3740,6 +3951,66 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * One file attached to a draft, as the row carries it: a name, a content type, the
+   * file-store id its bytes live under, and no MIME part path at all — a file the user
+   * attached is not part of any message until the draft is sent.
+   *
+   * @return the attachment row
+   */
+  private EmailAttachment attachmentRow() {
+    return new EmailAttachment(3L, null, null, "report.pdf", "application/pdf", null, MailFolder.DRAFTS, 77L, 21L);
+  }
+
+  /**
+   * A stored draft that carries one file, with the file store either holding its bytes
+   * or having lost them.
+   *
+   * @param attachment the attachment row the draft carries
+   * @param bytes the file's content, or null when the file is gone
+   */
+  private void givenAStoredDraftCarrying(EmailAttachment attachment, byte[] bytes) {
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.DIRTY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> {
+      // What the storage layer hands back after an edit: the row, read whole, with the
+      // file on it.
+      Email toStore = invocation.getArgument(0);
+      toStore.setMailHeaderId(stored.getMailHeaderId());
+      toStore.setContent(new EmailContent(toStore.getContent().getBody(), null, List.of(attachment)));
+      return toStore;
+    });
+    when(emailBoxStorage.attachmentFileExists(attachment.getFileId())).thenReturn(bytes != null);
+    if (bytes != null) {
+      givenTheFileStoreHolds(attachment.getFileId(), bytes);
+    }
+  }
+
+  /**
+   * The file store answering with a file — a FRESH {@link FileItem} on every call, as
+   * the real one does.
+   * <p>
+   * Freshness is the point rather than realism for its own sake: a stub handing back
+   * one instance forever would let a data source that captured a stream once look
+   * correct, and that is exactly the defect these tests exist to catch.
+   *
+   * @param fileId the file id to answer for
+   * @param bytes its content
+   */
+  @SneakyThrows
+  private void givenTheFileStoreHolds(Long fileId, byte[] bytes) {
+    when(emailBoxStorage.getAttachmentFileItem(fileId)).thenAnswer(invocation -> new FileItem(fileId,
+                                                                                             "report.pdf",
+                                                                                             "application/pdf",
+                                                                                             "emailConnector",
+                                                                                             bytes.length,
+                                                                                             new Date(),
+                                                                                             null,
+                                                                                             false,
+                                                                                             new ByteArrayInputStream(bytes)));
+  }
+
+  /**
    * A composed draft as the client sends it: text and recipients, and the local id
    * only once the client has one.
    *
@@ -3954,7 +4225,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null,
-                     null);
+                     null, null);
   }
 
   private EmailConnector emailConnector() {
