@@ -29,9 +29,55 @@ import org.exoplatform.emailConnector.model.DraftState;
 
 public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
+  /**
+   * Every cached row of a mailbox, every folder, no exception — the TOTAL read.
+   * <p>
+   * It has one caller and must keep having one: the cleanup that wipes a mailbox
+   * when the account is disconnected or rebound. Totality is the requirement there,
+   * not an accident of how the query happens to be written. A folder left out here
+   * is a set of rows that outlives the account they belonged to — deleted mail
+   * surviving the deletion of the mailbox it was deleted in, invisible to every
+   * screen and to the user who thought they had disconnected.
+   * <p>
+   * Anything that SHOWS mail must use
+   * {@link #findByUserIdExcludingFolderWithAttachments} instead. The two exist
+   * separately for exactly that reason: one question is "what belongs to this user"
+   * and the other is "what may this user be shown", and they stopped having the same
+   * answer the day Trash started being cached.
+   *
+   * @param userId the mailbox owner
+   * @return every one of the user's cached messages with their attachments, newest
+   *         first
+   */
   @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByUserIdWithAttachments(@Param("userId")
   String userId);
+
+  /**
+   * The same read as {@link #findByUserIdWithAttachments} minus one folder, always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH} — the whole
+   * mailbox as it may be SHOWN.
+   * <p>
+   * This is what the cached search reads. A search that offers back the mail the
+   * user threw away is the same defect as a conversation redisplaying it, only
+   * further from the delete that caused it and therefore harder to recognise: the
+   * hit does not say which folder it came from, so a deleted message simply looks
+   * like a message.
+   * <p>
+   * A separate query rather than a flag on the total read, because the two callers
+   * want opposite things and a boolean parameter would let a future one get the
+   * default wrong in silence. See {@link #findByUserIdAndThreadIdWithAttachments}
+   * for why the exclusion is a parameter and why a plain inequality is safe on this
+   * column.
+   *
+   * @param userId the mailbox owner
+   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @return the user's showable cached messages with their attachments, newest first
+   */
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder <> :excludedFolder ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByUserIdExcludingFolderWithAttachments(@Param("userId")
+  String userId, @Param("excludedFolder")
+  String excludedFolder);
 
   @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByUserIdAndFolderWithAttachments(@Param("userId")
@@ -54,10 +100,40 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("folder")
   String folder);
 
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.threadId = :threadId ORDER BY email.receivedDate ASC")
+  /**
+   * Every cached message of one conversation, across every folder, oldest first —
+   * the read model behind the conversation reader.
+   * <p>
+   * Every folder EXCEPT the excluded one, which is always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH}. Reading a
+   * conversation is the read a deleted message must never come back through: the
+   * user deleted it out of this very conversation, and a reader with no folder
+   * predicate would put it straight back in the moment Trash starts being cached.
+   * The other browsable folders stay in, which is the whole point of a cross-folder
+   * reader — a sent reply and a previously-archived message belong in the
+   * conversation they are part of.
+   * <p>
+   * The exclusion is a bound parameter rather than a {@code 'TRASH'} literal so the
+   * folder's name lives in exactly one place ({@code MailFolder}), the way every
+   * other folder-scoped query in this interface takes its folder from the caller.
+   * It is not a choice offered to the caller: the storage layer passes the constant,
+   * and there is no read of a conversation that should be given a different answer.
+   * <p>
+   * {@code FOLDER} is {@code NOT NULL} in the schema (changeset 1.0.0-20, default
+   * {@code INBOX}), so the plain inequality cannot silently drop a row the way it
+   * would on a nullable column — where {@code folder <> 'TRASH'} is UNKNOWN, not
+   * true, for every null.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @return the conversation's messages with their attachments, oldest first
+   */
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.threadId = :threadId AND email.folder <> :excludedFolder ORDER BY email.receivedDate ASC")
   List<EmailBoxEntity> findByUserIdAndThreadIdWithAttachments(@Param("userId")
   String userId, @Param("threadId")
-  String threadId);
+  String threadId, @Param("excludedFolder")
+  String excludedFolder);
 
   @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId ORDER BY email.receivedDate DESC")
   EmailBoxEntity findByMailRemoteIdAndUserIdAndFolder(@Param("mailRemoteId")
@@ -65,6 +141,12 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("folder")
   String folder);
 
+  /**
+   * Deletes every cached row of a mailbox, every folder, no exception — TRASH with
+   * the rest. Deleted mail must not outlive the account it was deleted in.
+   *
+   * @param userId the mailbox owner
+   */
   void deleteByUserId(String userId);
 
   @Transactional
@@ -218,6 +300,22 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("draftLocalId")
   String draftLocalId);
 
+  /**
+   * The user's cached rows carrying a given Message-ID, newest first. Its one
+   * reader wants the {@code References} chain off the first of them, so a reply can
+   * extend its parent's chain instead of replacing it.
+   * <p>
+   * Deliberately unscoped by folder, TRASH included. What is read here is a header
+   * chain, not a message: nothing of the row reaches a screen, and a parent the user
+   * has since deleted addressed its conversation exactly as it did before they
+   * deleted it. Excluding Trash would mean a reply written after the parent was
+   * thrown away silently starts a new chain — the conversation splitting in the
+   * recipient's mail client as a side effect of housekeeping in ours.
+   *
+   * @param mailHeaderId the Message-ID to look for
+   * @param userId the mailbox owner
+   * @return the matching rows, newest first
+   */
   @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")
   String mailHeaderId, @Param("userId")
@@ -273,6 +371,32 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String draftLocalId, @Param("draftState")
   DraftState draftState);
 
+  /**
+   * The distinct conversations of the cached messages carrying any of the given
+   * Message-IDs — the forward half of thread resolution.
+   * <p>
+   * One of four queries (with
+   * {@link #findDistinctThreadIdsByThreadIndexRoot},
+   * {@link #findThreadReferenceChainsByUserId} and
+   * {@link #findThreadIdsOrderedByAge}) that answer a single question: which
+   * conversation does this message belong to. All four are deliberately unscoped by
+   * folder, TRASH included, and the reason is the same for each — they resolve
+   * IDENTITY, never content. Not one row they touch is rendered anywhere; what they
+   * produce is a thread id.
+   * <p>
+   * Excluding Trash here would not hide anything (the reader and the summaries
+   * already do that, which is what makes leaving it in safe); it would break the
+   * conversation. A trashed message that stops being seen by the resolution stops
+   * being merged with its siblings, so it keeps a thread id nobody else shares — and
+   * comes back, on a restore or a re-sync, as a conversation of one, sitting beside
+   * the conversation it has always belonged to. The exclusions and the identity
+   * machinery are answering different questions and must not be given the same
+   * answer.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderIds the Message-IDs the new message points back at
+   * @return the distinct thread ids of the cached messages carrying them
+   */
   @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds AND email.threadId IS NOT NULL")
   List<String> findDistinctThreadIdsByMailHeaderIds(@Param("userId")
   String userId, @Param("mailHeaderIds")
@@ -317,14 +441,27 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * </ul>
    * The draft column is a count rather than a boolean because JPQL has no boolean
    * aggregate; the caller reads it as "more than none".
+   * <p>
+   * One folder is left out of the aggregate, always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH}, and it is left
+   * out of BOTH columns because it has to be: a conversation whose fourth message
+   * the user deleted holds three, and the number beside the participants is the one
+   * place that would keep insisting on four with nothing on screen to account for
+   * it. The draft column follows the same rule for a sharper reason — a draft the
+   * user discarded is in Trash, and a discarded draft that still made the
+   * conversation say "Draft" would advertise unfinished words that no longer exist.
+   * See {@link #findByUserIdAndThreadIdWithAttachments} for why the exclusion is a
+   * parameter.
    *
    * @param userId the mailbox owner
+   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
    * @return rows of {@code [threadId, messageCount, draftCount]}, one per
    *         conversation
    */
-  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL GROUP BY email.threadId")
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.folder <> :excludedFolder GROUP BY email.threadId")
   List<Object[]> summarizeThreadsByUserId(@Param("userId")
-  String userId);
+  String userId, @Param("excludedFolder")
+  String excludedFolder);
 
   /**
    * Who wrote the messages of each conversation that carries an unsent draft, with
@@ -361,20 +498,60 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * own participant names between two polls is a flicker, and an ungrouped result
    * set has no order to rely on.
    *
+   * One folder is left out, always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH}, and out of BOTH
+   * halves of the query. On the participant side, because somebody whose only
+   * message in the conversation the user deleted is no longer somebody the
+   * conversation shows — the names have to match the messages the reader will
+   * actually render. On the subquery side, because a DISCARDED draft is a TRASH row
+   * carrying a draft local id: left in, it would keep electing its conversation into
+   * the answer, and the caller's invariant (participants are populated exactly for
+   * the conversations {@code hasDraft} is true of) would break in the one direction
+   * that shows — names beside a row that no longer claims a draft. See
+   * {@link #findByUserIdAndThreadIdWithAttachments} for why the exclusion is a
+   * parameter.
+   *
    * @param userId the mailbox owner
+   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
    * @return rows of {@code [threadId, storedSender, firstSeenDate]}, one per
    *         (conversation, sender) pair of every conversation carrying a draft
    */
-  @Query("SELECT participant.threadId, participant.sender, MIN(participant.receivedDate) FROM EmailBoxEntity participant WHERE participant.userId = :userId AND participant.threadId IS NOT NULL AND participant.draftLocalId IS NULL AND participant.threadId IN (SELECT draft.threadId FROM EmailBoxEntity draft WHERE draft.userId = :userId AND draft.draftLocalId IS NOT NULL AND draft.threadId IS NOT NULL) GROUP BY participant.threadId, participant.sender")
+  @Query("SELECT participant.threadId, participant.sender, MIN(participant.receivedDate) FROM EmailBoxEntity participant WHERE participant.userId = :userId AND participant.threadId IS NOT NULL AND participant.draftLocalId IS NULL AND participant.folder <> :excludedFolder AND participant.threadId IN (SELECT draft.threadId FROM EmailBoxEntity draft WHERE draft.userId = :userId AND draft.draftLocalId IS NOT NULL AND draft.threadId IS NOT NULL AND draft.folder <> :excludedFolder) GROUP BY participant.threadId, participant.sender")
   List<Object[]> findDraftThreadParticipantsByUserId(@Param("userId")
-  String userId);
+  String userId, @Param("excludedFolder")
+  String excludedFolder);
 
-  // Per-folder message counts, so the list's folder switch only offers folders that
-  // actually have mail (e.g. no empty Archive tab on Gmail, which has no \Archive).
+  /**
+   * Per-folder message counts, so the list's folder switch only offers folders that
+   * actually have mail (e.g. no empty Archive tab on Gmail, which has no
+   * {@code \Archive}).
+   * <p>
+   * Grouped by folder rather than scoped to any, so TRASH counts itself here as
+   * every other folder does — deliberately, and it is the one place a TRASH row is
+   * SUPPOSED to be visible outside a Trash listing. This is what will light the
+   * Trash tab up when there is something in it and leave it out when there is not,
+   * which is precisely the "browsable" half of the rule the exclusions enforce the
+   * other half of.
+   *
+   * @param userId the mailbox owner
+   * @return rows of {@code [folder, messageCount]}, one per non-empty folder
+   */
   @Query("SELECT email.folder, COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId GROUP BY email.folder")
   List<Object[]> countMessagesByFolder(@Param("userId")
   String userId);
 
+  /**
+   * The distinct conversations of the cached messages sharing an Exchange
+   * Thread-Index conversation root — the same conversation even when the
+   * {@code References} chain was broken by a subject change or an external forward.
+   * <p>
+   * Unscoped by folder, TRASH included, for the identity reason
+   * {@link #findDistinctThreadIdsByMailHeaderIds} sets out in full.
+   *
+   * @param userId the mailbox owner
+   * @param threadIndexRoot the conversation root GUID
+   * @return the distinct thread ids sharing that root
+   */
   @Query("SELECT DISTINCT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadIndexRoot = :threadIndexRoot AND email.threadId IS NOT NULL")
   List<String> findDistinctThreadIdsByThreadIndexRoot(@Param("userId")
   String userId, @Param("threadIndexRoot")
@@ -398,6 +575,11 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * messages — most of a typical inbox — out of the transfer entirely. The
    * empty-string guard keeps backfill-pending rows (threading columns added after
    * their creation) out of the merge machinery.
+   * <p>
+   * Unscoped by folder, TRASH included, for the identity reason
+   * {@link #findDistinctThreadIdsByMailHeaderIds} sets out in full: what crosses the
+   * wire here is a pair of header chains, and a deleted message's chain still says
+   * which conversation the message that references it belongs to.
    *
    * @param userId the mailbox owner
    * @return rows of {@code [threadId, mailReferences, inReplyTo]} for every cached
@@ -416,6 +598,21 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String folder, @Param("threadIndexRoot")
   String threadIndexRoot);
 
+  /**
+   * The given thread ids repeated once per message, ordered by message date — the
+   * caller takes the first to learn which conversation is oldest, the canonical id a
+   * merge collapses the others into.
+   * <p>
+   * Unscoped by folder, TRASH included, for the identity reason
+   * {@link #findDistinctThreadIdsByMailHeaderIds} sets out in full. A trashed
+   * message is as old as it ever was, and letting it vote here keeps the canonical
+   * id stable: the same conversation must not elect a different canonical id
+   * depending on whether its oldest message has been deleted since.
+   *
+   * @param userId the mailbox owner
+   * @param threadIds the candidate conversation ids
+   * @return the ids, oldest message first
+   */
   @Query("SELECT email.threadId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IN :threadIds ORDER BY email.receivedDate ASC")
   List<String> findThreadIdsOrderedByAge(@Param("userId")
   String userId, @Param("threadIds")
@@ -438,6 +635,22 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String folder, @Param("mailRemoteIds")
   List<Long> mailRemoteIds);
 
+  /**
+   * Collapses several conversations into one: every row carrying one of the given
+   * thread ids is re-pointed at the canonical one.
+   * <p>
+   * Unscoped by folder, TRASH included, and here the totality is not merely safe but
+   * REQUIRED. This is the write half of the identity machinery
+   * {@link #findDistinctThreadIdsByMailHeaderIds} describes: a merge that skipped
+   * Trash would leave the trashed rows behind on a thread id no live row shares any
+   * more — a dangling conversation that reappears whole, and separate, the moment
+   * one of those rows is restored or re-synced. The rows are re-labelled, never
+   * shown; the exclusions on the read side are what keep them out of sight.
+   *
+   * @param userId the mailbox owner
+   * @param canonicalThreadId the conversation id to keep
+   * @param threadIds the conversation ids to fold into it
+   */
   @Transactional
   @Modifying
   @Query("UPDATE EmailBoxEntity email SET email.threadId = :canonicalThreadId WHERE email.userId = :userId AND email.threadId IN :threadIds")

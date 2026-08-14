@@ -44,4 +44,27 @@ public final class MailFolder {
   // the server" as "delete the local row" therefore has to make an exception for it
   // — see EmailBoxService#cleanupObsoleteEmails.
   public static final String DRAFTS   = "DRAFTS";
+
+  // Deleted mail. Mirrored from the server exactly as SENT and ARCHIVE are — the row
+  // is a copy of what the Trash folder holds, and nothing here authors one — but it
+  // is the one mirrored folder that must NOT be read back into the rest of the
+  // product: it is excluded from the conversation reader, from the per-conversation
+  // summaries the list is built on, and from the cached search.
+  //
+  // The distinction the exclusions encode is "browsable, not resurfaced". A user who
+  // opens Trash is asking to see what they threw away, and a folder-scoped read
+  // answers them. Every OTHER read is somebody who did not ask: a message deleted out
+  // of a conversation must not reappear inside that conversation, and a search must
+  // not offer back what the user threw away. A cross-folder read with no folder
+  // predicate does exactly that the moment the first TRASH row exists, silently and
+  // everywhere at once — which is why the exclusions landed BEFORE anything writes
+  // one, rather than alongside the folder that will.
+  //
+  // Two kinds of read stay deliberately total, and both are wrong to "fix":
+  // wiping a mailbox (disconnect / rebind) must delete TRASH rows like any other, or
+  // deleted mail outlives the account it belonged to; and the thread-identity
+  // machinery (sibling lookup, Thread-Index roots, merges) must keep seeing them, or
+  // a trashed message is orphaned from its conversation and comes back — if it ever
+  // comes back — as a conversation of its own.
+  public static final String TRASH    = "TRASH";
 }

@@ -2872,6 +2872,14 @@ public class EmailBoxServiceTest {
    * over the subject, the sender AND the body — and the body is stored as HTML, so it
    * is reduced to text first: without that, searching "div" or "style" would hit half
    * the mailbox on markup nobody sees.
+   * <p>
+   * WHICH read of the mirror is pinned here too. The storage layer offers two — the
+   * total one, whose only legitimate caller is the mailbox wipe, and the one that
+   * leaves Trash out — and a search wired to the wrong one hands the user back the
+   * mail they threw away, with nothing in a result row to reveal where it came from.
+   * The exclusion itself is asserted against a real database in
+   * {@code EmailBoxTrashExclusionStorageTest}; what this pins is that search asks
+   * the question that has it.
    */
   @Test
   @SneakyThrows
@@ -2889,13 +2897,14 @@ public class EmailBoxServiceTest {
     Email markupOnly = email(TEST_USER);
     markupOnly.setSubject("Unrelated");
     markupOnly.setContent(new EmailContent("<div style=\"budget\">unrelated</div>"));
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(bySubject, bySender, byBody, markupOnly));
+    when(emailBoxStorage.getEmailsExcludingTrash(TEST_USER)).thenReturn(List.of(bySubject, bySender, byBody, markupOnly));
 
     EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 10);
 
     assertEquals(3, page.getTotalMatches());
     // The one that only matched inside an HTML attribute must not be there.
     assertTrue(page.getResults().stream().noneMatch(result -> "Unrelated".equals(result.getSubject())));
+    verify(emailBoxStorage, never()).getEmails(TEST_USER);
   }
 
   /**
@@ -2913,7 +2922,7 @@ public class EmailBoxServiceTest {
     favorited.setStarred(true);
     Email plain = email(TEST_USER);
     plain.setSubject("budget, not kept");
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(favorited, plain));
+    when(emailBoxStorage.getEmailsExcludingTrash(TEST_USER)).thenReturn(List.of(favorited, plain));
 
     EmailSearchResultPage narrowed = emailBoxService.searchCachedEmails(TEST_USER, "budget", true, 10);
 
@@ -2942,7 +2951,7 @@ public class EmailBoxServiceTest {
     Email matchedInSubject = email(TEST_USER);
     matchedInSubject.setSubject("Quarterly budget");
     matchedInSubject.setContent(new EmailContent("<p>Opening words of a message that never says the word.</p>"));
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(matchedInBody, matchedInSubject));
+    when(emailBoxStorage.getEmailsExcludingTrash(TEST_USER)).thenReturn(List.of(matchedInBody, matchedInSubject));
 
     EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 10);
 
@@ -2983,7 +2992,7 @@ public class EmailBoxServiceTest {
       email.setReceivedDate(new Date(System.currentTimeMillis() - i * 1000L));
       emails.add(email);
     }
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(emails);
+    when(emailBoxStorage.getEmailsExcludingTrash(TEST_USER)).thenReturn(emails);
 
     EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 3);
 
