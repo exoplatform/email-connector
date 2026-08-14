@@ -453,6 +453,79 @@ public class EmailBoxStorage {
   }
 
   /**
+   * Takes an attachment that was only ever a MIME part path pointing INTO the draft's
+   * copy on the mail server, and gives it bytes of its own in the platform's file
+   * store — after which it is indistinguishable from a file the user attached here.
+   * <p>
+   * This is what a draft written on the user's phone needs before it can be edited.
+   * Such a draft's attachments are addresses, not content: they name part "2" of one
+   * particular message in the Drafts folder, and every push replaces that message and
+   * deletes the old one. Rebuilding the message from a row that only knows an address
+   * would put a copy up there without the file and then delete the copy that held it.
+   * Once the bytes are on this side, everything downstream — the size cap, the upload
+   * gate, the send gate, the part builder, the orphan bookkeeping — is the code that
+   * already exists for a locally attached file, with no second notion of an attachment
+   * anywhere.
+   * <p>
+   * <b>The part path is cleared</b>, and that is deliberate rather than tidying. It
+   * addressed a part of a message that the very next push destroys, and a positional
+   * path re-read against the REPLACEMENT message resolves to whatever happens to sit at
+   * that index — which is the failure mode changeset 1.0.0-43's commit is entirely
+   * about: an address that still looks valid and names something else. A row with no
+   * path names nothing, which is honest; a row with a stale one names the wrong thing.
+   * <p>
+   * <b>The draft's own row is deliberately NOT touched</b> — no {@link #touchDraft},
+   * no stepped revision, no state change. Bringing bytes over is bookkeeping about
+   * where the content already is, not a change to what the draft says, and the same
+   * argument {@link #markDraftUploaded} makes applies: routed through the edit path it
+   * would look like a save and make the composer's next autosave arrive stale.
+   * <p>
+   * Idempotent: an attachment that already has a file is answered as it stands, without
+   * writing a second copy of the same bytes. A materialization that fails half way
+   * through a draft therefore costs only the parts it did not reach.
+   * <p>
+   * The answer is mapped from the LOADED instance and not from what {@code save} hands
+   * back, for the reason {@link #saveDraftRow} sets out at length: nothing here is
+   * {@code @Transactional}, so this row is detached and {@code save} on it is a MERGE
+   * returning a different instance whose {@code email} is an uninitialised proxy over a
+   * session that closes as it returns — and reading the folder and UID off it is the
+   * first thing the mapper does.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param attachmentId the attachment row id
+   * @param bytes the part's content, read from the server copy
+   * @return the attachment as it now stands, or null when there is no such attachment,
+   *         when no bytes were offered, or when the file store wrote nothing
+   */
+  public EmailAttachment materializeDraftAttachment(String userId, String draftLocalId, long attachmentId, byte[] bytes) {
+    EmailAttachmentEntity attachment = emailAttachmentDAO.findByIdAndDraftLocalIdAndUserId(attachmentId, draftLocalId, userId)
+                                                         .orElse(null);
+    if (attachment == null) {
+      return null;
+    }
+    if (attachment.getFileId() != null) {
+      return fromEmailAttachmentEntity(attachment);
+    }
+    if (bytes == null) {
+      return null;
+    }
+    String name = StringUtils.defaultIfBlank(attachment.getName(), "attachment");
+    Long fileId = saveAttachmentFileItem(bytes, name, attachment.getMimeType());
+    if (fileId == null) {
+      return null;
+    }
+    attachment.setFileId(fileId);
+    attachment.setFileSize((long) bytes.length);
+    // See above: the address it used to carry points into a message the next push
+    // destroys, and a positional path resolved against the replacement names whatever
+    // sits at that index.
+    attachment.setAttachmentRemoteId(null);
+    emailAttachmentDAO.save(attachment);
+    return fromEmailAttachmentEntity(attachment);
+  }
+
+  /**
    * Removes one file from a draft: the row goes, and the file it pointed at is
    * recorded as unreferenced.
    * <p>
