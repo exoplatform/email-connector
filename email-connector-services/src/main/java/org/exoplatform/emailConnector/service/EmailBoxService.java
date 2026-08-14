@@ -80,6 +80,7 @@ import javax.mail.search.FromStringTerm;
 import javax.mail.search.MessageIDTerm;
 import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
+import javax.mail.search.SearchException;
 import javax.mail.search.SearchTerm;
 import javax.mail.search.SubjectTerm;
 
@@ -3104,7 +3105,12 @@ public class EmailBoxService {
     if (!isSearchableFolder(folder)) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
-    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - sinceDays * 86400000L);
+    if (sinceDays != null && sinceDays < 0) {
+      // A negative window is a future-dated lower bound: it matches nothing, silently,
+      // and reads to the caller as "the search is broken" rather than "the input was".
+      throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
+    }
+    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
     SearchTerm searchTerm = buildEmailSearchTerm(query, from, unreadOnly, since);
     if (searchTerm == null) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
@@ -3158,6 +3164,26 @@ public class EmailBoxService {
         }
       }
       return new EmailSearchResultPage(results, found.length);
+    } catch (SearchException e) {
+      // The server refused the CRITERIA, not the mailbox — the CHARSET path: a query
+      // carrying accents ("réunion") makes JavaMail issue SEARCH CHARSET UTF-8, and a
+      // server rejecting the charset makes it exhaust its charset list. A rejected
+      // input owes the caller a 400 with a code they can act on, not the generic 500
+      // the catch-all below would produce.
+      //
+      // Reachable only with mail.imaps.throwsearchexception=true, which we do NOT set
+      // today: IMAPFolder.search swallows both CommandFailedException ("unsupported
+      // charset or search criterion") and SearchException by default and falls back to
+      // Folder.search — a CLIENT-side scan that pulls the whole folder down to match
+      // locally. That fallback is silent and, on the 161k-message mailboxes this
+      // feature targets, is the linear scan the design avoids everywhere else (see
+      // buildEmailSearchTerm on why there is no BODY term); it reads as a hang, not an
+      // error. Flipping that property is the real fix but it is not search's to make
+      // alone — the same Session serves the sync and the archive thread-completion
+      // search, which would start throwing where they now degrade. Mapped here so the
+      // contract is already right the day it is flipped.
+      LOG.debug("Search criteria refused by the server for folder {} and user {}", folder, username, e);
+      throw new IllegalArgumentException("emailConnector.search.criteriaNotSupported");
     } catch (Exception e) {
       LOG.error("Error searching folder {} for user {}", folder, username, e);
       throw new IllegalStateException(String.format("Error when searching mailbox of user %s", username));
@@ -3184,6 +3210,12 @@ public class EmailBoxService {
    * open. Until that eviction the row is visible wherever the folder's cache is
    * (list, counts) — transient by design. A fetched message that happens to be
    * INSIDE the window just becomes a normal window row the next sync reconciles.
+   * <p>
+   * That self-restoration needs a sync to actually visit the folder, which is not
+   * true of ARCHIVE on a provider whose archived mail lives only in an unsynced
+   * {@code \All} superset — the Gmail case this feature's ARCHIVE mapping targets.
+   * {@link #trimSearchFedFolderCache} bounds that one explicitly, so the promise
+   * above holds on every provider rather than on most of them.
    * <p>
    * Mutually exclusive with a synchronization of this mailbox, via the sync's own
    * {@code syncingUsers} mutex: the sync decides "new vs known" from an in-memory
@@ -3260,6 +3292,7 @@ public class EmailBoxService {
       // happen here, on the calling thread, exactly like the sync and the
       // thread-completion paths.
       createEmails(uidFolder, new Message[] { message }, username, folder, Map.of(), Map.of(), null);
+      trimSearchFedFolderCache(store, username, folder, mailRemoteId);
       return getEmailByMailRemoteIdAndUserId(mailRemoteId, username, folder, true, true, true, false);
     } catch (MessagingException | RuntimeException e) {
       LOG.error("Error fetching searched email {} of folder {} for user {}", mailRemoteId, folder, username, e);
@@ -3267,6 +3300,57 @@ public class EmailBoxService {
     } finally {
       syncingUsers.remove(username);
       closeQuietly(remoteFolder, store, username);
+    }
+  }
+
+  /**
+   * Bounds the cache of a folder that NO bulk sync reconciles, after a search-fetch
+   * has just inserted a row into it.
+   * <p>
+   * {@link #fetchSearchedEmail} documents its rows as transient: the next full sync
+   * of that folder sees a message older than the window as absent-from-window and
+   * {@code cleanupObsoleteEmails} evicts it. That holds for every folder the sync
+   * actually visits — but not for the one case this feature makes routine. On a
+   * provider with no syncable {@code \Archive} (Gmail, whose archived mail lives in
+   * the {@code \All} superset the bulk sync deliberately never caches),
+   * {@code resolveArchiveFolder} returns null, {@code syncFolderIfChanged} returns at
+   * its null-folder guard, and {@code cleanupObsoleteEmails} therefore NEVER runs for
+   * ARCHIVE. Without this, every archived message a user ever opens from search stays
+   * for good — and those rows are visible in the folder's list and counts, so the
+   * ARCHIVE tab slowly fills with search history.
+   * <p>
+   * Trims to the same window the sync gives a non-inbox folder, oldest first, and
+   * never the row just fetched: that one is what the caller is about to read, and it
+   * is precisely the row most likely to sort oldest.
+   *
+   * @param store the open store, to tell a search-fed folder from a synced one
+   * @param username the mailbox owner
+   * @param folder the folder just written to
+   * @param justFetchedUid the UID inserted by the caller, exempt from the trim
+   */
+  private void trimSearchFedFolderCache(Store store, String username, String folder, long justFetchedUid) {
+    try {
+      if (!MailFolder.ARCHIVE.equals(folder) || resolveArchiveFolder(store, loadMailboxSyncState(username)) != null) {
+        // Every other folder is bulk-synced, so the documented self-restoring
+        // eviction does happen and this must not second-guess it.
+        return;
+      }
+      int window = Math.min(emailConnectorService.getEmailBoxCacheSize(), NON_INBOX_FOLDER_SYNC_LIMIT);
+      List<Email> cachedEmails = emailBoxStorage.getSyncEmails(username, folder);
+      if (cachedEmails.size() <= window) {
+        return;
+      }
+      List<Email> overflow = cachedEmails.subList(window, cachedEmails.size())
+                                         .stream()
+                                         .filter(email -> !Objects.equals(email.getMailRemoteId(), justFetchedUid))
+                                         .toList();
+      if (!overflow.isEmpty()) {
+        LOG.debug("Trimming {} search-fetched rows from folder {} of user {}", overflow.size(), folder, username);
+        deleteEmails(overflow);
+      }
+    } catch (Exception e) {
+      // Housekeeping: a failure here must never cost the user the message they opened.
+      LOG.warn("Could not trim the search-fed cache of folder {} for user {}", folder, username, e);
     }
   }
 
@@ -3338,9 +3422,28 @@ public class EmailBoxService {
    * SENT reuses the sync's remembered-name resolution (the rediscovered name is
    * deliberately NOT persisted here — search must never write the sync state a
    * running sync may be about to save, so a rediscovery just costs the next search
-   * one more LIST); ARCHIVE uses the archive DESTINATION lookup, which on Gmail is
-   * the {@code \All} "All Mail" superset — exactly where archived mail lives, and
-   * the one folder the bulk sync deliberately never covers.
+   * one more LIST).
+   * <p>
+   * ARCHIVE resolves the way the SYNC does, and only falls back to the archive
+   * DESTINATION lookup when the mailbox has no syncable {@code \Archive}. This is a
+   * correctness requirement, not a preference: IMAP UIDs are per-folder, and every
+   * cached row is keyed {@code (user, folder, UID)}. The rows filed under ARCHIVE are
+   * written with UIDs read from {@link #findSyncableArchiveFolder} ({@code \Archive}
+   * only), while the destination lookup {@link #findArchiveFolder} also accepts
+   * {@code \All} and any name merely CONTAINING "archive"/"all"/"tous". On a mailbox
+   * carrying both — a dedicated Archive folder and an All-Mail-type folder, where
+   * the winner is decided by {@code listSubscribed("*")} order — the two resolvers
+   * return different physical folders, and the shared ARCHIVE keyspace then mixes
+   * UIDs from both: the {@code cached} flag compares UIDs across folders, the cache
+   * pre-check in {@link #fetchSearchedEmail} can hand back a COMPLETELY DIFFERENT
+   * message on a UID collision, and the row it inserts carries a foreign UID that
+   * the next {@code \Archive} sync's {@code cleanupObsoleteEmails} misreads.
+   * <p>
+   * Resolving through the sync's own lookup removes the divergence at its source:
+   * when a syncable Archive exists, search and sync address the same folder and the
+   * keyspace has one owner. When it does not (the Gmail case — {@code \All} only),
+   * the fallback still reaches "All Mail" and reach is unchanged, and the ARCHIVE
+   * keyspace is then exclusively search-fed, hence self-consistent.
    *
    * @param store the connected store (the search's own, never the sync's)
    * @param folder the {@link MailFolder} key, already validated searchable
@@ -3355,7 +3458,8 @@ public class EmailBoxService {
     if (MailFolder.SENT.equals(folder)) {
       return resolveSentFolder(store, loadMailboxSyncState(username));
     }
-    return findArchiveFolder(store);
+    IMAPFolder syncableArchive = resolveArchiveFolder(store, loadMailboxSyncState(username));
+    return syncableArchive != null ? syncableArchive : findArchiveFolder(store);
   }
 
   /**
