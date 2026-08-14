@@ -64,4 +64,17 @@ public class EmailAttachment {
   // The size in bytes, denormalised from the file when it was stored. Exposed: the
   // composer renders it beside every chip.
   private Long   size;
+
+  // The local id of the draft this file belongs to, null on every attachment that is
+  // part of a received message. Declared last so the Lombok all-args constructor only
+  // grows a trailing argument.
+  //
+  // Same argument the folder above makes, and the one fileId's comment already
+  // assumes: a draft's attachment is addressed BY ITS DRAFT, so the draft is a fact
+  // the row cannot be used without. Without it the front end had only the message
+  // address to build - (uid, part path) - and a draft has neither half reliably: one
+  // never uploaded has no uid, and a file the user attached here has no part path.
+  // The two produced /attachments/null/... (rejected as a bad number, 400) and
+  // /attachments/66940/null (404), which is why a draft's image previewed blank.
+  private String draftLocalId;
 }

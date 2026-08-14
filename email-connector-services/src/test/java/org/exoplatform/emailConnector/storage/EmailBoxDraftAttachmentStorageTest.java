@@ -169,6 +169,33 @@ public class EmailBoxDraftAttachmentStorageTest {
   }
 
   /**
+   * A draft's file is read back knowing WHICH DRAFT it belongs to, because that is
+   * the only way it can be addressed.
+   * <p>
+   * Its address is /drafts/{draftLocalId}/attachments/{id}, and the two halves of the
+   * message address it would otherwise be given are both absent here — a draft that
+   * was never uploaded has no UID, and a file attached in eXo has no part path. Left
+   * off, the front end built /attachments/null/... which is rejected as a bad number
+   * (400), and for an uploaded draft /attachments/{uid}/null, which is a 404. Both
+   * showed up as an image preview that stayed blank.
+   * <p>
+   * Asserted on the ordinary draft read, not on a dedicated one, so this is what the
+   * composer and the message view actually receive.
+   */
+  @Test
+  void aDraftsFileKnowsWhichDraftItBelongsTo() {
+    emailBoxStorage.saveDraft(draft("draft-address", 1L, "see attached"));
+    emailBoxStorage.addDraftAttachment(USERNAME, "draft-address", upload("photo.png"), "photo.png", "image/png");
+
+    Email resumed = emailBoxStorage.getDraftByLocalId(USERNAME, "draft-address");
+    EmailAttachment read = resumed.getContent().getAttachments().get(0);
+
+    assertEquals("draft-address", read.getDraftLocalId(), "without this the file cannot be addressed at all");
+    assertNull(read.getAttachmentRemoteId(), "and the part path it would otherwise be addressed by is absent");
+    assertNotNull(read.getId(), "the other half of the address");
+  }
+
+  /**
    * The draft is read back WITH its file — which is the whole of "an attachment
    * survives a restart", since a resumed composer is a read of this row and nothing
    * else.
@@ -460,7 +487,7 @@ public class EmailBoxDraftAttachmentStorageTest {
     imported.setDraftState(DraftState.SYNCED);
     imported.getContent()
             .setAttachments(List.of(new EmailAttachment(null, 4242L, "2", fileName, "application/pdf", null, MailFolder.DRAFTS,
-                                                        null, null)));
+                                                        null, null, null)));
     return imported;
   }
 
