@@ -604,6 +604,33 @@
     </comment>
     <dropNotNullConstraint tableName="EMAIL_BOX" columnName="MAIL_REMOTE_ID" columnDataType="BIGINT"/>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-42">
+    <comment>
+      Whether the cached body is HTML. The sync has always known — it reads the
+      Content-Type of the part it takes the body from — and threw the answer away,
+      so everything served from the cache claimed not to be HTML and the reader
+      re-guessed it from the characters in the browser. It now travels with the row.
+
+      Deliberately nullable and deliberately without a default: null is the honest
+      value for every row already cached, whose message was read before the column
+      existed. Backfilling them with false would render every stored HTML mail as
+      escaped source, and with true every plain-text mail would keep collapsing its
+      line breaks — so the rows that were never asked stay unanswered, and the
+      storage derives a value for those and only those. They age out of the cache on
+      their own as the sync window moves.
+
+      Numbered 42 and not 39. This changeset was written against 38 while drafts was
+      being written against the same 38, and drafts reached the databases first —
+      1.0.0-39 is already recorded there, with the drafts columns and the drafts
+      checksum. Reusing the id would not have merged the two: Liquibase matches a
+      changeset by id and author, finds it already ran, and either fails the checksum
+      comparison or skips the changeset outright — leaving IS_HTML absent from a
+      schema whose code reads it. The id moves; the column does not.
+    </comment>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="IS_HTML" type="BOOLEAN"/>
+    </addColumn>
+  </changeSet>
   <changeSet author="email-connector" id="1.0.0-43" dbms="oracle,postgresql,hsqldb">
     <comment>
       The sequence EmailAttachmentEntity has been asking for since 1.0.0-5, and
