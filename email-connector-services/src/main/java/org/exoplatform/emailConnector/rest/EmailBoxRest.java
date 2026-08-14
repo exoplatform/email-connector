@@ -51,6 +51,7 @@ import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
+import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
@@ -670,6 +671,43 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       return draft;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @PostMapping("/drafts/{draftLocalId}/attachments/forwarded")
+  @Secured("users")
+  @Operation(summary = "Carries a forwarded message's files onto the draft that forwards it", method = "POST",
+             description = "Copies the files of the message being forwarded into the platform's file store and records them on the draft, so a forward arrives carrying what the original carried. The caller names the message, never its parts: which files are taken is read from the cached rows of a message that is the caller's own, in the folder they name. Answers the draft as it now stands - attachments included, revision stepped, since attaching is an edit - together with the names of the files that were NOT attached, because they would take the draft over the size a message may carry or because they could not be read. Nothing fails for one file: the rest are still attached, and the answer is what the forward will and will not carry. Answers 404 for an id the caller has no draft under, and for a message they have none of in that folder.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "No draft was named"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public ForwardedAttachments addForwardedAttachments(HttpServletRequest request,
+                                                      @Parameter(description = "The draft's local id", required = true)
+                                                      @PathVariable("draftLocalId")
+                                                      String draftLocalId,
+                                                      @Parameter(description = "The IMAP UID of the message being forwarded",
+                                                                 required = true)
+                                                      @RequestParam("mailRemoteId")
+                                                      long mailRemoteId,
+                                                      @Parameter(description = "The folder that message is listed in; blank means INBOX")
+                                                      @RequestParam(name = "folder", required = false)
+                                                      String folder) {
+    try {
+      ForwardedAttachments forwarded = emailBoxService.addForwardedAttachments(draftLocalId,
+                                                                              request.getRemoteUser(),
+                                                                              mailRemoteId,
+                                                                              folder);
+      if (forwarded == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return forwarded;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
