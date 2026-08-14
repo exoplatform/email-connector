@@ -186,6 +186,34 @@ public class EmailBoxService {
   // backfill and every subsequent sync on large mailboxes.
   private static final int        NON_INBOX_FOLDER_SYNC_LIMIT                                 = 100;
 
+  /**
+   * How many of the most recently deleted messages the Trash folder caches — a third
+   * of what Sent and Archive get, deliberately.
+   * <p>
+   * Trash is at once the largest folder in an ordinary mailbox and the least
+   * consulted: it is the only one that grows without anybody ever reading it, because
+   * everything in it arrived there by being dismissed. What the view promises is
+   * therefore not a mirror but a recent history — "what did I delete lately", the
+   * answer to a misclick or a change of mind — and thirty messages is a generous
+   * reading of "lately" for a folder consulted by exception. It is also comfortably
+   * more than the list shows at once, so the mail deleted this morning is reachable
+   * without scrolling for it.
+   * <p>
+   * The size matters more here than the number does. Every message inside the window
+   * costs one body download on the first sync and one cached row from then on, and a
+   * bulk clear-out — the select-all-and-delete that produces most Trash content —
+   * would put hundreds of already-dismissed newsletters through that at the widths the
+   * other folders use, for a folder the user may never open.
+   * <p>
+   * <b>Changing this number later forces a full re-download of the folder for every
+   * mailbox.</b> The window size is baked into {@link FolderSyncSnapshot} at capture
+   * and {@link #canSkipFolderSync} compares it, so a different constant makes every
+   * stored snapshot mismatch and every mailbox take the full path once. That is the
+   * correct behaviour (a wider window has never been downloaded) and it is not free:
+   * this is a number to get right rather than to tune.
+   */
+  private static final int        TRASH_FOLDER_SYNC_LIMIT                                     = 30;
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
@@ -240,6 +268,31 @@ public class EmailBoxService {
                                                                                                      "utkast",
                                                                                                      "kladde",
                                                                                                      "luonnokset");
+
+  // The RFC 6154 SPECIAL-USE attribute that names a mailbox's Trash folder. As with
+  // Drafts, the server saying so beats any name we could guess, so it is tried first.
+  private static final String     TRASH_SPECIAL_USE_ATTRIBUTE                                 = "\\Trash";
+
+  // The well-known Trash folder names, for the servers that never learned SPECIAL-USE,
+  // in the same spread of locales as DRAFTS_FOLDER_NAMES plus the "Deleted ..." names
+  // Exchange and its clients create. Matched on the folder's last path segment, for
+  // equality —
+  // see findSyncableTrashFolder for why this list is not applied as a "contains", and
+  // why the loose findTrashFolder next to it keeps being loose.
+  private static final Set<String> TRASH_FOLDER_NAMES                                         =
+                                                                                              Set.of("trash",
+                                                                                                     "deleted",
+                                                                                                     "deleted items",
+                                                                                                     "deleted messages",
+                                                                                                     "corbeille",
+                                                                                                     "papierkorb",
+                                                                                                     "cestino",
+                                                                                                     "papelera",
+                                                                                                     "lixeira",
+                                                                                                     "prullenbak",
+                                                                                                     "papperskorg",
+                                                                                                     "papirkurv",
+                                                                                                     "roskakori");
 
   // How many stray Drafts copies of already-sent mail one sync may remove from the
   // mail server. A bound, not a policy: the janitor exists for the occasional copy a
@@ -411,6 +464,26 @@ public class EmailBoxService {
 
   private static final String     USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE                     =
                                                                                               "User %s is not allowed to save a draft";
+
+  /**
+   * The administrator's kill switch for the Trash folder's synchronization, in the
+   * same style as {@link #DRAFTS_SERVER_ENABLED_PROPERTY}: a JVM property read on
+   * every sync, so flipping it needs no restart. Default ON.
+   * <p>
+   * What it withdraws is a READ, which makes it the mildest of the three switches
+   * here: turning it off stops new TRASH rows being cached and nothing else — mail is
+   * still deleted on the server exactly as before, and the rows already cached stay
+   * where they are (they belong to the mailbox, and dropping them on a property flip
+   * would make an operational toggle destroy data).
+   * <p>
+   * It exists because Trash is the one folder whose size is not the user's doing.
+   * A mailbox whose Trash holds tens of thousands of messages pays for the window
+   * listing on every sync of every user, and an administrator meeting that on a
+   * provider that rate-limits has to be able to take this off the sync loop without
+   * waiting for a release.
+   */
+  public static final String      TRASH_SYNC_ENABLED_PROPERTY                                 =
+                                                                                              "email.connector.trash.sync.enabled";
 
   /**
    * The administrator's kill switch for the post-send Sent-folder refresh, in the
@@ -666,6 +739,22 @@ public class EmailBoxService {
           }
         } catch (Exception e) {
           LOG.warn("Could not sync the Drafts folder for user {}", username, e);
+        }
+        // Trash last of all, and best-effort like Sent and Archive: it is the folder
+        // most likely to be missing, misnamed or enormous, and none of those may cost
+        // the user the folders that matter more. It notifies nothing — a message the
+        // user threw away is not news — and takes a window of its own, a third of the
+        // others' (see TRASH_FOLDER_SYNC_LIMIT).
+        // A mailbox with no Trash folder resolves to null and the sync is simply not
+        // run: quietly, with no warning, because "this account has no Trash folder" is
+        // a shape of mailbox and not a fault to report every period forever.
+        try {
+          if (isTrashSyncEnabled()) {
+            int trashWindow = Math.min(emailBoxCacheSize, TRASH_FOLDER_SYNC_LIMIT);
+            syncFolderIfChanged(store, resolveTrashFolder(store, syncState), MailFolder.TRASH, username, userEmailSetting, trashWindow, false, syncState);
+          }
+        } catch (Exception e) {
+          LOG.warn("Could not sync the Trash folder for user {}", username, e);
         }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
@@ -1236,6 +1325,33 @@ public class EmailBoxService {
     IMAPFolder draftsFolder = findDraftsFolder(store);
     syncState.setDraftsFolderName(draftsFolder != null ? draftsFolder.getFullName() : null);
     return draftsFolder;
+  }
+
+  /**
+   * The syncable Trash folder, from the name remembered in the sync state when
+   * possible — same reasoning and same fallback as {@link #resolveSentFolder}.
+   * <p>
+   * It resolves through {@link #findSyncableTrashFolder}, the STRICT lookup, and not
+   * through {@link #findTrashFolder}, the loose one the delete path files into. The
+   * two answer different questions and the split is the same one the archive already
+   * makes ({@link #findArchiveFolder} for the destination,
+   * {@link #findSyncableArchiveFolder} for the sync source).
+   *
+   * @param store the connected store
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @return the Trash folder, or null when the mailbox has none to bulk-sync
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder resolveTrashFolder(Store store, MailboxSyncState syncState) throws MessagingException {
+    if (StringUtils.isNotBlank(syncState.getTrashFolderName())) {
+      Folder cached = store.getFolder(syncState.getTrashFolderName());
+      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
+        return imapFolder;
+      }
+    }
+    IMAPFolder trashFolder = findSyncableTrashFolder(store);
+    syncState.setTrashFolderName(trashFolder != null ? trashFolder.getFullName() : null);
+    return trashFolder;
   }
 
   /**
@@ -2208,8 +2324,8 @@ public class EmailBoxService {
    * owner's address has to be passed down to it.
    *
    * @param username user getting user emails
-   * @param folder the folder to list: {@code INBOX}, {@code SENT}, {@code ARCHIVE}
-   *          or {@code DRAFTS}
+   * @param folder the folder to list: {@code INBOX}, {@code SENT}, {@code ARCHIVE},
+   *          {@code DRAFTS} or {@code TRASH}
    * @param starredOnly when {@code true}, only the starred messages are returned
    * @return the folder's cached messages plus the per-conversation summaries
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
@@ -2226,8 +2342,14 @@ public class EmailBoxService {
     // EmailConnectorMailBoxDrawer.vue are the same list expressed twice, with no
     // shared constant between them — change one and the other has to change with it,
     // or the client offers a folder this refuses (or hides one it would serve).
+    // TRASH is on THIS half only, on purpose and temporarily. The rows are cached and
+    // this will serve them, but the drawer does not yet offer the folder: the row menu,
+    // the swipe and the detail actions still offer delete and archive everywhere while
+    // the backend resolves both against INBOX (EXO-89367), and a Trash listing whose
+    // three-dots offers an inbox-keyed delete is worse than no Trash listing at all.
+    // The client half arrives with those restrictions, in one piece, in the next slice.
     if (!MailFolder.INBOX.equals(folder) && !MailFolder.SENT.equals(folder) && !MailFolder.ARCHIVE.equals(folder)
-        && !MailFolder.DRAFTS.equals(folder)) {
+        && !MailFolder.DRAFTS.equals(folder) && !MailFolder.TRASH.equals(folder)) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
     List<Email> emails = starredOnly ? emailBoxStorage.getStarredEmails(username, folder)
@@ -6298,8 +6420,18 @@ public class EmailBoxService {
         return threadId;
       }
       // The ids we already hold, and every id the cached messages point back to.
-      Set<String> cachedOwnIds = new HashSet<>();
-      Set<String> knownIds = new LinkedHashSet<>();
+      //
+      // What we HOLD comes from the total read, Trash included, and not from the
+      // conversation above. The two questions differ: `cached` is what the reader may
+      // SHOW, which deliberately excludes Trash, while this set answers what the cache
+      // already CONTAINS. Built from the reader, a message the user deleted stopped
+      // counting as held, was classified as a missing ancestor, and got pulled back out
+      // of the \All superset a few lines below and cached under ALL_MAIL — a folder no
+      // exclusion covers, so the deleted message came back into the conversation, put
+      // there by the act of opening it. See
+      // EmailBoxDAO#findMailHeaderIdsByUserIdAndThreadId.
+      Set<String> cachedOwnIds = new HashSet<>(emailBoxStorage.getThreadMessageIdsIncludingTrash(username, threadId));
+      Set<String> knownIds = new LinkedHashSet<>(cachedOwnIds);
       for (Email email : cached) {
         if (StringUtils.isNotEmpty(email.getMailHeaderId())) {
           cachedOwnIds.add(email.getMailHeaderId());
@@ -7001,6 +7133,13 @@ public class EmailBoxService {
     }
     if (MailFolder.DRAFTS.equals(folder)) {
       return resolveDraftsFolder(store, syncState);
+    }
+    // Through the STRICT resolver, for the reason every arm here goes through the one
+    // the rows were cached by: the loose findTrashFolder may answer a different folder
+    // entirely, and a UID read against the wrong folder does not fail — it answers with
+    // whatever message happens to hold that number.
+    if (MailFolder.TRASH.equals(folder)) {
+      return resolveTrashFolder(store, syncState);
     }
     if (MailFolder.ALL_MAIL.equals(folder)) {
       return findAllMailFolder(store);
@@ -8063,6 +8202,16 @@ public class EmailBoxService {
     return (BodyPart) current;
   }
 
+  /**
+   * The folder a DELETE files into: the {@code \Trash} attribute, then anything whose
+   * name merely CONTAINS a known token. Deliberately loose, and deliberately left
+   * that way — see {@link #findSyncableTrashFolder}, which is the strict lookup and
+   * the one the bulk sync uses.
+   *
+   * @param store the connected store
+   * @return somewhere to file a deletion, or null when the mailbox offers nowhere
+   * @throws MessagingException if the folder list cannot be read
+   */
   private IMAPFolder findTrashFolder(Store store) throws MessagingException {
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
       if (!(folder instanceof IMAPFolder)) {
@@ -8084,6 +8233,108 @@ public class EmailBoxService {
       }
     }
     return null;
+  }
+
+  /**
+   * The folder to <em>synchronize</em> as TRASH: the SPECIAL-USE {@code \Trash}
+   * attribute (RFC 6154) first, then a name match for the servers that never learned
+   * SPECIAL-USE. If neither finds one, the Trash sync is simply OFF for that account
+   * — we never CREATE a Trash folder, for the reason {@link #findDraftsFolder} gives
+   * about creating folders in a store the user shares with every other client they
+   * own.
+   * <p>
+   * This is the STRICT lookup, and it exists beside the loose {@link #findTrashFolder}
+   * rather than replacing it, the same way {@link #findSyncableArchiveFolder} exists
+   * beside {@link #findArchiveFolder}. The two are asked different questions and the
+   * cost of getting them wrong is not the same. Guessing loosely where to FILE a
+   * deletion is survivable: the mail lands in a folder of the user's own making, in
+   * their own mailbox, one message at a time, and they can see it. Guessing loosely
+   * what to BULK-IMPORT is not: a user's "Trash drafts" or "Deleted contracts" folder
+   * matching on {@code contains} would have its entire recent contents cached as
+   * deleted mail — hidden from the conversation reader, hidden from search, and shown
+   * back to them as things they had thrown away. Slice 4 will offer to empty that
+   * folder permanently.
+   * <p>
+   * So the name test is the one {@link #isDraftsFolderName} uses: LAST path segment,
+   * for EQUALITY, against a known token list. Last-segment equality still catches the
+   * nested layouts that matter — Gmail's {@code [Gmail]/Trash} and Maildir++'s
+   * {@code INBOX.Trash} both end in exactly {@code Trash}.
+   * <p>
+   * Subscribed folders are scanned first, then ALL folders when that found nothing.
+   * The second pass earns its extra {@code LIST *} here for the same reason it does
+   * for Drafts, and for one more: Gmail's {@code [Gmail]/Trash} is not subscribed for
+   * every account, and a mailbox that plainly HAS a Trash folder behaving as though it
+   * had none would be indistinguishable, from the outside, from this feature being
+   * broken.
+   *
+   * @param store the connected store
+   * @return the Trash folder, or null when the mailbox has none to bulk-sync
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder findSyncableTrashFolder(Store store) throws MessagingException {
+    IMAPFolder subscribed = findSyncableTrashFolderIn(store.getDefaultFolder().listSubscribed("*"));
+    return subscribed != null ? subscribed : findSyncableTrashFolderIn(store.getDefaultFolder().list("*"));
+  }
+
+  /**
+   * Scans one folder listing for the Trash folder — see
+   * {@link #findSyncableTrashFolder} for the matching rules and why they are what they
+   * are. Split out so the subscribed listing and the full listing run the exact same
+   * test.
+   *
+   * @param folders the folder listing to scan
+   * @return the first matching folder, or null when the listing holds none
+   * @throws MessagingException if a folder's attributes cannot be read
+   */
+  private IMAPFolder findSyncableTrashFolderIn(Folder[] folders) throws MessagingException {
+    IMAPFolder nameMatch = null;
+    for (Folder folder : folders) {
+      if (!(folder instanceof IMAPFolder imapFolder) || !imapFolder.exists()) {
+        continue;
+      }
+      for (String attribute : imapFolder.getAttributes()) {
+        if (attribute.equalsIgnoreCase(TRASH_SPECIAL_USE_ATTRIBUTE)) {
+          return imapFolder;
+        }
+      }
+      // Remembered, not returned: a SPECIAL-USE match found later in the listing must
+      // still win over a name match found earlier. The attribute is the server telling
+      // us which folder this is; the name is us guessing.
+      if (nameMatch == null && isTrashFolderName(imapFolder.getFullName())) {
+        nameMatch = imapFolder;
+      }
+    }
+    return nameMatch;
+  }
+
+  /**
+   * Whether a folder's full name is one of the well-known Trash names, judged on its
+   * LAST path segment only and by equality — so {@code [Gmail]/Trash} and
+   * {@code INBOX.Trash} match while a user's own "Trash drafts" does not.
+   *
+   * @param fullName the folder's full name, hierarchy separators included
+   * @return true when the last segment is a known Trash name
+   */
+  private boolean isTrashFolderName(String fullName) {
+    if (StringUtils.isBlank(fullName)) {
+      return false;
+    }
+    // Split on both separators actually seen in the wild ('/' on Gmail and Dovecot's
+    // default, '.' on the Maildir++ layouts) rather than asking the folder for its
+    // own: this is a pure string test, kept free of an IMAP round-trip.
+    String lastSegment = fullName.substring(Math.max(fullName.lastIndexOf('/'), fullName.lastIndexOf('.')) + 1);
+    return TRASH_FOLDER_NAMES.contains(lastSegment.trim().toLowerCase());
+  }
+
+  /**
+   * Whether the Trash folder's synchronization is switched on — see
+   * {@link #TRASH_SYNC_ENABLED_PROPERTY}. Read on every sync rather than cached, so
+   * an administrator can withdraw it without a restart.
+   *
+   * @return true when the Trash folder may be cached
+   */
+  private boolean isTrashSyncEnabled() {
+    return Boolean.parseBoolean(System.getProperty(TRASH_SYNC_ENABLED_PROPERTY, "true"));
   }
 
   private IMAPFolder findArchiveFolder(Store store) throws MessagingException {

@@ -120,7 +120,7 @@ public class EmailBoxDraftDAOTest {
     entityManager.flush();
     entityManager.clear();
 
-    List<EmailBoxEntity> found = emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments(USERNAME, "draft-2");
+    List<EmailBoxEntity> found = emailBoxDAO.findByUserIdAndDraftLocalIdWithAttachments(USERNAME, "draft-2", MailFolder.DRAFTS);
     assertEquals(1, found.size());
     EmailBoxEntity draft = found.get(0);
     assertTrue(Hibernate.isInitialized(draft.getAttachments()),

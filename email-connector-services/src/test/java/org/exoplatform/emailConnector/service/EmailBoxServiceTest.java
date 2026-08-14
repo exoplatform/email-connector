@@ -2038,7 +2038,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void cachedFolderNamesSkipTheDiscoveryScan() {
-    // Sent/Archive/Drafts used to be re-discovered with a LIST * over the whole
+    // Sent/Archive/Drafts/Trash used to be re-discovered with a LIST * over the whole
     // subscribed folder list on every sync; the remembered names replace that with
     // one single-folder exists() probe each.
     UserEmailSetting userEmailSetting = userEmailSetting();
@@ -2047,6 +2047,7 @@ public class EmailBoxServiceTest {
     state.setSentFolderName("MySent");
     state.setArchiveFolderName("MyArchive");
     state.setDraftsFolderName("MyDrafts");
+    state.setTrashFolderName("MyTrash");
     mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
     IMAPFolder sent = mock(IMAPFolder.class);
     when(sent.exists()).thenReturn(true);
@@ -2057,16 +2058,21 @@ public class EmailBoxServiceTest {
     IMAPFolder drafts = mock(IMAPFolder.class);
     when(drafts.exists()).thenReturn(true);
     when(drafts.getMessageCount()).thenReturn(0);
+    IMAPFolder trash = mock(IMAPFolder.class);
+    when(trash.exists()).thenReturn(true);
+    when(trash.getMessageCount()).thenReturn(0);
     Store connectedStore = userEmailSettingService.connect(userEmailSetting);
     when(connectedStore.getFolder("MySent")).thenReturn(sent);
     when(connectedStore.getFolder("MyArchive")).thenReturn(archive);
     when(connectedStore.getFolder("MyDrafts")).thenReturn(drafts);
+    when(connectedStore.getFolder("MyTrash")).thenReturn(trash);
     emailBoxService.synchronize(TEST_USER);
-    // All three resolved by name (and INBOX skipped): the full-list scan never runs.
+    // All four resolved by name (and INBOX skipped): the full-list scan never runs.
     verify(connectedStore.getDefaultFolder(), never()).listSubscribed("*");
     verify(sent).open(Folder.READ_ONLY);
     verify(archive).open(Folder.READ_ONLY);
     verify(drafts).open(Folder.READ_ONLY);
+    verify(trash).open(Folder.READ_ONLY);
   }
 
   @Test
@@ -2099,6 +2105,391 @@ public class EmailBoxServiceTest {
     emailBoxService.deleteUserEmails(TEST_USER);
     verify(settingService).remove(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
   }
+
+  /**
+   * The Trash folder is cached like any other mirrored folder — under its own
+   * discriminator, from its own cache view, so the rows are reachable by the reads
+   * that take a folder.
+   */
+  @Test
+  @SneakyThrows
+  void theTrashFolderIsCachedUnderItsOwnDiscriminator() {
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    when(trash.getMessageCount()).thenReturn(4);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(trash).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.TRASH);
+  }
+
+  /**
+   * The window, spelled out rather than read back from the constant: Trash caches
+   * THIRTY messages, not the hundred Sent and Archive take. On a folder of 100 that
+   * is the last 30, so the listing starts at 71.
+   * <p>
+   * Trash is at once the biggest folder in an ordinary mailbox and the one nobody
+   * opens, and every message inside the window costs a body download on the first
+   * sync — so the window is the whole of what keeps this feature from turning a
+   * bulk clear-out into a long download of mail already dismissed.
+   */
+  @Test
+  @SneakyThrows
+  void theTrashWindowIsThirtyDeepAndNotTheHundredTheOtherFoldersUse() {
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    when(trash.getMessageCount()).thenReturn(100);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(trash).getMessages(71, 100);
+  }
+
+  /**
+   * The other half of the window: the CACHE is trimmed to it too. A mailbox that has
+   * been deleting mail for a year must not accumulate a year of TRASH rows because
+   * the window only ever bounded what was downloaded.
+   * <p>
+   * The rows here all sit inside the server window (their UIDs repeat), so the
+   * obsolete-row half of the cleanup has nothing to remove and what the assertion
+   * sees is the trim alone.
+   */
+  @Test
+  @SneakyThrows
+  void theTrashCacheIsTrimmedBackToTheWindow() {
+    Message[] window = new Message[30];
+    for (int index = 0; index < window.length; index++) {
+      window[index] = flaggedMessage(false);
+    }
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    when(trash.getMessageCount()).thenReturn(30);
+    when(trash.getMessages(anyInt(), anyInt())).thenReturn(window);
+    for (int index = 0; index < window.length; index++) {
+      when(((UIDFolder) trash).getUID(window[index])).thenReturn((long) index + 1);
+    }
+    // Thirty-two cached rows, every one of them still on the server: two more than the
+    // window allows, so exactly two must go.
+    List<Email> cached = new ArrayList<>();
+    for (int index = 0; index < 32; index++) {
+      Email row = cachedEmail(index % 30 + 1L, false, false);
+      row.setId(1000L + index);
+      row.setFolder(MailFolder.TRASH);
+      cached.add(row);
+    }
+    when(emailBoxStorage.getSyncEmails(TEST_USER, MailFolder.TRASH)).thenReturn(cached);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<List<Long>> trimmed = ArgumentCaptor.forClass(List.class);
+    verify(emailBoxStorage).deleteEmailsByIds(trimmed.capture());
+    assertEquals(List.of(1030L, 1031L),
+                 trimmed.getValue(),
+                 "the two rows past the window are the ones trimmed, and nothing else is");
+  }
+
+  /**
+   * The server saying which folder this is beats us guessing from its name, and it
+   * beats it whichever order the listing arrives in — the name match is remembered
+   * rather than returned, so a {@code \Trash} folder further down the list still
+   * wins.
+   */
+  @Test
+  @SneakyThrows
+  void theSpecialUseAttributeBeatsAFolderMerelyNamedTrash() {
+    IMAPFolder namedTrash = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(namedTrash.exists()).thenReturn(true);
+    lenient().when(namedTrash.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    lenient().when(namedTrash.getFullName()).thenReturn("Trash");
+    IMAPFolder realTrash = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(realTrash.exists()).thenReturn(true);
+    lenient().when(realTrash.getAttributes()).thenReturn(new String[] { "\\Trash" });
+    lenient().when(realTrash.getFullName()).thenReturn("Papierkorb");
+    lenient().when(realTrash.isOpen()).thenReturn(true);
+    lenient().when(realTrash.getMessageCount()).thenReturn(2);
+    lenient().when(realTrash.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    // The name match comes FIRST in the listing, which is the case that would fail if
+    // the scan returned on it instead of remembering it.
+    givenAMailboxListing(namedTrash, realTrash);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(realTrash).open(Folder.READ_ONLY);
+    verify(namedTrash, never()).open(Folder.READ_ONLY);
+  }
+
+  /**
+   * The name match is LAST-SEGMENT EQUALITY, never {@code contains} — and this is the
+   * case the strictness exists for. A user's own "Trash drafts" folder matched on
+   * {@code contains} would have its whole recent contents bulk-imported as deleted
+   * mail: hidden from the conversation reader, hidden from search, shown back to them
+   * as things they had thrown away, and offered to slice 4's permanent delete.
+   */
+  @Test
+  @SneakyThrows
+  void aFolderWhoseNameMerelyContainsTrashIsNotSynced() {
+    IMAPFolder userFolder = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(userFolder.exists()).thenReturn(true);
+    lenient().when(userFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    lenient().when(userFolder.getFullName()).thenReturn("Trash drafts");
+    givenAMailboxListing(userFolder);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(userFolder, never()).open(Folder.READ_ONLY);
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.TRASH);
+  }
+
+  /**
+   * Last-segment equality still finds the nested layouts that matter — the segment
+   * after Gmail's separator is exactly {@code Trash} — and the full listing is
+   * scanned when the subscribed one came back with nothing, because
+   * {@code [Gmail]/Trash} is not subscribed on every account and a mailbox that
+   * plainly has a Trash folder behaving as though it had none is indistinguishable
+   * from this feature being broken.
+   */
+  @Test
+  @SneakyThrows
+  void anUnsubscribedNestedTrashIsFoundByTheFullListing() {
+    IMAPFolder trash = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(trash.exists()).thenReturn(true);
+    lenient().when(trash.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
+    lenient().when(trash.getFullName()).thenReturn("[Gmail]/Trash");
+    lenient().when(trash.isOpen()).thenReturn(true);
+    lenient().when(trash.getMessageCount()).thenReturn(3);
+    lenient().when(trash.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    Folder defaultFolder = givenAMailboxListing();
+    when(defaultFolder.list("*")).thenReturn(new Folder[] { trash });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(trash).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.TRASH);
+  }
+
+  /**
+   * A mailbox with no Trash folder anywhere is a no-op, and a QUIET one: "this
+   * account has no Trash folder" is a shape of mailbox, not a fault to report every
+   * period forever.
+   * <p>
+   * That it is quiet is what the last two assertions establish. The only warning on
+   * this path is in the catch around the Trash pass, so the question is whether the
+   * pass raised anything — and it cannot have: both listings were scanned and both
+   * came back empty, so discovery answered null and the sync returned on the
+   * null-folder guard before opening anything. The state records the absence rather
+   * than a folder that was not found.
+   */
+  @Test
+  @SneakyThrows
+  void aMailboxWithNoTrashFolderIsAQuietNoOp() {
+    Folder defaultFolder = givenAMailboxListing();
+    when(defaultFolder.list("*")).thenReturn(new Folder[0]);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.TRASH);
+    // Both passes ran and neither found anything: there was nothing to open, hence
+    // nothing to fail, hence nothing to warn about.
+    verify(defaultFolder, atLeast(1)).listSubscribed("*");
+    verify(defaultFolder, atLeast(1)).list("*");
+    // And nothing was learned, so nothing was written: no folder name to remember and
+    // no snapshot to skip on next time.
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), any(SettingValue.class));
+  }
+
+  /**
+   * The operator's kill switch takes the Trash folder off the sync loop and leaves
+   * every other folder exactly as it was — it withdraws a READ and nothing else.
+   */
+  @Test
+  @SneakyThrows
+  void theKillSwitchStopsTheTrashSyncAndNothingElse() {
+    System.setProperty(EmailBoxService.TRASH_SYNC_ENABLED_PROPERTY, "false");
+    try {
+      IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+      lenient().when(trash.getMessageCount()).thenReturn(4);
+
+      emailBoxService.synchronize(TEST_USER);
+
+      verify(trash, never()).open(Folder.READ_ONLY);
+      verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.TRASH);
+      // The sync itself is untouched by the switch: it is one folder pass that is
+      // withdrawn, not the run.
+      assertEquals(SyncStatus.SUCCESS, userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailSyncStatus());
+    } finally {
+      System.clearProperty(EmailBoxService.TRASH_SYNC_ENABLED_PROPERTY);
+    }
+  }
+
+  /**
+   * A cached TRASH row is reachable by the reads that go back to the server for one
+   * message — an attachment here, and every later one that resolves a cached row's
+   * folder. It resolves through the STRICT lookup, the one the rows were cached by:
+   * a UID read against the wrong folder does not fail, it answers with whatever
+   * message happens to carry that number.
+   */
+  @Test
+  @SneakyThrows
+  void anAttachmentOnADeletedMessageIsReadFromTheTrashFolder() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    IMAPFolder trash = mock(IMAPFolder.class);
+    when(trash.exists()).thenReturn(true);
+    when(trash.getFullName()).thenReturn("[Gmail]/Trash");
+    when(trash.getAttributes()).thenReturn(new String[] { "\\Trash" });
+    Folder root = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(root);
+    when(root.listSubscribed("*")).thenReturn(new Folder[] { trash });
+
+    emailBoxService.getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.TRASH);
+
+    verify(trash).open(Folder.READ_ONLY);
+    verify(store, never()).getFolder("INBOX");
+    verify(emailBoxStorage).getAttachmentByMailRemoteIdAnIdAndUserId(1212l, "2", TEST_USER, MailFolder.TRASH);
+  }
+
+  /**
+   * The server half of the folder switch will serve a Trash listing. The client half
+   * does not offer it yet (the row actions still resolve delete and archive against
+   * the inbox — EXO-89367 — so a Trash listing with a working three-dots menu is a
+   * slice of its own), but the rows are cached and this is what will list them.
+   */
+  @Test
+  @SneakyThrows
+  void theTrashFolderIsBrowsableOnTheServerSide() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+
+    emailBoxService.getEmailBox(TEST_USER, MailFolder.TRASH);
+
+    verify(emailBoxStorage).getEmails(TEST_USER, MailFolder.TRASH);
+  }
+
+  /**
+   * The defect that only became reachable once Trash is cached: opening a
+   * conversation must not RESURRECT the message the user deleted out of it.
+   * <p>
+   * The completion asks what the conversation already holds so it can fetch what it
+   * does not. Asked of the reader — which excludes Trash — a deleted ancestor stops
+   * counting as held, is classified as missing, and gets pulled back out of the
+   * {@code \All} superset and cached under {@code ALL_MAIL}: a folder no exclusion
+   * covers, so the deleted message reappears in the reader, put back there by the act
+   * of opening the conversation it was deleted from. Asked of the inventory read,
+   * Trash included, there is nothing missing and no IMAP connection is opened at all.
+   */
+  @Test
+  @SneakyThrows
+  void completeThreadDoesNotResurrectATrashedAncestorFromAllMail() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    // What the reader shows: the reply alone, because its parent is in the bin.
+    Email cached = email(TEST_USER);
+    cached.setMailHeaderId("<reply@host>");
+    cached.setThreadId("<reply@host>");
+    cached.setMailReferences("<deleted-root@host>");
+    when(emailBoxStorage.getEmailsByThreadId(anyString(), anyString(), anyString())).thenReturn(List.of(cached));
+    // What the cache actually holds: the reply AND the trashed parent.
+    when(emailBoxStorage.getThreadMessageIdsIncludingTrash(TEST_USER, "<reply@host>")).thenReturn(List.of("<reply@host>",
+                                                                                                          "<deleted-root@host>"));
+
+    emailBoxService.completeThread("<reply@host>", TEST_USER);
+
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * The same completion still works — the exclusion is not a blanket refusal to
+   * complete. An ancestor that is genuinely absent from the cache (archived in Gmail,
+   * never synced, not in anyone's bin) is still fetched and cached.
+   */
+  @Test
+  @SneakyThrows
+  void completeThreadStillRecoversAnAncestorThatIsGenuinelyMissing() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setMailHeaderId("<reply@host>");
+    cached.setThreadId("<reply@host>");
+    cached.setMailReferences("<root@host>");
+    when(emailBoxStorage.getEmailsByThreadId(anyString(), anyString(), anyString())).thenReturn(List.of(cached));
+    // The inventory knows only the reply: the root is nowhere in the cache, bin included.
+    when(emailBoxStorage.getThreadMessageIdsIncludingTrash(TEST_USER, "<reply@host>")).thenReturn(List.of("<reply@host>"));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(allMail.exists()).thenReturn(true);
+    when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
+    when(allMail.isOpen()).thenReturn(true);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { allMail });
+    MimeMessage archived = mock(MimeMessage.class);
+    when(archived.getMessageID()).thenReturn("<root@host>");
+    when(archived.getSubject()).thenReturn("root subject");
+    when(allMail.search(any())).thenReturn(new Message[] { archived });
+    when(((UIDFolder) allMail).getUID(archived)).thenReturn(999l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(999l, TEST_USER, null, "ALL_MAIL", false, false, false)).thenReturn(null);
+
+    emailBoxService.completeThread("<reply@host>", TEST_USER);
+
+    verify(allMail).search(any());
+    verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  /**
+   * A connected mailbox whose subscribed listing is exactly the given folders, with an
+   * empty full listing and an empty INBOX — the shape shared by the Trash discovery
+   * tests, where what is under test is which folder the scan picks.
+   *
+   * @param folders the subscribed folders the store reports
+   * @return the store's default folder, for tests that stub the full listing too
+   */
+  @SneakyThrows
+  private Folder givenAMailboxListing(Folder... folders) {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.getMessageCount()).thenReturn(0);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    lenient().when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(folders);
+    lenient().when(defaultFolder.list("*")).thenReturn(new Folder[0]);
+    return defaultFolder;
+  }
+
+  /**
+   * A mailbox whose single subscribed folder is its Trash, announced by the given
+   * attributes and name.
+   *
+   * @param attributes the folder's IMAP attributes (SPECIAL-USE or none)
+   * @param fullName the folder's full name
+   * @return the mocked Trash folder
+   */
+  @SneakyThrows
+  private IMAPFolder givenASubscribedTrashFolder(String[] attributes, String fullName) {
+    IMAPFolder trash = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(trash.exists()).thenReturn(true);
+    lenient().when(trash.getAttributes()).thenReturn(attributes);
+    lenient().when(trash.getFullName()).thenReturn(fullName);
+    lenient().when(trash.isOpen()).thenReturn(true);
+    lenient().when(trash.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    givenAMailboxListing(trash);
+    return trash;
+  }
+
 
   @Test
   @SneakyThrows
