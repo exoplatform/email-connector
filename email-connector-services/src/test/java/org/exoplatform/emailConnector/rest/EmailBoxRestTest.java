@@ -220,6 +220,53 @@ public class EmailBoxRestTest {
     response.andExpect(status().isOk());
   }
 
+  /**
+   * The two Trash actions are their OWN endpoints, not flags on the delete — which is
+   * what this pins: the restore is a POST to /trash/restore and the permanent delete a
+   * DELETE on /trash, and each reaches its own service method with the ids it was given.
+   */
+  @Test
+  void restoreEmail() throws Exception {
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/trash/restore").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/trash/restore").with(testSimpleUser())
+                                                                     .content(asJsonString(new ArrayList<Long>()))
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isNotFound());
+    List<Long> emailIds = List.of(123L, 456L);
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/trash/restore").with(testSimpleUser())
+                                                                     .content(asJsonString(emailIds))
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+    verify(emailBoxService).restoreEmail(emailIds, SIMPLE_USER);
+    // A restore must never reach the permanent delete, whatever else changes here.
+    verify(emailBoxService, never()).purgeEmail(anyList(), anyString());
+  }
+
+  @Test
+  void purgeEmail() throws Exception {
+    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/trash").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/trash").with(testSimpleUser())
+                                                                .content(asJsonString(new ArrayList<Long>()))
+                                                                .contentType(MediaType.APPLICATION_JSON)
+                                                                .accept(MediaType.APPLICATION_JSON));
+    // An empty body is a 404, never "everything": there is no empty-the-trash here.
+    response.andExpect(status().isNotFound());
+    List<Long> emailIds = List.of(123L, 456L);
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/trash").with(testSimpleUser())
+                                                                .content(asJsonString(emailIds))
+                                                                .contentType(MediaType.APPLICATION_JSON)
+                                                                .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+    verify(emailBoxService).purgeEmail(emailIds, SIMPLE_USER);
+    // And a permanent delete must never be answered by the ordinary one, which would
+    // move the messages to the Trash they are already in and report success.
+    verify(emailBoxService, never()).deleteEmail(anyList(), anyString());
+  }
+
   @Test
   void sendEmail() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser()));
