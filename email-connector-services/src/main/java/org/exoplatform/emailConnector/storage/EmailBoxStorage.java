@@ -38,6 +38,7 @@ import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.utils.IOUtil;
@@ -613,6 +614,37 @@ public class EmailBoxStorage {
     } catch (Exception e) {
       LOG.warn("The stored draft attachment {} could not be read", fileId, e);
       return null;
+    }
+  }
+
+  /**
+   * Whether the file behind a stored attachment is still there — the cheap question,
+   * asked before a draft is assembled into a message.
+   * <p>
+   * Metadata only, and deliberately: {@link #getAttachmentFileItem} reads the whole
+   * file into memory, and asking "can this 20 MB file be read" by reading 20 MB is a
+   * poor way to answer a question whose real subject is whether a row outlived its
+   * file. What is checked is what can go wrong here — the file was freed while the
+   * attachment row still names it — and a file whose metadata is present but whose
+   * bytes are not fails one layer down, where the part is written.
+   * <p>
+   * A deleted file counts as gone. The file service keeps the row and flips a flag
+   * rather than removing it, so "there is a FileInfo" is not the same question as
+   * "there is a file".
+   *
+   * @param fileId the file id an attachment row carries
+   * @return true when a live file sits behind it
+   */
+  public boolean attachmentFileExists(Long fileId) {
+    if (fileId == null || fileId <= 0) {
+      return false;
+    }
+    try {
+      FileInfo fileInfo = fileService.getFileInfo(fileId);
+      return fileInfo != null && !fileInfo.isDeleted();
+    } catch (Exception e) {
+      LOG.warn("The stored draft attachment {} could not be looked up", fileId, e);
+      return false;
     }
   }
 

@@ -127,6 +127,10 @@ const LOCAL_SAVE_DEBOUNCE_MS = 1000;
 // need it within thirty seconds — while every push re-uploads the entire message
 // (IMAP has no update), attachments included. Two minutes of genuine inactivity is
 // the point where the user has plainly stopped writing.
+//
+// It does not run at all once the draft carries a file: see onComposeChanged. The
+// arithmetic that makes two minutes reasonable for a page of text makes it
+// unreasonable for a page of text plus 20 MB.
 const SERVER_PUSH_IDLE_MS = 2 * 60 * 1000;
 
 /**
@@ -235,6 +239,18 @@ export default {
     },
     'email.subject'() {
       this.onComposeChanged();
+    },
+    // Attaching a file is not a change to save — the server stored it and stepped the
+    // revision itself. What it IS, is a reason to take down an idle push that was
+    // already counting: from the moment a file is on the draft, every push re-uploads
+    // it, and the countdown was armed when there was nothing to re-upload. Without
+    // this, the file attached at second 119 of a two-minute idle goes up one second
+    // later, and again on the next pause.
+    attachments() {
+      if (this.attachments.length) {
+        clearTimeout(this.serverPushTimer);
+        this.serverPushTimer = null;
+      }
     },
     'email.content.body'() {
       this.onComposeChanged();
@@ -632,6 +648,13 @@ export default {
      * Restarting the push countdown on every change is what makes it mean "genuine
      * inactivity" rather than "every two minutes regardless".
      *
+     * The push countdown is not armed at all while the draft carries a file. IMAP has
+     * no update, so every push re-uploads the WHOLE message: on a draft with a 20 MB
+     * attachment the idle push would send those 20 MB up again every couple of minutes
+     * for as long as the composer stays open, for a copy nobody but the author is
+     * reading. A draft with files is pushed when the drawer closes and when it is sent
+     * — the two moments the user has plainly finished — and never in between.
+     *
      * @returns {void}
      */
     onComposeChanged() {
@@ -643,7 +666,8 @@ export default {
       clearTimeout(this.localSaveTimer);
       this.localSaveTimer = setTimeout(() => this.saveDraft(false), LOCAL_SAVE_DEBOUNCE_MS);
       clearTimeout(this.serverPushTimer);
-      this.serverPushTimer = setTimeout(() => this.saveDraft(true), SERVER_PUSH_IDLE_MS);
+      this.serverPushTimer = this.attachments.length ? null
+        : setTimeout(() => this.saveDraft(true), SERVER_PUSH_IDLE_MS);
     },
     /**
      * The editor has taken the prefill and gone live.
