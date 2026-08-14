@@ -63,9 +63,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :sync-in-progress="syncInProgress" />
       </div>
     </template>
+    <!-- Unread, archive and delete all address a message by its IMAP UID, which a
+         draft may not have — and none of them means anything for a message nobody has
+         sent. When the conversation was opened FROM its draft, the draft is what this
+         toolbar would act on, so it stays away, exactly as the row's own swipe and
+         context menu already do. -->
     <template v-if="!loading" #titleIcons>
       <email-connector-mail-box-drawer-list-item-detail-actions
-        v-if="email && (!expanded || !selectEmailPlaceHolder)"
+        v-if="email && !email.draftLocalId && (!expanded || !selectEmailPlaceHolder)"
         :email="email" />
     </template>
     <template v-if="expanded" #fullAppLeftContent>
@@ -191,9 +196,25 @@ export default {
         this.$set(this.email, 'starred', favorite);
       }
     };
+    // The same two openings, for a row the caller already holds in full — a draft,
+    // which the UID-addressed pair above cannot open because it may have no UID.
+    this.onOpenEmailThreadDrawer = (email, emails, syncInProgress, webmailUrl) => {
+      this.detachedFromList = false;
+      this.standalone = false;
+      this.openThreadOn(email, emails, syncInProgress, webmailUrl);
+    };
+    this.onOpenEmailThreadContent = (email) => {
+      if (!this.emailDetailDrawer) {
+        return;
+      }
+      this.email = email;
+      this.selectEmailPlaceHolder = false;
+    };
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
+    this.$root.$on('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
+    this.$root.$on('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$on('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
@@ -246,6 +267,8 @@ export default {
     this.hideStandaloneBackdrop();
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
+    this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
+    this.$root.$off('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);
@@ -317,6 +340,32 @@ export default {
       }).finally(() => {
         this.loading = false;
       });
+    },
+    /**
+     * Opens the reader on a row the caller already holds in full, without going back
+     * to the server for it.
+     *
+     * The ordinary open re-fetches by IMAP UID, which a draft may simply not have —
+     * it has none until it has been uploaded, and the number moves under it when it
+     * is. The row the list is holding is the whole row, and the reader only reads its
+     * thread id and its subject off it before fetching the conversation itself, so
+     * there is nothing left for a fetch to add.
+     *
+     * @param {object} email - the row to open the conversation of
+     * @param {Array} emails - the list it came from
+     * @param {boolean} syncInProgress - whether a synchronization is running
+     * @param {string} webmailUrl - the account's webmail, for the toolbar
+     * @returns {void}
+     */
+    openThreadOn(email, emails, syncInProgress, webmailUrl) {
+      this.emailDetailDrawer = true;
+      this.loading = false;
+      this.emails = emails;
+      this.webmailUrl = webmailUrl;
+      this.syncInProgress = syncInProgress;
+      this.selectEmailPlaceHolder = false;
+      this.$root.isDetailDrawerActive = true;
+      this.email = email;
     },
     // IMAP UIDs are per-folder, so opening a Sent/Archive message needs its folder,
     // taken from the currently-listed emails.

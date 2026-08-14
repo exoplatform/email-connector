@@ -184,6 +184,7 @@ export default {
         { id: 'INBOX', label: 'emailConnector.mailBox.list.drawer.folder.inbox', icon: 'fa-inbox' },
         { id: 'SENT', label: 'emailConnector.mailBox.list.drawer.folder.sent', icon: 'fa-paper-plane' },
         { id: 'ARCHIVE', label: 'emailConnector.mailBox.list.drawer.folder.archive', icon: 'fa-archive' },
+        { id: 'DRAFTS', label: 'emailConnector.mailBox.list.drawer.folder.drafts', icon: 'fa-file-alt' },
       ],
     };
   },
