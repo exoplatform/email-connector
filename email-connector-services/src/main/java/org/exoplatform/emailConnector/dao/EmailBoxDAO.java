@@ -627,6 +627,38 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<Long> mailRemoteIds);
 
   /**
+   * The identity of a conversation's real mail, newest first — what a stored summary
+   * is checked against to decide whether it still describes the conversation.
+   * <p>
+   * DRAFTS ARE EXCLUDED, and that is the point of the query rather than a filter on
+   * it. A draft is re-dated and re-saved on every keystroke, so a fingerprint that
+   * counted it would go stale between two words; and an unsent reply is precisely the
+   * thing a summary must not describe back to the person still writing it.
+   * <p>
+   * The four columns and no body: this runs on every read of a summary, and dragging
+   * the CLOB of a whole conversation through the persistence layer to compare a UID
+   * is the mistake {@link #findSyncViewByUserIdAndFolder} was written to undo.
+   * {@code MAIL_HEADER_ID} rides along because the count has to be DISTINCT by
+   * Message-ID exactly as {@link #summarizeThreadsByUserId} is — the same message is
+   * cached once per folder, and a raw row count would report a conversation as having
+   * grown when thread completion merely cached a copy of it in ALL_MAIL.
+   * <p>
+   * The order is by date AND THEN by UID, which a single-column ordering would leave
+   * to chance: two messages of one conversation routinely share a received date (a
+   * mail and its own copy in another folder, or a bulk send), and "the newest message"
+   * has to be the same message on two consecutive reads or the summary flickers
+   * between stale and fresh without a single mail arriving.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @return rows of {@code [folder, mailRemoteId, mailHeaderId]}, newest first
+   */
+  @Query("SELECT email.folder, email.mailRemoteId, email.mailHeaderId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId = :threadId AND email.draftLocalId IS NULL ORDER BY email.receivedDate DESC, email.mailRemoteId DESC")
+  List<Object[]> findThreadFingerprintRows(@Param("userId")
+  String userId, @Param("threadId")
+  String threadId);
+
+  /**
    * Collapses several conversations into one: every row carrying one of the given
    * thread ids is re-pointed at the canonical one.
    * <p>
