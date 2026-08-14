@@ -282,6 +282,40 @@ public class EmailBoxDraftAttachmentStorageTest {
   }
 
   /**
+   * A SENT draft's files — all of them — are written down before its rows go, which is
+   * what makes the send path's cleanup safe rather than a leak.
+   * <p>
+   * Sending a draft ends with the same row delete a discard ends with, so this asserts
+   * what that delete really does against a real table: every file id read first, the
+   * attachment rows then gone, and nothing left to find them by. The existing
+   * single-file case does not cover it — the failure to catch is a loop that records
+   * only what it happened to be holding, and one file cannot tell a loop from a
+   * variable.
+   * <p>
+   * Deliberately at this level and not on a mock: the attachment rows disappear through
+   * the database's own ON DELETE CASCADE with no callback and no loaded instance, so
+   * "were they really gone, and was the marker really written first" is a question only
+   * a real table can be asked.
+   */
+  @Test
+  void aSentDraftsFilesAreAllRecordedBeforeItsRowsGo() {
+    Email saved = emailBoxStorage.saveDraft(draft("draft-sent", 1L, "here they are"));
+    EmailAttachment first = emailBoxStorage.addDraftAttachment(USERNAME, "draft-sent", upload("one.pdf"), "one.pdf",
+                                                              "application/pdf");
+    EmailAttachment second = emailBoxStorage.addDraftAttachment(USERNAME, "draft-sent", upload("two.pdf"), "two.pdf",
+                                                               "application/pdf");
+    assertEquals(2, emailBoxStorage.getDraftAttachments(USERNAME, "draft-sent").size());
+
+    emailBoxStorage.deleteEmailsByIds(List.of(saved.getId()));
+
+    assertNull(emailBoxStorage.getDraftByLocalId(USERNAME, "draft-sent"));
+    assertTrue(emailBoxStorage.getDraftAttachments(USERNAME, "draft-sent").isEmpty(), "the attachment rows went with the row");
+    assertEquals(List.of(first.getFileId(), second.getFileId()),
+                 emailOrphanFileDAO.findAll().stream().map(EmailOrphanFileEntity::getFileId).sorted().toList(),
+                 "every file, not just the last one the loop was holding");
+  }
+
+  /**
    * A file that is still there answers as such, and one that has been deleted does
    * not — the cheap check an upload and a send are both gated on.
    * <p>
