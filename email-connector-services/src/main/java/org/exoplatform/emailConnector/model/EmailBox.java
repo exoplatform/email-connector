@@ -28,18 +28,22 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class EmailBox {
 
-  private List<Email>          emails;
+  private List<Email>                emails;
 
-  private SyncStatus           emailSyncStatus;
+  private SyncStatus                 emailSyncStatus;
 
-  private String               webmailUrl;
+  private String                     webmailUrl;
 
-  // Total cached messages per conversation across every folder (INBOX/SENT/ARCHIVE/
-  // ALL_MAIL), keyed by thread id. The list shows the full conversation count on each
-  // thread badge — like Gmail — rather than only its inbox messages.
-  private Map<String, Integer> threadCounts;
+  // What each conversation looks like from OUTSIDE the folder being listed, keyed by
+  // thread id: its total message count across every folder (INBOX/SENT/ARCHIVE/
+  // ALL_MAIL/DRAFTS) and whether it carries an unsent draft. The list shows the full
+  // conversation count on each thread badge — like Gmail — rather than only its
+  // messages in the listed folder, and marks a conversation the user has a reply
+  // half-written in. Both are facts the listing itself cannot hold: it only ever
+  // carries one folder's rows.
+  private Map<String, ThreadSummary> threadSummaries;
 
   // Message count per folder, so the list's folder switch only offers folders with
   // mail (e.g. no empty Archive tab on Gmail).
-  private Map<String, Integer> folderCounts;
+  private Map<String, Integer>       folderCounts;
 }

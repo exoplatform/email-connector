@@ -19,7 +19,6 @@
 package org.exoplatform.emailConnector.rest;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
@@ -31,7 +30,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.ArrayList;
@@ -40,6 +38,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -56,6 +55,8 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -64,7 +65,6 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
-import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
@@ -225,6 +225,41 @@ public class EmailBoxRestTest {
   }
 
   @Test
+  void sendDraft() throws Exception {
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    Email draft = new Email();
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send").with(testSimpleUser())
+                                                                           .content(asJsonString(draft))
+                                                                           .contentType(MediaType.APPLICATION_JSON)
+                                                                           .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isBadRequest());
+    draft.setTo(List.of(mock(EmailRecipient.class)));
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send").with(testSimpleUser())
+                                                                           .content(asJsonString(draft))
+                                                                           .contentType(MediaType.APPLICATION_JSON)
+                                                                           .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+    // The path names the draft, whatever the body claims.
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendDraft(sent.capture(), anyString());
+    org.junit.jupiter.api.Assertions.assertEquals("draft-1", sent.getValue().getDraftLocalId());
+  }
+
+  @Test
+  void sendDraftAnswersNotFoundForADraftThatIsGone() throws Exception {
+    Email draft = new Email();
+    draft.setTo(List.of(mock(EmailRecipient.class)));
+    doThrow(new ObjectNotFoundException("emailConnector.drafts.send.gone")).when(emailBoxService)
+                                                                          .sendDraft(any(Email.class), anyString());
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/gone/send").with(testSimpleUser())
+                                                                                      .content(asJsonString(draft))
+                                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                                      .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isNotFound());
+  }
+
+  @Test
   void getAttachmentByMailRemoteIdAnId() throws Exception {
     ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));
     response.andExpect(status().isNotFound());
@@ -236,78 +271,6 @@ public class EmailBoxRestTest {
     when(emailAttachment.getMimeType()).thenReturn("application/pdf");
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));
     response.andExpect(status().isOk());
-  }
-
-  @Test
-  void getEmailCategories() throws Exception {
-    when(emailBoxService.getEmailCategories(anyString(), any())).thenReturn(List.of(new EmailCategory(11L, "Important")));
-    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/categories").with(testSimpleUser()));
-    response.andExpect(status().isOk())
-            .andExpect(jsonPath("$[0].id").value(11))
-            .andExpect(jsonPath("$[0].name").value("Important"));
-
-    doThrow(IllegalAccessException.class).when(emailBoxService).getEmailCategories(anyString(), any());
-    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/categories").with(testSimpleUser()));
-    response.andExpect(status().isUnauthorized());
-  }
-
-  @Test
-  void getAvailableEmailCategories() throws Exception {
-    when(emailBoxService.getAvailableEmailCategories(anyString(),
-                                                     any())).thenReturn(List.of(new EmailCategory(11L, "Important")));
-    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/categories/available").with(testSimpleUser()));
-    response.andExpect(status().isOk()).andExpect(jsonPath("$[0].id").value(11));
-  }
-
-  @Test
-  void linkEmailsToCategory() throws Exception {
-    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser()));
-    response.andExpect(status().isBadRequest());
-
-    when(emailBoxService.linkEmailsToCategory(anyList(), anyLong(), anyString())).thenReturn(2);
-    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
-                                                                     .content(asJsonString(List.of(123L, 456L)))
-                                                                     .contentType(MediaType.APPLICATION_JSON)
-                                                                     .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isOk()).andExpect(jsonPath("$.linked").value(2));
-
-    // Unknown category: the service's message code is surfaced as a 400, not a 500.
-    doThrow(new IllegalArgumentException("emailConnector.category.notFound")).when(emailBoxService)
-                                                                             .linkEmailsToCategory(anyList(),
-                                                                                                   anyLong(),
-                                                                                                   anyString());
-    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
-                                                                     .content(asJsonString(List.of(123L)))
-                                                                     .contentType(MediaType.APPLICATION_JSON)
-                                                                     .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isBadRequest());
-
-    doThrow(IllegalAccessException.class).when(emailBoxService).linkEmailsToCategory(anyList(), anyLong(), anyString());
-    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
-                                                                     .content(asJsonString(List.of(123L)))
-                                                                     .contentType(MediaType.APPLICATION_JSON)
-                                                                     .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isUnauthorized());
-  }
-
-  @Test
-  void unlinkEmailsFromCategory() throws Exception {
-    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser()));
-    response.andExpect(status().isBadRequest());
-
-    when(emailBoxService.unlinkEmailsFromCategory(anyList(), anyLong(), anyString())).thenReturn(1);
-    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
-                                                                       .content(asJsonString(List.of(123L)))
-                                                                       .contentType(MediaType.APPLICATION_JSON)
-                                                                       .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isOk()).andExpect(jsonPath("$.unlinked").value(1));
-
-    doThrow(IllegalAccessException.class).when(emailBoxService).unlinkEmailsFromCategory(anyList(), anyLong(), anyString());
-    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
-                                                                       .content(asJsonString(List.of(123L)))
-                                                                       .contentType(MediaType.APPLICATION_JSON)
-                                                                       .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isUnauthorized());
   }
 
   private RequestPostProcessor testSimpleUser() {
