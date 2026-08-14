@@ -40,20 +40,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span
           class="text-truncate"
           style="min-width: 0">
-          <a
-            v-if="value.profileUrl"
-            :href="value.profileUrl"
-            target="_blank"
-            rel="noopener noreferrer">{{ value.name }}</a>
-          <span
-            v-else
-            class="text-color">{{ value.name }}</span>
-          <!-- A real interpolated space, not a margin: margin is box geometry, not text
-               content, so selection/copy, find-in-page and screen readers would glue the
-               name to the address. A literal blank between elements is condensed away by
-               the template compiler; an interpolated one cannot be. -->
-          {{ ' ' }}
-          <span>{{ value.address }}</span>
+          <!-- With no name there is only the address, rather than the address
+               printed twice or a name-shaped hole in front of it. A recipient
+               added as a bare address is ordinary on a draft, and this line used
+               to render the missing half literally. The name comes from
+               personName(), so the four characters "null" an older row may carry
+               are not shown as somebody's name either. -->
+          <template v-if="displayName(value)">
+            <a
+              v-if="value.profileUrl"
+              :href="value.profileUrl"
+              target="_blank"
+              rel="noopener noreferrer">{{ displayName(value) }}</a>
+            <span
+              v-else
+              class="text-color">{{ displayName(value) }}</span>
+            <!-- A real interpolated space, not a margin: margin is box geometry,
+                 not text content, so selection/copy, find-in-page and screen
+                 readers would glue the name to the address. A literal blank
+                 between elements is condensed away by the template compiler;
+                 an interpolated one cannot be. -->
+            {{ ' ' }}
+            <span>{{ value.address }}</span>
+          </template>
+          <span v-else>{{ value.address }}</span>
         </span>
         <!-- The way from a mail to the person who sent it. Added beside the
              existing name rather than replacing it: a colleague's name already
@@ -79,6 +89,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { personName } from '../../js/EmailRecipientDisplay.js';
+
 export default {
   props: {
     label: {
@@ -96,6 +108,21 @@ export default {
   },
   methods: {
     /**
+     * What to call one addressed person on this line, or nothing when they have no
+     * name of their own.
+     * <p>
+     * Returned as a plain string for the template to interpolate, never as markup:
+     * the name is the personal part of the address, chosen by whoever sent the mail,
+     * so built into an HTML string it would run on the portal page rather than in
+     * the sandboxed frame the body gets.
+     *
+     * @param {object} value - the address entry, carrying address and maybe a name
+     * @returns {string} the name to show, or an empty string when there is none
+     */
+    displayName(value) {
+      return personName(value) || '';
+    },
+    /**
      * Opens the contact card for one of the addresses on this mail, or the
      * create form when nobody is stored there yet.
      * <p>
@@ -111,7 +138,9 @@ export default {
       document.dispatchEvent(new CustomEvent('open-contacts-drawer', {
         detail: {
           address: value.address,
-          name: value.name,
+          // The name only if it is one: this seeds a contact CREATION form, and a
+          // person filed under a name nobody chose outlives the row it came from.
+          name: personName(value),
         },
       }));
     },

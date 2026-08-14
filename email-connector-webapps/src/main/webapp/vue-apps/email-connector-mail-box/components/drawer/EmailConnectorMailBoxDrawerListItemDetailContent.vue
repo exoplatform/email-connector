@@ -83,6 +83,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { personLabel } from '../../js/EmailRecipientDisplay.js';
+
 export default {
   data() {
     return {
@@ -133,12 +135,12 @@ export default {
         return '';
       }
       if (recipients.length <= 3) {
-        return `${this.$t('emailConnector.mailBox.list.drawer.detail.to')} ${recipients.map(item => item.currentUser && this.$t('emailConnector.mailBox.list.drawer.detail.me') || item.name).join(', ')}`;
+        return `${this.$t('emailConnector.mailBox.list.drawer.detail.to')} ${recipients.map(item => this.recipientLabel(item)).join(', ')}`;
       }
       else {
         const firstRecipients = recipients.slice(0, 3);
-        const remainingCount = recipients.length - 3; 
-        return `${this.$t('emailConnector.mailBox.list.drawer.detail.to')} ${firstRecipients.map(item => item.currentUser && this.$t('emailConnector.mailBox.list.drawer.detail.me') || item.name).join(', ')}, +${remainingCount}`;
+        const remainingCount = recipients.length - 3;
+        return `${this.$t('emailConnector.mailBox.list.drawer.detail.to')} ${firstRecipients.map(item => this.recipientLabel(item)).join(', ')}, +${remainingCount}`;
       }
     },
     recipientsClass() {
@@ -164,6 +166,17 @@ export default {
     },
   },
   methods: {
+    /**
+     * What one name on the recipients line reads: "Me" for the reader themselves,
+     * otherwise the person's name — and their address when they have no name, which
+     * this line used to render as a gap between two commas.
+     *
+     * @param {object} recipient - the addressed recipient
+     * @returns {string} the label to show
+     */
+    recipientLabel(recipient) {
+      return recipient.currentUser && this.$t('emailConnector.mailBox.list.drawer.detail.me') || personLabel(recipient);
+    },
     toggleDetails() {
       this.expandedHeader = !this.expandedHeader;
     },

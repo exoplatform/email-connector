@@ -16,9 +16,14 @@
  */
 package org.exoplatform.emailConnector.storage;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -34,14 +39,17 @@ import org.exoplatform.emailConnector.dao.EmailAttachmentDAO;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
 import org.exoplatform.emailConnector.entity.EmailAttachmentEntity;
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
+import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 
 import io.meeds.social.category.model.CategoryObject;
 import io.meeds.social.category.service.CategoryLinkService;
@@ -57,6 +65,11 @@ public class EmailBoxStorage {
   // Largest IN list issued in one statement. Oracle refuses past 1000 literals (ORA-01795);
   // the margin leaves room for the other bound parameters of the same query.
   private static final int    IN_CLAUSE_MAX_SIZE = 900;
+  // What a missing display name looked like for as long as the writers concatenated
+  // one: the word itself, in the name half of a stored name,address pair. The writers
+  // no longer produce it; the rows that already hold it are still being read every
+  // day, which is why it is also a value the READERS know by name.
+  private static final String NULL_NAME = "null";
 
   @Autowired
   private EmailBoxDAO         emailBoxDao;
@@ -131,10 +144,253 @@ public class EmailBoxStorage {
       email.setRead(Boolean.TRUE.equals(row[4]));
       email.setRecent(Boolean.TRUE.equals(row[5]));
       email.setStarred(Boolean.TRUE.equals(row[6]));
+      // Carried by the light view because the sync's cleanup has to be able to tell a
+      // draft the user is still writing from a message the server no longer has — and
+      // "not in the server window" looks identical for the two. See
+      // EmailBoxService#cleanupObsoleteEmails.
+      email.setDraftState((DraftState) row[7]);
+      // And the handle every write to a draft is addressed by, since the Drafts folder
+      // joined the sync: a draft whose server copy vanished has to be put back to a
+      // state that will re-upload, and the row id and the UID are both unusable for
+      // that (the UID moves whenever a draft is re-appended, and the storage layer's
+      // draft writes deliberately go by local id).
+      email.setDraftLocalId((String) row[8]);
       email.setUserId(userId);
       email.setFolder(folder);
       return email;
     }).toList();
+  }
+
+  /**
+   * A draft by the composer's own handle on it, loaded in full (body and
+   * recipients) because every caller either resumes it in the composer or rebuilds
+   * the MIME message from it.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @return the draft, or null when the user has no draft under that id
+   */
+  public Email getDraftByLocalId(String userId, String draftLocalId) {
+    if (StringUtils.isBlank(draftLocalId)) {
+      return null;
+    }
+    List<EmailBoxEntity> entities = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    return entities.isEmpty() ? null : fromEntity(entities.get(0), true, false, userId, null, true, false);
+  }
+
+  /**
+   * Writes a draft: a new row the first time, an in-place update of the same row
+   * every time after. This is deliberately NOT {@link #createEmail(Email)} with an
+   * id set. createEmail builds a whole entity out of a DTO and hands it to
+   * {@code save}, which on an existing id becomes a merge that overwrites every
+   * column with whatever the DTO happened to carry — fine for the sync, which owns
+   * the entire row it just built from a server message, and wrong for a draft,
+   * whose row also carries columns the composer knows nothing about (the thread it
+   * was merged into, its Message-ID, the IMAP UID of the copy on the server). So
+   * the existing row is loaded and only the fields a draft edit can legitimately
+   * change are applied.
+   * <p>
+   * The revision guard lives here rather than in the service because it is a
+   * property of the row, not of the caller: an autosave that arrives carrying a
+   * revision the row has already reached is a request from a moment the user has
+   * typed past, and applying it would revert their newest sentence. It is dropped,
+   * and the row as it stands is returned so the caller can see what won.
+   * <p>
+   * This method is the EDIT path only. Recording where an uploaded copy landed is
+   * {@link #markDraftUploaded}, and it is deliberately not the same call: that write
+   * carries no new text and must not look like an edit that has arrived too late.
+   *
+   * @param draft the draft to write; no matching row means a first save
+   * @return the row as it now stands — the incoming draft when it was applied, the
+   *         stored one when an out-of-order save was dropped
+   */
+  public Email saveDraft(Email draft) {
+    if (draft == null || StringUtils.isBlank(draft.getDraftLocalId())) {
+      throw new IllegalArgumentException("draftLocalId is mandatory");
+    }
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(draft.getUserId(), draft.getDraftLocalId());
+    if (existing.isEmpty()) {
+      return createEmail(draft);
+    }
+    EmailBoxEntity entity = existing.get(0);
+    Long storedRevision = entity.getDraftRevision();
+    Long incomingRevision = draft.getDraftRevision();
+    if (storedRevision != null && incomingRevision != null && incomingRevision <= storedRevision) {
+      return fromEntity(entity, true, false, draft.getUserId(), null, true, false);
+    }
+    entity.setSubject(draft.getSubject());
+    entity.setBody(draft.getContent() != null ? draft.getContent().getBody() : null);
+    entity.setTo(toRecipientsString(draft.getTo()));
+    entity.setCc(toRecipientsString(draft.getCc()));
+    entity.setBcc(toRecipientsString(draft.getBcc()));
+    entity.setReceivedDate(draft.getReceivedDate());
+    entity.setDraftState(draft.getDraftState());
+    entity.setDraftRevision(incomingRevision);
+    entity.setDraftUpdatedDate(draft.getDraftUpdatedDate());
+    return saveDraftRow(entity, draft.getUserId());
+  }
+
+  /**
+   * Writes a draft row that was loaded, mutated, and is being stored again — and
+   * maps the answer from the instance that was LOADED, deliberately not from the one
+   * {@code save} hands back.
+   * <p>
+   * The three draft writers below all have that shape, and all three used to map
+   * {@code save}'s return value. Doing so threw "failed to lazily initialize a
+   * collection of role: EmailBoxEntity.attachments - no Session" on every write to an
+   * existing draft — which is to say on every autosave after the very first, the first
+   * one going through {@link #createEmail} instead. The composer keeps the text on
+   * screen through a failed save, so this was a 500 that told the user their words
+   * were safe while nothing was being stored.
+   * <p>
+   * Why the returned instance cannot be mapped: nothing in this class is
+   * {@code @Transactional}, so each DAO call runs and commits in a transaction of its
+   * own. The entity the caller loaded is therefore detached by the time it gets here,
+   * and {@code save} on a detached instance that has an id is a MERGE — it returns a
+   * different, managed instance, whose attachments collection is a fresh uninitialised
+   * proxy, and whose session closes as {@code save} returns. The first touch of that
+   * collection, which is the first thing the mapper does, has no session left to load
+   * it in. This is also why the fetch join added to
+   * {@link EmailBoxDAO#findByUserIdAndDraftLocalIdWithAttachments} did not settle it:
+   * the join initialises the collection of the instance it returns, and that is not
+   * the instance the answer was being built from.
+   * <p>
+   * The instance passed in is that one, its collection initialised by the fetch join,
+   * and an already-initialised collection reads fine detached. What it maps is exactly
+   * what was written: the merge copies these very values into the row, and no column
+   * here is generated or defaulted on write (no {@code @Version}, no lifecycle
+   * callback), so there is nothing the database knows about this row that this
+   * instance does not.
+   * <p>
+   * The alternative was to make these writes {@code @Transactional}, which would also
+   * work — the fetch and the merge would then share a persistence context, and the
+   * merged instance would still be attached while it is mapped. It was not taken:
+   * {@link #fromEntity} calls out to {@link CategoryLinkService}, another domain's
+   * service against another schema, and that would put a foreign call inside our write
+   * transaction and hold the transaction open across it — to lazily re-load a
+   * collection this method is already holding. The revision guard's early return in
+   * {@link #saveDraft} has always mapped from the loaded instance, for the same reason;
+   * this makes the other paths agree with it.
+   *
+   * @param entity the loaded, mutated draft row
+   * @param userId the mailbox owner
+   * @return the row as it now stands
+   */
+  private Email saveDraftRow(EmailBoxEntity entity, String userId) {
+    emailBoxDao.save(entity);
+    return fromEntity(entity, true, false, userId, null, true, false);
+  }
+
+  /**
+   * Records that a draft's text now also lives on the server, under a given IMAP
+   * UID — the upload path's bookkeeping, and the only place a draft becomes
+   * {@link DraftState#SYNCED}.
+   * <p>
+   * It applies only if the row is still at the revision that was uploaded. The
+   * service holds the draft's lock across the whole upload, so in practice nothing
+   * can have moved; the check is here anyway because the consequence of being wrong
+   * is precisely the failure this feature exists to prevent — a row marked as
+   * safely on the server while carrying a sentence that was never sent up. If the
+   * revision has moved, the UID is written anyway and the state stays whatever it
+   * was, so the next push still runs.
+   * <p>
+   * That the UID is written unconditionally is load-bearing rather than incidental,
+   * and the service side of it is worth stating here because the two halves are far
+   * apart: the copy that was just appended is real, and this row is the only record
+   * of where it is. Keeping the number is what lets the next push remove it. The
+   * service therefore reads the UID, and not the state, to decide whether there is a
+   * copy to remove — it once read the state, and a row left LOCAL_ONLY by exactly
+   * this branch had its copy skipped and duplicated on the next push.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param mailRemoteId the IMAP UID of the copy just appended
+   * @param uploadedRevision the revision whose text was uploaded
+   * @return the row as it now stands, or null when there is no such draft
+   */
+  public Email markDraftUploaded(String userId, String draftLocalId, long mailRemoteId, Long uploadedRevision) {
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    if (existing.isEmpty()) {
+      return null;
+    }
+    EmailBoxEntity entity = existing.get(0);
+    entity.setMailRemoteId(mailRemoteId);
+    if (Objects.equals(entity.getDraftRevision(), uploadedRevision)) {
+      entity.setDraftState(DraftState.SYNCED);
+    }
+    return saveDraftRow(entity, userId);
+  }
+
+  /**
+   * Moves a draft's state and nothing else — the send path's claim on the row
+   * ({@link DraftState#SENDING}) and the release of that claim when the send comes
+   * back refused.
+   * <p>
+   * Deliberately not routed through {@link #saveDraft}: this write carries no text
+   * at all, so passing it through the edit path would make it subject to the
+   * revision guard and be dropped as an out-of-order save — and a send claim that
+   * can be silently dropped is not a claim. The same reasoning as
+   * {@link #markDraftUploaded}, for the same reason.
+   * <p>
+   * It writes no revision either, so a state change never makes an autosave the
+   * user has since typed look stale.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   * @param draftState the state to move the row to
+   * @return the row as it now stands, or null when there is no such draft
+   */
+  public Email updateDraftState(String userId, String draftLocalId, DraftState draftState) {
+    List<EmailBoxEntity> existing = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(userId, draftLocalId);
+    if (existing.isEmpty()) {
+      return null;
+    }
+    EmailBoxEntity entity = existing.get(0);
+    entity.setDraftState(draftState);
+    return saveDraftRow(entity, userId);
+  }
+
+  /**
+   * Cuts a draft loose from a server copy that is no longer there: back to
+   * {@link DraftState#LOCAL_ONLY}, with the UID cleared.
+   * <p>
+   * Its own call for the same reason {@link #markDraftUploaded} and
+   * {@link #updateDraftState} are: it carries no text, so routing it through
+   * {@link #saveDraft} would put it under the revision guard and let it be dropped
+   * as a late save — and this write is precisely the one that must not be lost, or
+   * the next upload would try to remove a copy that does not exist and leave the
+   * user's unsaved words on this side of a mailbox that no longer knows about them.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the composer's handle on the draft
+   */
+  public void detachDraftFromServerCopy(String userId, String draftLocalId) {
+    if (StringUtils.isBlank(draftLocalId)) {
+      return;
+    }
+    emailBoxDao.detachDraftFromServerCopy(userId, draftLocalId, DraftState.LOCAL_ONLY);
+  }
+
+  /**
+   * Whether a folder's cache already holds a message under a given Message-ID —
+   * the identity test behind the stray-draft janitor, which removes a Drafts entry
+   * whose Message-ID is already in Sent.
+   * <p>
+   * Message-ID equality and nothing else. It is the only cross-folder identity a
+   * message actually has, and it is exact: subject, recipients or date would each
+   * be a guess about two different messages being "the same one", which is the kind
+   * of guess that deletes somebody's unsent words.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the Message-ID to look for
+   * @param folder the folder discriminator to look in
+   * @return true when the folder's cache holds a message under that Message-ID
+   */
+  public boolean isMessageCachedInFolder(String userId, String mailHeaderId, String folder) {
+    if (StringUtils.isBlank(mailHeaderId)) {
+      return false;
+    }
+    return emailBoxDao.countByMailHeaderIdAndUserIdAndFolder(mailHeaderId, userId, folder) > 0;
   }
 
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
@@ -372,19 +628,131 @@ public class EmailBoxStorage {
   }
 
   /**
-   * The total number of cached messages per conversation, across every folder, keyed
-   * by thread id — so the inbox list can show the full conversation count (Gmail-style)
-   * rather than only the messages that happen to be in the inbox.
+   * What the list needs to know about each of the user's conversations that the
+   * folder it is listing cannot tell it: the full cross-folder message count
+   * (Gmail-style, rather than only the messages that happen to be in the folder on
+   * screen), whether the conversation carries a draft, and — where it does — who the
+   * conversation is with.
+   * <p>
+   * Keyed by thread id so the caller decorates a page of rows by lookup instead of
+   * by a query per row. Two statements for the whole listing, not one, and the split
+   * is about cost rather than tidiness: the count is
+   * {@code COUNT(DISTINCT Message-ID)} over the conversation's rows, and adding the
+   * sender to that {@code GROUP BY} would break it. A sent draft is cached twice for
+   * a while — the DRAFTS row and the SENT copy that went out under the very
+   * Message-ID it minted — and the two rows carry the sender written by two
+   * different code paths, so grouping by sender would count them as two messages and
+   * the number beside the participants would jump as the user pressed Send, which is
+   * the exact behaviour {@link EmailBoxDAO#summarizeThreadsByUserId} was shaped to
+   * avoid. The second statement is scoped to draft-carrying conversations and
+   * normally answers nothing at all.
    *
    * @param userId the mailbox owner
-   * @return a map of thread id to its cached message count
+   * @param userEmail the owner's own address, kept OUT of the participant names —
+   *          Gmail's convention is "me", never your own display name, and a draft's
+   *          sender is always the owner
+   * @return a map of thread id to its summary, never null
    */
-  public Map<String, Integer> getThreadMessageCounts(String userId) {
-    Map<String, Integer> counts = new HashMap<>();
-    for (Object[] row : emailBoxDao.countMessagesByThread(userId)) {
-      counts.put((String) row[0], ((Number) row[1]).intValue());
+  public Map<String, ThreadSummary> getThreadSummaries(String userId, String userEmail) {
+    Map<String, List<String>> participants = getDraftThreadParticipants(userId, userEmail);
+    Map<String, ThreadSummary> summaries = new HashMap<>();
+    for (Object[] row : emailBoxDao.summarizeThreadsByUserId(userId)) {
+      String threadId = (String) row[0];
+      // The draft column is a SUM, so it can be null on a dialect that returns no
+      // rows to add up; "no drafts" is the honest reading of that.
+      boolean hasDraft = row[2] != null && ((Number) row[2]).intValue() > 0;
+      summaries.put(threadId,
+                    new ThreadSummary(threadId,
+                                      ((Number) row[1]).intValue(),
+                                      hasDraft,
+                                      participants.getOrDefault(threadId, List.of())));
     }
-    return counts;
+    return summaries;
+  }
+
+  /**
+   * Who each draft-carrying conversation is with, oldest correspondent first — the
+   * names a draft row is labelled with in place of its own sender.
+   * <p>
+   * Three things happen to the raw rows here rather than in SQL, all of them because
+   * SQL is the wrong place for them:
+   * <ul>
+   * <li>The owner is dropped. Their address is the account binding's, which the
+   * database does not know; and it is the sender of every draft and of every sent
+   * copy, so a conversation would otherwise name the user to themselves. Gmail says
+   * "me" and only ever alongside somebody else — that is a change to how EVERY row
+   * of the list is labelled, not just a draft's, and is deliberately not made here.
+   * A conversation the owner is alone in therefore contributes no name and the row
+   * reads "Draft", which is what Gmail shows for a draft that answers nothing.</li>
+   * <li>The same person is folded into one name. A correspondent can be cached both
+   * with a display name and without one (a message whose From carries no personal
+   * part), which are two different stored senders for one address; a naive list
+   * would name them twice, once properly and once as a bare address. The address is
+   * the identity, and a name is preferred to an address for it.</li>
+   * <li>The order is fixed. The rows come out of a {@code GROUP BY} with no order of
+   * their own, and this listing is polled — names that re-shuffle between two polls
+   * are a visible flicker. Oldest first is also the order the conversation itself
+   * reads in.</li>
+   * </ul>
+   * The names are resolved exactly as the listing resolves a row's own sender —
+   * {@code EmailConnectorUtils.getEmailSender} with no profile lookup, the same
+   * arguments {@code fromEntity} passes for a listed row — so a draft row and the
+   * conversation's own row cannot end up calling the same person two different
+   * things. No directory lookup, no query per name.
+   *
+   * @param userId the mailbox owner
+   * @param userEmail the owner's own address, excluded from every conversation
+   * @return a map of thread id to its participant names, holding only the
+   *         conversations that carry a draft, never null
+   */
+  private Map<String, List<String>> getDraftThreadParticipants(String userId, String userEmail) {
+    List<Object[]> rows = new ArrayList<>(emailBoxDao.findDraftThreadParticipantsByUserId(userId));
+    rows.sort(Comparator.comparing((Object[] row) -> (Date) row[2], Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(row -> StringUtils.defaultString((String) row[1])));
+    Map<String, Map<String, String>> namesByAddress = new HashMap<>();
+    for (Object[] row : rows) {
+      String[] senderParts = splitStoredPerson((String) row[1]);
+      String address = senderParts[1];
+      if (StringUtils.isBlank(address) || StringUtils.equalsIgnoreCase(address, userEmail)) {
+        continue;
+      }
+      // Insertion-ordered, so the map IS the display order once it is filled. Keyed
+      // on the address folded with ROOT rather than the default locale: the mailbox
+      // is read under whatever locale the server runs in, and a Turkish one folds I
+      // to a dotless letter, which would make two spellings of one address two people
+      // on some deployments and not on others.
+      Map<String, String> names = namesByAddress.computeIfAbsent((String) row[0], threadId -> new LinkedHashMap<>());
+      String key = address.toLowerCase(Locale.ROOT);
+      // Overwrite only a placeholder — the address standing in for a name we did not
+      // have yet — never a real name with a later row's, which would let the last
+      // message win over the first.
+      if (!names.containsKey(key) || names.get(key).equals(address)) {
+        names.put(key, participantName(senderParts));
+      }
+    }
+    Map<String, List<String>> participants = new HashMap<>();
+    namesByAddress.forEach((threadId, names) -> participants.put(threadId, List.copyOf(names.values())));
+    return participants;
+  }
+
+  /**
+   * What to call the person behind a stored sender column, as the list calls them.
+   * <p>
+   * It goes through the same helper the row mapper does instead of reading the name
+   * half of the column directly: the helper decodes an encoded display name and
+   * falls back to the address when there is none, and a second implementation of
+   * that would be a second answer to "what is this person called" on the same
+   * screen. No profile is resolved, because a listed row's sender is not resolved
+   * either.
+   *
+   * @param storedSenderParts the {@code [name, address]} of a stored sender column
+   * @return the name to show
+   */
+  @SneakyThrows
+  private String participantName(String[] storedSenderParts) {
+    EmailSender sender = EmailConnectorUtils.getEmailSender(new InternetAddress(storedSenderParts[1], storedSenderParts[0]),
+                                                           false);
+    return sender == null ? storedSenderParts[1] : sender.getName();
   }
 
   /**
@@ -406,12 +774,31 @@ public class EmailBoxStorage {
    * All cached messages of a conversation, across every folder (INBOX, SENT,
    * ARCHIVE), oldest first — the read model for the conversation reader. Bodies
    * and recipients are loaded so each message renders in full.
+   * <p>
+   * Mail reads in the order the query returns it, by date. A DRAFT reads after the
+   * message it answers, which its date cannot say and its In-Reply-To can: see
+   * {@link EmailThreadingUtils#positionDraftsAfterTheirParent}. Applied here, at the
+   * one read every conversation goes through, rather than at its two callers — the
+   * order of a read model is part of the read model, the way the participant order
+   * of a thread summary already is, and the caller added next would otherwise have to
+   * remember.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @param userEmail the owner's own address, for the "me" resolution on each row
+   * @return the conversation's messages in reading order, never null
    */
   public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndThreadIdWithAttachments(userId, threadId);
-    return emailBoxEntities.stream()
-                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, false, userId, userEmail, true, true))
-                           .toList();
+    return EmailThreadingUtils.positionDraftsAfterTheirParent(emailBoxEntities.stream()
+                                                                             .map(emailBoxEntity -> fromEntity(emailBoxEntity,
+                                                                                                               true,
+                                                                                                               false,
+                                                                                                               userId,
+                                                                                                               userEmail,
+                                                                                                               true,
+                                                                                                               true))
+                                                                             .toList());
   }
 
   public long countUnreadEmails(String userId) {
@@ -463,9 +850,7 @@ public class EmailBoxStorage {
 
   /**
    * Decodes the stored {@code name,address} sender string without touching the
-   * directory. Split on the LAST comma: the address cannot contain one, while a
-   * display name legitimately can ("Doe, Jane") — the first-comma split the full
-   * mapper inherited would hand the rules a truncated address.
+   * directory.
    *
    * @param stored the stored sender string
    * @return the sender, or null for a blank value
@@ -474,13 +859,95 @@ public class EmailBoxStorage {
     if (StringUtils.isBlank(stored)) {
       return null;
     }
+    String[] parts = splitStoredPerson(stored);
+    return new EmailSender(StringUtils.isBlank(parts[0]) ? parts[1] : parts[0], parts[1], null, null);
+  }
+
+  /**
+   * Takes a stored {@code name,address} pair apart, and is the ONLY place that knows
+   * how that shape is written — the sender column, each entry of the To/Cc/Bcc/
+   * Reply-To columns, the full mapper and the light contact view all come through
+   * here, so no two of them can disagree about what a person looks like.
+   * <p>
+   * Three things it does that the readers used to get wrong, all of which a draft
+   * made ordinary rather than theoretical:
+   * <ul>
+   * <li>It tolerates a value with no comma, and a blank one. The mapper indexed
+   * {@code split(",")[1]} with nothing checked, on the reasoning that every row was
+   * built from a delivered message and so had a From header. A draft is the first row
+   * written HERE, and a blank sender column is written for any DTO that reaches
+   * {@code toEntity} without one — after which every read of that row threw, not just
+   * the read of its sender.</li>
+   * <li>It splits on the LAST comma rather than the first. The address cannot contain
+   * one; a display name legitimately can ("Doe, Jane"), and the platform profile name
+   * a draft's own sender is stamped with is exactly such a name. Splitting on the
+   * first comma handed back that name's tail as the address — which the recipient
+   * reader still did, having been fixed nowhere, because it had its own copy of the
+   * split.</li>
+   * <li>It answers {@link #storedName}, so a column that carries the word
+   * {@code null} comes back with no name rather than with that word as one.</li>
+   * </ul>
+   *
+   * @param stored the stored pair, may be null or blank
+   * @return {@code [name, address]}, the name null when the column carries none, the
+   *         address never null
+   */
+  private static String[] splitStoredPerson(String stored) {
+    if (StringUtils.isBlank(stored)) {
+      return new String[] { null, "" };
+    }
     int lastComma = stored.lastIndexOf(',');
     if (lastComma < 0) {
-      return new EmailSender(stored, stored, null, null);
+      // A single value and no separator: it is the address, which is the only half a
+      // message cannot be without.
+      return new String[] { null, stored };
     }
-    String name = stored.substring(0, lastComma);
-    String address = stored.substring(lastComma + 1);
-    return new EmailSender(StringUtils.isBlank(name) ? address : name, address, null, null);
+    return new String[] { storedName(stored.substring(0, lastComma)), stored.substring(lastComma + 1) };
+  }
+
+  /**
+   * A display name as it is read from — and written into — a stored
+   * {@code name,address} pair, with an absent one answered as null.
+   * <p>
+   * The four characters {@code null} count as absent, and that is the whole reason
+   * this exists. They are what concatenating a null name produced for as long as the
+   * writers did it that way, and stopping the writers was not enough: the rows
+   * already written keep the word, and a reader that takes it at face value shows it
+   * to the user as somebody's name — a chip in the composer reading {@code null},
+   * which is what the owner is looking at. Reading it as absent retires those rows
+   * without a rewrite, and without a migration that would have to guess whether a
+   * person is really called that.
+   * <p>
+   * Also applied on the WRITE side, so a client that hands the word back (a legacy
+   * draft resumed in a browser tab opened before the fix, and saved again) cannot put
+   * a fresh one in the table.
+   *
+   * @param name the name half of a stored pair, may be null
+   * @return the name to use, or null when there is none
+   */
+  private static String storedName(String name) {
+    String trimmed = StringUtils.trimToNull(name);
+    return NULL_NAME.equals(trimmed) ? null : trimmed;
+  }
+
+  /**
+   * Writes a sender into the stored {@code name,address} form, the counterpart of
+   * {@link #splitStoredPerson}.
+   * <p>
+   * A missing display name is written as an empty one, never as the four characters
+   * {@code null} that string concatenation produces: a name is optional on a message
+   * and routinely absent on a draft, and the reader would show that word to the user
+   * as the sender's name. {@link #storedName} decides what missing means, so the word
+   * cannot get back in through a client that echoes it either.
+   *
+   * @param sender the sender, may be null
+   * @return the column value, never null
+   */
+  private String toSenderString(EmailSender sender) {
+    if (sender == null) {
+      return "";
+    }
+    return StringUtils.defaultString(storedName(sender.getName())) + "," + StringUtils.defaultString(sender.getAddress());
   }
 
   public EmailAttachment getAttachmentByMailRemoteIdAnIdAndUserId(long mailRemoteId, String attachmentId, String userId) {
@@ -503,8 +970,7 @@ public class EmailBoxStorage {
                                                          email.getUserId(),
                                                          email.getSubject(),
                                                          email.getContent() != null ? email.getContent().getBody() : null,
-                                                         email.getSender() != null ? email.getSender().getName() + ","
-                                                             + email.getSender().getAddress() : "",
+                                                         toSenderString(email.getSender()),
                                                          toRecipientsString(email.getTo()),
                                                          toRecipientsString(email.getCc()),
                                                          toRecipientsString(email.getBcc()),
@@ -523,7 +989,11 @@ public class EmailBoxStorage {
                                                          email.isHasListPost(),
                                                          email.isHasListUnsubscribe(),
                                                          email.getOriginalSender(),
-                                                         email.isStarred());
+                                                         email.isStarred(),
+                                                         email.getDraftLocalId(),
+                                                         email.getDraftState(),
+                                                         email.getDraftRevision(),
+                                                         email.getDraftUpdatedDate());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -548,9 +1018,17 @@ public class EmailBoxStorage {
           && emailBoxEntity.getAttachments() != null ? emailBoxEntity.getAttachments().stream().map(this::fromEmailAttachmentEntity).filter(Objects::nonNull).toList() : null;
       String excerpt = null;
       if (isExcerpt) {
-        excerpt = Jsoup.parse(emailBoxEntity.getBody()).text().trim();
+        // A row with no body at all. Every message this table held before drafts had
+        // one — it was fetched from the server with the message — so this parsed the
+        // column unguarded, and Jsoup.parse(null) throws. A draft whose author has
+        // typed a subject and no text yet is an ordinary draft, and one of them made
+        // the whole folder listing answer 500 (and the cached search, and the
+        // disconnect cleanup, which map the same way). An empty body has an empty
+        // excerpt, which is what the list already renders as "no content".
+        String body = emailBoxEntity.getBody();
+        excerpt = StringUtils.isBlank(body) ? "" : Jsoup.parse(body).text().trim();
       }
-      String[] emailSenderParts = emailBoxEntity.getSender().split(",");
+      String[] emailSenderParts = splitStoredPerson(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
       List<Long> categoryIds = categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
                                                                                    String.valueOf(emailBoxEntity.getId()),
@@ -582,9 +1060,28 @@ public class EmailBoxStorage {
                               emailBoxEntity.isHasListPost(),
                               emailBoxEntity.isHasListUnsubscribe(),
                               emailBoxEntity.getOriginalSender(),
-                              emailBoxEntity.isStarred());
+                              emailBoxEntity.isStarred(),
+                              emailBoxEntity.getDraftLocalId(),
+                              emailBoxEntity.getDraftState(),
+                              emailBoxEntity.getDraftRevision(),
+                              emailBoxEntity.getDraftUpdatedDate());
 
-      if (withRecipients) {
+      // A draft carries its recipients on EVERY read, whatever the caller asked for.
+      //
+      // Not a convenience: the caller that asks for a listing without them is the
+      // folder list, and a listing row shows a sender, a subject and an excerpt, so
+      // leaving them out was right for as long as a row was mail. A draft row is not
+      // only rendered — it is RESUMED from, straight out of the list, and the composer
+      // fills its recipient fields from what it was handed. Handed a row without them
+      // it showed none, and the first autosave wrote that emptiness back over the
+      // stored ones: the user's draft lost the people it was addressed to by being
+      // opened. Verified on a live mailbox, on drafts imported with recipients whose
+      // rows came back with none after a resume.
+      //
+      // Here rather than at the four call sites, because "a draft is always read whole"
+      // is a property of the row and not of who is asking — the next read path added
+      // would otherwise have to remember, and this one did not.
+      if (withRecipients || StringUtils.isNotBlank(emailBoxEntity.getDraftLocalId())) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
         InternetAddress[] emailCcRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getCc());
         InternetAddress[] emailBccRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getBcc());
@@ -623,25 +1120,67 @@ public class EmailBoxStorage {
     }
   }
 
+  /**
+   * Writes recipients into the stored {@code name,address;name,address} form.
+   * <p>
+   * A recipient with no display name is written with an empty one. It used to be
+   * written with the four characters {@code null} — the result of concatenating a
+   * null — which the reader then handed back as the person's name, because a
+   * recipient parsed out of a delivered message always had a name to write there.
+   * The composer sends addresses alone (a half-typed address has no name yet), so
+   * every draft ever saved carried {@code null} as the name of everyone it was
+   * addressed to.
+   * <p>
+   * What counts as missing is {@link #storedName}'s to say, and it counts that word
+   * as missing: the composer reads a draft's recipients back into its chips and saves
+   * them again, so a row written before this was fixed would otherwise write its own
+   * {@code null} back out on the next autosave and outlive the fix.
+   *
+   * @param recipients the recipients, may be null or empty
+   * @return the column value, never null
+   */
   private String toRecipientsString(List<EmailRecipient> recipients) {
     if (recipients == null || recipients.isEmpty()) {
       return "";
     }
     return recipients.stream()
-                     .map(recipient -> recipient.getName() + "," + recipient.getAddress())
+                     .map(recipient -> StringUtils.defaultString(storedName(recipient.getName())) + ","
+                         + StringUtils.defaultString(recipient.getAddress()))
                      .collect(Collectors.joining(";"));
   }
 
+  /**
+   * Reads back what {@link #toRecipientsString} wrote.
+   * <p>
+   * An entry with no address is dropped rather than returned as a nameless,
+   * addressless recipient: a recipient IS an address, and the caller renders what
+   * comes back — an entry with nothing in it draws an empty chip nobody can act on.
+   * Missing names are handed on as missing on purpose, so the display-name resolution
+   * downstream (the platform profile, else the address itself) gets its chance — and
+   * a stored {@code null} counts as missing, which is what retires the rows written
+   * while the writer was still producing that word, with no re-save and no migration.
+   * <p>
+   * Each entry goes through {@link #splitStoredPerson} rather than through a split of
+   * its own. It had one — on the FIRST comma, where the sender's reader had already
+   * been moved to the last — so a recipient whose name carries a comma came back
+   * addressed to the tail of their own name. Two readers of one written form is how
+   * the same defect got fixed on one of them and stayed on the other.
+   *
+   * @param recipientsString the stored column, may be null or blank
+   * @return the addresses, never null
+   */
   private static InternetAddress[] toRecipientsInternetAddresses(String recipientsString) {
     if (recipientsString == null || recipientsString.trim().isEmpty()) {
       return new InternetAddress[0];
     }
     return Arrays.stream(recipientsString.split(";")).map(entry -> {
-      String[] parts = entry.split(",", 2);
-      String name = parts.length > 0 ? parts[0] : "";
-      String address = parts.length > 1 ? parts[1] : "";
+      String[] parts = splitStoredPerson(entry);
+      String address = parts[1];
+      if (StringUtils.isBlank(address)) {
+        return null;
+      }
       try {
-        return new InternetAddress(address, name);
+        return new InternetAddress(address, parts[0]);
       } catch (Exception e) {
         return null;
       }
