@@ -232,6 +232,14 @@ public class EmailBoxStorage {
     }
     entity.setSubject(draft.getSubject());
     entity.setBody(draft.getContent() != null ? draft.getContent().getBody() : null);
+    // Written with the body, because it describes that body and nothing else. This
+    // path is the one that does NOT go through toEntity — it mutates the loaded row
+    // column by column — so a column left out here is a column that only the very
+    // first save of a draft ever writes, the first being the one that goes through
+    // createEmail. The body is replaced on every autosave; the answer about its
+    // format has to be replaced with it, or the row keeps describing text it no
+    // longer holds.
+    entity.setHtml(draft.getContent() != null ? draft.getContent().isHtml() : null);
     entity.setTo(toRecipientsString(draft.getTo()));
     entity.setCc(toRecipientsString(draft.getCc()));
     entity.setBcc(toRecipientsString(draft.getBcc()));
