@@ -2897,6 +2897,14 @@ public class EmailBoxServiceTest {
    * over the subject, the sender AND the body — and the body is stored as HTML, so it
    * is reduced to text first: without that, searching "div" or "style" would hit half
    * the mailbox on markup nobody sees.
+   * <p>
+   * WHICH read of the mirror is pinned here too. The storage layer offers two — the
+   * total one, whose only legitimate caller is the mailbox wipe, and the one that
+   * leaves Trash out — and a search wired to the wrong one hands the user back the
+   * mail they threw away, with nothing in a result row to reveal where it came from.
+   * The exclusion itself is asserted against a real database in
+   * {@code EmailBoxTrashExclusionStorageTest}; what this pins is that search asks
+   * the question that has it.
    */
   @Test
   @SneakyThrows
@@ -2943,6 +2951,7 @@ public class EmailBoxServiceTest {
     assertEquals(3, page.getTotalMatches());
     // The one that only matched inside an HTML attribute must not be there.
     assertTrue(page.getResults().stream().noneMatch(result -> "Unrelated".equals(result.getSubject())));
+    verify(emailBoxStorage, never()).getEmails(TEST_USER);
   }
 
   /**
