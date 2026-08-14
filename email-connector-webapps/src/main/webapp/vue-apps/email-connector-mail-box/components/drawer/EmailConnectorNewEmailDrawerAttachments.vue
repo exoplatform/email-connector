@@ -104,6 +104,19 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Hands a freshly uploaded file to whoever owns the draft, and answers with the
+    // attachment as stored. Injected rather than called directly here because the
+    // draft session — its local id, its revision, the queue that serialises its saves
+    // — belongs to the composer; this component owns a list of chips and an upload.
+    persist: {
+      type: Function,
+      default: null,
+    },
+    // The counterpart, for a file already stored on the draft.
+    unpersist: {
+      type: Function,
+      default: null,
+    },
   },
   data() {
     return {
@@ -111,6 +124,14 @@ export default {
       // files when several attachment-added events fire synchronously (each read of
       // the not-yet-updated prop would overwrite the previous entry).
       items: [],
+      // The array this component last emitted. Everything else arriving through the
+      // v-model prop is the parent REPLACING the list — resuming a draft with the
+      // files it was stored with, or clearing the composer — and has to be adopted.
+      // Comparing by reference is what tells the two apart: without it, either the
+      // resumed files never appear (the prop is ignored) or files added by two
+      // synchronous events overwrite each other (the prop is trusted blindly, which
+      // is the flicker the local list was introduced to fix).
+      lastEmitted: null,
       chipKey: 0,
       // How many files preview as inline chips before the rest fold into "view all".
       maxInlineChips: 5,
@@ -128,6 +149,14 @@ export default {
     maxFileSizeBytes() {
       const mb = eXo.env.portal.maxFileSize;
       return mb ? mb * 1024 * 1024 : 0;
+    },
+  },
+  watch: {
+    value(newValue) {
+      if (newValue === this.lastEmitted) {
+        return;
+      }
+      this.items = Array.isArray(newValue) ? newValue.slice() : [];
     },
   },
   created() {
@@ -263,8 +292,14 @@ export default {
         this.uploadFile(file, entry).catch(() => this.failPending(entry));
       });
     },
-    // Uploads a File to the commons upload service and resolves the pending entry
-    // with the returned upload id, which is what the backend attaches to the email.
+    // Uploads a File to the commons upload service and, as soon as it has an upload
+    // id, hands it to the draft — which copies the bytes into the platform's file
+    // store and answers with the attachment as stored.
+    //
+    // The chip stays in "uploading" until BOTH have happened, which is deliberate: it
+    // is what the Send button reads to stay disabled, and a file that has reached the
+    // commons upload but not yet the draft is exactly as unsendable as one still going
+    // up. The user is told a file is on its way, and it is.
     async uploadFile(file, entry) {
       const uploadId = this.$uploadService.generateRandomId();
       const resolvedId = await this.$uploadService.upload(file, uploadId);
@@ -272,6 +307,19 @@ export default {
         throw new Error('Upload failed');
       }
       entry.uploadId = resolvedId;
+      if (this.persist) {
+        const stored = await this.persist(entry);
+        if (stored) {
+          // From here the file belongs to the draft, not to this session. Its own id
+          // is how it is downloaded and removed; the upload id is dropped because the
+          // server has consumed the upload, and leaving it would put the same file on
+          // the message twice at send time.
+          entry.id = stored.id;
+          entry.uploadId = null;
+          entry.stored = true;
+          entry.size = stored.size || entry.size;
+        }
+      }
       entry.uploading = false;
       this.sync();
     },
@@ -296,6 +344,12 @@ export default {
       return entry;
     },
     failPending(entry) {
+      // The upload may have succeeded and only the handover to the draft failed, in
+      // which case a temporary file is sitting there belonging to nothing. Released
+      // here rather than left to expire, since the chip it backed is about to go.
+      if (entry && entry.uploadId) {
+        this.$uploadService.deleteUpload(entry.uploadId);
+      }
       const index = this.items.indexOf(entry);
       if (index >= 0) {
         this.items.splice(index, 1);
@@ -303,17 +357,31 @@ export default {
       }
       this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.attach.error'), 'error');
     },
+    // Takes a file off the composed mail. Where it goes depends on where it got to: a
+    // file already on the draft is removed through the draft (and its bytes recorded
+    // for a later sweep), a file that only ever reached the commons upload is released
+    // there. The chip goes either way and immediately — the user's action is not worth
+    // making them watch a round trip, and a removal that fails server-side leaves a
+    // file on a draft they will see again the next time they open it, which is
+    // recoverable; a chip that lingers under a click is not.
     removeAttachment(index) {
       const attachment = this.items[index];
-      if (attachment && attachment.uploadId) {
+      if (attachment && attachment.stored && this.unpersist) {
+        this.unpersist(attachment).catch(() => {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.attach.error'), 'error');
+        });
+      } else if (attachment && attachment.uploadId) {
         this.$uploadService.deleteUpload(attachment.uploadId);
       }
       this.items.splice(index, 1);
       this.sync();
     },
     // Mirror the local list to the parent's v-model (used to build the send payload).
+    // The emitted array is remembered so the watcher above can tell our own echo from
+    // the parent genuinely replacing the list.
     sync() {
-      this.$emit('input', this.items.slice());
+      this.lastEmitted = this.items.slice();
+      this.$emit('input', this.lastEmitted);
     },
     getIconClass(mimeType) {
       return this.$emailConnectorMailBoxService.getAttachmentIcon(mimeType || '').class;
