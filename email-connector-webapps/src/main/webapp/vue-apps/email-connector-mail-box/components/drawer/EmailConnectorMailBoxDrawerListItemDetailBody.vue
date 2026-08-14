@@ -187,17 +187,23 @@ export default {
      * three and they want opposite whitespace handling:
      * <p>
      * 1. no markup at all — the sender's newlines are the whole layout, so the text
-     *    is escaped and shown preformatted;<br>
+     *    is escaped and shown preformatted, and folding is skipped;<br>
      * 2. markup that draws no lines of its own (typed text in an envelope, the shape
-     *    a reply arrives in) — same treatment, but the markup is kept, not escaped;<br>
+     *    a reply arrives in) — same whitespace treatment, but the markup is kept
+     *    rather than escaped, and it still folds;<br>
      * 3. real HTML — untouched, and folded as before.
      * <p>
-     * Folding is skipped for 1 and 2. It looks for a gmail_quote, a blockquote or an
-     * element holding the "On … wrote:" line; a body of those shapes has none, so it
-     * never found a boundary in one and returned it unchanged. Left to run over the
-     * wrapper it would now find exactly one element, the wrapper, and fold from it —
-     * hiding the whole message. Plain-text quoting (the leading "&gt; ") is therefore
-     * still not folded: it never was, and keeping the line breaks does not change it.
+     * Only 1 skips folding, and only because it has nothing to fold: the fold looks
+     * for a gmail_quote, a blockquote or an element holding the "On … wrote:" line,
+     * and a body with no elements at all offers none of them. It never folded such a
+     * body, so skipping it changes nothing — while letting it run would hand it the
+     * one element on the page, our own wrapper, to fold from. Plain-text quoting (the
+     * leading "&gt; ") is therefore still not folded; it never was.
+     * <p>
+     * Shape 2 keeps its fold, because it is not markup-free: its own elements are
+     * intact and are what the fold works on. It is folded *before* being wrapped, so
+     * the fold sees exactly the body it saw before any of this existed and never sees
+     * the wrapper.
      *
      * @param {string} html the raw email body
      * @returns {string} the markup to place in the iframe's body
@@ -210,8 +216,18 @@ export default {
         // Not escaped, and deliberately: this exact string is what already went into
         // the iframe for such a body. Only the whitespace rule around it changes, so
         // nothing can render here that did not render before.
-        return `<div class="ec-plain-text">${html}</div>`;
+        return `<div class="ec-plain-text">${this.foldHistory(html)}</div>`;
       }
+      return this.foldHistory(html);
+    },
+    /**
+     * Collapse the quoted history behind the "See more" toggle, in the reader's
+     * language.
+     *
+     * @param {string} html the email body to fold
+     * @returns {string} the folded body, or the original when nothing was folded
+     */
+    foldHistory(html) {
       return foldQuotedHistory(html, {
         show: this.$t('emailConnector.mailBox.list.drawer.detail.showQuotedText'),
         hide: this.$t('emailConnector.mailBox.list.drawer.detail.hideQuotedText'),

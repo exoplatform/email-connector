@@ -276,6 +276,38 @@ function buildToggleScript(labels) {
 }
 
 /**
+ * Whether anything the reader can actually see survives outside the collapsed block.
+ * <p>
+ * The boundary is only ever a *guess*, and a wrong one that leaves nothing visible
+ * turns the mail into an empty frame with a "See more" link — the module's one stated
+ * red line. It happens whenever the boundary is the first thing in the body: a mail
+ * whose whole content is the attribution line, or an intro immediately followed by
+ * its quote. Cheaper to detect afterwards than to enumerate the shapes that cause it.
+ * <p>
+ * Script and style text is stripped before looking, since it counts as text content
+ * while rendering nothing; an image alone, on the other hand, is a real message.
+ *
+ * @param {Element} body the transformed body element
+ * @returns {boolean} true when the reader is still left with something to read
+ */
+function hasVisibleContentOutsideHistory(body) {
+  const clone = body.cloneNode(true);
+  const history = clone.querySelector(`#${HISTORY_ID}`);
+  if (history) {
+    history.remove();
+  }
+  const toggle = clone.querySelector(`#${TOGGLE_ID}`);
+  if (toggle) {
+    toggle.remove();
+  }
+  clone.querySelectorAll('script, style').forEach(node => node.remove());
+  if ((clone.textContent || '').trim() !== '') {
+    return true;
+  }
+  return clone.querySelector('img') !== null;
+}
+
+/**
  * Fold the quoted history of a received mail body, if any is clearly detected.
  *
  * The boundary node and every node after it (to the end of the body) are moved
@@ -329,6 +361,9 @@ export function foldQuotedHistory(html, labels, parser) {
     parent.insertBefore(toggle, boundary);
     parent.insertBefore(container, boundary);
     historyNodes.forEach(historyNode => container.appendChild(historyNode));
+    if (!hasVisibleContentOutsideHistory(doc.body)) {
+      return html;
+    }
     return doc.body.innerHTML + buildToggleScript(safeLabels);
   } catch (e) {
     return html;
