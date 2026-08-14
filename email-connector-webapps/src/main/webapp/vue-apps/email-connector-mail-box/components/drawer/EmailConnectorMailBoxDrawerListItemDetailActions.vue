@@ -25,25 +25,47 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       parent-element="div"
       element="div"
       class="my-auto" />
-    <v-btn
-      :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
-      @click="updateEmailReadStatus()"
-      icon>
-      <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
-    </v-btn>
-    <v-btn
-      :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
-      @click="archiveEmail()"
-      icon>
-      <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
-    </v-btn>
-    <v-btn
-      :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
-      color="error"
-      @click="deleteEmail()"
-      icon>
-      <v-icon size="20">fa-trash</v-icon>
-    </v-btn>
+    <!-- All three write to the mail server by IMAP UID, which the backend resolves
+         against the inbox — so a message opened out of a read-only folder offers
+         none of them. The extension seam above stays: it is somebody else's toolbar
+         and its actions are not this one's to withdraw. -->
+    <template v-if="!readOnly">
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.unread.label')"
+        @click="updateEmailReadStatus()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-mail-bulk</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.archive.label')"
+        @click="archiveEmail()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+        color="error"
+        @click="deleteEmail()"
+        icon>
+        <v-icon size="20">fa-trash</v-icon>
+      </v-btn>
+    </template>
+    <!-- What a Trash message offers instead. -->
+    <template v-if="trashActions">
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.restore.label')"
+        @click="restoreEmail()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-trash-restore</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.purge.label')"
+        color="error"
+        @click="purgeEmail()"
+        icon>
+        <v-icon size="20">fa-times-circle</v-icon>
+      </v-btn>
+    </template>
   </v-layout>
 </template>
 
@@ -53,6 +75,26 @@ export default {
     email: {
       type: Object,
       default: () => null,
+    },
+  },
+  computed: {
+    /**
+     * Whether the opened message sits in a folder the interface may only read
+     * (Trash), in which case this toolbar offers nothing that writes.
+     *
+     * @returns {Boolean} true when the mail actions must stay hidden
+     */
+    readOnly() {
+      return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email?.folder);
+    },
+    /**
+     * Whether the opened message is a trashed one, in which case this toolbar offers
+     * restore and delete-permanently in place of the three withheld above.
+     *
+     * @returns {Boolean} true when the Trash actions belong here
+     */
+    trashActions() {
+      return this.$emailConnectorMailBoxService.hasTrashActions(this.email?.folder);
     },
   },
   methods: {
@@ -67,6 +109,25 @@ export default {
     archiveEmail() {
       this.$root.$emit('archive-email', [this.email.mailRemoteId]);
       this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Puts the opened message back into the inbox and closes the reader — the message
+     * is leaving the Trash listing behind it, so there is nothing left to read here.
+     *
+     * @returns {void}
+     */
+    restoreEmail() {
+      this.$root.$emit('restore-email', [this.email.mailRemoteId]);
+      this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Asks first, then destroys. The reader closes only once the user has confirmed,
+     * so cancelling leaves them looking at the message they decided to keep.
+     *
+     * @returns {void}
+     */
+    purgeEmail() {
+      this.$root.$emit('open-purge-email-confirm-popup', [this.email.mailRemoteId], () => this.$root.$emit('close-email-detail-drawer'));
     },
   }
 };
