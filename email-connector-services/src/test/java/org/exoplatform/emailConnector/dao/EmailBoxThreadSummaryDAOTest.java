@@ -258,7 +258,7 @@ public class EmailBoxThreadSummaryDAOTest {
     persist(mailFrom("<second@example.org>", MailFolder.SENT, 2L, "thread-9", "Alice,alice@example.org"));
 
     assertTrue(participantsOf("thread-9").isEmpty(), "nothing reads participants on a conversation with no draft");
-    assertTrue(emailBoxDAO.findDraftThreadParticipantsByUserId(USERNAME).isEmpty(),
+    assertTrue(emailBoxDAO.findDraftThreadParticipantsByUserId(USERNAME, MailFolder.TRASH).isEmpty(),
                "and a mailbox with no drafts at all pays nothing for this");
   }
 
@@ -290,7 +290,7 @@ public class EmailBoxThreadSummaryDAOTest {
    * @return its {@code [threadId, storedSender, firstSeenDate]} rows
    */
   private List<Object[]> participantsOf(String threadId) {
-    return emailBoxDAO.findDraftThreadParticipantsByUserId(USERNAME)
+    return emailBoxDAO.findDraftThreadParticipantsByUserId(USERNAME, MailFolder.TRASH)
                       .stream()
                       .filter(row -> threadId.equals(row[0]))
                       .toList();
@@ -357,7 +357,7 @@ public class EmailBoxThreadSummaryDAOTest {
    */
   private Object[] summaryOf(String threadId) {
     Map<String, Object[]> byThread = new HashMap<>();
-    for (Object[] row : emailBoxDAO.summarizeThreadsByUserId(USERNAME)) {
+    for (Object[] row : emailBoxDAO.summarizeThreadsByUserId(USERNAME, MailFolder.TRASH)) {
       byThread.put((String) row[0], row);
     }
     Object[] summary = byThread.get(threadId);

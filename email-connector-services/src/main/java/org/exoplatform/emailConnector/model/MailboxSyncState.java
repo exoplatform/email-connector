@@ -26,10 +26,16 @@ import lombok.NoArgsConstructor;
  * read-modified-written by user-facing preference flows, and sync bookkeeping
  * racing user preferences over one JSON blob is how settings get clobbered).
  * Carries one {@link FolderSyncSnapshot} per bulk-synced folder — the basis of
- * the skip-if-unchanged check — and the discovered Sent/Archive/Drafts folder
- * names, so a routine sync stops re-scanning the whole folder list ({@code LIST
- * *}) every period just to re-find folders that never move. Flat fields rather
- * than a map, so the JSON round-trip stays trivial for the settings serializer.
+ * the skip-if-unchanged check — and the discovered Sent/Archive/Drafts/Trash
+ * folder names, so a routine sync stops re-scanning the whole folder list
+ * ({@code LIST *}) every period just to re-find folders that never move. Flat
+ * fields rather than a map, so the JSON round-trip stays trivial for the settings
+ * serializer.
+ * <p>
+ * New fields go at the END, always. The all-args constructor is positional and
+ * Lombok regenerates it silently, so a field slipped into the middle re-numbers
+ * every argument after it while every call site still compiles — a mistake that
+ * shows up as data in the wrong column rather than as a build failure.
  */
 @Data
 @NoArgsConstructor
@@ -61,6 +67,19 @@ public class MailboxSyncState {
   // on the user's phone invisible here.
   private FolderSyncSnapshot draftsSnapshot;
 
+  // The discovered Trash folder, remembered for the same reason as the three above:
+  // a folder that never moves should not cost a LIST * every time something needs it.
+  // Declared after every existing field, and that placement is the point rather than
+  // tidiness -- this class carries a Lombok all-args constructor, so a field inserted
+  // anywhere but the end silently re-numbers every positional argument after it and
+  // every existing call site keeps compiling while meaning something else.
+  private String             trashFolderName;
+
+  // The Trash folder's own change snapshot, so a Trash nobody has touched since the
+  // last sync is not re-listed and re-fetched every period -- the same skip-if-unchanged
+  // deal the other four folders get. Also trailing, for the reason above.
+  private FolderSyncSnapshot trashSnapshot;
+
   /**
    * The stored snapshot of a bulk-synced folder.
    *
@@ -74,6 +93,7 @@ public class MailboxSyncState {
       case MailFolder.SENT -> sentSnapshot;
       case MailFolder.ARCHIVE -> archiveSnapshot;
       case MailFolder.DRAFTS -> draftsSnapshot;
+      case MailFolder.TRASH -> trashSnapshot;
       default -> null;
     };
   }
@@ -91,6 +111,7 @@ public class MailboxSyncState {
       case MailFolder.SENT -> sentSnapshot = snapshot;
       case MailFolder.ARCHIVE -> archiveSnapshot = snapshot;
       case MailFolder.DRAFTS -> draftsSnapshot = snapshot;
+      case MailFolder.TRASH -> trashSnapshot = snapshot;
       default -> {
         // ALL_MAIL is an on-demand completion store, never bulk-synced: nothing to track.
       }
