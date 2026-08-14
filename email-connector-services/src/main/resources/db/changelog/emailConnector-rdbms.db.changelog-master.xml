@@ -241,29 +241,25 @@
     </createIndex>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-22">
-    <!-- Whether the message was machine-sent, decided from the standard bulk headers at sync
-         time (List-Unsubscribe, Auto-Submitted, Precedence) while the MimeMessage is still at
-         hand. Consumers only see the cached row, so without this the only way to guess is to
-         search the body for the word "unsubscribe", which also matches signatures, mailing
-         list footers and quoted replies, and so mislabels genuine human mail. Existing rows
-         default to false and are corrected on their next sync. -->
-    <addColumn tableName="EMAIL_BOX">
-      <column name="BULK_MAIL" type="BOOLEAN" defaultValueBoolean="false">
-        <constraints nullable="false"/>
-      </column>
-    </addColumn>
-  </changeSet>
-  <changeSet author="email-connector" id="1.0.0-23">
-    <!-- Replace the single BULK_MAIL flag with the raw headers it was collapsing. They do not
-         mean the same thing: Auto-Submitted and Precedence say "no human wrote this", while
+    <!-- The bulk-mail signals, read from the standard headers at sync time while the
+         MimeMessage is still at hand. Consumers only see the cached row, so without these the
+         only way to guess is to search the body for the word "unsubscribe", which also matches
+         signatures, mailing list footers and quoted replies, and so mislabels genuine human
+         mail. Existing rows default to false and are corrected on their next sync.
+         Stored as separate facts rather than one derived verdict, because they do not mean the
+         same thing: Auto-Submitted and Precedence say "no human wrote this", while
          List-Unsubscribe only says "this travelled through bulk distribution machinery" - a
          mailing list stamps it on every message it relays, including one a colleague typed by
-         hand. Collapsing them made list traffic indistinguishable from marketing and filed
-         genuine business mail as automated. List-Id plus a postable List-Post is what actually
-         identifies a mailing list, since marketing senders rarely set List-Post.
-         Kept as separate facts rather than a derived verdict so the classification rule can be
-         changed without re-downloading every mailbox. -->
-    <dropColumn tableName="EMAIL_BOX" columnName="BULK_MAIL"/>
+         hand. Collapsing them into a single flag made list traffic indistinguishable from
+         marketing and filed genuine business mail as automated. List-Id plus a postable
+         List-Post is what actually identifies a mailing list, since marketing senders rarely
+         set List-Post. Keeping the raw facts means the classification rule can be changed
+         without re-downloading every mailbox.
+         Upstream reached this shape in two steps - a single BULK_MAIL flag, then its
+         replacement by these four - which is why feature/ai-contribution carries both an add
+         and a drop. Neither has ever run on this lineage, so they are collapsed here rather
+         than backported literally: replaying them would add a NOT NULL column to EMAIL_BOX and
+         drop it again on every install and every upgrade, for a column no code ever reads. -->
     <addColumn tableName="EMAIL_BOX">
       <column name="AUTO_SUBMITTED" type="BOOLEAN" defaultValueBoolean="false">
         <constraints nullable="false"/>
@@ -279,7 +275,7 @@
       </column>
     </addColumn>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-24">
+  <changeSet author="email-connector" id="1.0.0-23">
     <!-- Who actually wrote a message that arrived through a mailing list. Google Groups and
          Mailman rewrite From to the list itself ("Name via the-list <the-list@example.com>"),
          so the stored sender identifies the transport, not the author - and a colleague's
@@ -290,12 +286,7 @@
       <column name="ORIGINAL_SENDER" type="VARCHAR(320)"/>
     </addColumn>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-39">
-    <!-- Numbered 39, past every id feature/ai-contribution already uses (0..38). This
-         changeset is new here rather than cherry-picked from upstream, and the contacts
-         backport stacked on this branch ships 1.0.0-25 and 1.0.0-27..29 - two different
-         changesets sharing an id under the same author is a Liquibase collision that would
-         only surface once both had reached develop. -->
+  <changeSet author="email-connector" id="1.0.0-24">
     <!-- The reconcile view this change introduced (findSyncViewByUserIdAndFolder) runs on
          every routine sync of every connected mailbox: it filters on (USER_ID, FOLDER) and
          sorts on RECEIVED_DATE. The indexes above cover USER_ID, (USER_ID, THREAD_ID) and
