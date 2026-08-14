@@ -53,6 +53,7 @@ import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -333,6 +334,46 @@ public class EmailBoxRest {
                                     String threadId) {
     try {
       return emailBoxService.completeThread(threadId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
+  @GetMapping("/thread/{threadId}/ai-summary")
+  @Secured("users")
+  @Operation(summary = "Gets a conversation's stored summary", method = "GET",
+             description = "Returns the summary stored for a conversation, with a 'stale' flag saying whether the conversation has gained a message since it was written. 404 when no summary has been stored: this add-on does not produce them, so a deployment with no producer installed answers 404 for every conversation, which is the expected silence rather than an error.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "No summary stored for this conversation") })
+  public ThreadAiSummary getThreadAiSummary(HttpServletRequest request,
+                                            @Parameter(description = "Conversation thread id", required = true)
+                                            @PathVariable("threadId")
+                                            String threadId) {
+    try {
+      ThreadAiSummary summary = emailBoxService.getThreadAiSummary(threadId, request.getRemoteUser());
+      if (summary == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return summary;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
+  @PostMapping("/thread/{threadId}/ai-summary/refresh")
+  @Secured("users")
+  @Operation(summary = "Asks for a conversation to be summarised", method = "POST",
+             description = "Broadcasts a request to summarise the conversation and returns immediately. 202 and not 200 on purpose: the request has been accepted, and nothing here can promise a summary will be written — the producer lives elsewhere, and a deployment without one is supported. Poll the GET endpoint for the result.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "202", description = "Request accepted"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public ResponseEntity<String> refreshThreadAiSummary(HttpServletRequest request,
+                                                       @Parameter(description = "Conversation thread id", required = true)
+                                                       @PathVariable("threadId")
+                                                       String threadId) {
+    try {
+      emailBoxService.requestThreadAiSummary(threadId, request.getRemoteUser());
+      return ResponseEntity.accepted().build();
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
