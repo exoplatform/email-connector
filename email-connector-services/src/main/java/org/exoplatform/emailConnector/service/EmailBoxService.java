@@ -3329,7 +3329,17 @@ public class EmailBoxService {
    * <p>
    * <b>Send failed.</b> Nothing had been removed yet, so the draft is intact here
    * and on the server. Its state goes back to what it was, and the failure travels
-   * up for the composer to report the way it already reports a failed send.
+   * up for the composer to report the way it already reports a failed send. Its files
+   * are intact too — the send never frees them, whatever becomes of it (see
+   * {@link #transmitDraft}); they belong to the draft until the draft is gone.
+   * <p>
+   * <b>Send refused before it starts.</b> A draft that shows a file it can no longer
+   * read cannot be sent, and finding that out is the FIRST thing this does — before
+   * the composer's text is written to the row and before the row is claimed as
+   * {@link DraftState#SENDING}. Nothing is saved, nothing is claimed, nothing is
+   * removed: the draft is left exactly where it was, on both sides, for the user to
+   * take the broken chip off and try again. Delivering a mail whose attachments are
+   * missing is the one failure here that the sender cannot see and cannot take back.
    * <p>
    * A second send of the same draft cannot start while the first is in flight: the
    * row is claimed as {@link DraftState#SENDING} before the message goes out (see
@@ -3374,10 +3384,17 @@ public class EmailBoxService {
         // second copy of the same mail on the wire.
         throw new IllegalArgumentException("emailConnector.drafts.send.alreadyInFlight");
       }
+      // The files the draft has been carrying since some earlier session, read once and
+      // checked BEFORE anything is written or claimed. A send that cannot carry every
+      // file it shows must leave the draft exactly where it was: nothing saved, nothing
+      // claimed, nothing removed here or on the server, and the user still holding a
+      // draft they can fix.
+      List<EmailAttachment> storedAttachments = emailBoxStorage.getDraftAttachments(username, draftLocalId);
+      requireReadableDraftFiles(storedAttachments, username);
       DraftState stateBeforeSend = saveDraftBeforeSend(draft, stored);
       emailBoxStorage.updateDraftState(username, draftLocalId, DraftState.SENDING);
       try {
-        transmitDraft(draft, stored, username, userEmailSetting);
+        transmitDraft(draft, stored, storedAttachments, username, userEmailSetting);
       } catch (RuntimeException e) {
         // Nothing has been removed, here or on the server. Put the claim back down at
         // exactly the state the row was in and let the composer report the refusal.
@@ -3449,19 +3466,25 @@ public class EmailBoxService {
    * the session it is in; a draft resumed after a restart has none of those, so a
    * message built from the payload alone goes out with the words and without the files
    * — silent loss the sender cannot discover or take back. The draft's own stored
-   * files, read off the row, ride alongside them: what was attached before, and what
-   * was attached just now.
+   * files, read off the row by the caller, ride alongside them: what was attached
+   * before, and what was attached just now.
    *
    * @param draft the composed draft as the composer is showing it
    * @param stored the row, for the identity the composer does not own
+   * @param storedAttachments the draft's own files, read and checked by
+   *          {@link #sendDraft} before anything was claimed
    * @param username the mailbox owner
    * @param userEmailSetting the user's connector binding
    */
-  private void transmitDraft(Email draft, Email stored, String username, UserEmailSetting userEmailSetting) {
+  private void transmitDraft(Email draft,
+                             Email stored,
+                             List<EmailAttachment> storedAttachments,
+                             String username,
+                             UserEmailSetting userEmailSetting) {
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
-    draft.setStoredAttachments(emailBoxStorage.getDraftAttachments(username, stored.getDraftLocalId()));
+    draft.setStoredAttachments(storedAttachments);
     try {
       MimeMessage message = buildOutgoingMessage(draft, userEmailSetting, emailConnector, stored.getMailHeaderId(), uploadIds);
       applyStoredThreadingHeaders(message, stored);
@@ -3470,9 +3493,18 @@ public class EmailBoxService {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
     } finally {
-      // Same as the ordinary send: the attachment body parts stream lazily from the
-      // temporary upload files, so they cannot be freed before the message (and its
-      // Sent-folder copy) has been written.
+      // The commons uploads, and only them. Those are this session's temporary files,
+      // consumed by the message that was just built, and they cannot be freed before it
+      // (and its Sent-folder copy) has been written, because their parts stream lazily
+      // from exactly those files. Same as the ordinary send.
+      //
+      // The draft's STORED files are deliberately NOT freed here, and that asymmetry is
+      // the point: they belong to the DRAFT, not to this attempt at sending it. A send
+      // that comes back refused leaves the draft standing, and a draft whose files had
+      // been released by the failed attempt would be one the user can open, read and
+      // never send. They are freed when the draft itself goes — recorded as
+      // unreferenced by the row delete that follows a SUCCESSFUL send (see
+      // cleanupSentDraft), which is the only place that knows the draft is over.
       removeUploadResources(uploadIds);
     }
   }
@@ -3509,6 +3541,19 @@ public class EmailBoxService {
    * that did not complete, which is what the warn lines are for. Above all the local
    * row goes either way: see {@link #sendDraft} for why a leftover server draft is
    * the better of the two failures available here.
+   * <p>
+   * <b>This is where the draft's files are released.</b> Not by this method directly —
+   * by {@link EmailBoxStorage#deleteEmailsByIds}, which reads the file ids off the
+   * attachment rows and records them as unreferenced BEFORE it deletes anything. The
+   * order is not a nicety: that delete is a bulk JPQL statement, the attachment rows go
+   * with it through the database's own {@code ON DELETE CASCADE}, nothing in Java ever
+   * observes them dying, and afterwards nothing anywhere knows which files they named.
+   * Read first or never. A marker written for a file that turns out to still be
+   * referenced is harmless (the sweep verifies); bytes with nothing naming them are a
+   * leak with no record of itself.
+   * <p>
+   * And this is the ONLY place a send frees a draft's files. The send itself does not,
+   * however it ends: see {@link #transmitDraft}.
    *
    * @param sentDraft the row that was just sent, as it was read before the send —
    *          which is where its technical id and the UID of its server copy live
@@ -3796,6 +3841,35 @@ public class EmailBoxService {
       }
     }
     return true;
+  }
+
+  /**
+   * The same question the upload asks, asked before a SEND, and answered by refusing
+   * rather than by carrying on quietly.
+   * <p>
+   * The asymmetry with {@link #draftFilesAreAllReadable} is deliberate. An upload that
+   * does not happen costs the user nothing they can see: their words are stored, and
+   * the composer tells them the draft lives only here. A mail that goes out without
+   * the file the sender attached cannot be discovered by them and cannot be taken
+   * back, so it is the one case worth failing the whole operation for.
+   * <p>
+   * Asked BEFORE the row is claimed as {@link DraftState#SENDING} and before the
+   * composer's text is written to it, so a refused send leaves the draft exactly as it
+   * was — locally and on the server — with nothing claimed and nothing to undo.
+   *
+   * @param attachments the draft's stored files
+   * @param username the mailbox owner, for the log
+   * @throws IllegalStateException when one of them cannot be read
+   */
+  private void requireReadableDraftFiles(List<EmailAttachment> attachments, String username) {
+    for (EmailAttachment attachment : attachments) {
+      if (attachment.getFileId() == null || !emailBoxStorage.attachmentFileExists(attachment.getFileId())) {
+        LOG.warn("The draft of user {} cannot be sent: its attachment {} has no file behind it any more",
+                 username,
+                 attachment.getName());
+        throw new IllegalStateException("emailConnector.drafts.send.attachmentGone");
+      }
+    }
   }
 
   /**
@@ -4631,9 +4705,10 @@ public class EmailBoxService {
    * streaming read to ask for. Nothing here holds one longer than the write.
    * <p>
    * A file that has gone answers with an {@code IOException} rather than an empty
-   * stream, so the write fails and the message is not delivered half-assembled. The
-   * caller checks first (see {@link #draftFilesAreAllReadable}); this is the backstop
-   * for the file that disappears between the check and the write.
+   * stream, so the write fails and the message is not delivered half-assembled. Both
+   * callers check first (see {@link #draftFilesAreAllReadable} and
+   * {@link #requireReadableDraftFiles}); this is the backstop for the file that
+   * disappears between the check and the write.
    */
   private static final class StoredFileDataSource implements DataSource {
 
@@ -4716,8 +4791,9 @@ public class EmailBoxService {
    * Sending a mail whose attachments are missing, to someone who is expecting them, is
    * not something the sender can discover afterwards or take back — the branch's own
    * rule for the mail server holds here too: refuse rather than deliver something that
-   * looks complete and is not. {@link StoredFileDataSource} is what answers it, at the
-   * moment the bytes are actually written.
+   * looks complete and is not. {@link #sendDraft} asks that question before it claims
+   * the row; {@link StoredFileDataSource} is what answers it again at the moment the
+   * bytes are actually written.
    *
    * @param multipart the message body being assembled
    * @param email the draft being sent

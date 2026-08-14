@@ -3507,6 +3507,86 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
   }
 
+  /**
+   * A send whose draft shows a file that can no longer be read is refused, and refused
+   * BEFORE anything is written, claimed or removed.
+   * <p>
+   * The asymmetry with the upload is the point. An upload that does not happen costs
+   * the user nothing they can see; a mail delivered without the file its sender
+   * attached cannot be discovered by them and cannot be taken back. So this one fails
+   * the whole operation — and leaves the draft exactly where it was, on both sides, for
+   * the user to take the broken chip off and try again.
+   * <p>
+   * Four separate "nothing happened" assertions rather than one, because there are four
+   * distinct ways this could go wrong and each is its own regression: the text written
+   * to the row, the SENDING claim taken, the mail put on the wire, the row deleted.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSendRefusedOverAMissingFileClaimsNothingAndChangesNothing() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of(attachmentRow()));
+    when(emailBoxStorage.attachmentFileExists(77L)).thenReturn(false);
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email draft = draft("draft-1");
+      assertThrows(IllegalStateException.class, () -> emailBoxService.sendDraft(draft, TEST_USER));
+      transportMock.verifyNoInteractions();
+    }
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).updateDraftState(anyString(), anyString(), any(DraftState.class));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * A draft sent tomorrow carries the file attached yesterday — and the send itself
+   * never frees it.
+   * <p>
+   * The composer's payload holds upload ids for files attached in the session that is
+   * still open, and a draft resumed after a restart has none of them; a message built
+   * from the payload alone would go out with the words and without the files. So the
+   * stored file is read off the row and put on the message, which is asserted here on
+   * the message that actually reached {@code Transport.send}.
+   * <p>
+   * The second half is the slice's own rule: the files belong to the DRAFT, not to the
+   * attempt at sending it. They are freed by the row delete that follows a successful
+   * send — {@code deleteEmailsByIds}, which writes the file ids down before the bulk
+   * delete takes the attachment rows out from under Java — and by nothing else on this
+   * path. A {@code finally} that released them the way the ordinary send releases
+   * upload ids would leave a refused send with a draft the user can read and never
+   * send.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftSentTomorrowCarriesYesterdaysFileAndTheRowDeleteIsWhatFreesIt() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    givenADraftsFolder();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of(attachmentRow()));
+    when(emailBoxStorage.attachmentFileExists(77L)).thenReturn(true);
+    givenTheFileStoreHolds(77L, "yesterday's bytes".getBytes());
+
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      // The composer sends NO attachments at all: everything this draft carries was
+      // attached in a session that is over, which is the whole case being tested.
+      emailBoxService.sendDraft(draft("draft-1"), TEST_USER);
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      Multipart multipart = (Multipart) sent.getValue().getContent();
+      assertEquals(2, multipart.getCount(), "the body, then the file the draft has been carrying");
+      assertEquals("report.pdf", multipart.getBodyPart(1).getFileName());
+    }
+    // The one and only thing that frees a sent draft's files, and it does it by
+    // recording them before the rows go.
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
   @Test
   void aSendWhoseCleanupFailsStillTakesTheLocalRowAway() throws Exception {
     // The mail is out and cannot be recalled. Showing the user a draft of a message
