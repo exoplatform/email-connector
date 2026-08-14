@@ -68,7 +68,10 @@ public class Email {
   // threads by this id. inReplyTo / mailReferences stay backend-only.
   private String               threadId;
 
-  @JsonIgnore
+  // Exposed, unlike mailReferences, and only because of drafts: resuming a draft
+  // reply means putting the parent's Message-ID back into the composer, and until
+  // sending a draft moves server-side this is the only way it gets there. Everything
+  // else about a draft's threading stays where it was decided, on the server.
   private String               inReplyTo;
 
   @JsonIgnore
@@ -111,4 +114,26 @@ public class Email {
   // render the star. Declared last so the Lombok all-args constructor only grows a
   // trailing argument (existing positional call sites stay aligned).
   private boolean              starred;
+
+  // The draft fields, null on every message that is not a draft. Appended after
+  // starred for the reason starred itself gives: Lombok's all-args constructor
+  // follows field order and createEmails calls it positionally.
+
+  // The composer's stable handle on this draft — the id it saves, resumes and
+  // discards by. Exposed to the client because it is the only id a draft has that
+  // survives a save (the IMAP UID does not: see DraftState).
+  private String               draftLocalId;
+
+  // Where the draft stands against its copy on the server. Exposed so the composer
+  // can tell the user their words are only here, which is the honest thing to say
+  // when the account has no Drafts folder.
+  private DraftState           draftState;
+
+  // The local edit counter. Round-tripped through the client: the composer sends
+  // back the revision it is editing, and a save carrying a revision the row has
+  // already passed is dropped rather than applied.
+  private Long                 draftRevision;
+
+  // When the user last typed. The reader shows this, not receivedDate.
+  private Date                 draftUpdatedDate;
 }
