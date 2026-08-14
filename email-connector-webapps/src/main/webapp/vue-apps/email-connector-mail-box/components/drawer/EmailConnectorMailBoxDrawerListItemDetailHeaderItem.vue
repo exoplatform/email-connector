@@ -48,10 +48,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <span
             v-else
             class="text-color">{{ value.name }}</span>
-          <!-- Spaced by a margin rather than by a blank in the template: the
-               template compiler condenses whitespace between elements, so a plain
-               space would have left the name glued to the address. -->
-          <span class="ms-1">{{ value.address }}</span>
+          <!-- A real interpolated space, not a margin: margin is box geometry,
+               not text content, so selection/copy, find-in-page and screen
+               readers would glue the name to the address. A literal blank
+               between elements is condensed away by the template compiler;
+               an interpolated one cannot be. -->
+          {{ ' ' }}
+          <span>{{ value.address }}</span>
         </span>
         <!-- The way from a mail to the person who sent it. Added beside the
              existing name rather than replacing it: a colleague's name already
