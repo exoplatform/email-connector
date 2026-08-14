@@ -90,6 +90,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -109,6 +110,7 @@ import org.exoplatform.commons.notification.impl.NotificationContextImpl;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
@@ -394,6 +396,11 @@ public class EmailBoxService {
 
   @Autowired
   private EmailConnectorService   emailConnectorService;
+
+  // Publishes EmailSentEvent after a successful send, so contact collection (and any
+  // later consumer) learns who the user writes to without this class knowing about it.
+  @Autowired
+  private ApplicationEventPublisher eventPublisher;
 
   @PostConstruct
   public void initEmailBoxSyncJob() {
@@ -2633,6 +2640,7 @@ public class EmailBoxService {
       Transport.send(message);
       String emailType = StringUtils.isEmpty(email.getMailHeaderId()) ? "newEmail" : "reply";
       listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL, username, emailType);
+      publishEmailSentEvent(username, email);
       try {
         copyToSentFolder(message, username, userEmailSetting);
       } catch (IllegalStateException e) {
@@ -2657,6 +2665,31 @@ public class EmailBoxService {
       // Free the commons temporary upload resources only after the message (and its Sent-folder copy) has been built,
       // since the attachment body parts stream their bytes lazily from those temporary files.
       removeUploadResources(uploadIds);
+    }
+  }
+
+  /**
+   * Publishes the {@link EmailSentEvent} carrying who the mail was addressed to
+   * — To and Cc ONLY, never Bcc: Bcc is deliberately not a contact-collection
+   * signal, so it is stripped here at the source rather than trusted to every
+   * consumer. Fenced so an event consumer's failure can never fail a mail the
+   * SMTP server already accepted.
+   *
+   * @param username the sender
+   * @param email the composed email as sent
+   */
+  private void publishEmailSentEvent(String username, Email email) {
+    try {
+      List<EmailRecipient> recipients = new ArrayList<>();
+      if (!CollectionUtils.isEmpty(email.getTo())) {
+        recipients.addAll(email.getTo());
+      }
+      if (!CollectionUtils.isEmpty(email.getCc())) {
+        recipients.addAll(email.getCc());
+      }
+      eventPublisher.publishEvent(new EmailSentEvent(username, recipients));
+    } catch (Exception e) {
+      LOG.warn("Error publishing the sent-email event for user {}", username, e);
     }
   }
 
