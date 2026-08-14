@@ -58,6 +58,7 @@ import EmailConnectorMailBoxDrawerFilterChips from './components/drawer/EmailCon
 import EmailConnectorNewEmailDrawer from './components/drawer/EmailConnectorNewEmailDrawer.vue';
 import EmailConnectorNewEmailDrawerAttachments from './components/drawer/EmailConnectorNewEmailDrawerAttachments.vue';
 import EmailConnectorNewEmailDrawerNoSubjectConfirmPopup from './components/drawer/EmailConnectorNewEmailDrawerNoSubjectConfirmPopup.vue';
+import EmailConnectorMailBoxPurgeConfirmPopup from './components/drawer/EmailConnectorMailBoxPurgeConfirmPopup.vue';
 
 const components = {
   'email-connector-mail-box-app': EmailConnectorMailBoxApp,
@@ -103,7 +104,8 @@ const components = {
   'email-connector-mail-box-drawer-filter-chips': EmailConnectorMailBoxDrawerFilterChips,
   'email-connector-new-email-drawer': EmailConnectorNewEmailDrawer,
   'email-connector-new-email-drawer-attachments': EmailConnectorNewEmailDrawerAttachments,
-  'email-connector-new-email-drawer-no-subject-confirm-popup': EmailConnectorNewEmailDrawerNoSubjectConfirmPopup
+  'email-connector-new-email-drawer-no-subject-confirm-popup': EmailConnectorNewEmailDrawerNoSubjectConfirmPopup,
+  'email-connector-mail-box-purge-confirm-popup': EmailConnectorMailBoxPurgeConfirmPopup
 };
 
 for (const key in components) {

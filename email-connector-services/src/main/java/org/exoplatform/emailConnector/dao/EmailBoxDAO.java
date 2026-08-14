@@ -171,24 +171,27 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<Long> ids);
 
   /**
-   * Counts the unread emails of the locally synced mirror. Never reaches the
+   * Counts the unread emails of the locally synced mirror, minus one folder — always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH}. Never reaches the
    * IMAP server: the badge reflects what the platform already knows.
    * <p>
-   * Scoped to one folder, and the caller passes the inbox: SENT and ARCHIVE
-   * rows carry the server's SEEN flag too, so an archived message that was
-   * never read would otherwise be counted forever — the client can only mark
-   * inbox messages read, so nothing could ever clear it. ALL_MAIL is a
-   * thread-completion cache that duplicates the other folders and must never be
-   * counted at all.
+   * The exclusion is the badge's half of the rule the reader and the search already
+   * follow, and it is the one a user meets without ever opening a Trash listing:
+   * deleting an unread mail is how most people dismiss one, the message keeps its
+   * unread flag on the way to the server's Trash, and a total count would take it
+   * back the moment that folder is cached — a badge insisting on unread mail that
+   * nothing on screen accounts for, permanently. See
+   * {@link #findByUserIdAndThreadIdWithAttachments} for why the exclusion is a
+   * parameter and why a plain inequality is safe on this column.
    *
    * @param  userId the mailbox owner
-   * @param  folder the folder to count in
-   * @return        the number of unread emails in that folder
+   * @param  excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @return        the number of unread emails the mailbox still shows
    */
-  @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read = FALSE)")
-  long countUnreadByUserIdAndFolder(@Param("userId")
-  String userId, @Param("folder")
-  String folder);
+  @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder <> :excludedFolder AND (email.read IS NULL OR email.read = FALSE)")
+  long countUnreadByUserIdExcludingFolder(@Param("userId")
+  String userId, @Param("excludedFolder")
+  String excludedFolder);
 
   @Transactional
   @Modifying
@@ -304,16 +307,38 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * that closes with the write. The join is necessary and was never sufficient; what
    * makes the writes work is that they now map from this instance. See
    * {@code EmailBoxStorage#saveDraftRow}.
+   * <p>
+   * Scoped to a folder, always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#DRAFTS}, since Trash
+   * started being cached. A local id is not the name of a row, it is the composer's
+   * handle on a DRAFT, and the two stopped being the same thing the moment a
+   * discarded draft could exist as a TRASH row still carrying its id: unscoped, this
+   * query would hand that row back to every caller below — the composer would reopen
+   * a draft the user threw away, an autosave would write text into the bin, and a
+   * send would transmit from a row nothing shows.
+   * <p>
+   * The alternative was to clear {@code DRAFT_LOCAL_ID} when a row is cached into
+   * Trash, and it was rejected: it destroys the only handle the draft ever had (so a
+   * restore could never put it back under it), it fixes only the rows THIS code
+   * writes, and it would have to be remembered by every future writer of a TRASH row.
+   * A predicate on the one query every draft read already goes through cannot be
+   * forgotten by code that does not exist yet.
+   * <p>
+   * Every caller means DRAFTS — there is no read of a draft by local id that should
+   * be given a different answer — so the folder is passed by the storage layer as a
+   * constant, exactly as the TRASH exclusions are.
    *
    * @param userId the mailbox owner
    * @param draftLocalId the composer's handle on the draft
+   * @param folder the folder to look in, always {@code MailFolder.DRAFTS}
    * @return the matching rows with their attachments, normally exactly one, never
    *         null
    */
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId")
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId AND email.folder = :folder")
   List<EmailBoxEntity> findByUserIdAndDraftLocalIdWithAttachments(@Param("userId")
   String userId, @Param("draftLocalId")
-  String draftLocalId);
+  String draftLocalId, @Param("folder")
+  String folder);
 
   /**
    * The user's cached rows carrying a given Message-ID, newest first. Its one
@@ -335,6 +360,36 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")
   String mailHeaderId, @Param("userId")
   String userId);
+
+  /**
+   * Every {@code Message-ID} a conversation holds, across every folder, TRASH
+   * INCLUDED — the answer to "do we already have this message", as opposed to "may
+   * this message be shown".
+   * <p>
+   * It exists because those two questions stopped having the same answer, and the
+   * reader is now the wrong one to ask the first. Thread completion asks what the
+   * conversation already holds so it can go and fetch what it does not, and it used
+   * to build that set from {@link #findByUserIdAndThreadIdWithAttachments} — which
+   * excludes Trash. A message the user deleted therefore stopped counting as held,
+   * became a "missing ancestor", and was pulled back out of the provider's
+   * {@code \All} superset and cached under
+   * {@link org.exoplatform.emailConnector.model.MailFolder#ALL_MAIL}: a folder no
+   * exclusion covers, so the deleted message reappeared in the reader — resurrected
+   * by the very act of opening the conversation it was deleted from.
+   * <p>
+   * The fix is this query and not a weaker exclusion on the reader. The reader's job
+   * is to show a conversation and a deleted message is not part of it; what needed to
+   * change is that the completion stops using a DISPLAY read as an INVENTORY.
+   * Ids only — nothing this returns is ever rendered.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @return the Message-IDs of every cached row of that conversation, Trash included
+   */
+  @Query("SELECT email.mailHeaderId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId = :threadId AND email.mailHeaderId IS NOT NULL")
+  List<String> findMailHeaderIdsByUserIdAndThreadId(@Param("userId")
+  String userId, @Param("threadId")
+  String threadId);
 
   /**
    * How many cached messages of a folder carry a given Message-ID. A count rather
@@ -374,17 +429,27 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * a bound parameter goes through the same enum conversion as every other write to
    * this column instead of relying on how a given dialect renders a literal.
    *
+   * Scoped to {@link org.exoplatform.emailConnector.model.MailFolder#DRAFTS} for the
+   * reason {@link #findByUserIdAndDraftLocalIdWithAttachments} gives: a local id
+   * names a draft, not a row, and a discarded draft can exist as a TRASH row still
+   * carrying it. Unscoped, this write would put such a row into
+   * {@code LOCAL_ONLY} — which {@code EmailBoxService#isProtectedDraft} treats as
+   * unsent words to be preserved, exempting the row from the cleanup and the window
+   * trim, so a deleted message would sit in the cache forever.
+   *
    * @param userId the mailbox owner
    * @param draftLocalId the composer's handle on the draft
    * @param draftState the state to put the row back to
+   * @param folder the folder to write in, always {@code MailFolder.DRAFTS}
    */
   @Transactional
   @Modifying
-  @Query("UPDATE EmailBoxEntity email SET email.draftState = :draftState, email.mailRemoteId = null WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId")
+  @Query("UPDATE EmailBoxEntity email SET email.draftState = :draftState, email.mailRemoteId = null WHERE email.userId = :userId AND email.draftLocalId = :draftLocalId AND email.folder = :folder")
   void detachDraftFromServerCopy(@Param("userId")
   String userId, @Param("draftLocalId")
   String draftLocalId, @Param("draftState")
-  DraftState draftState);
+  DraftState draftState, @Param("folder")
+  String folder);
 
   /**
    * The distinct conversations of the cached messages carrying any of the given

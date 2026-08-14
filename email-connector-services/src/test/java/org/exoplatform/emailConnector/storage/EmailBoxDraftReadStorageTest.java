@@ -338,7 +338,7 @@ public class EmailBoxDraftReadStorageTest {
     draft.setTo(List.of(new EmailRecipient("null", "veronika@example.org", null, false)));
     emailBoxStorage.saveDraft(draft);
 
-    EmailBoxEntity stored = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(ECHOED_NULL_NAME_USER, "draft-echoed-null")
+    EmailBoxEntity stored = emailBoxDao.findByUserIdAndDraftLocalIdWithAttachments(ECHOED_NULL_NAME_USER, "draft-echoed-null", MailFolder.DRAFTS)
                                        .get(0);
 
     assertEquals(",veronika@example.org", stored.getTo(), "a name that is the word null is no name, and is stored as none");
