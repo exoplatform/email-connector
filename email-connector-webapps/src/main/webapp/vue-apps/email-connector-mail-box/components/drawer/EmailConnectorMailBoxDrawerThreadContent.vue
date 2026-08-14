@@ -23,17 +23,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-list-item-title>
       </v-list-item-content>
     </v-list-item>
-    <!-- Room for somebody else to say something about this conversation as a whole,
-         directly under its subject and above everything that is about its individual
-         messages — the same seam the mail toolbars already offer, in the same shape
-         (see EmailConnectorMailBoxDrawerListItemDetailActions). A module that can
-         summarise a conversation fills it with
+    <!-- Assign the conversation to the add-on's email categories (Important / Invitation
+         / Notification) and show the ones already applied. Drafts are kept out of it:
+         categories are assigned by IMAP UID, which a draft may not have, and an unsent
+         message is not a thing anyone means to categorise. -->
+    <email-connector-mail-box-drawer-category-bar :emails="categorizableMessages" />
+    <!-- Room for somebody else to say something about this conversation as a whole:
+         under its subject and its categories, and above everything that is about the
+         individual messages — the same seam the mail toolbars already offer, in the
+         same shape (see EmailConnectorMailBoxDrawerListItemDetailActions). A module
+         that can summarise a conversation fills it with
          extensionRegistry.registerComponent('EmailThread', 'email-thread-summary', …)
          and is rendered here with the params below as props.
 
+         Below the categories rather than above them: the categories are chips that
+         belong with the subject as the conversation's labelling, while a summary is a
+         block of prose, and pushing the chips away from the title left the header
+         reading as two separate things. Ordered by weight, the light identifying line
+         stays next to what it identifies.
+
          Nothing in this add-on registers into it, so the component renders NOTHING at
-         all — not even its own wrapper — and the subject sits against the category bar
-         exactly as before. -->
+         all — not even its own wrapper — and the category bar sits against the first
+         message exactly as before. -->
     <extension-registry-components
       :params="summaryExtensionParams"
       name="EmailThread"
@@ -41,11 +52,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       parent-element="div"
       element="div"
       class="my-auto" />
-    <!-- Assign the conversation to the add-on's email categories (Important / Invitation
-         / Notification) and show the ones already applied. Drafts are kept out of it:
-         categories are assigned by IMAP UID, which a draft may not have, and an unsent
-         message is not a thing anyone means to categorise. -->
-    <email-connector-mail-box-drawer-category-bar :emails="categorizableMessages" />
     <!-- A thin progress bar while the archived tail is fetched in the background. -->
     <v-progress-linear
       v-if="loadingOlder"
