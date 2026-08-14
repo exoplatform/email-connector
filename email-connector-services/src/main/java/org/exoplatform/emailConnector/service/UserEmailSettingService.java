@@ -24,6 +24,8 @@ import javax.mail.MessagingException;
 import javax.mail.Session;
 import javax.mail.Store;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -137,6 +139,9 @@ public class UserEmailSettingService {
                                                                                userEmailSetting.getEmailSyncStatus(),
                                                                                userEmailSetting.getEmailSyncFailedAttemps(),
                                                                                userEmailSetting.getLastEmailSyncStartDate());
+    userEmailSettingEntity.setNotifyAllCategories(userEmailSetting.getNotifyAllCategories());
+    userEmailSettingEntity.setNotifyCategories(userEmailSetting.getNotifyCategories());
+    userEmailSettingEntity.setDefaultCategoryView(userEmailSetting.getDefaultCategoryView());
     settingService.set(Context.USER.id(username),
                        EMAIL_CONNECTOR_SCOPE,
                        USER_EMAIL_SETTING_KEY,
@@ -144,6 +149,30 @@ public class UserEmailSettingService {
     if (broadcast) {
       eventPublisher.publishEvent(new EmailBoxCleanupEvent(username));
     }
+  }
+
+  /**
+   * Update only the new-mail notification / default-view preferences of a user's email setting,
+   * without reconnecting the mailbox. A no-op when the user has no connected mailbox.
+   *
+   * @param username the user whose preferences are updated
+   * @param notifyAllCategories notify for every new email (null/true) or only for the selected
+   *          categories (false)
+   * @param notifyCategories the Inbox category ids to notify about when notifyAllCategories is false
+   * @param defaultCategoryView the Inbox category the mailbox drawer opens positioned to (null = None)
+   */
+  public void updateEmailPreferences(String username,
+                                     Boolean notifyAllCategories,
+                                     List<Long> notifyCategories,
+                                     Long defaultCategoryView) {
+    UserEmailSetting userEmailSetting = getUserEmailSetting(username);
+    if (StringUtils.isBlank(userEmailSetting.getEmailConnectorId())) {
+      return;
+    }
+    userEmailSetting.setNotifyAllCategories(notifyAllCategories);
+    userEmailSetting.setNotifyCategories(notifyCategories);
+    userEmailSetting.setDefaultCategoryView(defaultCategoryView);
+    setUserEmailSetting(userEmailSetting, username, false);
   }
 
   /**
@@ -219,6 +248,20 @@ public class UserEmailSettingService {
   public Store connect(UserEmailSetting userEmailSetting) throws MessagingException {
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    return connect(userEmailSetting, emailConnector);
+  }
+
+  /**
+   * Connect to the user's mail box against an already-resolved connector preset. Pure
+   * IMAP — no database read happens here, which is what lets the sync's parallel
+   * body-prefetch workers call it from bare threads (no request lifecycle, no
+   * EntityManager) after the sync thread resolved the connector once for all of them.
+   *
+   * @param userEmailSetting userEmailSetting used to connect
+   * @param emailConnector the connector preset holding the IMAP endpoint
+   * @return store user box connected store
+   */
+  public Store connect(UserEmailSetting userEmailSetting, EmailConnector emailConnector) throws MessagingException {
     Properties props = new Properties();
     props.setProperty("mail.imaps.ssl.enable", "true");
     props.setProperty("mail.store.protocol", "imaps");
@@ -229,6 +272,11 @@ public class UserEmailSettingService {
     props.setProperty("mail.imaps.connectiontimeout", "15000");
     props.setProperty("mail.imaps.timeout", "30000");
     props.setProperty("mail.imaps.writetimeout", "30000");
+    // Read a message body in one go. The default fetch size is 16KB, so every message is
+    // pulled in 16KB slices, each its own round-trip to the server -- an HTML newsletter of a
+    // few hundred KB costs a dozen of them, and the sync spends most of its time waiting on
+    // the network rather than on the mailbox.
+    props.setProperty("mail.imaps.fetchsize", "1048576");
     // getInstance (not getDefaultInstance) so these props actually apply rather than
     // silently reusing the first-ever session's properties.
     Session session = Session.getInstance(props);

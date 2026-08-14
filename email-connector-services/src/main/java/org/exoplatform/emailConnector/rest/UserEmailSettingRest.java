@@ -84,6 +84,23 @@ public class UserEmailSettingRest {
     return userEmailSettingService.getUserEmailSetting(request.getRemoteUser());
   }
 
+  @PutMapping("/preferences")
+  @Secured("users")
+  @Operation(summary = "Updates the user's email notification / default-view preferences",
+             method = "PUT",
+             description = "Updates only the notification categories and default category view, without reconnecting the mailbox")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"), })
+  public void updateEmailPreferences(HttpServletRequest request,
+                                     @RequestBody
+                                     UserEmailSetting userEmailSetting) {
+    userEmailSettingService.updateEmailPreferences(request.getRemoteUser(),
+                                                   userEmailSetting.getNotifyAllCategories(),
+                                                   userEmailSetting.getNotifyCategories(),
+                                                   userEmailSetting.getDefaultCategoryView());
+  }
+
   @DeleteMapping()
   @Secured("users")
   @Operation(summary = "Deletes user email setting", method = "DELETE", description = "This will delete user email setting")

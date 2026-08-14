@@ -83,4 +83,26 @@ public class Email {
   // broken. Backend-only.
   @JsonIgnore
   private String               threadIndexRoot;
+
+  // The distribution headers, captured at sync time (they only exist on the live message, so
+  // a consumer reading the cache cannot recompute them). Kept raw rather than pre-judged:
+  // see EmailConnectorUtils#getMailType for how they combine. Backend-only.
+
+  @JsonIgnore
+  private boolean              autoSubmitted;
+
+  @JsonIgnore
+  private boolean              hasListId;
+
+  @JsonIgnore
+  private boolean              hasListPost;
+
+  @JsonIgnore
+  private boolean              hasListUnsubscribe;
+
+  // The real author when a mailing list rewrote From to itself (X-Original-Sender), so a
+  // consumer can judge who wrote a list message rather than the list it came through.
+  // Backend-only.
+  @JsonIgnore
+  private String               originalSender;
 }

@@ -163,6 +163,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// Categorization runs after the sync reports done, in batches, and a large mailbox takes
+// several minutes. Two numbers govern how long the drawer keeps watching for the results.
+
+// Give up after this long even if categories are still arriving, so a mailbox with
+// categorization switched off never polls indefinitely.
+const CATEGORY_WATCH_MAX_MS = 600000;
+
+// Stop once nothing new has landed for this many consecutive polls (2s each, so ~60s).
+// It has to comfortably exceed the gap between two batches finishing: at three polls the
+// first lull between batches looked like the end and the drawer stopped after one batch.
+const CATEGORY_WATCH_QUIET_POLLS = 30;
+
 export default {
   data() {
     return {
@@ -170,6 +182,9 @@ export default {
       emailBox: null,
       loading: false,
       syncInProgress: false,
+      categoryWatchDeadline: null,
+      lastCategoryCount: 0,
+      stableCategoryPolls: 0,
       webmailUrl: null,
       refreshInterval: null,
       activeDownload: null,
@@ -191,7 +206,8 @@ export default {
     // The add-on's own email categories are the children of the Inbox category; feeding
     // their ids to the platform filter makes it open "inside the Inbox" — showing those
     // children directly as chips, rather than an Inbox parent the user must drill into.
-    this.$emailConnectorMailBoxService.getAvailableEmailCategories()
+    // The promise is kept so open() can await the ids before trusting a stored default view.
+    this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.emailCategoryIds = (list || []).map(category => category.id));
     this.$root.$on('switch-folder', this.onSwitchFolder);
     this.onOpenEmailDetailContent = (mailRemoteId) => {
@@ -356,6 +372,19 @@ export default {
       this.emailBoxDrawer = true;
       await this.loadEmailBox();
       this.loading = false;
+      // Position the inbox on the user's chosen default category view (if any). The stored
+      // view can point at a category that no longer exists (e.g. a removed default), and
+      // filtering on it would reject — so apply it only once the available category ids are
+      // loaded and the stored id is one of them.
+      this.$emailConnectorCommonService.getUserEmailSetting()
+        .then(async setting => {
+          const defaultView = setting && setting.defaultCategoryView || null;
+          await this.emailCategoryIdsPromise;
+          this.selectedCategoryId = defaultView && this.emailCategoryIds.includes(defaultView) ? defaultView : null;
+        })
+        .catch(() => {
+          // Keep the inbox unfiltered when the setting cannot be read.
+        });
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
@@ -378,6 +407,7 @@ export default {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
     close() {
+      this.categoryWatchDeadline = null;
       this.stopAutoRefresh();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
       this.cancelSelectMode();
@@ -474,9 +504,12 @@ export default {
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
       this.webmailUrl = this.emailBox.webmailUrl;
       this.$root.$emit('refresh-emails', this.emails);
-      if (!this.syncInProgress) {
-        this.stopAutoRefresh();
+      if (this.syncInProgress) {
+        // A new sync started: any previous post-sync watch is over.
+        this.categoryWatchDeadline = null;
+      } else {
         this.$root.$emit('synchronize-finished');
+        this.watchIncomingCategories();
       }
     },
     // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
@@ -519,6 +552,32 @@ export default {
           this.isRefreshing = false;
         }
       }, 2000); 
+    },
+    // AI categorization only starts once the sync reports it is done, and then keeps writing
+    // categories for a while. Stopping the refresh the moment the sync finishes left the user
+    // staring at an uncategorized list until they reloaded the page by hand. So keep polling
+    // past the end of the sync, and stop as soon as nothing new lands rather than on a timer
+    // alone — a mailbox with categorization switched off must not poll for minutes.
+    watchIncomingCategories() {
+      if (!this.categoryWatchDeadline) {
+        this.categoryWatchDeadline = Date.now() + CATEGORY_WATCH_MAX_MS;
+        this.lastCategoryCount = this.countAppliedCategories();
+        this.stableCategoryPolls = 0;
+        this.startAutoRefresh();
+        return;
+      }
+      const count = this.countAppliedCategories();
+      this.stableCategoryPolls = count === this.lastCategoryCount ? this.stableCategoryPolls + 1 : 0;
+      this.lastCategoryCount = count;
+      if (this.stableCategoryPolls >= CATEGORY_WATCH_QUIET_POLLS || Date.now() > this.categoryWatchDeadline) {
+        this.categoryWatchDeadline = null;
+        this.stopAutoRefresh();
+      }
+    },
+    // How many categories are applied across the listed emails; its only use is to notice
+    // that categorization has stopped changing anything.
+    countAppliedCategories() {
+      return (this.emailBox?.emails || []).reduce((total, email) => total + (email.categoryIds || []).length, 0);
     },
     stopAutoRefresh() {
       if (this.refreshInterval) {

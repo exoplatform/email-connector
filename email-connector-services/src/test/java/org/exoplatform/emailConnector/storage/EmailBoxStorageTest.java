@@ -27,17 +27,23 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -150,6 +156,85 @@ public class EmailBoxStorageTest {
   }
 
   @Test
+  void getThreadIdsReferencingMessageIdMatchesChainsInJava() {
+    // The matching runs in Java over the chains the DAO returns (SQL substring
+    // functions are unsupported on the CLOB columns of some dialects -- a LOCATE
+    // version aborted a live sync on HSQLDB). The storage must: match the bracketed
+    // token exactly (neither <xa@host> nor <a@host.com> may match <a@host>), fall
+    // back to In-Reply-To when References misses, normalize a bare id to its
+    // bracketed form, de-duplicate thread ids, and skip the database entirely for a
+    // blank id (a synthesized id can never be referenced).
+    when(emailBoxDAO.findThreadReferenceChainsByUserId("root"))
+                                                              .thenReturn(List.of(
+                                                                                  new Object[] { "<t1@host>",
+                                                                                      "<root@host> <a@host>", null },
+                                                                                  new Object[] { "<t1@host>", null, "<a@host>" },
+                                                                                  new Object[] { "<t2@host>", "<xa@host>",
+                                                                                      "<a@host.com>" },
+                                                                                  new Object[] { "<t3@host>", null, null }));
+    assertEquals(List.of("<t1@host>"), emailBoxStorage.getThreadIdsReferencingMessageId("root", "<a@host>"));
+    assertEquals(List.of("<t1@host>"), emailBoxStorage.getThreadIdsReferencingMessageId("root", "a@host"));
+    assertEquals(List.of("<t2@host>"), emailBoxStorage.getThreadIdsReferencingMessageId("root", "<xa@host>"));
+    assertEquals(List.of(), emailBoxStorage.getThreadIdsReferencingMessageId("root", null));
+    assertEquals(List.of(), emailBoxStorage.getThreadIdsReferencingMessageId("root", " "));
+  }
+
+  @Test
+  void getSyncEmailsMapsTheLightViewWithoutBodiesOrCategories() {
+    // The sync view must carry exactly what the reconcile reads -- ids, flags,
+    // threading state -- and nothing that costs a CLOB read or a category lookup,
+    // because loading those for 5000 rows per sync was the point of removing it.
+    when(emailBoxDAO.findSyncViewByUserIdAndFolder("root", "INBOX"))
+                                                                   .thenReturn(List.<Object[]> of(new Object[] { 7L, 1212L,
+                                                                       "<t@host>", "", Boolean.TRUE, Boolean.FALSE }));
+    List<Email> emails = emailBoxStorage.getSyncEmails("root", "INBOX");
+    assertEquals(1, emails.size());
+    Email email = emails.get(0);
+    assertEquals(7L, email.getId());
+    assertEquals(1212L, email.getMailRemoteId());
+    assertEquals("<t@host>", email.getThreadId());
+    assertEquals("", email.getThreadIndexRoot());
+    assertTrue(email.isRead());
+    assertFalse(email.isRecent());
+    assertEquals("root", email.getUserId());
+    assertEquals("INBOX", email.getFolder());
+    assertNull(email.getContent());
+    assertNull(email.getCategoryIds());
+  }
+
+  @Test
+  void markEmailsAsNotRecentSkipsTheDatabaseOnEmptyList() {
+    // The bulk clear is called once per folder sync; when nothing wears the recent
+    // badge it must not cost a statement.
+    emailBoxStorage.markEmailsAsNotRecent(List.of(), "root", "INBOX");
+    emailBoxStorage.markEmailsAsNotRecent(null, "root", "INBOX");
+    verify(emailBoxDAO, never()).markEmailsAsNotRecent(anyList(), anyString(), anyString());
+    emailBoxStorage.markEmailsAsNotRecent(List.of(1L), "root", "INBOX");
+    verify(emailBoxDAO).markEmailsAsNotRecent(List.of(1L), "root", "INBOX");
+  }
+
+  @Test
+  void markEmailsAsNotRecentSlicesLongIdListsForOracle() {
+    // Oracle refuses an IN list past 1000 literals (ORA-01795), and this list is bounded by
+    // the mailbox cache size -- 1000 by default now, up to 5000 when an administrator raises
+    // it. A first sync of a full cache must not fail on the very statement added to make
+    // bulk syncs cheaper.
+    List<Long> ids = LongStream.rangeClosed(1, 2500).boxed().toList();
+
+    emailBoxStorage.markEmailsAsNotRecent(ids, "root", "INBOX");
+
+    ArgumentCaptor<List<Long>> slices = ArgumentCaptor.forClass(List.class);
+    verify(emailBoxDAO, times(3)).markEmailsAsNotRecent(slices.capture(), eq("root"), eq("INBOX"));
+    List<List<Long>> issued = slices.getAllValues();
+    assertEquals(900, issued.get(0).size());
+    assertEquals(900, issued.get(1).size());
+    assertEquals(700, issued.get(2).size());
+    // Every id is still covered, exactly once and in order: a slice that dropped or
+    // duplicated rows would leave messages wearing a stale recent badge.
+    assertEquals(ids, issued.stream().flatMap(List::stream).toList());
+  }
+
+  @Test
   void getEmailByMailRemoteIdAndUserId() {
     Email retrievedEmail = emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, "root", null, "INBOX", false, false, false);
     assertNull(retrievedEmail);
@@ -223,6 +308,11 @@ public class EmailBoxStorageTest {
                                                        null,
                                                        null,
                                                        "INBOX",
+                                                       null,
+                                                       false,
+                                                       false,
+                                                       false,
+                                                       false,
                                                        null);
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
@@ -262,6 +352,11 @@ public class EmailBoxStorageTest {
                      null,
                      null,
                      "INBOX",
+                     null,
+                     false,
+                     false,
+                     false,
+                     false,
                      null);
   }
 

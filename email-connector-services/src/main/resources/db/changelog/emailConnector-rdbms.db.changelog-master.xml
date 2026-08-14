@@ -240,4 +240,64 @@
       <column name="THREAD_INDEX_ROOT"/>
     </createIndex>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-22">
+    <!-- The bulk-mail signals, read from the standard headers at sync time while the
+         MimeMessage is still at hand. Consumers only see the cached row, so without these the
+         only way to guess is to search the body for the word "unsubscribe", which also matches
+         signatures, mailing list footers and quoted replies, and so mislabels genuine human
+         mail. Existing rows default to false and are corrected on their next sync.
+         Stored as separate facts rather than one derived verdict, because they do not mean the
+         same thing: Auto-Submitted and Precedence say "no human wrote this", while
+         List-Unsubscribe only says "this travelled through bulk distribution machinery" - a
+         mailing list stamps it on every message it relays, including one a colleague typed by
+         hand. Collapsing them into a single flag made list traffic indistinguishable from
+         marketing and filed genuine business mail as automated. List-Id plus a postable
+         List-Post is what actually identifies a mailing list, since marketing senders rarely
+         set List-Post. Keeping the raw facts means the classification rule can be changed
+         without re-downloading every mailbox.
+         Upstream reached this shape in two steps - a single BULK_MAIL flag, then its
+         replacement by these four - which is why feature/ai-contribution carries both an add
+         and a drop. Neither has ever run on this lineage, so they are collapsed here rather
+         than backported literally: replaying them would add a NOT NULL column to EMAIL_BOX and
+         drop it again on every install and every upgrade, for a column no code ever reads. -->
+    <addColumn tableName="EMAIL_BOX">
+      <column name="AUTO_SUBMITTED" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="HAS_LIST_ID" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="HAS_LIST_POST" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="HAS_LIST_UNSUBSCRIBE" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-23">
+    <!-- Who actually wrote a message that arrived through a mailing list. Google Groups and
+         Mailman rewrite From to the list itself ("Name via the-list <the-list@example.com>"),
+         so the stored sender identifies the transport, not the author - and a colleague's
+         message then looks exactly like a newsletter relayed into the same group. The original
+         address survives in X-Original-Sender; without it, anything list-borne is
+         indistinguishable. Empty for directly-delivered mail. -->
+    <addColumn tableName="EMAIL_BOX">
+      <column name="ORIGINAL_SENDER" type="VARCHAR(320)"/>
+    </addColumn>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-24">
+    <!-- The reconcile view this change introduced (findSyncViewByUserIdAndFolder) runs on
+         every routine sync of every connected mailbox: it filters on (USER_ID, FOLDER) and
+         sorts on RECEIVED_DATE. The indexes above cover USER_ID, (USER_ID, THREAD_ID) and
+         (USER_ID, THREAD_INDEX_ROOT) - none covers FOLDER or RECEIVED_DATE, so the database
+         range-scans USER_ID alone and filters and sorts the rest in memory. That is a whole
+         mailbox's rows on the hottest query of the sync path, at a cache size that now
+         defaults to 1000 and that administrators may raise to 5000. -->
+    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE">
+      <column name="USER_ID"/>
+      <column name="FOLDER"/>
+      <column name="RECEIVED_DATE"/>
+    </createIndex>
+  </changeSet>
 </databaseChangeLog>

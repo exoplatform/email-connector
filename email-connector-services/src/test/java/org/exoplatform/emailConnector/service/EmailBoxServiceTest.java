@@ -23,11 +23,18 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -39,10 +46,23 @@ import static org.mockito.Mockito.withSettings;
 
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
+import java.util.stream.LongStream;
 
 import javax.mail.Authenticator;
 import javax.mail.BodyPart;
@@ -50,6 +70,7 @@ import javax.mail.Flags;
 import javax.mail.Folder;
 import javax.mail.Message;
 import javax.mail.MessageRemovedException;
+import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Session;
 import javax.mail.Store;
@@ -66,9 +87,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
+import com.sun.mail.imap.ResyncData;
 
 import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -77,12 +100,16 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
+import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -97,6 +124,7 @@ import io.meeds.social.category.model.CategoryObject;
 import io.meeds.social.category.model.CategoryWithName;
 import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.category.service.CategoryService;
+import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { EmailBoxService.class })
@@ -152,7 +180,7 @@ public class EmailBoxServiceTest {
     when(message2.getSubject()).thenReturn("message2Subject");
     MimeMessage[] messages = { message1, message2 };
     when((inbox).getMessages(anyInt(), anyInt())).thenReturn(messages);
-    when(emailBoxStorage.getEmails(anyString(), anyString())).thenReturn(new ArrayList<Email>());
+    when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<Email>());
     // No subscribed Sent/Archive folders in the test store, so those syncs are no-ops.
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -557,6 +585,112 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void shouldNotifyForNewEmailNotifyAllTrue() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(Boolean.TRUE);
+    setting.setNotifyCategories(List.of(1L));
+    // Notify-all wins even when the email's category is not among the selected ones.
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of(99L)), setting));
+  }
+
+  @Test
+  void shouldNotifyForNewEmailNotifyAllNull() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(null);
+    setting.setNotifyCategories(List.of(1L));
+    // Null resolves to "notify for everything" (the default).
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of(99L)), setting));
+  }
+
+  @Test
+  void shouldNotifyForNewEmailSelectedCategoriesMatch() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(Boolean.FALSE);
+    setting.setNotifyCategories(List.of(1L, 2L));
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of(2L, 5L)), setting));
+  }
+
+  @Test
+  void shouldNotifyForNewEmailSelectedCategoriesNoMatch() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(Boolean.FALSE);
+    setting.setNotifyCategories(List.of(1L, 2L));
+    assertEquals(false, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of(5L)), setting));
+  }
+
+  @Test
+  void shouldNotifyForNewEmailUncategorizedFallback() {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(Boolean.FALSE);
+    setting.setNotifyCategories(List.of(1L, 2L));
+    // Fallback: an uncategorized email (also the AI-off case) always notifies.
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(null), setting));
+    assertEquals(true, emailBoxService.shouldNotifyForNewEmail(emailWithCategories(List.of()), setting));
+  }
+
+  @Test
+  void countedDeferralFiresOnlyOnTheLastRelease() {
+    // Distinct user: the notification scheduler is shared across the test class, and a
+    // stray timer from another test must not perturb the per-user verifications below.
+    String user = "counteduser";
+    // A streamed sync: window opened, three groups claimed by the classifier, window
+    // completed -- the notification belongs to whichever release empties the window.
+    emailBoxService.openNotificationWindow(user, List.of());
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.completeNotificationWindow(user, List.of());
+    emailBoxService.notifyNewEmailsClassified(user);
+    emailBoxService.notifyNewEmailsClassified(user);
+    // Two of three groups classified: the messages of the third are still uncategorized,
+    // so the per-category preference cannot be applied yet and nothing may fire.
+    verify(emailBoxStorage, never()).getEmails(user, MailFolder.INBOX);
+    emailBoxService.notifyNewEmailsClassified(user);
+    // The last release empties the completed window: the send runs (observed through its
+    // mailbox re-read), exactly once.
+    verify(emailBoxStorage, times(1)).getEmails(user, MailFolder.INBOX);
+  }
+
+  @Test
+  void countedDeferralIgnoresTransientZeroWhileSyncStillRuns() {
+    String user = "earlyzerouser";
+    emailBoxService.openNotificationWindow(user, List.of());
+    // The classifier finishes the first group before the second is even broadcast: the
+    // claim count touches zero while the download is still running. Firing here is the
+    // bug streaming introduces -- the window being open must hold the notification.
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.notifyNewEmailsClassified(user);
+    verify(emailBoxStorage, never()).getEmails(user, MailFolder.INBOX);
+    // The next group arrives, the sync ends, and only then does its release fire.
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.completeNotificationWindow(user, List.of());
+    verify(emailBoxStorage, never()).getEmails(user, MailFolder.INBOX);
+    emailBoxService.notifyNewEmailsClassified(user);
+    verify(emailBoxStorage, times(1)).getEmails(user, MailFolder.INBOX);
+  }
+
+  @Test
+  void partitionUidsBalancesContiguousChunks() {
+    List<Long> uids = List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L);
+    List<long[]> chunks = EmailBoxService.partitionUids(uids, 3);
+    assertEquals(3, chunks.size());
+    // Balanced sizes, and the concatenation preserves the mailbox order exactly.
+    assertArrayEquals(new long[] { 1L, 2L, 3L, 4L }, chunks.get(0));
+    assertArrayEquals(new long[] { 5L, 6L, 7L }, chunks.get(1));
+    assertArrayEquals(new long[] { 8L, 9L, 10L }, chunks.get(2));
+  }
+
+  @Test
+  void partitionUidsWithFewerUidsThanChunks() {
+    List<long[]> chunks = EmailBoxService.partitionUids(List.of(7L, 9L), 5);
+    assertEquals(2, chunks.size());
+    assertArrayEquals(new long[] { 7L }, chunks.get(0));
+    assertArrayEquals(new long[] { 9L }, chunks.get(1));
+    assertTrue(EmailBoxService.partitionUids(List.of(), 5).isEmpty());
+    assertTrue(EmailBoxService.partitionUids(List.of(1L), 0).isEmpty());
+  }
+
+  @Test
   void getDefaultEmailCategoryIds() {
     // The importer has not run yet: no nameId -> id mapping is stored at all.
     assertTrue(emailBoxService.getDefaultEmailCategoryIds().isEmpty());
@@ -568,6 +702,27 @@ public class EmailBoxServiceTest {
     mockCategoryIdSetting("emailNotificationCategory", "notANumber");
     mockCategoryIdSetting("emailToReviewCategory", "44");
     assertEquals(List.of(11L, 44L), emailBoxService.getDefaultEmailCategoryIds());
+  }
+
+  @Test
+  @SneakyThrows
+  void synchronizeSkipsBodyPrefetchForSmallSync() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    mockInboxForSync(userEmailSetting, 3);
+    emailBoxService.synchronize(TEST_USER);
+    // Below the minimum batch the extra connections cost more than they save: the
+    // parallel path must not run, and the bodies come from the serial loop as before.
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class), any(EmailConnector.class));
+    verify(emailBoxStorage, times(3)).createEmail(any(Email.class));
+    // The serial path streams nothing: one NEW_EMAILS_SYNCED with the whole sync's new
+    // messages, then the completion event closing the run.
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED),
+                                      eq(TEST_USER),
+                                      argThat((List<Long> group) -> group.size() == 3));
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED),
+                                      eq(TEST_USER),
+                                      argThat((List<Long> all) -> all.size() == 3));
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
   }
 
   @Test
@@ -591,6 +746,21 @@ public class EmailBoxServiceTest {
     assertEquals(1, categories.size());
     assertEquals(11L, categories.get(0).getId());
     assertEquals("Important", categories.get(0).getName());
+  }
+
+  @Test
+  @SneakyThrows
+  void synchronizeSkipsBodyPrefetchWhenSingleWorkerConfigured() {
+    System.setProperty("email.connector.sync.body.fetch.threads", "1");
+    try {
+      UserEmailSetting userEmailSetting = userEmailSetting();
+      mockInboxForSync(userEmailSetting, 12);
+      emailBoxService.synchronize(TEST_USER);
+      verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class), any(EmailConnector.class));
+      verify(emailBoxStorage, times(12)).createEmail(any(Email.class));
+    } finally {
+      System.clearProperty("email.connector.sync.body.fetch.threads");
+    }
   }
 
   @Test
@@ -624,6 +794,1208 @@ public class EmailBoxServiceTest {
     doThrow(ObjectNotFoundException.class).when(categoryLinkService)
                                           .link(anyLong(), any(CategoryObject.class), anyString());
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+  }
+
+  @Test
+  @SneakyThrows
+  void synchronizePrefetchesBodiesOverParallelConnections() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    mockInboxForSync(userEmailSetting, 100);
+    EmailConnector emailConnector = emailConnector();
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
+    // The workers' own connection: same folder re-opened by full name, its messages
+    // resolved by UID. Every worker message carries a distinguishable body, while the
+    // main connection's messages have none — so a created email carrying a
+    // "prefetched-<uid>" body proves the parallel map was used, not the serial fetch.
+    Store workerStore = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting, emailConnector)).thenReturn(workerStore);
+    when(workerStore.isConnected()).thenReturn(true);
+    Folder workerFolder = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(workerStore.getFolder("INBOX")).thenReturn(workerFolder);
+    when(workerFolder.isOpen()).thenReturn(true);
+    Map<Long, Message> workerMessages = new HashMap<>();
+    for (long uid = 1; uid <= 100; uid++) {
+      MimeMessage workerMessage = mock(MimeMessage.class);
+      when(workerMessage.isMimeType("text/*")).thenReturn(true);
+      when(workerMessage.getContent()).thenReturn("prefetched-" + uid);
+      when(((UIDFolder) workerFolder).getUID(workerMessage)).thenReturn(uid);
+      workerMessages.put(uid, workerMessage);
+    }
+    // Read-only answer (all stubbing done above) so concurrent workers never stub.
+    when(((UIDFolder) workerFolder).getMessagesByUID(any(long[].class))).thenAnswer(invocation -> {
+      long[] uids = invocation.getArgument(0);
+      Message[] result = new Message[uids.length];
+      for (int i = 0; i < uids.length; i++) {
+        result[i] = workerMessages.get(uids[i]);
+      }
+      return result;
+    });
+    emailBoxService.synchronize(TEST_USER);
+    // 100 new UIDs cut into slices of 20 = 5 slices, each fetched on its own connection
+    // and every one closed when its worker finished.
+    verify(userEmailSettingService, times(5)).connect(userEmailSetting, emailConnector);
+    verify(workerFolder, times(5)).close(false);
+    verify(workerStore, times(5)).close();
+    ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage, times(100)).createEmail(emailCaptor.capture());
+    // Bodies come from the workers. The rows land in slice-COMPLETION order, newest
+    // slices submitted first -- deliberately NOT in ascending UID order. The ascending
+    // assertion that used to live here encoded the forward-only threading lookup (a
+    // parent had to be cached before its replies); computeThreadId now links
+    // conversations in both directions, and the order-independence itself is proven by
+    // the *StillFormsOneThread tests. What must hold here is that every message is
+    // cached exactly once, with the body its worker prefetched.
+    Set<Long> cachedUids = new HashSet<>();
+    for (Email created : emailCaptor.getAllValues()) {
+      assertEquals("prefetched-" + created.getMailRemoteId(), created.getContent().getBody());
+      assertTrue(cachedUids.add(created.getMailRemoteId()), "every message must be cached exactly once");
+    }
+    assertEquals(100, cachedUids.size());
+    // The new-emails events stream out during the download, one group every three slices
+    // (3 x 20 = 60, then the remaining 40), so the AI categorization can start on the
+    // first messages while the later ones are still being fetched. Which UIDs land in
+    // which group depends on completion order; together they must cover the whole sync.
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    ArgumentCaptor<List<Long>> groupCaptor = ArgumentCaptor.forClass((Class) List.class);
+    verify(listenerService, times(2)).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), eq(TEST_USER), groupCaptor.capture());
+    List<List<Long>> groups = groupCaptor.getAllValues();
+    assertEquals(60, groups.get(0).size());
+    assertEquals(40, groups.get(1).size());
+    Set<Long> broadcastUids = new HashSet<>(groups.get(0));
+    broadcastUids.addAll(groups.get(1));
+    assertEquals(cachedUids, broadcastUids);
+    // ...and the completion event closes the run with every id, which is what whole-run
+    // consumers (conversation alignment) key off.
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED),
+                                      eq(TEST_USER),
+                                      argThat((List<Long> all) -> all.size() == 100));
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void synchronizeSurvivesPrefetchWorkerFailure() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    mockInboxForSync(userEmailSetting, 12);
+    EmailConnector emailConnector = emailConnector();
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
+    // Every worker connection fails outright: the sync must neither fail nor lose
+    // messages — the serial loop fetches every body itself, as before the prefetch.
+    when(userEmailSettingService.connect(userEmailSetting, emailConnector)).thenThrow(new javax.mail.AuthenticationFailedException("Too many simultaneous connections"));
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage, times(12)).createEmail(any(Email.class));
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void replyCachedBeforeParentStillFormsOneThread() {
+    // Order-independence, direction one: the reply lands FIRST (newest-first caching
+    // does exactly this on every reset), its parent second. The forward References
+    // lookup finds nothing when the reply is cached, so only the reverse lookup run
+    // when the parent lands can reunite them -- before it existed this conversation
+    // silently split in two.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage reply = threadedMessage("<reply@host>", "<parent@host>", "<parent@host>", null, new Date(2000));
+    MimeMessage parent = threadedMessage("<parent@host>", null, null, null, new Date(1000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { reply, parent });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(2, rows.size());
+    assertEquals(rows.get(0).getThreadId(), rows.get(1).getThreadId(), "reply and parent must share one thread id");
+  }
+
+  @Test
+  @SneakyThrows
+  void lateMessageReferencingTwoThreadsMergesThemIntoTheOldest() {
+    // Two fragments exist before the linking message arrives: A alone, and C whose only
+    // reference points at a not-yet-cached B. When B finally lands it references A (the
+    // forward lookup finds A's thread) while C references B (the reverse lookup finds
+    // C's thread): one message bridges two conversations, and the merge collapses them
+    // into the oldest thread whatever order the three were cached in.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage a = threadedMessage("<a@host>", null, null, null, new Date(1000));
+    MimeMessage c = threadedMessage("<c@host>", "<b@host>", "<b@host>", null, new Date(3000));
+    MimeMessage b = threadedMessage("<b@host>", "<a@host>", "<a@host>", null, new Date(2000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { a, c, b });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(3, rows.size());
+    for (Email row : rows) {
+      // A is the oldest message, so its thread id is the canonical one everything
+      // collapses into -- including C, whose row was already stored with its own id
+      // and must have been rewritten by the merge.
+      assertEquals("<a@host>", row.getThreadId(), "all three fragments must collapse into the oldest thread");
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void aStaleReferencesHeaderMergesConversationsThatAreNotRelated() {
+    // The other side of lateMessageReferencingTwoThreadsMergesThemIntoTheOldest: the merge
+    // trusts the References header completely, so any message naming 2+ already-cached
+    // Message-IDs collapses their threads. Here A and B are unrelated conversations and the
+    // third message is what a forwarded digest -- or a client dumping a stale References
+    // list -- produces: it belongs to neither, yet it merges both.
+    //
+    // Pinned deliberately rather than asserted as correct. The merge is one-way (threads are
+    // never split again), so a false merge is irreversible, and whether a bare 2+ hit should
+    // really be enough is a product call. If the rule is tightened to demand a real chain
+    // through both threads, this is the test that must change -- on purpose, not by surprise.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage a = threadedMessage("<unrelated-a@host>", null, null, null, new Date(1000));
+    MimeMessage b = threadedMessage("<unrelated-b@host>", null, null, null, new Date(2000));
+    MimeMessage digest =
+                       threadedMessage("<digest@host>", "<unrelated-a@host> <unrelated-b@host>", null, null, new Date(3000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { a, b, digest });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(3, rows.size());
+    for (Email row : rows) {
+      assertEquals("<unrelated-a@host>",
+                   row.getThreadId(),
+                   "current behavior: a multi-id References header merges the threads it names, related or not");
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void threadIndexGroupingIsOrderIndependent() {
+    // Exchange mail with a broken References chain: the only grouping signal is the
+    // Thread-Index conversation root. The root lookup matches any cached row carrying
+    // the same root, in either direction, so the pair must group even when the newer
+    // message deliberately lands before the conversation starter.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage newer = threadedMessage("<ti-reply@host>", null, null, threadIndex(27), new Date(2000));
+    MimeMessage older = threadedMessage("<ti-root@host>", null, null, threadIndex(22), new Date(1000));
+    mockInboxWithMessages(userEmailSetting(), new MimeMessage[] { newer, older });
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(2, rows.size());
+    assertEquals(rows.get(0).getThreadId(), rows.get(1).getThreadId(), "a shared Thread-Index root must group either way");
+  }
+
+  @Test
+  @SneakyThrows
+  void interleavedRepliesAcrossParallelSlicesStillFormOneThreadEach() {
+    // The full pipeline: 40 messages = 20 parent/reply pairs deliberately split across
+    // two prefetch slices (parents in UIDs 1..20, replies in 21..40). The slices are
+    // submitted newest-first and drained in completion order, so the replies routinely
+    // land before their parents -- every pair must still come out as one conversation,
+    // and no two pairs may bleed into each other.
+    List<Email> rows = stubStatefulThreadingStorage();
+    MimeMessage[] messages = new MimeMessage[40];
+    for (int i = 0; i < 20; i++) {
+      messages[i] = threadedMessage("<m" + (i + 1) + "@host>", null, null, null, new Date((i + 1) * 1000L));
+      messages[20 + i] = threadedMessage("<r" + (i + 1) + "@host>",
+                                         "<m" + (i + 1) + "@host>",
+                                         "<m" + (i + 1) + "@host>",
+                                         null,
+                                         new Date((21 + i) * 1000L));
+    }
+    mockInboxWithMessages(userEmailSetting(), messages);
+    EmailConnector emailConnector = emailConnector();
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
+    mockPrefetchWorkerConnection(emailConnector, 40);
+    emailBoxService.synchronize(TEST_USER);
+    assertEquals(40, rows.size());
+    Map<String, String> threadIdByHeaderId = rows.stream().collect(Collectors.toMap(Email::getMailHeaderId, Email::getThreadId));
+    for (int i = 1; i <= 20; i++) {
+      assertEquals(threadIdByHeaderId.get("<m" + i + "@host>"),
+                   threadIdByHeaderId.get("<r" + i + "@host>"),
+                   "pair " + i + " must share one thread id whatever order its slices completed in");
+    }
+    assertEquals(20, rows.stream().map(Email::getThreadId).distinct().count(), "the 20 conversations must stay distinct");
+  }
+
+  @Test
+  @SneakyThrows
+  void slowSliceDoesNotHoldUpCompletedSlices() {
+    // The incident behind completion-order draining: one message trickling in slowly
+    // stalled a whole mailbox for ~4 minutes while four workers sat idle holding
+    // finished data, because slices were consumed strictly in sequence. Here the
+    // NEWEST slice (UIDs 81..100, submitted first) blocks until the other eighty
+    // messages have been cached; with a sequential drain that is a deadlock broken
+    // only by the slice timeout, with completion-order draining it just finishes last.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    mockInboxForSync(userEmailSetting, 100);
+    EmailConnector emailConnector = emailConnector();
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
+    CountDownLatch othersCached = new CountDownLatch(80);
+    when(emailBoxStorage.createEmail(any(Email.class))).thenAnswer(invocation -> {
+      othersCached.countDown();
+      return invocation.getArgument(0);
+    });
+    mockPrefetchWorkerConnection(emailConnector, 100, uids -> {
+      if (LongStream.of(uids).anyMatch(uid -> uid == 100L)) {
+        // The slow slice: its FETCH does not return until every other slice's messages
+        // have been cached by the sync thread -- which can only happen if the drain
+        // consumes slices as they complete instead of waiting for this one.
+        assertTrue(othersCached.await(30, TimeUnit.SECONDS),
+                   "the other slices must be cached while the slow one is still fetching");
+      }
+      return null;
+    });
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage, times(100)).createEmail(emailCaptor.capture());
+    List<Email> created = emailCaptor.getAllValues();
+    // The blocked slice's messages are exactly the LAST twenty cached: nothing waited
+    // for it, and nothing was lost to it.
+    Set<Long> lastTwenty = created.subList(80, 100).stream().map(Email::getMailRemoteId).collect(Collectors.toSet());
+    assertEquals(LongStream.rangeClosed(81, 100).boxed().collect(Collectors.toSet()), lastTwenty);
+  }
+
+  @Test
+  @SneakyThrows
+  void noOpSyncIssuesNoPerMessageStatements() {
+    // The B1 regression guard. A sync that finds nothing new used to issue one SELECT
+    // and two guarded UPDATEs per already-known message -- ~15,000 statements on a
+    // 5000-message cache to discover nothing changed -- plus the full-entity folder
+    // load with every body CLOB. It must now issue NO per-message statement and never
+    // touch the full load: this is the regression that would silently return.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[12];
+    List<Email> cached = new ArrayList<>();
+    for (int i = 0; i < 12; i++) {
+      messages[i] = flaggedMessage(false);
+      cached.add(cachedEmail(i + 1, false, false));
+    }
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(cached);
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage, never()).getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                                     anyString(),
+                                                                     any(),
+                                                                     anyString(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean());
+    verify(emailBoxStorage, never()).updateEmailReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    verify(emailBoxStorage, never()).markEmailAsNotRecent(anyLong(), anyString(), anyString());
+    verify(emailBoxStorage, never()).markEmailsAsNotRecent(anyList(), anyString(), anyString());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    verify(emailBoxStorage, never()).getEmails(anyString(), anyString());
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void flagChangesAreAppliedAsBulkUpdates() {
+    // Read/unread changes made in another client must still land, but as at most
+    // three bulk statements -- one per direction plus one recent-clear -- never as
+    // per-message updates.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[6];
+    List<Email> cached = new ArrayList<>();
+    // UIDs 1-2: read on the server, unread in the cache -> one bulk mark-read.
+    messages[0] = flaggedMessage(true);
+    messages[1] = flaggedMessage(true);
+    cached.add(cachedEmail(1, false, false));
+    cached.add(cachedEmail(2, false, false));
+    // UIDs 3-4: unread on the server, read in the cache -> one bulk mark-unread.
+    messages[2] = flaggedMessage(false);
+    messages[3] = flaggedMessage(false);
+    cached.add(cachedEmail(3, true, false));
+    cached.add(cachedEmail(4, true, false));
+    // UID 5: still wearing the recent badge from its own sync -> one bulk clear.
+    messages[4] = flaggedMessage(false);
+    cached.add(cachedEmail(5, false, true));
+    // UID 6: nothing changed -> touched by no statement at all.
+    messages[5] = flaggedMessage(false);
+    cached.add(cachedEmail(6, false, false));
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(cached);
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1L, 2L), TEST_USER, true, "INBOX");
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(3L, 4L), TEST_USER, false, "INBOX");
+    verify(emailBoxStorage).markEmailsAsNotRecent(List.of(5L), TEST_USER, "INBOX");
+    verify(emailBoxStorage, never()).markEmailAsNotRecent(anyLong(), anyString(), anyString());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void mixedSyncCreatesNewAndReconcilesKnownInBulk() {
+    // The general case: known-unchanged messages are untouched, a known flag change
+    // goes through the bulk path, a lingering recent badge is cleared in bulk, and
+    // the genuinely new messages are created -- the same end state the per-message
+    // code produced, at O(changes) statements.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[5];
+    List<Email> cached = new ArrayList<>();
+    // UID 1: known, read on the server but not in the cache.
+    messages[0] = flaggedMessage(true);
+    cached.add(cachedEmail(1, false, false));
+    // UID 2: known, recent badge to clear.
+    messages[1] = flaggedMessage(false);
+    cached.add(cachedEmail(2, false, true));
+    // UID 3: known, nothing changed.
+    messages[2] = flaggedMessage(false);
+    cached.add(cachedEmail(3, false, false));
+    // UIDs 4-5: new, a parent and its reply.
+    messages[3] = threadedMessage("<new-parent@host>", null, null, null, new Date(4000));
+    messages[4] = threadedMessage("<new-reply@host>", "<new-parent@host>", "<new-parent@host>", null, new Date(5000));
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(cached);
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage, times(2)).createEmail(emailCaptor.capture());
+    assertEquals(List.of(4L, 5L), emailCaptor.getAllValues().stream().map(Email::getMailRemoteId).toList());
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1L), TEST_USER, true, "INBOX");
+    verify(emailBoxStorage).markEmailsAsNotRecent(List.of(2L), TEST_USER, "INBOX");
+    verify(emailBoxStorage, never()).getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                                     anyString(),
+                                                                     any(),
+                                                                     anyString(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean());
+    verify(emailBoxStorage, never()).markEmailAsNotRecent(anyLong(), anyString(), anyString());
+  }
+
+  @Test
+  @SneakyThrows
+  void backfillStillRunsPerRowButOnlyForRowsThatNeedIt() {
+    // The threading backfill keeps its per-row writes -- but ONLY for rows that
+    // genuinely need them, which is what keeps it out of the steady-state cost.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[] { flaggedMessage(false), flaggedMessage(false), flaggedMessage(false) };
+    // UID 1: cached before threading existed -- no thread id at all.
+    Email unthreaded = cachedEmail(1, false, false);
+    unthreaded.setThreadId("");
+    unthreaded.setThreadIndexRoot(null);
+    // UID 2: threaded, but its Thread-Index root was never captured.
+    Email rootless = cachedEmail(2, false, false);
+    rootless.setThreadIndexRoot(null);
+    // UID 3: fully backfilled -- must not be written at all.
+    Email complete = cachedEmail(3, false, false);
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(List.of(unthreaded, rootless, complete));
+    emailBoxService.synchronize(TEST_USER);
+    // Exactly one thread-info backfill (UID 1) and one root capture (UID 2); the
+    // messages carry no Thread-Index header, so the root is stored as "".
+    verify(emailBoxStorage, times(1)).updateThreadInfo(eq(TEST_USER), eq(1L), anyString(), any(), any(), eq("INBOX"), eq(""));
+    verify(emailBoxStorage, times(1)).updateThreadIndexRoot(TEST_USER, 2L, "INBOX", "");
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void unchangedSnapshotSkipsTheFolderEntirely() {
+    // The B2 payoff and its regression guard: when every change signal matches the
+    // snapshot, the folder must never be opened, never window-FETCHed, never loaded
+    // from the cache, never broadcast -- 98% of a measured no-op sync was the window
+    // FETCH alone. A fully-skipped run must also write no sync state back.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox, never()).open(anyInt());
+    verify(inbox, never()).open(anyInt(), any(ResyncData.class));
+    verify(inbox, never()).getMessages(anyInt(), anyInt());
+    verify(inbox, never()).fetch(any(), any());
+    verify(emailBoxStorage, never()).getSyncEmails(anyString(), anyString());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), any(), any());
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED), any(), any());
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), any());
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void newArrivalForcesTheFullPath() {
+    // uidNext moved: at least one message arrived (even if deleted again since).
+    assertFullSyncRunsWhenServerReports(11L, 502L, 100, 777L);
+  }
+
+  @Test
+  @SneakyThrows
+  void expungeForcesTheFullPath() {
+    // uidNext unchanged but the count dropped: messages were deleted elsewhere.
+    assertFullSyncRunsWhenServerReports(11L, 501L, 99, 777L);
+  }
+
+  @Test
+  @SneakyThrows
+  void remoteFlagChangeForcesTheFullPath() {
+    // Only the mod-sequence moved: metadata changed -- a read/unread flip in
+    // another client. This is the signal the whole CONDSTORE requirement exists for.
+    assertFullSyncRunsWhenServerReports(11L, 501L, 100, 778L);
+  }
+
+  @Test
+  @SneakyThrows
+  void uidValidityChangeForcesTheFullPathWithoutTouchingTheCache() {
+    // The server renumbered the folder (Gmail rebuild): every cached UID is
+    // meaningless, so the ONLY acceptable reaction is the full path, which re-lists
+    // the window and reconciles as it always did. Here the renumbered folder's
+    // window is empty and the cache is empty, so the full path must run and destroy
+    // nothing.
+    IMAPFolder inbox = assertFullSyncRunsWhenServerReports(12L, 501L, 100, 777L);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  @Test
+  @SneakyThrows
+  void missingSnapshotTakesTheFullPath() {
+    // First sync ever (or a reset invalidated the snapshot): nothing to compare,
+    // no STATUS worth issuing -- straight to the full path.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.INBOX);
+  }
+
+  @Test
+  @SneakyThrows
+  void unparseableSyncStateTakesTheFullPathAndHeals() {
+    // A corrupt state blob can never do worse than cost one full sync: it reads as
+    // an empty state, the full path runs, and the fresh snapshot overwrites the
+    // garbage.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
+    doReturn(SettingValue.create("this is not json")).when(settingService)
+                                                     .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    MailboxSyncState healed = JsonUtils.fromJsonString(savedState.getValue().getValue().toString(), MailboxSyncState.class);
+    assertEquals(501L, healed.getSnapshot(MailFolder.INBOX).getUidNext());
+  }
+
+  @Test
+  @SneakyThrows
+  void windowSizeChangeForcesTheFullPath() {
+    // The admin grew the cache: the server is unchanged, but the wider window has
+    // never been downloaded -- skipping would leave the mailbox permanently short.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 50));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+  }
+
+  @Test
+  @SneakyThrows
+  void withoutCondstoreTheSkipIsNeverTaken() {
+    // No CONDSTORE means an unchanged uidNext+messageCount still says NOTHING about
+    // read/unread flags flipped in another client. Skipping would not make those
+    // flags late -- it would make them stale forever. So on such servers the skip
+    // is refused outright, even with every other signal matching.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, false);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+  }
+
+  @Test
+  @SneakyThrows
+  void fullSyncCapturesTheSnapshotForTheNextRun() {
+    // The other half of the contract: a full sync must leave behind the snapshot
+    // that lets the NEXT run skip, with the SELECT-time signals and the window size.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 3, 777L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    FolderSyncSnapshot snapshot = JsonUtils.fromJsonString(savedState.getValue().getValue().toString(), MailboxSyncState.class)
+                                           .getSnapshot(MailFolder.INBOX);
+    assertEquals(11L, snapshot.getUidValidity());
+    assertEquals(501L, snapshot.getUidNext());
+    assertEquals(3L, snapshot.getMessageCount());
+    assertEquals(777L, snapshot.getHighestModSeq());
+    assertEquals(100, snapshot.getWindowSize());
+  }
+
+  @Test
+  @SneakyThrows
+  void cachedFolderNamesSkipTheDiscoveryScan() {
+    // Sent/Archive used to be re-discovered with a LIST * over the whole subscribed
+    // folder list on every sync; the remembered names replace that with one
+    // single-folder exists() probe each.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    state.setSentFolderName("MySent");
+    state.setArchiveFolderName("MyArchive");
+    mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
+    IMAPFolder sent = mock(IMAPFolder.class);
+    when(sent.exists()).thenReturn(true);
+    when(sent.getMessageCount()).thenReturn(0);
+    IMAPFolder archive = mock(IMAPFolder.class);
+    when(archive.exists()).thenReturn(true);
+    when(archive.getMessageCount()).thenReturn(0);
+    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    when(connectedStore.getFolder("MySent")).thenReturn(sent);
+    when(connectedStore.getFolder("MyArchive")).thenReturn(archive);
+    emailBoxService.synchronize(TEST_USER);
+    // Both folders resolved by name (and INBOX skipped): the full-list scan never runs.
+    verify(connectedStore.getDefaultFolder(), never()).listSubscribed("*");
+    verify(sent).open(Folder.READ_ONLY);
+    verify(archive).open(Folder.READ_ONLY);
+  }
+
+  @Test
+  @SneakyThrows
+  void clearingAFolderCacheDropsItsSnapshotSoTheResyncCannotSkip() {
+    // The reset flow: the INBOX rows are wiped while the SERVER still matches the
+    // old snapshot exactly. If the snapshot survived, the resync would conclude
+    // "nothing changed" over an empty cache and the mailbox would come up blank --
+    // the silent failure this feature must never cause.
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    state.setSnapshot(MailFolder.SENT, new FolderSyncSnapshot(21L, 61L, 60, 888L, 100));
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class),
+                                                                     any(Scope.class),
+                                                                     eq("emailBoxSyncState"));
+    when(emailBoxStorage.getEmails(TEST_USER, MailFolder.INBOX)).thenReturn(new ArrayList<>());
+    emailBoxService.deleteUserEmails(TEST_USER, MailFolder.INBOX);
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    MailboxSyncState cleared = JsonUtils.fromJsonString(savedState.getValue().getValue().toString(), MailboxSyncState.class);
+    assertNull(cleared.getSnapshot(MailFolder.INBOX), "the cleared folder's snapshot must be gone");
+    assertEquals(888L, cleared.getSnapshot(MailFolder.SENT).getHighestModSeq(), "other folders' snapshots must survive");
+  }
+
+  @Test
+  @SneakyThrows
+  void deletingTheWholeMailboxRemovesTheSyncState() {
+    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(new ArrayList<>());
+    emailBoxService.deleteUserEmails(TEST_USER);
+    verify(settingService).remove(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+  }
+
+  @Test
+  @SneakyThrows
+  void condstoreServerOpensWithExplicitModSeqRequest() {
+    // The Stalwart fix: a server may advertise CONDSTORE yet only send HIGHESTMODSEQ
+    // when explicitly asked (RFC 7162 obliges it no further) -- observed live as
+    // benjamin's folders looping on "snapshot incomplete" forever. On such servers
+    // the sync must open with SELECT (CONDSTORE), never with a plain SELECT.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
+    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    lenient().when(inbox.getStore()).thenReturn(connectedStore);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY, ResyncData.CONDSTORE);
+    verify(inbox, never()).open(anyInt());
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void resyncRejectionFallsBackToPlainOpen() {
+    // A server that advertises CONDSTORE but rejects the SELECT parameter must cost
+    // nothing: the open falls back to a plain SELECT and the sync completes -- the
+    // skip simply stays off for that folder, exactly the pre-fix behavior.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
+    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    lenient().when(inbox.getStore()).thenReturn(connectedStore);
+    when(inbox.open(Folder.READ_ONLY, ResyncData.CONDSTORE)).thenThrow(new MessagingException("CONDSTORE not supported"));
+    lenient().when(inbox.isOpen()).thenReturn(false).thenReturn(true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.INBOX);
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+  }
+
+  @Test
+  @SneakyThrows
+  void serverWithholdingModSeqStoresIncompleteSnapshotAndStaysOnTheFullPath() {
+    // A server that ACCEPTS the CONDSTORE parameter but still provides no
+    // mod-sequence: the capture stores -1, the state persists it (the log then
+    // shows exactly which signal is missing), and the skip must never fire.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, -1L, true);
+    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    lenient().when(inbox.getStore()).thenReturn(connectedStore);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<SettingValue> savedState = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), savedState.capture());
+    MailboxSyncState savedSyncState = JsonUtils.fromJsonString(savedState.getValue().getValue().toString(),
+                                                               MailboxSyncState.class);
+    assertEquals(-1L, savedSyncState.getSnapshot(MailFolder.INBOX).getHighestModSeq());
+  }
+
+  @Test
+  @SneakyThrows
+  void incompleteSnapshotNeverSkips() {
+    // The stored -1 mod-sequence (a capture the server left short) must keep forcing
+    // the full path even when every other signal matches -- this is the exact state
+    // benjamin's mailbox was stuck in, and it must stay a full sync, never a skip.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, -1L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, -1L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.INBOX);
+  }
+
+  /**
+   * Runs a sync whose INBOX snapshot is {@code (uidValidity 11, uidNext 501, 100
+   * messages, highestModSeq 777, window 100)} against a CONDSTORE server reporting
+   * the given signals, and asserts the FULL path ran (folder opened, cache view
+   * loaded) -- the shape shared by every one-signal-changed test.
+   *
+   * @param uidValidity the server-side UIDVALIDITY
+   * @param uidNext the server-side UIDNEXT
+   * @param messageCount the server-side message count
+   * @param highestModSeq the server-side HIGHESTMODSEQ
+   * @return the INBOX mock, for extra assertions
+   */
+  @SneakyThrows
+  private IMAPFolder assertFullSyncRunsWhenServerReports(long uidValidity, long uidNext, int messageCount, long highestModSeq) {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, state, uidValidity, uidNext, messageCount, highestModSeq, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.INBOX);
+    return inbox;
+  }
+
+  /**
+   * Wires a mailbox for the skip-check tests: an IMAP store (CONDSTORE-capable or
+   * not), an INBOX reporting the given change signals over STATUS/SELECT, and the
+   * previous run's sync state persisted in the settings mock (none when null). No
+   * subscribed folders, so Sent/Archive syncs are no-ops when the full path runs.
+   *
+   * @param userEmailSetting the user's connector binding
+   * @param storedState the persisted sync state, or null for a first sync
+   * @param uidValidity the server-side UIDVALIDITY
+   * @param uidNext the server-side UIDNEXT
+   * @param messageCount the server-side message count
+   * @param highestModSeq the server-side HIGHESTMODSEQ
+   * @param condstore whether the store advertises CONDSTORE
+   * @return the INBOX mock
+   */
+  @SneakyThrows
+  private IMAPFolder mockInboxForSkipCheck(UserEmailSetting userEmailSetting,
+                                           MailboxSyncState storedState,
+                                           long uidValidity,
+                                           long uidNext,
+                                           int messageCount,
+                                           long highestModSeq,
+                                           boolean condstore) {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    lenient().when(store.hasCapability("CONDSTORE")).thenReturn(condstore);
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    IMAPFolder inbox = mock(IMAPFolder.class);
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.getUIDValidity()).thenReturn(uidValidity);
+    lenient().when(inbox.getUIDNext()).thenReturn(uidNext);
+    lenient().when(inbox.getMessageCount()).thenReturn(messageCount);
+    lenient().when(inbox.getHighestModSeq()).thenReturn(highestModSeq);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    lenient().when(inbox.getFullName()).thenReturn("INBOX");
+    if (storedState != null) {
+      doReturn(SettingValue.create(JsonUtils.toJsonString(storedState))).when(settingService)
+                                                                        .get(any(Context.class),
+                                                                             any(Scope.class),
+                                                                             eq("emailBoxSyncState"));
+    }
+    Folder defaultFolder = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    lenient().when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    return inbox;
+  }
+
+  /**
+   * A mocked inbox message for the reconcile tests: only its SEEN flag matters, and
+   * the flag comes off the batched window FETCH in production, so a bare mock with a
+   * stubbed flag is the honest shape.
+   *
+   * @param seen the server-side SEEN flag
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private MimeMessage flaggedMessage(boolean seen) {
+    MimeMessage message = mock(MimeMessage.class);
+    lenient().when(message.isSet(Flags.Flag.SEEN)).thenReturn(seen);
+    lenient().when(message.getReceivedDate()).thenReturn(new Date());
+    return message;
+  }
+
+  /**
+   * A cached row as the light sync view returns it: ids, flags and threading state,
+   * no body. Threading is already backfilled (non-empty thread id, captured empty
+   * Thread-Index root) so the reconcile tests exercise pure flag logic; the backfill
+   * test overrides those fields explicitly.
+   *
+   * @param uid the IMAP UID
+   * @param read the cached read flag
+   * @param recent the cached recent flag
+   * @return the light row
+   */
+  private Email cachedEmail(long uid, boolean read, boolean recent) {
+    Email email = new Email();
+    email.setId(uid * 100);
+    email.setMailRemoteId(uid);
+    email.setRead(read);
+    email.setRecent(recent);
+    email.setThreadId("<m" + uid + "@host>");
+    email.setThreadIndexRoot("");
+    email.setUserId(TEST_USER);
+    email.setFolder("INBOX");
+    return email;
+  }
+
+  /**
+   * Turns the mocked storage into a small in-memory mailbox for the threading tests:
+   * created rows are remembered, and every thread lookup computeThreadId relies on
+   * (forward References, reverse References, Thread-Index root, oldest-thread
+   * canonicalization, merge) answers from what has actually been stored so far --
+   * exactly what the service sees in production. Without this, the order-independence
+   * tests would only prove that the service believes whatever a stubbed list says.
+   *
+   * @return the live list of stored rows, in creation order
+   */
+  private List<Email> stubStatefulThreadingStorage() {
+    List<Email> rows = Collections.synchronizedList(new ArrayList<>());
+    when(emailBoxStorage.createEmail(any(Email.class))).thenAnswer(invocation -> {
+      Email email = invocation.getArgument(0);
+      rows.add(email);
+      return email;
+    });
+    when(emailBoxStorage.getSiblingThreadIds(anyString(), anyList())).thenAnswer(invocation -> {
+      List<String> mailHeaderIds = invocation.getArgument(1);
+      return rows.stream()
+                 .filter(row -> row.getMailHeaderId() != null && mailHeaderIds.contains(row.getMailHeaderId()))
+                 .map(Email::getThreadId)
+                 .filter(Objects::nonNull)
+                 .distinct()
+                 .toList();
+    });
+    when(emailBoxStorage.getThreadIdsReferencingMessageId(anyString(), anyString())).thenAnswer(invocation -> {
+      String messageId = invocation.getArgument(1);
+      return rows.stream()
+                 .filter(row -> (row.getMailReferences() != null && row.getMailReferences().contains(messageId))
+                     || (row.getInReplyTo() != null && row.getInReplyTo().contains(messageId)))
+                 .map(Email::getThreadId)
+                 .filter(Objects::nonNull)
+                 .distinct()
+                 .toList();
+    });
+    when(emailBoxStorage.getThreadIdsByThreadIndexRoot(anyString(), anyString())).thenAnswer(invocation -> {
+      String threadIndexRoot = invocation.getArgument(1);
+      return rows.stream()
+                 .filter(row -> threadIndexRoot.equals(row.getThreadIndexRoot()))
+                 .map(Email::getThreadId)
+                 .filter(Objects::nonNull)
+                 .distinct()
+                 .toList();
+    });
+    when(emailBoxStorage.getOldestThreadId(anyString(), anyList())).thenAnswer(invocation -> {
+      List<String> threadIds = invocation.getArgument(1);
+      return rows.stream()
+                 .filter(row -> threadIds.contains(row.getThreadId()))
+                 .sorted(Comparator.comparing(Email::getReceivedDate))
+                 .map(Email::getThreadId)
+                 .findFirst()
+                 .orElse(null);
+    });
+    doAnswer(invocation -> {
+      String canonicalThreadId = invocation.getArgument(1);
+      List<String> threadIds = invocation.getArgument(2);
+      rows.stream().filter(row -> threadIds.contains(row.getThreadId())).forEach(row -> row.setThreadId(canonicalThreadId));
+      return null;
+    }).when(emailBoxStorage).mergeThreads(anyString(), anyString(), anyList());
+    return rows;
+  }
+
+  /**
+   * A mocked inbox message carrying real threading headers, as the sync connection's
+   * batched fetch would expose them. Only non-null headers are stubbed, so an absent
+   * header behaves exactly like production (getHeader returns null).
+   *
+   * @param messageId the Message-ID header (angle-bracketed), may be null
+   * @param references the raw References header, may be null
+   * @param inReplyTo the raw In-Reply-To header, may be null
+   * @param threadIndex the raw Exchange Thread-Index header, may be null
+   * @param receivedDate the received date, which drives oldest-thread canonicalization
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private MimeMessage threadedMessage(String messageId, String references, String inReplyTo, String threadIndex, Date receivedDate) {
+    MimeMessage message = mock(MimeMessage.class);
+    when(message.getMessageID()).thenReturn(messageId);
+    // lenient: the service also probes getHeader for headers this message does not
+    // carry (delivery headers, the absent ones of the three below), and strict
+    // stubbing would report those probes as argument mismatches.
+    if (references != null) {
+      lenient().when(message.getHeader("References")).thenReturn(new String[] { references });
+    }
+    if (inReplyTo != null) {
+      lenient().when(message.getHeader("In-Reply-To")).thenReturn(new String[] { inReplyTo });
+    }
+    if (threadIndex != null) {
+      lenient().when(message.getHeader("Thread-Index")).thenReturn(new String[] { threadIndex });
+    }
+    when(message.getReceivedDate()).thenReturn(receivedDate);
+    return message;
+  }
+
+  /**
+   * A synthetic MS-OXOMSG {@code Thread-Index} whose 16-byte conversation GUID
+   * (bytes 6..21) is a fixed constant, so indexes of different lengths -- the
+   * conversation starter at 22 bytes, each reply 5 bytes longer -- decode to the
+   * same conversation root.
+   *
+   * @param length the raw byte length before base64 encoding, at least 22
+   * @return the base64-encoded header value
+   */
+  private String threadIndex(int length) {
+    byte[] raw = new byte[length];
+    for (int i = 6; i < 22; i++) {
+      raw[i] = (byte) 0x42;
+    }
+    return Base64.getEncoder().encodeToString(raw);
+  }
+
+  /**
+   * Wires the mocks for a {@code synchronize()} run over an inbox containing exactly
+   * the given messages, with UIDs {@code 1..n} in array order (nothing cached
+   * locally, no Sent/Archive folders on the store). Unlike {@link #mockInboxForSync}
+   * the caller controls each message's headers, which is what the threading
+   * order-independence tests manipulate.
+   *
+   * @param userEmailSetting the user's connector binding
+   * @param messages the inbox content, oldest first (UID = index + 1)
+   * @return the mocked INBOX folder
+   */
+  @SneakyThrows
+  private Folder mockInboxWithMessages(UserEmailSetting userEmailSetting, MimeMessage[] messages) {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    // Only the parallel-prefetch tests reach getFullName; lenient so the serial-path
+    // tests sharing this fixture do not trip strict-stubbing.
+    lenient().when(inbox.getFullName()).thenReturn("INBOX");
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    when(inbox.getMessageCount()).thenReturn(messages.length);
+    for (int i = 0; i < messages.length; i++) {
+      when(((UIDFolder) inbox).getUID(messages[i])).thenReturn((long) (i + 1));
+    }
+    when(inbox.getMessages(anyInt(), anyInt())).thenReturn(messages);
+    when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
+    // No subscribed Sent/Archive folders in the test store, so those syncs are no-ops.
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    return inbox;
+  }
+
+  /**
+   * Wires the extra IMAP connection the body prefetch workers open: same folder
+   * re-opened by full name, messages resolved by UID, each carrying a
+   * {@code prefetched-<uid>} body.
+   *
+   * @param emailConnector the resolved connector the workers connect with
+   * @param count the number of messages, UIDs {@code 1..count}
+   * @return the mocked worker-side folder
+   */
+  @SneakyThrows
+  private Folder mockPrefetchWorkerConnection(EmailConnector emailConnector, int count) {
+    return mockPrefetchWorkerConnection(emailConnector, count, uids -> null);
+  }
+
+  /**
+   * Same as {@link #mockPrefetchWorkerConnection(EmailConnector, int)}, with a hook
+   * invoked on the worker thread before a slice's messages are returned -- used to
+   * make one slice deliberately slow.
+   *
+   * @param emailConnector the resolved connector the workers connect with
+   * @param count the number of messages, UIDs {@code 1..count}
+   * @param beforeSlice called with the slice's UIDs before they resolve; may block
+   * @return the mocked worker-side folder
+   */
+  @SneakyThrows
+  private Folder mockPrefetchWorkerConnection(EmailConnector emailConnector, int count, SliceHook beforeSlice) {
+    Store workerStore = mock(Store.class);
+    when(userEmailSettingService.connect(any(UserEmailSetting.class), eq(emailConnector))).thenReturn(workerStore);
+    when(workerStore.isConnected()).thenReturn(true);
+    Folder workerFolder = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(workerStore.getFolder("INBOX")).thenReturn(workerFolder);
+    when(workerFolder.isOpen()).thenReturn(true);
+    Map<Long, Message> workerMessages = new HashMap<>();
+    for (long uid = 1; uid <= count; uid++) {
+      MimeMessage workerMessage = mock(MimeMessage.class);
+      when(workerMessage.isMimeType("text/*")).thenReturn(true);
+      when(workerMessage.getContent()).thenReturn("prefetched-" + uid);
+      when(((UIDFolder) workerFolder).getUID(workerMessage)).thenReturn(uid);
+      workerMessages.put(uid, workerMessage);
+    }
+    // Read-only answer (all stubbing done above) so concurrent workers never stub.
+    when(((UIDFolder) workerFolder).getMessagesByUID(any(long[].class))).thenAnswer(invocation -> {
+      long[] uids = invocation.getArgument(0);
+      beforeSlice.beforeSlice(uids);
+      Message[] result = new Message[uids.length];
+      for (int i = 0; i < uids.length; i++) {
+        result[i] = workerMessages.get(uids[i]);
+      }
+      return result;
+    });
+    return workerFolder;
+  }
+
+  /**
+   * A hook run on a prefetch worker thread just before its slice resolves, allowed to
+   * block or throw -- how the slow-slice test freezes exactly one slice.
+   */
+  @FunctionalInterface
+  private interface SliceHook {
+    /**
+     * Invoked with the slice's UIDs on the worker thread.
+     *
+     * @param uids the slice's UIDs
+     * @return ignored, present so blocking lambdas may end with a return
+     * @throws Exception to fail the slice like a dead connection would
+     */
+    Object beforeSlice(long[] uids) throws Exception;
+  }
+
+  /**
+   * Wires the mocks for a {@code synchronize()} run over an inbox of {@code count}
+   * brand-new messages with UIDs {@code 1..count} (nothing cached locally, no
+   * Sent/Archive folders on the store).
+   */
+  @SneakyThrows
+  private Folder mockInboxForSync(UserEmailSetting userEmailSetting, int count) {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    // Only the parallel-prefetch tests reach getFullName; lenient so the skip-path
+    // tests sharing this fixture do not trip strict-stubbing.
+    lenient().when(inbox.getFullName()).thenReturn("INBOX");
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    when(inbox.getMessageCount()).thenReturn(count);
+    MimeMessage[] messages = new MimeMessage[count];
+    for (int i = 0; i < count; i++) {
+      messages[i] = mock(MimeMessage.class);
+      when(((UIDFolder) inbox).getUID(messages[i])).thenReturn((long) (i + 1));
+    }
+    when(inbox.getMessages(anyInt(), anyInt())).thenReturn(messages);
+    when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
+    // No subscribed Sent/Archive folders in the test store, so those syncs are no-ops.
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    return inbox;
+  }
+
+  private Email emailWithCategories(List<Long> categoryIds) {
+    Email email = email(TEST_USER);
+    email.setCategoryIds(categoryIds);
+    return email;
+  }
+
+  /**
+   * A mocked message carrying the bulk-mail classification headers. Only non-null values
+   * are stubbed, so an absent header behaves exactly as in production.
+   */
+  @SneakyThrows
+  private MimeMessage bulkSignalMessage(String autoSubmitted, String precedence, String listPost) {
+    MimeMessage message = mock(MimeMessage.class);
+    lenient().when(message.getHeader("Auto-Submitted"))
+             .thenReturn(autoSubmitted == null ? null : new String[] { autoSubmitted });
+    lenient().when(message.getHeader("Precedence")).thenReturn(precedence == null ? null : new String[] { precedence });
+    lenient().when(message.getHeader("List-Post")).thenReturn(listPost == null ? null : new String[] { listPost });
+    return message;
+  }
+
+  @Test
+  @SneakyThrows
+  void isAutoSubmittedReadsTheDeliveryHeaders() {
+    // No headers at all: a message somebody typed.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, null, null)));
+    // RFC 3834: any value other than "no" declares the message machine-generated, and the
+    // comparison is case-insensitive -- providers stamp "Auto-Replied" and "AUTO-GENERATED".
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("auto-generated", null, null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("Auto-Replied", null, null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage("AUTO-NOTIFIED", null, null)));
+    // "no" is the explicit opposite and must NOT be read as automated, whatever its case
+    // or surrounding whitespace.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("no", null, null)));
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("NO", null, null)));
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("  no  ", null, null)));
+    // A blank header is not a declaration either.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage("   ", null, null)));
+    // Legacy Precedence, again case-insensitively.
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "bulk", null)));
+    assertTrue(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "Junk", null)));
+    // "list" is deliberately NOT automated: a mailing list stamps it on every message it
+    // relays, including one a colleague typed by hand.
+    assertFalse(EmailBoxService.isAutoSubmitted(bulkSignalMessage(null, "list", null)));
+  }
+
+  @Test
+  @SneakyThrows
+  void isPostableListNeedsAnActualMailtoAddress() {
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, null)));
+    assertTrue(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "<mailto:team@example.com>")));
+    assertTrue(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "<MAILTO:team@example.com>")));
+    // A list that explicitly refuses posting, and a malformed value: neither is postable,
+    // which is what separates a discussion list from a one-way blast.
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "NO")));
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "team@example.com")));
+    assertFalse(EmailBoxService.isPostableList(bulkSignalMessage(null, null, "")));
+  }
+
+  @Test
+  @SneakyThrows
+  void synchronizePersistsTheBulkMailSignals() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Folder inbox = mockInboxForSync(userEmailSetting, 1);
+    MimeMessage message = (MimeMessage) inbox.getMessages(1, 1)[0];
+    lenient().when(message.getHeader("Auto-Submitted")).thenReturn(new String[] { "auto-generated" });
+    lenient().when(message.getHeader("List-Id")).thenReturn(new String[] { "<team.example.com>" });
+    lenient().when(message.getHeader("List-Post")).thenReturn(new String[] { "<mailto:team@example.com>" });
+    lenient().when(message.getHeader("List-Unsubscribe")).thenReturn(new String[] { "<mailto:bye@example.com>" });
+    lenient().when(message.getHeader("X-Original-Sender")).thenReturn(new String[] { "author@example.com" });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    // The five signals must survive onto the cached row: they are the whole point of this
+    // groundwork, and a downstream categorizer only ever sees the row, never the message.
+    ArgumentCaptor<Email> created = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(created.capture());
+    Email cached = created.getValue();
+    assertTrue(cached.isAutoSubmitted());
+    assertTrue(cached.isHasListId());
+    assertTrue(cached.isHasListPost());
+    assertTrue(cached.isHasListUnsubscribe());
+    assertEquals("author@example.com", cached.getOriginalSender());
+  }
+
+  @Test
+  @SneakyThrows
+  void aBackstopOnlyFlushesTheWindowItWasArmedFor() {
+    String user = "backstopuser";
+    // The race the generation stamp exists for: cancel(false) does nothing once the timer
+    // task has started, so a backstop can reach its flush at the very moment a new sync has
+    // installed a fresh window. Driven through the guard directly rather than through the
+    // scheduler -- the timer thread needs a live PortalContainer to get as far as the send,
+    // so a timing-based test would pass or fail on the container, not on the guard.
+    emailBoxService.openNotificationWindow(user, List.of());
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.completeNotificationWindow(user, List.of());
+    long armedGeneration = notificationGeneration();
+
+    // A new sync opens its own window: the old backstop is now stale.
+    emailBoxService.openNotificationWindow(user, List.of());
+    long freshGeneration = notificationGeneration();
+    assertTrue(freshGeneration > armedGeneration);
+
+    // The stale backstop must leave that fresh window alone -- flushing it here is what sent
+    // an early notification and lost the in-flight window, with nothing in the logs.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, armedGeneration));
+    // And the window really is still there: its own generation still flushes it.
+    assertNotNull(emailBoxService.takePendingNotificationIfCurrent(user, freshGeneration));
+    // Once taken it is gone, so two timers cannot both send.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, freshGeneration));
+  }
+
+  @Test
+  @SneakyThrows
+  void everyWindowGetsItsOwnGeneration() {
+    String user = "generationuser";
+    // Each transition installs a new window, so the timer armed by the previous one can
+    // never flush the next: claims and releases re-arm the backstop each time.
+    emailBoxService.openNotificationWindow(user, List.of());
+    long opened = notificationGeneration();
+    emailBoxService.deferNewEmailsNotification(user);
+    long claimed = notificationGeneration();
+    emailBoxService.deferNewEmailsNotification(user);
+    long claimedAgain = notificationGeneration();
+    emailBoxService.completeNotificationWindow(user, List.of());
+    long completed = notificationGeneration();
+    assertTrue(opened < claimed && claimed < claimedAgain && claimedAgain < completed);
+    // Only the newest one is honoured.
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, opened));
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, claimed));
+    assertNull(emailBoxService.takePendingNotificationIfCurrent(user, claimedAgain));
+    assertNotNull(emailBoxService.takePendingNotificationIfCurrent(user, completed));
+  }
+
+  /**
+   * The generation stamped on the most recently installed notification window.
+   */
+  private long notificationGeneration() {
+    return ((AtomicLong) ReflectionTestUtils.getField(emailBoxService, "notificationGenerations")).get();
+  }
+
+  @Test
+  @SneakyThrows
+  void concurrentClaimsAndReleasesSendExactlyOnce() {
+    String user = "raceuser";
+    // The backstop is 15 minutes, far beyond this test, so the single send asserted below is
+    // necessarily the real release path -- the point is that racing threads cannot produce
+    // two sends, nor zero.
+    int groups = 32;
+    emailBoxService.openNotificationWindow(user, List.of());
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch done = new CountDownLatch(groups);
+    List<Thread> threads = new ArrayList<>();
+    for (int i = 0; i < groups; i++) {
+      Thread thread = new Thread(() -> {
+        try {
+          emailBoxService.deferNewEmailsNotification(user);
+          start.await();
+          emailBoxService.notifyNewEmailsClassified(user);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          done.countDown();
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+    // Every claim is taken before any release, so the window can only empty after the
+    // sync is marked complete below.
+    emailBoxService.completeNotificationWindow(user, List.of());
+    start.countDown();
+    assertTrue(done.await(10, TimeUnit.SECONDS));
+    for (Thread thread : threads) {
+      thread.join(10000);
+    }
+    // Exactly one send, whatever order the releases landed in: the claim count and the
+    // window's completion flag are read and written inside the same compute().
+    verify(emailBoxStorage, times(1)).getEmails(user, MailFolder.INBOX);
   }
 
   @Test
@@ -693,6 +2065,11 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      "INBOX",
+                     null,
+                     false,
+                     false,
+                     false,
+                     false,
                      null);
   }
 

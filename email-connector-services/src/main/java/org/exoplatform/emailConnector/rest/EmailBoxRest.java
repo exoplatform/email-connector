@@ -103,6 +103,24 @@ public class EmailBoxRest {
     }
   }
 
+  @PostMapping("/reset")
+  @Secured("users")
+  @Operation(summary = "Resets and re-synchronizes the email box", method = "POST",
+             description = "Clears the locally-cached emails and runs a full re-synchronization from the server")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized"),
+      @ApiResponse(responseCode = "409", description = "A synchronization is already in progress"), })
+  public ResponseEntity<String> resetUserEmailBox(HttpServletRequest request) {
+    try {
+      emailBoxService.resetAndResynchronize(request.getRemoteUser());
+      return ResponseEntity.ok().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    }
+  }
+
   @GetMapping("/{mailRemoteId}")
   @Secured("users")
   @Operation(summary = "Gets remote email by id", method = "GET", description = "This will get remote email by id")

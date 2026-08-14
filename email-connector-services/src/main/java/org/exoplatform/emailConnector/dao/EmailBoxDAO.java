@@ -73,6 +73,45 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId, @Param("folder")
   String folder);
 
+  /**
+   * Bulk companion of {@link #markEmailAsNotRecent}: clears the recent flag of all
+   * the given messages in ONE statement. The sync used to issue the single-row
+   * version once per already-known message — 5000 statements per routine sync on a
+   * 5000-message cache, almost all of them writing nothing. The caller passes only
+   * the rows whose flag is actually set, so a steady-state sync issues no statement
+   * at all.
+   *
+   * @param mailRemoteIds the IMAP UIDs whose recent flag must be cleared
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.recent = false WHERE email.mailRemoteId IN :mailRemoteIds AND email.userId = :userId AND email.folder = :folder")
+  void markEmailsAsNotRecent(@Param("mailRemoteIds")
+  List<Long> mailRemoteIds, @Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
+   * The light per-folder view the sync reconcile runs on: row id, IMAP UID,
+   * threading state and the two flags — WITHOUT the body CLOB and without the
+   * attachments join. The sync used to load the full entities through
+   * {@link #findByUserIdAndFolderWithAttachments}: at 5000 cached messages that
+   * dragged 5000 bodies out of the database every routine sync just to compare
+   * UIDs and flags. Ordered newest-first because cleanupObsoleteEmails trims the
+   * cache overflow off the END of the list, exactly as the full query did.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read, recent]},
+   *         newest first
+   */
+  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
+  List<Object[]> findSyncViewByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
   @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByMailHeaderIdAndUserId(@Param("mailHeaderId")
   String mailHeaderId, @Param("userId")
@@ -100,6 +139,33 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<String> findDistinctThreadIdsByThreadIndexRoot(@Param("userId")
   String userId, @Param("threadIndexRoot")
   String threadIndexRoot);
+
+  /**
+   * The reference chains of the user's cached messages: each row's thread id with
+   * its raw {@code References} and {@code In-Reply-To} headers. This feeds the
+   * REVERSE thread lookup (which already-cached messages point AT a given
+   * Message-ID — see {@code EmailBoxStorage#getThreadIdsReferencingMessageId}),
+   * needed when a message is cached after the replies that reference it: the sync
+   * drains prefetch slices in completion order, newest mail first, so a parent
+   * routinely lands last. The substring matching itself deliberately happens in
+   * Java, NOT here: {@code MAIL_REFERENCES} maps to CLOB on some dialects (verified
+   * live on HSQLDB), where SQL string functions are unsupported — a
+   * {@code LOCATE}-based version of this query threw
+   * {@code SQLFeatureNotSupportedException} on the first live reset and aborted the
+   * whole sync. Equality and null checks are all a CLOB column can be trusted with
+   * across dialects. The result is bounded by the per-user cache cap
+   * (a few hundred rows), and the chain-presence predicate keeps chainless
+   * messages — most of a typical inbox — out of the transfer entirely. The
+   * empty-string guard keeps backfill-pending rows (threading columns added after
+   * their creation) out of the merge machinery.
+   *
+   * @param userId the mailbox owner
+   * @return rows of {@code [threadId, mailReferences, inReplyTo]} for every cached
+   *         message that has a thread id and at least one chain header
+   */
+  @Query("SELECT email.threadId, email.mailReferences, email.inReplyTo FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.threadId <> '' AND (email.mailReferences IS NOT NULL OR email.inReplyTo IS NOT NULL)")
+  List<Object[]> findThreadReferenceChainsByUserId(@Param("userId")
+  String userId);
 
   @Transactional
   @Modifying

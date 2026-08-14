@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 
 import javax.mail.internet.InternetAddress;
 
+import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -52,6 +53,10 @@ import lombok.SneakyThrows;
 @Component
 public class EmailBoxStorage {
 
+  // Largest IN list issued in one statement. Oracle refuses past 1000 literals (ORA-01795);
+  // the margin leaves room for the other bound parameters of the same query.
+  private static final int    IN_CLAUSE_MAX_SIZE = 900;
+
   @Autowired
   private EmailBoxDAO         emailBoxDao;
 
@@ -72,6 +77,62 @@ public class EmailBoxStorage {
 
   public void markEmailAsNotRecent(Long mailRemoteId, String userId, String folder) {
     emailBoxDao.markEmailAsNotRecent(mailRemoteId, userId, folder);
+  }
+
+  /**
+   * Clears the recent flag of all the given messages in one statement — the bulk
+   * companion of {@link #markEmailAsNotRecent}, introduced when the sync stopped
+   * issuing one UPDATE per already-known message. No-op on an empty list, so a
+   * steady-state sync touches nothing.
+   * <p>
+   * Issued in slices: this list is bounded by the mailbox cache size, whose default is now
+   * 1000 and which administrators may raise to 5000, and Oracle rejects an {@code IN} list of
+   * more than 1000 literals (ORA-01795). A first sync of a full cache would otherwise fail the
+   * whole run on the very statement added to make bulk syncs cheaper.
+   *
+   * @param mailRemoteIds the IMAP UIDs whose recent flag must be cleared
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   */
+  public void markEmailsAsNotRecent(List<Long> mailRemoteIds, String userId, String folder) {
+    if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+      return;
+    }
+    for (int start = 0; start < mailRemoteIds.size(); start += IN_CLAUSE_MAX_SIZE) {
+      int end = Math.min(start + IN_CLAUSE_MAX_SIZE, mailRemoteIds.size());
+      emailBoxDao.markEmailsAsNotRecent(mailRemoteIds.subList(start, end), userId, folder);
+    }
+  }
+
+  /**
+   * The light view of a folder the sync reconcile runs on: each cached row's id,
+   * IMAP UID, threading state and flags — no body, no attachments join, no
+   * category-link lookup. The full {@link #getEmails(String, String)} load was one
+   * of the two dominant costs of a sync that found nothing new: at 5000 cached
+   * messages it pulled every BODY CLOB through the persistence layer and ran one
+   * category-link query per row, none of which the sync ever read. Category ids
+   * are resolved lazily, only for the rows actually being deleted (see the
+   * service's delete path). Ordered newest-first, which cleanupObsoleteEmails
+   * relies on to trim the cache overflow off the end.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return light {@link Email} DTOs (body, recipients and category ids left null),
+   *         newest first
+   */
+  public List<Email> getSyncEmails(String userId, String folder) {
+    return emailBoxDao.findSyncViewByUserIdAndFolder(userId, folder).stream().map(row -> {
+      Email email = new Email();
+      email.setId((Long) row[0]);
+      email.setMailRemoteId((Long) row[1]);
+      email.setThreadId((String) row[2]);
+      email.setThreadIndexRoot((String) row[3]);
+      email.setRead(Boolean.TRUE.equals(row[4]));
+      email.setRecent(Boolean.TRUE.equals(row[5]));
+      email.setUserId(userId);
+      email.setFolder(folder);
+      return email;
+    }).toList();
   }
 
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
@@ -97,6 +158,57 @@ public class EmailBoxStorage {
       return List.of();
     }
     return emailBoxDao.findDistinctThreadIdsByMailHeaderIds(userId, mailHeaderIds);
+  }
+
+  /**
+   * The distinct thread ids of already-cached messages that point back AT the given
+   * message — its Message-ID appears in their {@code References} / {@code In-Reply-To}
+   * — the reverse of {@link #getSiblingThreadIds}. Without this direction a reply
+   * cached before its parent is invisible to the parent, and the conversation
+   * silently splits in two; with both directions, thread grouping no longer depends
+   * on the order messages are cached in.
+   * <p>
+   * The matching runs HERE, in Java, over the chains the DAO returns — not as a SQL
+   * substring function. The References column is CLOB on some dialects (HSQLDB),
+   * where {@code LOCATE} throws {@code SQLFeatureNotSupportedException}; the first
+   * live reset with a SQL-side match aborted the sync and cached nothing. Matching in
+   * Java is dialect-proof, and cheap: the candidate set is bounded by the per-user
+   * cache cap, hundreds of short strings against a sync budget that is pure IMAP
+   * latency. The id is normalized to its angle-bracketed RFC 5322 form before
+   * matching, because the brackets are what makes the containment check token-exact:
+   * {@code <a@host>} matches neither {@code <xa@host>} nor {@code <a@host.com>},
+   * while a bare {@code a@host} would match both.
+   *
+   * @param userId the mailbox owner
+   * @param messageId the message's own Message-ID, with or without angle brackets
+   * @return the distinct thread ids of the cached messages referencing it, never null
+   */
+  public List<String> getThreadIdsReferencingMessageId(String userId, String messageId) {
+    if (StringUtils.isBlank(messageId)) {
+      return List.of();
+    }
+    String bracketedId = messageId.startsWith("<") && messageId.endsWith(">") ? messageId : "<" + messageId + ">";
+    return emailBoxDao.findThreadReferenceChainsByUserId(userId)
+                      .stream()
+                      .filter(chain -> chainContains((String) chain[1], bracketedId)
+                          || chainContains((String) chain[2], bracketedId))
+                      .map(chain -> (String) chain[0])
+                      .distinct()
+                      .toList();
+  }
+
+  /**
+   * Whether a raw {@code References} / {@code In-Reply-To} header value contains the
+   * given angle-bracketed Message-ID. A plain containment check is exact here: ids
+   * cannot contain {@code <} or {@code >} internally, so the brackets delimit the
+   * token on both sides.
+   *
+   * @param chain the raw header value, may be null
+   * @param bracketedId the angle-bracketed Message-ID to look for
+   * @return true when the chain references the id
+   */
+  private boolean chainContains(String chain, String bracketedId) {
+    return chain != null && chain.contains(bracketedId);
   }
 
   /**
@@ -247,7 +359,12 @@ public class EmailBoxStorage {
                                                          email.getInReplyTo(),
                                                          email.getMailReferences(),
                                                          email.getFolder() != null ? email.getFolder() : MailFolder.INBOX,
-                                                         email.getThreadIndexRoot());
+                                                         email.getThreadIndexRoot(),
+                                                         email.isAutoSubmitted(),
+                                                         email.isHasListId(),
+                                                         email.isHasListPost(),
+                                                         email.isHasListUnsubscribe(),
+                                                         email.getOriginalSender());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -300,7 +417,12 @@ public class EmailBoxStorage {
                               emailBoxEntity.getInReplyTo(),
                               emailBoxEntity.getMailReferences(),
                               emailBoxEntity.getFolder(),
-                              emailBoxEntity.getThreadIndexRoot());
+                              emailBoxEntity.getThreadIndexRoot(),
+                              emailBoxEntity.isAutoSubmitted(),
+                              emailBoxEntity.isHasListId(),
+                              emailBoxEntity.isHasListPost(),
+                              emailBoxEntity.isHasListUnsubscribe(),
+                              emailBoxEntity.getOriginalSender());
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());
