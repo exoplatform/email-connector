@@ -176,4 +176,17 @@ public class EmailBoxEntity {
   // sorts on and which will carry the server copy's INTERNALDATE once drafts sync.
   @Column(name = "DRAFT_UPDATED_DATE")
   private Date                        draftUpdatedDate;
+
+  // Whether BODY is HTML, as the message itself declared it (the Content-Type of the
+  // part the body was taken from). A fact read once at sync rather than re-guessed from
+  // the characters on every render, which is what the reader used to do and got wrong.
+  // A Boolean, not a boolean, and that is the point: null means "written before this
+  // column existed, nobody asked the message", and the storage derives an answer for
+  // those rows only. Defaulting them to false would show every cached HTML mail as
+  // escaped source; to true, every plain-text one would keep collapsing its line breaks.
+  // Declared last for the same reason STARRED and the draft columns were, and now after
+  // the four of them: Lombok's all-args constructor follows field order, so this field
+  // is the last positional argument and the draft ones keep the places they took.
+  @Column(name = "IS_HTML")
+  private Boolean                     html;
 }

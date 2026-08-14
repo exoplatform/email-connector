@@ -244,6 +244,14 @@ public class EmailBoxStorage {
     }
     entity.setSubject(draft.getSubject());
     entity.setBody(draft.getContent() != null ? draft.getContent().getBody() : null);
+    // Written with the body, because it describes that body and nothing else. This
+    // path is the one that does NOT go through toEntity — it mutates the loaded row
+    // column by column — so a column left out here is a column that only the very
+    // first save of a draft ever writes, the first being the one that goes through
+    // createEmail. The body is replaced on every autosave; the answer about its
+    // format has to be replaced with it, or the row keeps describing text it no
+    // longer holds.
+    entity.setHtml(draft.getContent() != null ? draft.getContent().isHtml() : null);
     entity.setTo(toRecipientsString(draft.getTo()));
     entity.setCc(toRecipientsString(draft.getCc()));
     entity.setBcc(toRecipientsString(draft.getBcc()));
@@ -1354,7 +1362,14 @@ public class EmailBoxStorage {
                                                          email.getDraftLocalId(),
                                                          email.getDraftState(),
                                                          email.getDraftRevision(),
-                                                         email.getDraftUpdatedDate());
+                                                         email.getDraftUpdatedDate(),
+                                                         // What the message said about its own body, on its way to the row.
+                                                         // Null only for an Email built without content at all: there is
+                                                         // no body to describe, so there is nothing to claim about it.
+                                                         // A draft comes through here too, and its body is what the rich
+                                                         // editor produced — so this is the one place that records that a
+                                                         // draft is HTML, and resuming it depends on the flag landing.
+                                                         email.getContent() != null ? email.getContent().isHtml() : null);
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -1389,6 +1404,8 @@ public class EmailBoxStorage {
         String body = emailBoxEntity.getBody();
         excerpt = StringUtils.isBlank(body) ? "" : Jsoup.parse(body).text().trim();
       }
+      EmailContent content = new EmailContent(emailBoxEntity.getBody(), excerpt, attachments);
+      content.setHtml(isHtmlBody(emailBoxEntity));
       String[] emailSenderParts = splitStoredPerson(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
       List<Long> categoryIds = categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
@@ -1400,7 +1417,7 @@ public class EmailBoxStorage {
                               emailBoxEntity.getUserId(),
                               userEmail,
                               emailBoxEntity.getSubject(),
-                              new EmailContent(emailBoxEntity.getBody(), excerpt, attachments),
+                              content,
                               emailBoxEntity.getReceivedDate(),
                               EmailConnectorUtils.getEmailSender(emailSenderAddress, withProfile),
                               emailBoxEntity.isRead(),
@@ -1459,6 +1476,23 @@ public class EmailBoxStorage {
       }
       return email;
     }
+  }
+
+  /**
+   * Whether a cached row's body is HTML.
+   * <p>
+   * The row's own answer whenever it has one — that is the message's declared
+   * Content-Type, recorded at sync. A row cached before the column existed was never
+   * asked, so its body is read instead; that fallback is the only guessing left in the
+   * whole path, it applies to no row written from now on, and those rows leave the cache
+   * as the sync window moves past them.
+   *
+   * @param emailBoxEntity the cached row
+   * @return true when the body should be rendered as HTML
+   */
+  private boolean isHtmlBody(EmailBoxEntity emailBoxEntity) {
+    return emailBoxEntity.getHtml() != null ? emailBoxEntity.getHtml()
+                                            : EmailConnectorUtils.looksLikeHtml(emailBoxEntity.getBody());
   }
 
   private EmailAttachmentEntity toEmailAttachmentEntity(EmailAttachment emailAttachment, EmailBoxEntity emailBoxEntity) {
