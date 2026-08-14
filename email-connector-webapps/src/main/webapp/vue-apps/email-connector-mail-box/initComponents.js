@@ -47,6 +47,8 @@ import EmailConnectorMailBoxDrawerListItemDetailHeader from './components/drawer
 import EmailConnectorMailBoxDrawerListItemDetailHeaderItem from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailHeaderItem.vue';
 import EmailConnectorMailBoxDrawerListItemDetailSenderAvatar from './components/drawer/EmailConnectorMailBoxDrawerListItemDetailSenderAvatar.vue';
 import EmailConnectorMailBoxDrawerMultiSelectEmail from './components/drawer/EmailConnectorMailBoxDrawerMultiSelectEmail.vue';
+import EmailConnectorMailBoxDrawerSearchResults from './components/drawer/EmailConnectorMailBoxDrawerSearchResults.vue';
+import EmailConnectorMailBoxDrawerSearchResultItem from './components/drawer/EmailConnectorMailBoxDrawerSearchResultItem.vue';
 import EmailConnectorMailBoxDrawerNoEmail from './components/drawer/EmailConnectorMailBoxDrawerNoEmail.vue';
 import EmailConnectorMailBoxDrawerSelectEmail from './components/drawer/EmailConnectorMailBoxDrawerSelectEmail.vue';
 import EmailConnectorRecipientField from './components/drawer/EmailConnectorRecipientField.vue';
@@ -88,6 +90,8 @@ const components = {
   'email-connector-mail-box-drawer-list-item-detail-header-item': EmailConnectorMailBoxDrawerListItemDetailHeaderItem,
   'email-connector-mail-box-drawer-list-item-detail-sender-avatar': EmailConnectorMailBoxDrawerListItemDetailSenderAvatar,
   'email-connector-mail-box-drawer-multi-select-email': EmailConnectorMailBoxDrawerMultiSelectEmail,
+  'email-connector-mail-box-drawer-search-results': EmailConnectorMailBoxDrawerSearchResults,
+  'email-connector-mail-box-drawer-search-result-item': EmailConnectorMailBoxDrawerSearchResultItem,
   'email-connector-mail-box-drawer-no-email': EmailConnectorMailBoxDrawerNoEmail,
   'email-connector-mail-box-drawer-select-email': EmailConnectorMailBoxDrawerSelectEmail,
   'email-connector-recipient-field': EmailConnectorRecipientField,

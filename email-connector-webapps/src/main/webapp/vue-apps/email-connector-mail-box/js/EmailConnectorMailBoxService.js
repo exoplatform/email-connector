@@ -293,6 +293,67 @@ export function completeThreadByThreadId(threadId) {
 }
 
 /**
+ * Searches the WHOLE mailbox on the server (IMAP SEARCH over the remote folder),
+ * not just the locally-cached window. Matches subject or sender, like the local
+ * instant filter, so the two result sets agree. Each hit carries a `cached` flag
+ * telling whether the message can be opened straight from the local cache.
+ *
+ * @param {String} query free text matched against subject or sender
+ * @param {String} folder the folder to search: INBOX, SENT or ARCHIVE
+ * @param {Number} limit how many hits to return (newest first)
+ * @returns {Promise} resolves with { results, totalMatches }
+ */
+export function searchEmails(query, folder, limit) {
+  const params = new URLSearchParams({ query, limit });
+  if (folder && folder !== 'INBOX') {
+    params.append('folder', folder);
+  }
+  return fetch(`/email-connector/rest/email-box/search?${params}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when searching the mailbox');
+    }
+  });
+}
+
+/**
+ * Fetches a search hit that lives OUTSIDE the locally-cached window: pulls that
+ * one message from the server into the cache so the regular reader can open it.
+ * While a synchronization is running the server refuses with 409 on purpose (it
+ * would race the sync into duplicate rows); the rejection then carries
+ * `status = 409` so the caller can retry after a short delay instead of
+ * reporting an error.
+ *
+ * @param {Number} mailRemoteId the message's IMAP UID in the folder
+ * @param {String} folder the folder the search hit came from
+ * @returns {Promise} resolves with the full cached email
+ */
+export function fetchSearchedEmail(mailRemoteId, folder) {
+  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box/search/${mailRemoteId}${query}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    const error = new Error('Error when fetching the searched email');
+    error.status = resp?.status;
+    throw error;
+  });
+}
+
+/**
  * Suggests recipients for a compose field: one ranked, de-duplicated list
  * merging the user's own contact store with the platform's people directory.
  * A blank term answers their top contacts rather than nothing, so opening the
