@@ -31,10 +31,40 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <!-- Truncated rather than wrapped or overflowing: a long address must not
              push the card button out of the row, which is exactly what a button
              placed after free-flowing text does. -->
+        <!-- Name and address are interpolated, never built as an HTML string: both
+             come straight from the mail's headers, so whoever sent the mail chooses
+             them. Rendered as markup, a From name is script the reader runs on the
+             portal page — and the drawer is not the sandboxed frame the body gets.
+             The link around the name is ours, so it stays real markup; only the
+             href is bound, and only to a platform profile URL we resolved here. -->
         <span
           class="text-truncate"
-          style="min-width: 0"
-          v-html="parsedValue(value)"></span>
+          style="min-width: 0">
+          <!-- With no name there is only the address, rather than the address
+               printed twice or a name-shaped hole in front of it. A recipient
+               added as a bare address is ordinary on a draft, and this line used
+               to render the missing half literally. The name comes from
+               personName(), so the four characters "null" an older row may carry
+               are not shown as somebody's name either. -->
+          <template v-if="displayName(value)">
+            <a
+              v-if="value.profileUrl"
+              :href="value.profileUrl"
+              target="_blank"
+              rel="noopener noreferrer">{{ displayName(value) }}</a>
+            <span
+              v-else
+              class="text-color">{{ displayName(value) }}</span>
+            <!-- A real interpolated space, not a margin: margin is box geometry,
+                 not text content, so selection/copy, find-in-page and screen
+                 readers would glue the name to the address. A literal blank
+                 between elements is condensed away by the template compiler;
+                 an interpolated one cannot be. -->
+            {{ ' ' }}
+            <span>{{ value.address }}</span>
+          </template>
+          <span v-else>{{ value.address }}</span>
+        </span>
         <!-- The way from a mail to the person who sent it. Added beside the
              existing name rather than replacing it: a colleague's name already
              links to their profile, and taking that away to gain a contact card
@@ -78,6 +108,21 @@ export default {
   },
   methods: {
     /**
+     * What to call one addressed person on this line, or nothing when they have no
+     * name of their own.
+     * <p>
+     * Returned as a plain string for the template to interpolate, never as markup:
+     * the name is the personal part of the address, chosen by whoever sent the mail,
+     * so built into an HTML string it would run on the portal page rather than in
+     * the sandboxed frame the body gets.
+     *
+     * @param {object} value - the address entry, carrying address and maybe a name
+     * @returns {string} the name to show, or an empty string when there is none
+     */
+    displayName(value) {
+      return personName(value) || '';
+    },
+    /**
      * Opens the contact card for one of the addresses on this mail, or the
      * create form when nobody is stored there yet.
      * <p>
@@ -98,24 +143,6 @@ export default {
           name: personName(value),
         },
       }));
-    },
-    /**
-     * One addressed person on an expanded To/Cc line: their name, then their
-     * address.
-     * <p>
-     * With no name there is only the address, rather than the address printed twice
-     * or a name-shaped hole in front of it — a recipient added as a bare address is
-     * ordinary on a draft, and this line rendered the missing half literally.
-     *
-     * @param {object} value - the address entry, carrying address and maybe a name
-     * @returns {string} the markup for that person
-     */
-    parsedValue(value) {
-      const name = personName(value);
-      if (!name) {
-        return value.address;
-      }
-      return value.profileUrl && `<a href="${value.profileUrl}" target="_blank" rel="noopener noreferrer">${name}</a> ${value.address}` || `<span class="text-color">${name}</span> ${value.address}`;
     },
   },
 };
