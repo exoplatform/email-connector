@@ -801,5 +801,76 @@
     </comment>
     <createSequence sequenceName="SEQ_EMAIL_ORPHAN_FILE_ID" startValue="1"/>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-48">
+    <comment>
+      A written summary of one conversation, kept so it is produced once and read
+      many times. Numbered 48 because 1.0.0-44's group announced that anything
+      landing after it starts there, and this is the first thing that does.
+
+      It is a CACHE, not a record: every row here can be thrown away and rebuilt
+      from the mail it describes. That is why there is no foreign key to EMAIL_BOX
+      and no cascade -- a conversation's rows come and go as the sync window moves,
+      and a summary written from the fuller conversation is still the better answer
+      once the cache has trimmed its oldest messages.
+
+      Keyed by (USER_ID, THREAD_ID) rather than by THREAD_ID alone. A thread id is
+      minted per mailbox out of the Message-IDs that mailbox holds, so two users on
+      one mailing list legitimately produce the same id for what is, to each of
+      them, their own copy of the conversation -- and a summary describes the copy
+      it was written from. The uniqueness is an index rather than a compound
+      primary key because every other table here is keyed by a generated id and the
+      DAO layer expects one.
+
+      MESSAGE_COUNT and NEWEST_MESSAGE_KEY are the fingerprint of what was actually
+      summarised, and they are the whole of the staleness rule: the read compares
+      them against the conversation as it stands NOW, so nothing has to be
+      scheduled and nothing has to be invalidated. NEWEST_MESSAGE_KEY is a folder
+      and an IMAP UID ("INBOX:4217") rather than a date, because a date is not an
+      identity -- two messages can share one, and a draft's changes on every
+      keystroke.
+
+      SUMMARY is long text because it is prose about a whole conversation rather
+      than a label. AGENT_NAME_ID records WHICH producer wrote it, so a deployment
+      that changes producer can tell its old rows from its new ones instead of
+      serving one voice as the other.
+    </comment>
+    <createTable tableName="EMAIL_THREAD_AI_SUMMARY">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_THREAD_AI_SUMMARY"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <!-- 255, exactly as EMAIL_BOX.THREAD_ID in 1.0.0-18 and for the same reason:
+           (USER_ID, THREAD_ID) has to fit a MySQL index key. It also has to be the
+           SAME width as the column it mirrors, or a thread id this table could not
+           hold would be one no summary could ever be stored against. -->
+      <column name="THREAD_ID" type="VARCHAR(255)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SUMMARY" type="CLOB"/>
+      <column name="MESSAGE_COUNT" type="INT"/>
+      <column name="NEWEST_MESSAGE_KEY" type="VARCHAR(250)"/>
+      <column name="AGENT_NAME_ID" type="VARCHAR(250)"/>
+      <column name="CREATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <createIndex tableName="EMAIL_THREAD_AI_SUMMARY" indexName="UQ_EMAIL_THREAD_AI_SUMMARY" unique="true">
+      <column name="USER_ID"/>
+      <column name="THREAD_ID"/>
+    </createIndex>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-49" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The summary's sequence, on the vendors that have sequences -- created in the
+      same breath as its table, which is the lesson 1.0.0-43 paid for and 1.0.0-47
+      already had to repeat.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_THREAD_AI_SUMMARY_ID" startValue="1"/>
+  </changeSet>
 
 </databaseChangeLog>

@@ -123,6 +123,18 @@ public class EmailConnectorUtils {
   // for an inbox-only sync, which never caches Sent at all.
   public static final String   MAILBOX_SYNC_COMPLETED    = "exo.email.mailboxSyncCompleted";
 
+  // Broadcast when somebody asks for a conversation to be summarised: source =
+  // username, data = the thread id. A REQUEST and not a result -- this add-on has no
+  // summariser in it, and is not going to grow one. Whoever can write a summary
+  // listens for this and calls back through EmailBoxService#saveThreadAiSummary.
+  //
+  // Which means a deployment with nothing listening is a supported deployment, not a
+  // broken one: the request goes nowhere, the reader keeps answering "there is none",
+  // and no part of this add-on waits for an answer it might not get. That is why the
+  // endpoint behind it answers 202 rather than 200 -- it has accepted a request, and
+  // is honestly unable to promise anything came of it.
+  public static final String   THREAD_AI_SUMMARY_REQUESTED = "exo.email.threadAiSummaryRequested";
+
   public static final String   EMAIL_FEATURE           = "email";
 
   private static final int     DEFAULT_AVATAR_WIDTH    = 350;
