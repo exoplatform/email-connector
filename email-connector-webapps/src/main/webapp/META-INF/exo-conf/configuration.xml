@@ -11,7 +11,10 @@
       <name>Change PortalContainer Definitions</name>
       <set-method>registerChangePlugin</set-method>
       <type>org.exoplatform.container.definition.PortalContainerDefinitionChangePlugin</type>
-      <priority>120</priority>
+      <!-- After app-center (21), whose Application Center registry this addon's
+           badge plugin registers into, and after the other addons contributing
+           to the same portal container. -->
+      <priority>500</priority>
       <init-params>
         <value-param>
           <name>apply.default</name>
