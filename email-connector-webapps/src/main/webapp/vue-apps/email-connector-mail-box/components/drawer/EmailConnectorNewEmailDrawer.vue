@@ -1340,6 +1340,12 @@ export default {
         // The row and its server copy are already gone; all that is left here is to
         // forget the draft so the close below cannot save it back.
         this.emptyComposer();
+        // Announced BEFORE the reload, and it is the ordering that matters: the mailbox
+        // re-arms its watch on this, and the reload right after is the first poll of
+        // that watch. The copy of this message is not in the Sent folder cache yet — the
+        // server files it and the add-on re-reads that folder in the background — so the
+        // list has to keep re-reading itself for a moment rather than once, now.
+        this.$root.$emit('email-sent');
         this.$root.$emit('refresh-email-box');
         this.close();
       }).catch(() => {
