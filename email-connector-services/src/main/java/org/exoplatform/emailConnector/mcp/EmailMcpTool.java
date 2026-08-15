@@ -274,7 +274,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * content and attachment metadata (plain-text body).
    */
   public EmailModel getEmailFull(long mailRemoteId) throws ObjectNotFoundException, IllegalAccessException {
-    Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), true, true, true, false);
+    Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), MailFolder.INBOX, true, true, true, false);
     if (email == null) {
       throw new ObjectNotFoundException("Email with mail_remote_id %s not found");
     }
@@ -328,7 +328,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * opens the URL in their own authenticated browser. Empty list if none.
    */
   public List<EmailAttachmentModel> listAttachments(long mailRemoteId) throws IllegalAccessException {
-    Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), true, false, false, false);
+    Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, getCurrentUserName(), MailFolder.INBOX, true, false, false, false);
     if (email == null || email.getContent() == null || email.getContent().getAttachments() == null) {
       return List.of();
     }
@@ -345,25 +345,27 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Mark one or more emails (by IMAP mailRemoteId) as read, locally and on the
-   * IMAP server. Reports the true outcome: emails whose server flag could not be
+   * IMAP server. Inbox messages only — see {@link #archiveEmail}. Reports the true
+   * outcome: emails whose server flag could not be
    * written (message not found on server or IMAP write denied) are counted as
    * failed rather than reported as success.
    */
   public String markRead(List<Long> mailRemoteIds) throws IllegalAccessException {
     int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
-    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), true, true);
+    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), MailFolder.INBOX, true, true);
     return buildReadStatusMessage(total, failed, "read");
   }
 
   /**
    * Mark one or more emails (by IMAP mailRemoteId) as unread, locally and on the
-   * IMAP server. Reports the true outcome: emails whose server flag could not be
+   * IMAP server. Inbox messages only — see {@link #archiveEmail}. Reports the true
+   * outcome: emails whose server flag could not be
    * written (message not found on server or IMAP write denied) are counted as
    * failed rather than reported as success.
    */
   public String markUnread(List<Long> mailRemoteIds) throws IllegalAccessException {
     int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
-    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), false, true);
+    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, getCurrentUserName(), MailFolder.INBOX, false, true);
     return buildReadStatusMessage(total, failed, "unread");
   }
 
@@ -439,7 +441,7 @@ public class EmailMcpTool implements McpToolPlugin {
       throw new IllegalArgumentException("At least one recipient is required in 'to'");
     }
     String username = getCurrentUserName();
-    Email original = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, true, false, false);
+    Email original = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.INBOX, false, true, false, false);
     if (original == null) {
       throw new ObjectNotFoundException("Email with mail_remote_id %s not found");
     }
@@ -459,9 +461,13 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Move one or more emails (by IMAP mailRemoteId) to the Archive folder.
+   * <p>
+   * Inbox messages only: the ids this toolset hands out are INBOX UIDs, and a UID
+   * numbers a message within one folder. Passing the folder explicitly is what keeps
+   * that a stated limit rather than a silent assumption (EXO-89367).
    */
   public String archiveEmail(List<Long> mailRemoteIds) throws IllegalAccessException {
-    int failed = emailBoxService.archiveEmail(mailRemoteIds, getCurrentUserName());
+    int failed = emailBoxService.archiveEmail(mailRemoteIds, getCurrentUserName(), MailFolder.INBOX);
     int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
     return String.format("Archived %d of %d email(s)%s.", total - failed, total, failed > 0 ? " (" + failed + " failed)" : "");
   }
@@ -471,7 +477,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * expunges them from the INBOX. Destructive and irreversible.
    */
   public String deleteEmail(List<Long> mailRemoteIds) throws IllegalAccessException {
-    int failed = emailBoxService.deleteEmail(mailRemoteIds, getCurrentUserName());
+    int failed = emailBoxService.deleteEmail(mailRemoteIds, getCurrentUserName(), MailFolder.INBOX);
     int total = mailRemoteIds == null ? 0 : mailRemoteIds.size();
     return String.format("Deleted %d of %d email(s)%s.", total - failed, total, failed > 0 ? " (" + failed + " failed)" : "");
   }
@@ -654,7 +660,7 @@ public class EmailMcpTool implements McpToolPlugin {
    * Fetch the original email (with recipients) or fail if it cannot be found.
    */
   private Email fetchOriginalOrFail(long mailRemoteId, String username) throws IllegalAccessException {
-    Email original = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, true, false, false);
+    Email original = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.INBOX, false, true, false, false);
     if (original == null) {
       throw new IllegalArgumentException("Original email with mail_remote_id " + mailRemoteId + " not found");
     }

@@ -33,9 +33,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.select.label') }}
       </span>
     </v-list-item>
-    <!-- Read/unread is a write to the mail server, so it stays off a read-only
-         folder's rows: the backend scopes read-status writes to the inbox, and a
-         menu entry that reliably does nothing is worse than no entry at all. -->
+    <!-- Read/unread is a write to the mail server, so it stays off a read-only folder's
+         rows. It is folder-aware now (EXO-89367), so this is no longer about the write
+         landing in the wrong place — it is that a message the user threw away has no
+         read state worth pushing. -->
     <v-list-item
       v-if="!readOnly"
       class="ps-2 pe-3 height-auto"
@@ -90,9 +91,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       element="div"
       class="my-auto" /> 
     <!-- `restricted` is the mobile long-press drawer saying "the swipe already offers
-         these two"; `readOnly` is the folder saying they must not be offered at all. -->
+         these two"; `canMove` is the folder saying they must not be offered at all. -->
     <v-list-item
-      v-if="!restricted && !readOnly"
+      v-if="!restricted && canMove"
       class="ps-2 pe-3 height-auto"
       @click.stop="archiveEmail">
       <v-sheet
@@ -110,7 +111,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </v-list-item>
     <v-list-item
-      v-if="!restricted && !readOnly"
+      v-if="!restricted && canMove"
       class="ps-2 pe-3 height-auto"
       @click.stop="deleteEmail">
       <v-sheet
@@ -217,6 +218,14 @@ export default {
     // ordinary actions are withheld, and nothing here can drift out of that pairing.
     trashActions() {
       return this.$emailConnectorMailBoxService.hasTrashActions(this.email.folder);
+    },
+    // Whether delete and archive may be offered on this row at all. On top of readOnly:
+    // both address a message by its IMAP uid, and an unsent draft has none to address --
+    // discarding a draft is its own action, in the composer, where the user can see what
+    // they are throwing away. Exactly what the swipe has always refused (moveEnd in
+    // EmailConnectorMailBoxDrawerListItem), asked here so the menu and the swipe agree.
+    canMove() {
+      return !this.readOnly && (this.email.folder || 'INBOX') !== 'DRAFTS';
     },
   },
   methods: {
