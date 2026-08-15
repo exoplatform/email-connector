@@ -50,6 +50,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.forward.label') }}
       </span>
     </v-list-item>
+    <!-- The AI actions an administrator has already written for a mail, on the one
+         message the reader opened out of the conversation — the same seam the mail
+         list's own row menu offers (see EmailConnectorMailBoxDrawerListItemActionMenuItems),
+         with the same name, type and params, so an action written once appears in both
+         without anything new to define.
+
+         Only inside a thread. This component is also what a conversation of a single
+         message renders, and there the drawer's header already carries the very same
+         actions on the very same mail (EmailConnectorMailBoxDrawerListItemDetailActions,
+         the `EmailDetail` / `email-detail-toolbar` seam) — so unscoped they would be
+         offered twice, side by side, on one message. In a thread the header speaks for
+         the conversation and this menu is the only way to reach one message of it,
+         which is an asymmetry worth keeping rather than flattening.
+
+         Read-only actions only, deliberately. A thread is the one view that mixes
+         folders (the reply in SENT, the original in INBOX), and anything that WRITES
+         from here must take the folder off the message object it is handed rather than
+         off the drawer's folder lookup, which searches the listing and would not find a
+         thread message at all (EXO-89367). -->
+    <extension-registry-components
+      v-if="inThread"
+      :params="{
+        email,
+      }"
+      name="Email"
+      type="email-menu-action"
+      parent-element="div"
+      element="div"
+      class="my-auto" />
   </v-list>
 </template>
 
@@ -59,6 +88,12 @@ export default {
     email: {
       type: Object,
       default: () => null,
+    },
+    // Whether this message is one of several in the conversation on screen. See the
+    // comment on the extension seam above for why the seam is scoped to that case.
+    inThread: {
+      type: Boolean,
+      default: false,
     },
   },
   methods: {
