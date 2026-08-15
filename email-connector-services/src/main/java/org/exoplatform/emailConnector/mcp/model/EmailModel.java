@@ -46,6 +46,15 @@ public class EmailModel {
   @JsonProperty("mail_remote_id")
   private Long                 mailRemoteId;
 
+  /**
+   * The conversation this message belongs to, and the only way an agent ever gets a
+   * thread_id to pass to {@code get_email_thread}. Carried here because that tool's
+   * description promises it: a tool that names an id its own reads never return is a
+   * tool nothing can chain (EXO-89372).
+   */
+  @JsonProperty("thread_id")
+  private String               threadId;
+
   private String               userId;
 
   private String               userEmail;
