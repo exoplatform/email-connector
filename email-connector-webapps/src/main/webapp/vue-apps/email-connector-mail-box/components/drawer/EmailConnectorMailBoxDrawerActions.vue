@@ -228,7 +228,8 @@ export default {
      *
      * Any read-only row disqualifies the whole selection: a listing holds one
      * folder's rows, so in practice it is all of them or none, and the conservative
-     * reading is the one that cannot fire an inbox-keyed delete on a Trash message.
+     * reading is the one that cannot offer a Trash message an action the server will
+     * refuse.
      *
      * @returns {Boolean} true when archive/delete/read-status may be offered
      */
@@ -260,8 +261,7 @@ export default {
   methods: {
     /**
      * Whether a bulk read/unread is worth offering: at least one selected message
-     * would actually change, and none of them is in a read-only folder (read-status
-     * writes are inbox-scoped server-side, so offering it there would do nothing).
+     * would actually change, and none of them is in a read-only folder.
      *
      * @param {Boolean} read the status the button would apply
      * @returns {Boolean} true when the button should be shown
