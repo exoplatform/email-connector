@@ -71,7 +71,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="!loading" #titleIcons>
       <email-connector-mail-box-drawer-list-item-detail-actions
         v-if="email && !email.draftLocalId && (!expanded || !selectEmailPlaceHolder)"
-        :email="email" />
+        :email="email"
+        :thread="threadContext" />
     </template>
     <template v-if="expanded" #fullAppLeftContent>
       <categories-filter
@@ -96,11 +97,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-mail-box-drawer-no-email v-if="filteredEmails.length === 0" />
         <template v-else>
           <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
+          <!-- The reader tells the header which conversation it is showing; this drawer
+               holds both and is the only place the value can pass between them. -->
           <email-connector-mail-box-drawer-thread-content
             v-else
             :email="email"
             :emails="filteredEmails"
-            :expanded-drawer="expanded" />
+            :expanded-drawer="expanded"
+            @thread-context="threadContext = $event" />
         </template>
       </template>
     </template>
@@ -131,6 +135,10 @@ export default {
       webmailUrl: null,
       selectMode: false,
       selectEmailPlaceHolder: false,
+      // The conversation the reader below is showing — {threadId, messages, subject} —
+      // relayed to the toolbar in the title bar, which is a sibling of the reader and
+      // would otherwise only ever see the single opened message.
+      threadContext: null,
       selectedCategoryId: null,
       selectedCategoryIds: [],
     };
@@ -484,6 +492,7 @@ export default {
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
       this.email = null;
+      this.threadContext = null;
       this.$root.isDetailDrawerActive = false;
       this.$root.$emit('email-detail-drawer-closed');
       this.selectedCategoryId = null;

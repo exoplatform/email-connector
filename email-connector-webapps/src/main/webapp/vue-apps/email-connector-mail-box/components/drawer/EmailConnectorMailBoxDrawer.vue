@@ -79,7 +79,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div v-if="hasFullAppLeft">
         <email-connector-mail-box-drawer-list-item-detail-actions
           v-if="email && !selectEmailPlaceHolder"
-          :email="email" />
+          :email="email"
+          :thread="threadContext" />
       </div>
       <email-connector-mail-box-drawer-actions
         v-else-if="!syncBlocked"
@@ -167,11 +168,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :emails="emails"
               :selected-emails="selectedEmails" />
             <email-connector-mail-box-drawer-select-email v-else-if="selectEmailPlaceHolder" />
+            <!-- The reader tells the header which conversation it is showing, so the
+                 title bar above can act on the exchange rather than on the one message
+                 that was clicked. This drawer holds both of them and is the only place
+                 the value can pass between them. -->
             <email-connector-mail-box-drawer-thread-content
               v-else
               :email="email"
               :emails="emails"
-              expanded-drawer />
+              expanded-drawer
+              @thread-context="threadContext = $event" />
           </template>
           <email-connector-mail-box-drawer-content
             v-else
@@ -236,6 +242,11 @@ export default {
       // open something themselves, or close the drawer.
       pinnedEmail: false,
       selectEmailPlaceHolder: false,
+      // The conversation the reader below is showing — {threadId, messages, subject} —
+      // relayed to the toolbar in the title bar, which is a sibling of the reader and
+      // would otherwise only ever see the single opened message. Null until the reader
+      // has loaded something, and cleared whenever it stops showing one.
+      threadContext: null,
       // The category VIEW: picking a category in the ⋮ menu switches the list to
       // it, the way picking Sent or Archive does — single selection, left by
       // selecting a folder (or re-picking the same category). Holds the id, or
@@ -967,6 +978,7 @@ export default {
       this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
       this.email = null;
+      this.threadContext = null;
       this.emailBoxDrawer = false;
       this.favoriteOnly = false;
       this.unreadOnly = false;
