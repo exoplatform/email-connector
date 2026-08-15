@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -69,6 +70,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
+import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
@@ -153,6 +155,15 @@ public class EmailBoxRestTest {
                                                                          .contentType(MediaType.APPLICATION_JSON)
                                                                          .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
+    verify(emailBoxService).updateEmailReadStatus(emailIds, SIMPLE_USER, MailFolder.INBOX, true, true);
+    // And the row's own folder when it is not the inbox: a read flag pushed against the
+    // wrong folder lands on whichever message carries that number there.
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "?readStatus=true&folder=ARCHIVE").with(testSimpleUser())
+                                                                            .content(asJsonString(emailIds))
+                                                                            .contentType(MediaType.APPLICATION_JSON)
+                                                                            .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).updateEmailReadStatus(emailIds, SIMPLE_USER, MailFolder.ARCHIVE, true, true);
   }
 
   @Test
@@ -190,6 +201,26 @@ public class EmailBoxRestTest {
                                                      .contentType(MediaType.APPLICATION_JSON)
                                                      .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
+    // No folder on the query: the endpoint reads INBOX, which is what every client
+    // written before the mailbox held other folders meant.
+    verify(emailBoxService).deleteEmail(emailIds, SIMPLE_USER, MailFolder.INBOX);
+  }
+
+  /**
+   * The folder travels from the caller to the service untouched — the whole of
+   * EXO-89367 at this layer. A delete fired from the Sent list must reach the service
+   * as SENT, or it is answered against the inbox, where that UID is another message.
+   */
+  @Test
+  void deleteEmailCarriesTheRowsOwnFolder() throws Exception {
+    List<Long> emailIds = List.of(123L);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "?folder=SENT").with(testSimpleUser())
+                                                          .content(asJsonString(emailIds))
+                                                          .contentType(MediaType.APPLICATION_JSON)
+                                                          .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).deleteEmail(emailIds, SIMPLE_USER, MailFolder.SENT);
+    verify(emailBoxService, never()).deleteEmail(anyList(), anyString(), eq(MailFolder.INBOX));
   }
 
   @Test
@@ -203,11 +234,12 @@ public class EmailBoxRestTest {
                                                                   .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isNotFound());
     emailIds = List.of(123L, 456L, 789L);
-    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive").with(testSimpleUser())
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/archive?folder=SENT").with(testSimpleUser())
                                                                   .content(asJsonString(emailIds))
                                                                   .contentType(MediaType.APPLICATION_JSON)
                                                                   .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk());
+    verify(emailBoxService).archiveEmail(emailIds, SIMPLE_USER, MailFolder.SENT);
   }
 
   /**
@@ -254,7 +286,7 @@ public class EmailBoxRestTest {
     verify(emailBoxService).purgeEmail(emailIds, SIMPLE_USER);
     // And a permanent delete must never be answered by the ordinary one, which would
     // move the messages to the Trash they are already in and report success.
-    verify(emailBoxService, never()).deleteEmail(anyList(), anyString());
+    verify(emailBoxService, never()).deleteEmail(anyList(), anyString(), anyString());
   }
 
   @Test
