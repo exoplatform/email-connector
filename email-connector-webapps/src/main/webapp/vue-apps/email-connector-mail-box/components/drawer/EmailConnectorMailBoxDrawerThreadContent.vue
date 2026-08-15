@@ -106,6 +106,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :expanded="expandedIds.includes(item.key)"
         :collapsible="!isLast(item.message)"
         :expanded-drawer="expandedDrawer"
+        :in-thread="isThread"
         @expand="expand(item.key)"
         @collapse="collapse(item.key)" />
     </template>
@@ -191,6 +192,19 @@ export default {
     // that acts on one by its IMAP UID has to work off this instead.
     categorizableMessages() {
       return this.messages.filter(message => !this.isDraft(message));
+    },
+    // Whether what is on screen is a conversation rather than one mail. Every opened
+    // message comes through this reader, so a lone mail is rendered by the very same
+    // components a thread is -- the difference is only how many messages there are.
+    // Told apart here because it is the one place that knows, and because a message
+    // of a real conversation offers things a lone mail must not repeat from the
+    // drawer's header (see the 3-dots menu items).
+    //
+    // Counted on the mail, not on `messages`: a draft is not a message of the exchange
+    // -- a mail with an unsent reply under it is still one mail being read, and its
+    // header already carries everything the menu would.
+    isThread() {
+      return this.categorizableMessages.length > 1;
     },
     // The reader's display list: each message shown on its own, except runs of
     // consecutive collapsed middle messages, which fold into one "bubble" item
