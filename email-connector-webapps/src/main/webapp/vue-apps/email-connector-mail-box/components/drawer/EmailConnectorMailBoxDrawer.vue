@@ -1272,8 +1272,13 @@ export default {
      * @returns {void}
      */
     deleteEmails(emailIdsToDelete = []) {
+      // Group BEFORE hiding the rows: the listing is a computed that filters out
+      // deletedEmailIds, so pushing first would take the rows out of it and leave
+      // folderOfEmail with nothing to read — every delete would then be addressed
+      // to the INBOX default and refused by the server (EXO-89367).
+      const groups = this.byOwnFolder(emailIdsToDelete);
       this.deletedEmailIds.push(...emailIdsToDelete);
-      this.byOwnFolder(emailIdsToDelete).forEach(([folder, ids]) =>
+      groups.forEach(([folder, ids]) =>
         this.$emailConnectorMailBoxService.deleteEmails(ids, folder)
           .then(deleteResult => this.alertOnActionFailures(deleteResult.failedDeletions ?? 0, 'delete'))
           .catch(() => this.alertOnActionFailures(ids.length, 'delete')));
@@ -1356,8 +1361,10 @@ export default {
      * @returns {void}
      */
     archiveEmails(emailIdsToArchive = []) {
+      // Group BEFORE hiding the rows — same reason as deleteEmails above.
+      const groups = this.byOwnFolder(emailIdsToArchive);
       this.archivedEmailIds.push(...emailIdsToArchive);
-      this.byOwnFolder(emailIdsToArchive).forEach(([folder, ids]) =>
+      groups.forEach(([folder, ids]) =>
         this.$emailConnectorMailBoxService.archiveEmails(ids, folder)
           .then(archiveResult => this.alertOnActionFailures(archiveResult.failedArchives ?? 0, 'archive'))
           .catch(() => this.alertOnActionFailures(ids.length, 'archive')));
