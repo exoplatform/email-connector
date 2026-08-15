@@ -182,6 +182,14 @@ public class EmailBoxServiceTest {
 
   private static final String     TEST_USER = "testuser";
 
+  // A conversation id as it is STORED: a Message-ID, angle brackets and all, which is
+  // the only spelling the database ever holds.
+  private static final String     STORED_THREAD_ID = "<a27866e4-ce38-47ed-bf84-a713b724be1b@vistosolutions.com>";
+
+  // The same id as it ARRIVES from the AI thread actions, its brackets eaten by the HTML
+  // rendering of the prompt that carried it.
+  private static final String     BARE_THREAD_ID = "a27866e4-ce38-47ed-bf84-a713b724be1b@vistosolutions.com";
+
   // A fixed, readable origin for the body-prefetch timing tests: the rule is a pure
   // function of instants, so it is exercised at chosen instants rather than by really
   // waiting out its windows.
@@ -1122,6 +1130,116 @@ public class EmailBoxServiceTest {
     List<Email> thread = emailBoxService.getThread("<self@host>", TEST_USER);
 
     assertEquals(1, thread.size());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+  }
+
+  /**
+   * The bare id and the bracketed one open the SAME conversation.
+   * <p>
+   * A thread id is a Message-ID and is stored bracketed, but the AI thread actions carry
+   * it through prompt text the chat drawer renders as HTML, which eats
+   * {@code <id@host>} as a tag. The bare spelling is therefore what normally arrives
+   * there, and it used to read back an empty conversation from a thread that had three
+   * messages in it.
+   */
+  @Test
+  void getThreadResolvesBracketlessThreadIdToTheStoredConversation() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setMailHeaderId(STORED_THREAD_ID);
+    cached.setThreadId(STORED_THREAD_ID);
+    // Only the stored spelling names anything; the bare one is a miss, as in the database.
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, STORED_THREAD_ID, "testEmail")).thenReturn(List.of(cached));
+
+    List<Email> bracketed = emailBoxService.getThread(STORED_THREAD_ID, TEST_USER);
+    List<Email> bare = emailBoxService.getThread(BARE_THREAD_ID, TEST_USER);
+
+    assertEquals(1, bare.size());
+    assertEquals(bracketed.size(), bare.size());
+    assertEquals(STORED_THREAD_ID, bare.get(0).getThreadId());
+    // The caller's own spelling is asked for first, and only then the other one.
+    verify(emailBoxStorage).getEmailsByThreadId(TEST_USER, BARE_THREAD_ID, "testEmail");
+  }
+
+  /**
+   * The same equivalence the other way round: a conversation whose stored id happens to
+   * carry no brackets is still found when the caller asks for it bracketed.
+   */
+  @Test
+  void getThreadResolvesBracketedThreadIdWhenStoredBare() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setThreadId(BARE_THREAD_ID);
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, BARE_THREAD_ID, "testEmail")).thenReturn(List.of(cached));
+
+    List<Email> thread = emailBoxService.getThread(STORED_THREAD_ID, TEST_USER);
+
+    assertEquals(1, thread.size());
+    assertEquals(BARE_THREAD_ID, thread.get(0).getThreadId());
+  }
+
+  /**
+   * The exact-match path is not perturbed: an id that resolves as given costs the one
+   * read it always cost, and the other spelling is never queried. This is the half of
+   * the fix that has to stay true for every caller that already worked.
+   */
+  @Test
+  void getThreadDoesNotRetryWhenTheGivenThreadIdResolves() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setThreadId(STORED_THREAD_ID);
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, STORED_THREAD_ID, "testEmail")).thenReturn(List.of(cached));
+
+    List<Email> thread = emailBoxService.getThread(STORED_THREAD_ID, TEST_USER);
+
+    assertEquals(1, thread.size());
+    verify(emailBoxStorage, times(1)).getEmailsByThreadId(anyString(), anyString(), anyString());
+    verify(emailBoxStorage, never()).getEmailsByThreadId(TEST_USER, BARE_THREAD_ID, "testEmail");
+  }
+
+  /**
+   * An id that names no conversation in either spelling still returns an empty list
+   * rather than failing — the retry is a second chance, not a new error path.
+   */
+  @Test
+  void getThreadReturnsEmptyWhenNeitherSpellingResolves() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+
+    List<Email> thread = emailBoxService.getThread(BARE_THREAD_ID, TEST_USER);
+
+    assertTrue(thread.isEmpty());
+    verify(emailBoxStorage).getEmailsByThreadId(TEST_USER, BARE_THREAD_ID, "testEmail");
+    verify(emailBoxStorage).getEmailsByThreadId(TEST_USER, STORED_THREAD_ID, "testEmail");
+  }
+
+  /**
+   * Completion resolves the spelling BEFORE it works, not after: the archive lookup and
+   * the thread merge are keyed on the thread id, so a bare id there is not merely read
+   * back empty — it also silently skips the archive round-trip it was called for.
+   */
+  @Test
+  void completeThreadResolvesBracketlessThreadIdBeforeCompleting() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    cached.setMailHeaderId(STORED_THREAD_ID);
+    cached.setThreadId(STORED_THREAD_ID);
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, STORED_THREAD_ID, "testEmail")).thenReturn(List.of(cached));
+
+    List<Email> thread = emailBoxService.completeThread(BARE_THREAD_ID, TEST_USER);
+
+    assertEquals(1, thread.size());
+    assertEquals(STORED_THREAD_ID, thread.get(0).getThreadId());
+    // Nothing is missing from this conversation, so it stays a pure cache read.
     verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
   }
 
