@@ -467,9 +467,9 @@ export default {
       // not been uploaded has none. Discarding a draft is its own action, in the
       // composer, where the user can see what they are throwing away.
       //
-      // A Trash row has a UID, and that is exactly the danger: the backend resolves
-      // it against the inbox, so a swipe here would delete or archive whichever inbox
-      // message happens to be numbered the same. The row snaps back instead — the
+      // A Trash row is refused for a different reason: delete and archive both mean
+      // moving the message somewhere it already is, and the Trash has its own two
+      // actions for what can still be done to it. The row snaps back instead — the
       // same nothing a swipe on a draft already does.
       if (this.isDraft || this.readOnly) {
         this.reset();

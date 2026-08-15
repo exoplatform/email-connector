@@ -397,25 +397,43 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Marks messages read or unread, in the mirror and on the mail server.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}
+   * @param readStatus true to mark read, false to mark unread
+   * @param folder the folder those UIDs are numbered in; INBOX when omitted
+   * @return {@code failedUpdates}: how many the mail server did not take. It used to
+   *         answer nothing at all, so a push the server refused — which the service
+   *         reverts in the mirror — reached the user as a plain success and quietly
+   *         came undone at the next synchronization.
+   */
   @PatchMapping()
   @Secured("users")
-  @Operation(summary = "Updates emails read status", method = "PATCH", description = "This will update emails read status")
+  @Operation(summary = "Updates emails read status", method = "PATCH", description = "Marks the given messages read or unread, locally and on the mail server. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder. Returns the number of messages whose remote update failed (their local change is reverted).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
-  public void updateEmailReadStatus(HttpServletRequest request,
-                                    @Parameter(description = "Email remote ids", required = true)
-                                    @RequestBody
-                                    List<Long> mailRemoteIds,
-                                    @RequestParam("readStatus")
-                                    boolean readStatus) {
+  public Map<String, Integer> updateEmailReadStatus(HttpServletRequest request,
+                                                    @Parameter(description = "Email remote ids", required = true)
+                                                    @RequestBody
+                                                    List<Long> mailRemoteIds,
+                                                    @RequestParam("readStatus")
+                                                    boolean readStatus,
+                                                    @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, ALL_MAIL, DRAFTS); INBOX when omitted")
+                                                    @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                    String folder) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      emailBoxService.updateEmailReadStatus(mailRemoteIds, request.getRemoteUser(), readStatus, true);
+      int failedUpdates = emailBoxService.updateEmailReadStatus(mailRemoteIds, request.getRemoteUser(), folder, readStatus, true);
+      Map<String, Integer> response = new HashMap<>();
+      response.put("failedUpdates", failedUpdates);
+      return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -452,9 +470,19 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Moves messages to the Trash folder.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to delete
+   * @param folder the folder those UIDs are numbered in; INBOX when omitted. The
+   *          caller must send the ROW's own folder, not the folder it is listing —
+   *          they differ in search results, in favorites and in the reader.
+   * @return {@code failedDeletions}: how many could not be deleted
+   */
   @DeleteMapping()
   @Secured("users")
-  @Operation(summary = "Deletes email", method = "DELETE", description = "This will delete email")
+  @Operation(summary = "Deletes email", method = "DELETE", description = "Moves the given messages, out of the folder they are listed in, to the Trash folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder, so the same id names a different message in INBOX and in SENT.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -463,13 +491,16 @@ public class EmailBoxRest {
   public Map<String, Integer> deleteEmail(HttpServletRequest request,
                                           @Parameter(description = "Email remote ids", required = true)
                                           @RequestBody
-                                          List<Long> mailRemoteIds) {
+                                          List<Long> mailRemoteIds,
+                                          @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, ALL_MAIL); INBOX when omitted")
+                                          @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                          String folder) {
 
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedEmailDeletions = emailBoxService.deleteEmail(mailRemoteIds, request.getRemoteUser());
+      int failedEmailDeletions = emailBoxService.deleteEmail(mailRemoteIds, request.getRemoteUser(), folder);
       Map<String, Integer> response = new HashMap<>();
       response.put("failedDeletions", failedEmailDeletions);
       return response;
@@ -480,9 +511,17 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Moves messages to the Archive folder.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to archive
+   * @param folder the folder those UIDs are numbered in; INBOX when omitted
+   * @return {@code failedArchives}: how many could not be archived
+   */
   @DeleteMapping("/archive")
   @Secured("users")
-  @Operation(summary = "Archives email", method = "DELETE", description = "This will archive email")
+  @Operation(summary = "Archives email", method = "DELETE", description = "Moves the given messages, out of the folder they are listed in, to the Archive folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder. Archiving from the Archive folder itself is refused and counted as failed.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -491,12 +530,15 @@ public class EmailBoxRest {
   public Map<String, Integer> archiveEmail(HttpServletRequest request,
                                            @Parameter(description = "Email remote ids", required = true)
                                            @RequestBody
-                                           List<Long> mailRemoteIds) {
+                                           List<Long> mailRemoteIds,
+                                           @Parameter(description = "The folder those ids are numbered in (INBOX, SENT); INBOX when omitted")
+                                           @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                           String folder) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedEmailArchives = emailBoxService.archiveEmail(mailRemoteIds, request.getRemoteUser());
+      int failedEmailArchives = emailBoxService.archiveEmail(mailRemoteIds, request.getRemoteUser(), folder);
       Map<String, Integer> response = new HashMap<>();
       response.put("failedArchives", failedEmailArchives);
       return response;
