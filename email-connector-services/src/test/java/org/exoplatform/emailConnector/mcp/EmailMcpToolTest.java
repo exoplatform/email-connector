@@ -19,16 +19,17 @@ package org.exoplatform.emailConnector.mcp;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -95,6 +96,7 @@ class EmailMcpToolTest {
     email.setUserId(USERNAME);
     email.setUserEmail("testuser1@example.com");
     email.setSubject("Hello");
+    email.setThreadId("thread-1");
     EmailContent content = new EmailContent();
     content.setBody("<p>Hello <b>world</b></p>");
     email.setContent(content);
@@ -125,20 +127,33 @@ class EmailMcpToolTest {
   }
 
   /**
-   * An id is guessable, and this tool is reached from outside: an agent hands it a
-   * number. The refusal has to come from the read itself, so the plain lookup -- which
-   * finds a row by technical id alone -- must not be the one used. Asserting the refusal
-   * alone would still pass if somebody restored the plain call, hence the never().
-   *
-   * @throws Exception never thrown; declared by the tool's own contract
+   * An id is guessable, and this one arrives from an agent rather than from a screen the
+   * platform rendered. The read therefore has to be the owning one: another user's mail
+   * is refused, not decorated with the caller's name and returned.
    */
   @Test
   void getEmailByIdRefusesSomebodyElsesEmail() throws Exception {
     when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenThrow(new IllegalAccessException("not yours"));
-
     assertThrows(IllegalAccessException.class, () -> emailMcpTool.getEmailById(EMAIL_ID));
-
     verify(emailBoxService, never()).getEmailById(anyLong(), any());
+  }
+
+  /**
+   * The conversation id the reader tool asks for has to come from somewhere, and this is
+   * one of the three reads that carry it. It used to be dropped on the way out while the
+   * conversation tool's description promised it (EXO-89372).
+   */
+  @Test
+  void getEmailByIdCarriesTheThreadId() throws Exception {
+    Email email = buildEmail(EMAIL_ID);
+    email.setThreadId("thread-1");
+    when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(email);
+
+    EmailModel model = emailMcpTool.getEmailById(EMAIL_ID);
+
+    assertEquals("thread-1", model.getThreadId());
+    // And it must reach the agent under the name the tool definition promises.
+    assertTrue(new ObjectMapper().writeValueAsString(model).contains("\"thread_id\":\"thread-1\""));
   }
 
   // --- list_emails ---------------------------------------------------------
@@ -156,6 +171,9 @@ class EmailMcpToolTest {
     assertEquals("Hello world", emails.get(0).getContent().getBody());
     // list_emails does not expose the user email address
     assertEquals(null, emails.get(0).getUserEmail());
+    // but it does expose the conversation id, which is where get_email_thread's own
+    // argument comes from
+    assertEquals("thread-1", emails.get(0).getThreadId());
   }
 
   // --- get_my_email_account ------------------------------------------------
@@ -577,6 +595,77 @@ class EmailMcpToolTest {
   @Test
   void getEmailThreadWithoutAThreadIdIsRefused() {
     assertThrows(IllegalArgumentException.class, () -> emailMcpTool.getEmailThread(" "));
+  }
+
+  /**
+   * Every message of the conversation says which message it is. Without that, the one
+   * thing a reader most often wants next — reply to THIS one, read the body that was
+   * cut, list what came attached — can only be attempted by searching the mailbox again
+   * for a subject and a sender and hoping the newest hit is the same message
+   * (EXO-89372).
+   */
+  @Test
+  void getEmailThreadIdentifiesEachMessage() throws Exception {
+    Email message = threadMessage("<one@server>", "Véronika", "veronika@example.org", "<p>The contract</p>");
+    message.setId(EMAIL_ID);
+    message.setMailRemoteId(REMOTE_ID);
+    message.setFolder(MailFolder.INBOX);
+    when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(message));
+
+    EmailThreadMessageModel model = emailMcpTool.getEmailThread("thread-1").get(0);
+
+    assertEquals(EMAIL_ID, model.getEmailId(), "the handle get_email_by_id takes");
+    assertEquals(REMOTE_ID, model.getMailRemoteId(), "the handle reply_email and the other write tools take");
+    assertEquals(MailFolder.INBOX, model.getFolder());
+    // The ids are only usable if they arrive under the names the tool definition
+    // promises: a handle nobody can name is a handle nobody can chain.
+    String json = new ObjectMapper().writeValueAsString(model);
+    assertTrue(json.contains("\"email_id\":" + EMAIL_ID), json);
+    assertTrue(json.contains("\"mail_remote_id\":" + REMOTE_ID), json);
+    assertTrue(json.contains("\"folder\":\"INBOX\""), json);
+  }
+
+  /**
+   * A conversation reliably mixes received and sent mail, and an IMAP UID numbers a
+   * message within ONE folder. A sent message that reported no folder — or reported
+   * INBOX — would hand out a number that names a different message in the INBOX-scoped
+   * write tools, which is precisely the bug EXO-89367 fixed.
+   */
+  @Test
+  void getEmailThreadSaysWhichFolderEachMessageCameFrom() throws Exception {
+    Email received = threadMessage("<one@server>", "Véronika", "veronika@example.org", "<p>The contract</p>");
+    received.setMailRemoteId(101L);
+    received.setFolder(MailFolder.INBOX);
+    Email sent = threadMessage("<two@server>", "Me", "testuser1@example.com", "<p>Thursday works</p>");
+    sent.setMailRemoteId(101L);
+    sent.setFolder(MailFolder.SENT);
+    when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(received, sent));
+
+    List<EmailThreadMessageModel> thread = emailMcpTool.getEmailThread("thread-1");
+
+    assertEquals(MailFolder.INBOX, thread.get(0).getFolder());
+    assertEquals(MailFolder.SENT, thread.get(1).getFolder(), "a sent message must report SENT, not the reader's default");
+    // Same number, two different messages: the folder is the whole of what tells them
+    // apart.
+    assertEquals(thread.get(0).getMailRemoteId(), thread.get(1).getMailRemoteId());
+  }
+
+  /**
+   * A message that does not know where it lives says nothing rather than claiming the
+   * inbox. Defaulting a missing folder to INBOX is the same silent assumption EXO-89367
+   * was about, and the caller is told not to act on a UID that arrives without one.
+   */
+  @Test
+  void getEmailThreadDoesNotInventAFolderItWasNotGiven() throws Exception {
+    Email message = threadMessage("<one@server>", "Véronika", "veronika@example.org", "<p>The contract</p>");
+    message.setMailRemoteId(REMOTE_ID);
+    message.setFolder(null);
+    when(emailBoxService.getThread(eq("thread-1"), eq(USERNAME))).thenReturn(List.of(message));
+
+    EmailThreadMessageModel model = emailMcpTool.getEmailThread("thread-1").get(0);
+
+    assertNull(model.getFolder());
+    assertFalse(new ObjectMapper().writeValueAsString(model).contains("folder"));
   }
 
   /**
