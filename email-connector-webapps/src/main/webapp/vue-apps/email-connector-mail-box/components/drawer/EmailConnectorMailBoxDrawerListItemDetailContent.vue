@@ -66,7 +66,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-icon size="20" class="icon-default-color">fa-reply</v-icon>
           </v-btn>
           <email-connector-mail-box-drawer-list-item-detail-action-menu
-            :email="email" />
+            :email="email"
+            :in-thread="inThread" />
         </div>
       </v-list-item-action>
     </v-list-item>
@@ -113,6 +114,13 @@ export default {
     },
     // In a thread an expanded message collapses again when its sender line is clicked.
     collapsible: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether the conversation this message is rendered in holds more than one message.
+    // Carried down to the 3-dots menu, which offers the per-message AI actions only
+    // there — see EmailConnectorMailBoxDrawerListItemDetailActionMenuItems.
+    inThread: {
       type: Boolean,
       default: false,
     },

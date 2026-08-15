@@ -40,7 +40,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </template>
       <email-connector-mail-box-drawer-list-item-detail-action-menu-items
-        :email="email" />
+        :email="email"
+        :in-thread="inThread" />
     </v-menu>
   </v-list-item-action>
 </template>
@@ -51,7 +52,12 @@ export default {
     email: {
       type: Object,
       default: () => null,
-    }
+    },
+    // Passed straight through to the menu items, which is where it decides anything.
+    inThread: {
+      type: Boolean,
+      default: false,
+    },
   }
 };
 </script>
