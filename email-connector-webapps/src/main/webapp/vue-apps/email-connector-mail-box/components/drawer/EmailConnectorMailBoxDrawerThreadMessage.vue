@@ -59,6 +59,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :expanded-drawer="expandedDrawer"
       hide-subject
       :collapsible="collapsible"
+      :in-thread="inThread"
       @toggle-collapse="$emit('collapse')" />
   </div>
 </template>
@@ -80,6 +81,12 @@ export default {
       default: true,
     },
     expandedDrawer: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether the conversation on screen holds more than one message. Only carried
+    // through to the expanded renderer, which hands it to the 3-dots menu.
+    inThread: {
       type: Boolean,
       default: false,
     },
