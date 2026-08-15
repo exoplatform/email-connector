@@ -113,9 +113,22 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Retrieve one stored email by its local database id (plain-text body).
+   * <p>
+   * Reads through {@link EmailBoxService#getOwnedEmailById}, not the plain lookup:
+   * that one finds a row by its technical id alone and lets the username merely
+   * decorate what comes back, which is right for a caller that has already
+   * established who owns the row and wrong for anything reached from outside. This
+   * is reached from outside -- an agent hands it an id -- and an id is guessable, so
+   * it takes the same read {@code EmailBoxRest} takes. It refuses another user's
+   * mail rather than returning it.
+   *
+   * @param emailId the cached email's local database id
+   * @return the email, with its body flattened to plain text
+   * @throws ObjectNotFoundException if no such email is cached
+   * @throws IllegalAccessException if the email belongs to somebody else
    */
   public EmailModel getEmailById(long emailId) throws ObjectNotFoundException, IllegalAccessException {
-    Email email = emailBoxService.getEmailById(emailId, getCurrentUserName());
+    Email email = emailBoxService.getOwnedEmailById(emailId, getCurrentUserName());
     if (email == null) {
       throw new ObjectNotFoundException("Email with id %s not found");
     }
