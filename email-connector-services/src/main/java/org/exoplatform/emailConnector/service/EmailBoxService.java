@@ -2670,25 +2670,19 @@ public class EmailBoxService {
     }
   }
 
-  public Email getEmailByMailRemoteIdAndUserId(long mailRemoteId,
-                                               String username,
-                                               boolean withAttachments,
-                                               boolean withRecipients,
-                                               boolean withProfile,
-                                               boolean broadcast) throws IllegalAccessException {
-    return getEmailByMailRemoteIdAndUserId(mailRemoteId,
-                                           username,
-                                           MailFolder.INBOX,
-                                           withAttachments,
-                                           withRecipients,
-                                           withProfile,
-                                           broadcast);
-  }
-
   /**
    * Get a single cached message by its IMAP UID within a given folder. IMAP UIDs are
    * per-folder, so the folder is required to open a message the user clicked from the
    * Sent or Archive list, not only the inbox.
+   * <p>
+   * <b>There is deliberately no overload that defaults the folder.</b> There used to be
+   * one, defaulting to {@code INBOX}, and it is what EXO-89367 was: {@code deleteEmail},
+   * {@code archiveEmail} and the read-status writes all called it without a folder, so a
+   * UID coming from the Sent list was looked up in the inbox — where it matches nothing,
+   * or worse, matches an unrelated message that happens to carry the same number. None
+   * of the callers left wants "whatever folder the signature picked"; the ones that
+   * genuinely act on the inbox now say {@link MailFolder#INBOX} out loud, which is a
+   * line a reader can question and a default is not.
    *
    * @param mailRemoteId the message IMAP UID
    * @param username the mailbox owner
@@ -2958,9 +2952,18 @@ public class EmailBoxService {
    * server. Each per-message remote failure (including a message that no longer
    * exists on the server) reverts the local change for that email and is counted so
    * the caller can report a truthful outcome instead of silently claiming success.
+   * <p>
+   * The folder is part of the address, not a hint. A UID numbers a message within ONE
+   * folder, so pushing {@code \Seen} for a UID read off a Sent row against an open
+   * INBOX either flags nothing or flags whichever inbox message carries that number —
+   * silently, since the row and the flag live in different folders and neither
+   * complains. That was EXO-89367, and it is why the folder comes down from the caller
+   * that listed the row rather than being assumed here.
    *
    * @param mailRemoteIds the IMAP UIDs of the emails to update
    * @param username the user acting on their own mailbox
+   * @param folder the folder those UIDs are numbered in; blank means INBOX, which is
+   *          what every caller written before the mailbox held other folders meant
    * @param readStatus {@code true} to mark as read, {@code false} to mark as unread
    * @param updateRemoteReadStatus whether the flag must also be pushed to the IMAP
    *          server (skipped, e.g., during sync where the flag comes from the server)
@@ -2970,6 +2973,7 @@ public class EmailBoxService {
    */
   public int updateEmailReadStatus(List<Long> mailRemoteIds,
                                    String username,
+                                   String folder,
                                    boolean readStatus,
                                    boolean updateRemoteReadStatus) throws IllegalAccessException {
     int failedEmailUpdates = 0;
@@ -2979,46 +2983,65 @@ public class EmailBoxService {
           || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
-      emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, readStatus, MailFolder.INBOX);
+      String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+      emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, readStatus, sourceFolder);
       Store store = null;
-      Folder inbox = null;
+      Folder remoteFolder = null;
       try {
         if (updateRemoteReadStatus) {
           store = userEmailSettingService.connect(userEmailSetting);
-          inbox = store.getFolder(INBOX_FOLDER_NAME);
-          inbox.open(Folder.READ_WRITE);
+          // Through the same resolver the rows were cached by, never a folder name
+          // spelled out here: ARCHIVE and Gmail's ALL_MAIL are different mailboxes
+          // numbering their messages independently, and only that resolver knows which
+          // of them a row of a given discriminator came from.
+          remoteFolder = resolveCachedFolder(store, sourceFolder, username);
+          if (remoteFolder == null) {
+            // Rows cached under a folder the mailbox no longer offers. Nothing can be
+            // flagged, so nothing may be reported as flagged: the optimistic local
+            // change goes back and every id counts as failed.
+            emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, !readStatus, sourceFolder);
+            LOG.warn("No {} folder for user {}; the read status of {} message(s) could not be pushed",
+                     sourceFolder,
+                     username,
+                     mailRemoteIds.size());
+            return mailRemoteIds.size();
+          }
+          remoteFolder.open(Folder.READ_WRITE);
         }
         for (Long mailRemoteId : mailRemoteIds) {
           try {
             if (updateRemoteReadStatus) {
-              Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
+              Message remoteMessage = ((UIDFolder) remoteFolder).getMessageByUID(mailRemoteId);
               // Guard the not-found case explicitly: getMessageByUID returns null
               // (rather than throwing) when the UID is unknown to the server.
               if (remoteMessage == null) {
-                emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus, MailFolder.INBOX);
+                emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus, sourceFolder);
                 failedEmailUpdates++;
-                LOG.warn("Email {} not found on IMAP server for user {}, read status update reverted", mailRemoteId, username);
+                LOG.warn("Email {} not found in folder {} on IMAP server for user {}, read status update reverted",
+                         mailRemoteId,
+                         sourceFolder,
+                         username);
                 continue;
               }
               remoteMessage.setFlag(Flags.Flag.SEEN, readStatus);
             }
           } catch (Exception e) {
-            emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus, MailFolder.INBOX);
+            emailBoxStorage.updateEmailReadStatusByMailRemoteIds(List.of(mailRemoteId), username, !readStatus, sourceFolder);
             failedEmailUpdates++;
-            LOG.error("Error when updating email {} read status for user {}", mailRemoteId, username, e);
+            LOG.error("Error when updating email {} of folder {} read status for user {}", mailRemoteId, sourceFolder, username, e);
           }
         }
       } catch (Exception e) {
-        emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, !readStatus, MailFolder.INBOX);
+        emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, !readStatus, sourceFolder);
         LOG.error("Error when connecting store for user {}", username, e);
         throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
       } finally {
         try {
-          if (inbox != null && inbox.isOpen()) {
-            inbox.close(false);
+          if (remoteFolder != null && remoteFolder.isOpen()) {
+            remoteFolder.close(false);
           }
         } catch (MessagingException e) {
-          LOG.warn("Error when closing inbox", e);
+          LOG.warn("Error when closing folder {} of user {}", folder, username, e);
         }
         try {
           if (store != null && store.isConnected()) {
@@ -3162,192 +3185,303 @@ public class EmailBoxService {
     return failedEmailUpdates;
   }
 
-  public int deleteEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
-    int failedEmailDeletions = 0;
-    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
-      UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
-      if (userEmailSetting.getEmailConnectorId() == null
-          || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE, username));
-      }
-      List<Email> emails = mailRemoteIds.stream().map(mailRemoteId -> {
-        try {
-          return getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
-        } catch (Exception e) {
-          LOG.error("Error getting email {} for user {}", mailRemoteId, username, e);
-          return null;
-        }
-      }).filter(Objects::nonNull).collect(Collectors.toList());
-      deleteEmails(emails);
-      Store store = null;
-      IMAPFolder inbox = null;
-      try {
-        store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
-        inbox = (IMAPFolder) store.getFolder(INBOX_FOLDER_NAME);
-        inbox.open(Folder.READ_WRITE);
-        IMAPFolder trash = findTrashFolder(store);
-        for (Long mailRemoteId : mailRemoteIds) {
-          try {
-            Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
-            if (remoteMessage != null) {
-              if (trash != null) {
-                inbox.copyMessages(new Message[] { remoteMessage }, trash);
-              }
-              // On Gmail a COPY into [Gmail]/Trash MOVES the message (Trash is exclusive
-              // with every label), so the server expunges it from INBOX right away and the
-              // source handle is already gone — the delete has in fact succeeded. Only set
-              // the DELETED flag when the message survived the copy (the non-Gmail case,
-              // where the finally's inbox.close(true) expunges it), and treat an
-              // already-expunged source as success rather than triggering the re-insert.
-              try {
-                if (!remoteMessage.isExpunged()) {
-                  remoteMessage.setFlag(Flags.Flag.DELETED, true);
-                }
-              } catch (MessageRemovedException alreadyRemoved) {
-                LOG.debug("Email {} already removed from INBOX by the copy to Trash for user {}", mailRemoteId, username);
-              }
-            }
-          } catch (Exception e) {
-            emails.stream().filter(email -> email.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
-              email.setId(null);
-              return email;
-            }).ifPresent(email -> {
-              emailBoxStorage.createEmail(email);
-              if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
-                email.getCategoryIds().stream().forEach(emailCategoryId -> {
-                  categoryLinkService.link(emailCategoryId,
-                                           new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
-                });
-              }
-            });
-            failedEmailDeletions++;
-            LOG.error("Error when deleting email {} for user {}", mailRemoteId, username, e);
-          }
-        }
-      } catch (Exception e) {
-        LOG.error("Error when connecting store for user {}", username, e);
-        emails.stream().forEach(email -> {
-          email.setId(null);
-          emailBoxStorage.createEmail(email);
-          if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
-            email.getCategoryIds().stream().forEach(emailCategoryId -> {
-              categoryLinkService.link(emailCategoryId,
-                                       new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
-            });
-          }
-        });
-        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
-      } finally {
-        try {
-          if (inbox != null && inbox.isOpen()) {
-            inbox.close(true);
-          }
-        } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing inbox", messagingException);
-        }
-        try {
-          if (store != null && store.isConnected()) {
-            store.close();
-          }
-        } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing store", messagingException);
-        }
-        // Removing mirror rows changes the unread count whenever any of them
-        // was unread, so the badge has to be told exactly as for a read/unread
-        // change. In the finally because the local rows are already gone by the
-        // time the remote step can fail, so a partial delete changed it too.
-        broadcastUnreadCountChanged(username);
-      }
-    }
-    return failedEmailDeletions;
+  /**
+   * Counts the unread emails of the locally synced mirror, for the mailbox
+   * owner only.
+   *
+   * @param  username the mailbox owner
+   * @return          the number of unread emails
+   */
+  public long countUnreadEmails(String username) {
+    return emailBoxStorage.countUnreadEmails(username);
   }
 
-  public int archiveEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
-    int failedEmailArchives = 0;
-    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
-      UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
-      if (userEmailSetting.getEmailConnectorId() == null
-          || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE, username));
-      }
-      List<Email> emails = mailRemoteIds.stream().map(mailRemoteId -> {
-        try {
-          return getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
-        } catch (Exception e) {
-          LOG.error("Error getting email {} for user {}", mailRemoteId, username, e);
-          return null;
-        }
-      }).filter(Objects::nonNull).collect(Collectors.toList());
-      deleteEmails(emails);
-      Store store = null;
-      IMAPFolder inbox = null;
+  /**
+   * Signals that a user's unread count may have changed, so that anything
+   * displaying it can refresh.
+   *
+   * @param username the mailbox owner
+   */
+  public void broadcastUnreadCountChanged(String username) {
+    try {
+      listenerService.broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, username, null);
+    } catch (Exception e) {
+      LOG.warn("Error broadcasting unread emails change for user {}", username, e);
+    }
+  }
+
+  /**
+   * Moves messages to the Trash folder — the ordinary "delete" of the mailbox, which
+   * files mail away rather than destroying it ({@link #purgeEmail} is the one that
+   * destroys).
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to delete
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * @return how many of them could NOT be deleted
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int deleteEmail(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
+    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE);
+  }
+
+  /**
+   * Moves messages to the Archive folder, out of the folder they are listed in.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to archive
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * @return how many of them could NOT be archived
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int archiveEmail(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
+    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.ARCHIVE);
+  }
+
+  /**
+   * Where {@link #applyMoveAction} is putting the messages it takes out of the folder
+   * they are listed in. The two differ by their destination folder and by nothing else
+   * — same connection, same identity check, same removal, same compensation — which is
+   * the same reason {@link TrashAction} exists beside them.
+   */
+  private enum MoveAction {
+    /** Into the Trash folder. */
+    DELETE,
+    /** Into the Archive folder. */
+    ARCHIVE
+  }
+
+  /**
+   * The shared body of {@link #deleteEmail} and {@link #archiveEmail}: take a message
+   * out of the folder it is listed in and put it in another one.
+   * <p>
+   * <b>The folder is the fix.</b> Both actions used to read their rows and open their
+   * remote folder as INBOX whatever the caller was looking at (EXO-89367). Deleting a
+   * message from the Sent list therefore looked up a Sent UID among inbox rows — found
+   * nothing, deleted nothing locally — then asked the open INBOX for that UID, got null,
+   * and fell off the end of an {@code if (remoteMessage != null)} with no counter
+   * touched and no line logged. The endpoint answered 200, the interface removed the row
+   * it had removed optimistically, and the message was still in Sent. Where the number
+   * DID exist in the inbox, the same code deleted a different message instead.
+   * <p>
+   * So two things are load-bearing here and neither may be softened:
+   * <ul>
+   * <li>rows are read, and the remote folder opened, FOLDER-SCOPED to what the caller
+   * listed — through {@link #resolveCachedFolder}, the resolver the rows were cached by;
+   * </li>
+   * <li>every way of not doing the work is counted and logged. A UID the mirror does not
+   * hold, a message not at that UID, a message that is not the one the row remembers, a
+   * mailbox with nowhere to file the move — each puts its row back and adds to the
+   * count. Silence is reserved for the one case that really is a success: a source the
+   * COPY already expunged.</li>
+   * </ul>
+   * <p>
+   * The identity check before the {@code \Deleted} flag is the same one the Trash
+   * actions make, for the same reason ({@link #isExpectedMessageAtUid}) and now with the
+   * same reach: this path flags and expunges in the INBOX and in Sent, so a UID that has
+   * been renumbered under us must stop the operation rather than take a stranger's
+   * message with it.
+   *
+   * @param mailRemoteIds the IMAP UIDs, numbered within {@code folder}
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs come from; blank means INBOX
+   * @param action which destination the messages go to
+   * @return how many could not be moved
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  private int applyMoveAction(List<Long> mailRemoteIds,
+                              String username,
+                              String folder,
+                              MoveAction action) throws IllegalAccessException {
+    if (CollectionUtils.isEmpty(mailRemoteIds)) {
+      return 0;
+    }
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(action == MoveAction.DELETE ? USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE
+                                                                                : USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE,
+                                                     username));
+    }
+    String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+    if (!canMoveOutOf(action, sourceFolder)) {
+      LOG.warn("{} is not an operation on the {} folder; {} message(s) of user {} were left where they are",
+               action,
+               sourceFolder,
+               mailRemoteIds.size(),
+               username);
+      return mailRemoteIds.size();
+    }
+    Map<Long, Email> rows = new LinkedHashMap<>();
+    for (Long mailRemoteId : mailRemoteIds) {
       try {
-        store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
-        inbox = (IMAPFolder) store.getFolder(INBOX_FOLDER_NAME);
-        IMAPFolder archive = findArchiveFolder(store);
-        inbox.open(Folder.READ_WRITE);
-        for (Long mailRemoteId : mailRemoteIds) {
-          try {
-            Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
-            if (remoteMessage != null) {
-              if (archive != null) {
-                inbox.copyMessages(new Message[] { remoteMessage }, archive);
-                remoteMessage.setFlag(Flags.Flag.DELETED, true);
-              }
-            }
-          } catch (Exception e) {
-            emails.stream().filter(mail -> mail.getMailRemoteId().equals(mailRemoteId)).findFirst().map(email -> {
-              email.setId(null);
-              return email;
-            }).ifPresent(email -> {
-              emailBoxStorage.createEmail(email);
-              if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
-                email.getCategoryIds().stream().forEach(emailCategoryId -> {
-                  categoryLinkService.link(emailCategoryId,
-                                           new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
-                });
-              }
-            });
-            failedEmailArchives++;
-            LOG.error("Error when archiving email {} for user {}", mailRemoteId, username, e);
-          }
+        Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, sourceFolder, false, false, false, false);
+        if (email != null) {
+          rows.put(mailRemoteId, email);
         }
       } catch (Exception e) {
-        LOG.error("Error when connecting store for user {}", username, e);
-        emails.stream().forEach(email -> {
-          email.setId(null);
-          emailBoxStorage.createEmail(email);
-          if (!CollectionUtils.isEmpty(email.getCategoryIds())) {
-            email.getCategoryIds().stream().forEach(emailCategoryId -> {
-              categoryLinkService.link(emailCategoryId,
-                                       new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, String.valueOf(email.getId()), 0));
-            });
-          }
-        });
-        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
-      } finally {
-        try {
-          if (inbox != null && inbox.isOpen()) {
-            inbox.close(true);
-          }
-        } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing inbox", messagingException);
-        }
-        try {
-          if (store != null && store.isConnected()) {
-            store.close();
-          }
-        } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing store", messagingException);
-        }
-        // Archiving removes the rows from the inbox the badge counts, so an
-        // unread mail leaving the inbox changes the count just as reading it
-        // does. In the finally because the local rows are already gone by the
-        // time the remote step can fail, so a partial archive changed it too.
-        broadcastUnreadCountChanged(username);
+        LOG.error("Error getting email {} of folder {} for user {}", mailRemoteId, sourceFolder, username, e);
       }
     }
-    return failedEmailArchives;
+    deleteEmails(new ArrayList<>(rows.values()));
+
+    int failures = 0;
+    Store store = null;
+    IMAPFolder source = null;
+    boolean expungeOnClose = false;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      source = resolveCachedImapFolder(store, sourceFolder, username);
+      if (source == null) {
+        LOG.warn("No {} folder for user {}; {} message(s) could not be moved", sourceFolder, username, mailRemoteIds.size());
+        rows.values().forEach(this::recreateCachedRow);
+        return mailRemoteIds.size();
+      }
+      // The DESTINATION lookups, which are deliberately the loose ones: guessing loosely
+      // where to FILE a message is survivable (it lands in a folder of the user's own,
+      // one message at a time, and they can see it), while guessing loosely what to READ
+      // is not — see findSyncableTrashFolder.
+      Folder destination = action == MoveAction.DELETE ? findTrashFolder(store) : findArchiveFolder(store);
+      if (destination == null) {
+        if (action == MoveAction.ARCHIVE) {
+          // Nowhere to archive to. The old code silently did nothing here and answered
+          // success; there is no second meaning of "archive" to fall back on, so every
+          // row goes back and every id counts as failed.
+          LOG.warn("No Archive folder for user {}; {} message(s) could not be archived", username, mailRemoteIds.size());
+          rows.values().forEach(this::recreateCachedRow);
+          return mailRemoteIds.size();
+        }
+        // A delete with nowhere to file it still has a meaning — remove the message —
+        // and that is what this mailbox's users have always got. Said out loud because
+        // it is the one branch where "delete" is not reversible from the Trash.
+        LOG.warn("No Trash folder for user {}; {} message(s) will be removed rather than filed away",
+                 username,
+                 mailRemoteIds.size());
+      }
+      source.open(Folder.READ_WRITE);
+      for (Long mailRemoteId : mailRemoteIds) {
+        Email row = rows.get(mailRemoteId);
+        try {
+          if (row == null) {
+            // Same refusal as the Trash actions: these endpoints act on what the mirror
+            // listed, and a UID it does not hold is a stale client or a number nobody
+            // ever saw.
+            LOG.warn("No cached {} row for uid {} of user {}; refusing to act on it", sourceFolder, mailRemoteId, username);
+            failures++;
+            continue;
+          }
+          Message message = source.getMessageByUID(mailRemoteId);
+          if (message == null) {
+            // THE bug of EXO-89367, now counted. The row was listed and the server has
+            // nothing at that number: either the mirror is stale or the UID belongs to
+            // another folder entirely. Either way the move did not happen.
+            LOG.warn("Email {} not found in folder {} on IMAP server for user {}; it was not moved",
+                     mailRemoteId,
+                     sourceFolder,
+                     username);
+            recreateCachedRow(row);
+            failures++;
+            continue;
+          }
+          String expectedMessageId = row.getMailHeaderId();
+          if (!isExpectedMessageAtUid(message, expectedMessageId, mailRemoteId, sourceFolder, username)) {
+            recreateCachedRow(row);
+            failures++;
+            continue;
+          }
+          if (destination != null) {
+            source.copyMessages(new Message[] { message }, destination);
+          }
+          // On Gmail a COPY into [Gmail]/Trash MOVES the message (Trash is exclusive with
+          // every label), so the server expunges the source right away and the handle is
+          // already gone — the delete has in fact succeeded, and an already-expunged
+          // source is the success rather than the failure it looks like.
+          try {
+            if (message.isExpunged()) {
+              LOG.debug("The {} message of user {} (uid {}) was expunged by the copy out of it",
+                        sourceFolder,
+                        username,
+                        mailRemoteId);
+              continue;
+            }
+            expungeOnClose = removeMessageByUid(source, mailRemoteId, expectedMessageId, sourceFolder, username) || expungeOnClose;
+          } catch (MessageRemovedException alreadyRemoved) {
+            LOG.debug("Email {} already removed from {} by the copy for user {}", mailRemoteId, sourceFolder, username);
+          }
+        } catch (Exception e) {
+          recreateCachedRow(row);
+          failures++;
+          LOG.error("Error when {} email {} of folder {} for user {}",
+                    action == MoveAction.DELETE ? "deleting" : "archiving",
+                    mailRemoteId,
+                    sourceFolder,
+                    username,
+                    e);
+        }
+      }
+    } catch (Exception e) {
+      LOG.error("Error when connecting store for user {}", username, e);
+      rows.values().forEach(this::recreateCachedRow);
+      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+    } finally {
+      closeFolderQuietly(source, expungeOnClose, sourceFolder, username);
+      closeQuietly(null, store, username);
+      // Removing mirror rows changes the unread count whenever any of them
+      // was unread, so the badge has to be told exactly as for a read/unread
+      // change. In the finally because the local rows are already gone by the
+      // time the remote step can fail, so a partial delete changed it too.
+      broadcastUnreadCountChanged(username);
+    }
+    return failures;
+  }
+
+  /**
+   * Whether an action has a meaning at all on the folder the caller is acting from.
+   * <p>
+   * Three refusals, each one an operation whose destination is its own source or whose
+   * name already belongs to another method:
+   * <ul>
+   * <li><b>Delete from TRASH</b> — the message is already in the Trash. Quietly aliasing
+   * it to {@link #purgeEmail} is the trap to avoid above all others: an ordinary Delete
+   * button would then destroy mail irreversibly, from a list whose whole purpose is to
+   * be the place things can still be taken back from. Trash has Restore and Delete
+   * permanently, and they are separate on purpose.</li>
+   * <li><b>Archive from ARCHIVE or ALL_MAIL</b> — copying a message into the folder it
+   * is already in and then removing the original is a no-op that costs the message its
+   * UID and its mirror row. There is nothing the user could mean by it.</li>
+   * <li><b>Either, from DRAFTS</b> — discarding a draft is its own operation
+   * ({@link #deleteDraft}), with its own lock and its own removal of the server copy. An
+   * unsent draft is not mail to be filed away.</li>
+   * </ul>
+   * Refusing is not the same as ignoring: the caller gets these back in the failure
+   * count, so a client that offers the button anyway says so on screen.
+   *
+   * @param action the action asked for
+   * @param folder the folder it is asked from
+   * @return true when the action means something there
+   */
+  private boolean canMoveOutOf(MoveAction action, String folder) {
+    if (MailFolder.TRASH.equals(folder) || MailFolder.DRAFTS.equals(folder)) {
+      return false;
+    }
+    return action != MoveAction.ARCHIVE || (!MailFolder.ARCHIVE.equals(folder) && !MailFolder.ALL_MAIL.equals(folder));
+  }
+
+  /**
+   * The remote folder a cached row of a given {@link MailFolder} came from, as an
+   * {@link IMAPFolder} — {@link #resolveCachedFolder} for the callers that need the
+   * by-UID mechanics (fetch, expunge) rather than the plain {@code Folder} contract.
+   *
+   * @param store the connected store
+   * @param folder the {@link MailFolder} discriminator the rows carry
+   * @param username the mailbox owner, to load the remembered folder names
+   * @return the remote folder, or null when the mailbox has none (or exposes it under
+   *         an implementation this add-on cannot address by UID)
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder resolveCachedImapFolder(Store store, String folder, String username) throws MessagingException {
+    Folder resolved = resolveCachedFolder(store, folder, username);
+    return resolved instanceof IMAPFolder imapFolder ? imapFolder : null;
   }
 
   /**
@@ -3621,6 +3755,11 @@ public class EmailBoxService {
    * Link one or more emails (by IMAP mailRemoteId) to an existing category, acting
    * as the given user (the category ACL is enforced by CategoryLinkService). Emails
    * already in the category are skipped. Returns the number of emails newly linked.
+   * <p>
+   * INBOX-scoped, and said out loud rather than defaulted: categories are offered on
+   * the inbox listing only. A UID from another folder finds no row here and is skipped
+   * — a mislabelled or unlabelled message, never a wrong write to the mail server, so
+   * this stayed out of EXO-89367's reach.
    */
   public int linkEmailsToCategory(List<Long> mailRemoteIds, long categoryId, String username) throws IllegalAccessException {
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
@@ -3631,7 +3770,7 @@ public class EmailBoxService {
     }
     int linked = 0;
     for (Long mailRemoteId : mailRemoteIds) {
-      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
+      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.INBOX, false, false, false, false);
       if (email == null) {
         continue;
       }
@@ -3653,6 +3792,8 @@ public class EmailBoxService {
    * Remove one or more emails (by IMAP mailRemoteId) from a category, acting as the
    * given user. Emails not currently in the category are skipped. Returns the number
    * of emails effectively unlinked.
+   * <p>
+   * INBOX-scoped for the reason {@link #linkEmailsToCategory} gives.
    */
   public int unlinkEmailsFromCategory(List<Long> mailRemoteIds, long categoryId, String username) throws IllegalAccessException {
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
@@ -3660,7 +3801,7 @@ public class EmailBoxService {
     }
     int unlinked = 0;
     for (Long mailRemoteId : mailRemoteIds) {
-      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, false, false, false, false);
+      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.INBOX, false, false, false, false);
       if (email == null) {
         continue;
       }
@@ -5810,8 +5951,16 @@ public class EmailBoxService {
    * expunging — is not "safe", it is a Drafts folder that fills up with struck-through
    * copies of the same half-written mail. For TRASH it is the folder the user has
    * already thrown things into, so an over-broad expunge removes messages that were
-   * awaiting removal anyway. Neither argument would hold for the INBOX, and nothing
-   * points this there.
+   * awaiting removal anyway.
+   * <p>
+   * Neither argument holds for the INBOX or for Sent, and {@link #applyMoveAction}
+   * points this at both of them — so what it buys there is worth being exact about. It
+   * is not a new risk, it is a narrowing of an old one: the delete and archive paths
+   * ALWAYS finished on {@code close(true)}, unconditionally expunging the whole INBOX
+   * whether or not anything needed it. Going through here means UID EXPUNGE removes
+   * exactly the one message on every server that offers it, and the whole-folder expunge
+   * survives only as the fallback for servers that offer nothing else — which is
+   * precisely what those paths already did on every server.
    * <p>
    * A message that is simply not there any more (another client removed it) is not a
    * failure: there is nothing left to do, and saying so at debug level is enough.

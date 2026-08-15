@@ -116,13 +116,17 @@ const attachmentMapIconsExtensions = new Map([
  
 // Folders whose messages the interface may only READ.
 //
-// Every mutating action the mailbox offers — delete, archive, read status — addresses
-// a message by its IMAP UID, and the backend resolves that UID against the INBOX
-// (EXO-89367). UIDs are numbered PER FOLDER, so firing one of those from a row that
-// is not an inbox row either does nothing or acts on the unrelated inbox message that
-// happens to carry the same number. Trash is browsable from this slice on, so it is
-// the one folder that must not offer them; Sent and Archive stay as they are, and are
-// EXO-89367's to fix.
+// This list was drawn when every mutating action was resolved against the INBOX
+// whatever folder the row came from, so it had to hold back anything not an inbox row.
+// That is fixed (EXO-89367): delete, archive and read status now travel with the row's
+// own folder and act on that folder's copy, and Sent and Archive are writable exactly
+// as the inbox is.
+//
+// Trash stays, and now for its own reason rather than a technical one. "Delete" there
+// would have only one meaning left — destroy — and "archive" would file away something
+// the user has already thrown out. Trash has Restore and Delete permanently instead,
+// and the backend refuses the ordinary two on it (EmailBoxService#canMoveOutOf) rather
+// than trusting this list.
 //
 // One list, asked for in one place: the row menu, the swipe, the reader's toolbar and
 // the bulk toolbar all read it, so a folder cannot be read-only in one of them and
@@ -144,8 +148,8 @@ export function isReadOnlyFolder(folder) {
 //
 // A second list beside READ_ONLY_FOLDERS rather than a hole punched in it, because the
 // two say different things about the same folder and both are true at once: none of
-// the ORDINARY mail actions may be offered on a Trash row (they are inbox-keyed
-// server-side, EXO-89367), and these two extra ones must be. Folding them into one flag
+// the ORDINARY mail actions means anything on a Trash row, and these two extra ones
+// are the only ones that do. Folding them into one flag
 // would mean "read-only" quietly coming to mean "read-only except the two writes we
 // added", which is how a rule stops being readable.
 //
@@ -517,8 +521,33 @@ export function suggestRecipients(query, limit) {
   });
 }
 
-export function deleteEmails(mailRemoteIds) {
-  return fetch('/email-connector/rest/email-box', {
+/**
+ * The `?folder=` suffix these actions address a message by.
+ *
+ * An IMAP UID numbers a message inside ONE folder, so every write has to name the
+ * folder its ids came from. The folder wanted is always the ROW's own — never the one
+ * the list happens to be showing: a search result, a favorite and the opened message
+ * each carry a folder of their own, and they differ from the listed one.
+ *
+ * INBOX is left off the query rather than spelled out, because it is what the endpoints
+ * default to and what every id written before the mailbox held other folders meant.
+ *
+ * @param {String} folder the folder the ids are numbered in
+ * @returns {String} the query string to append, empty for the inbox
+ */
+function folderQuery(folder) {
+  return folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+}
+
+/**
+ * Moves messages to the Trash folder.
+ *
+ * @param {Array<Number>} mailRemoteIds the IMAP UIDs, within `folder`
+ * @param {String} folder the folder those ids are numbered in; INBOX when omitted
+ * @returns {Promise} resolves with { failedDeletions }
+ */
+export function deleteEmails(mailRemoteIds, folder) {
+  return fetch(`/email-connector/rest/email-box${folderQuery(folder)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -533,8 +562,15 @@ export function deleteEmails(mailRemoteIds) {
   });
 }
 
-export function archiveEmails(mailRemoteIds) {
-  return fetch('/email-connector/rest/email-box/archive', {
+/**
+ * Moves messages to the Archive folder.
+ *
+ * @param {Array<Number>} mailRemoteIds the IMAP UIDs, within `folder`
+ * @param {String} folder the folder those ids are numbered in; INBOX when omitted
+ * @returns {Promise} resolves with { failedArchives }
+ */
+export function archiveEmails(mailRemoteIds, folder) {
+  return fetch(`/email-connector/rest/email-box/archive${folderQuery(folder)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -845,8 +881,18 @@ export function formatDateString(dateToFormat, yesterdayLabel, atLabel, fullDate
   }
 }
 
-export function updateEmailsReadStatus(mailRemoteIds, readStatus) {
-  return fetch(`/email-connector/rest/email-box?readStatus=${readStatus}`, {
+/**
+ * Marks messages read or unread, locally and on the mail server.
+ *
+ * @param {Array<Number>} mailRemoteIds the IMAP UIDs, within `folder`
+ * @param {Boolean} readStatus true to mark read, false to mark unread
+ * @param {String} folder the folder those ids are numbered in; INBOX when omitted
+ * @returns {Promise} resolves with { failedUpdates } — the pushes the mail server did
+ *          not take, whose local change the backend has already reverted
+ */
+export function updateEmailsReadStatus(mailRemoteIds, readStatus, folder) {
+  const folderParam = folder && folder !== 'INBOX' ? `&folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box?readStatus=${readStatus}${folderParam}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -857,6 +903,7 @@ export function updateEmailsReadStatus(mailRemoteIds, readStatus) {
     if (!resp?.ok) {
       throw new Error('Error when updating emails read status');
     }
+    return resp.json();
   });
 }
 
