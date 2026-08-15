@@ -168,6 +168,13 @@ export default {
     // handed a function would be coupled to this component's internals rather than to
     // the conversation.
     //
+    // Also what the DRAWER'S HEADER is handed, through the `thread-context` event below.
+    // The header sits in the drawer's title bar, a sibling of this reader rather than a
+    // parent or a child of it, so it has no way of its own to know whether what is open
+    // is a conversation — and this is the one component that does. One shape for both
+    // seams deliberately: a second, slightly different object describing the same
+    // conversation is how the two of them would come to disagree about what a thread is.
+    //
     // `categorizableMessages` and not `messages`, for the reason the category bar is
     // given the same list: a draft is a sentence the user is in the middle of writing,
     // and nothing that describes the conversation back to them should be describing
@@ -244,8 +251,30 @@ export default {
     this.$root.$off('update-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('refresh-email-box', this.reloadFromCache);
+    // Nothing is being read any more — the drawer switched to its multi-select mode, to
+    // the "pick a message" placeholder, or closed. Say so, or the header keeps offering
+    // the conversation's actions on a conversation nobody has open.
+    this.emitThreadContext(true);
   },
   methods: {
+    /**
+     * Tells the drawer around this reader which conversation is on screen, so its header
+     * can act on the exchange rather than on the message that happens to be selected.
+     *
+     * Emitted from the two places that actually know — a load starting and messages
+     * landing — rather than watched off the params: the messages of the PREVIOUS
+     * conversation deliberately stay on screen while the next one is fetched, and a
+     * watcher would hand the header the new mail's thread id with the old exchange's
+     * messages still attached, which is exactly how a lone mail is mistaken for a
+     * conversation. Clearing first and re-announcing on arrival means the header is
+     * briefly right-but-narrow instead of momentarily wrong.
+     *
+     * @param {boolean} clear - true to announce that nothing is open
+     * @returns {void}
+     */
+    emitThreadContext(clear) {
+      this.$emit('thread-context', clear ? null : this.summaryExtensionParams);
+    },
     // Patch the favorite flag on this conversation's INBOX messages (favorite ids are
     // INBOX UIDs; the same number in another folder is a different message).
     applyFavoriteStatus(favorite, mailRemoteIds = []) {
@@ -348,6 +377,9 @@ export default {
       if (!this.email) {
         return;
       }
+      // The header stops speaking for the previous conversation the moment another one
+      // is asked for, and starts speaking for this one only once its messages are here.
+      this.emitThreadContext(true);
       this.revealedKeys = [];
       const threadId = this.resolveThreadId();
       this.loadingThread = true;
@@ -450,6 +482,10 @@ export default {
       const readable = messages.filter(message => !this.isDraft(message));
       const latest = readable[readable.length - 1];
       this.expandedIds = latest ? [this.msgKey(latest)] : [];
+      // The single place messages are set, so the single place the drawer's header is
+      // told what the conversation now holds — including the archived tail, which turns
+      // an apparently lone mail into a conversation a second after it opened.
+      this.emitThreadContext();
     },
     /**
      * Moves each draft directly under the message it answers, and leaves the mail
