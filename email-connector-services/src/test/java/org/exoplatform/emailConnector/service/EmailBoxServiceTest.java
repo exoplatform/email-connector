@@ -407,8 +407,12 @@ public class EmailBoxServiceTest {
 
   @Test
   void getEmailByMailRemoteIdAndUserId() throws IllegalAccessException {
-    emailBoxService.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, false, false, false, false);
+    emailBoxService.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, MailFolder.INBOX, false, false, false, false);
     verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", false, false, false);
+    // The folder reaches storage as given, and there is no overload that would have
+    // picked one for the caller — a UID is only a name inside one folder.
+    emailBoxService.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, MailFolder.SENT, false, false, false, false);
+    verify(emailBoxStorage).getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "SENT", false, false, false);
   }
 
   @Test
@@ -460,9 +464,9 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     List<Long> mailRemoteIds = List.of(1212l);
     assertThrows(IllegalAccessException.class,
-                 () -> emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, false));
+                 () -> emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, false));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, false);
+    emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, false);
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     reset(emailBoxStorage);
     Store store = mock(Store.class);
@@ -473,7 +477,7 @@ public class EmailBoxServiceTest {
     when(store.isConnected()).thenReturn(true);
     Message message = mock(Message.class);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
-    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, false, true);
+    int failed = emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, false, true);
     org.junit.jupiter.api.Assertions.assertEquals(0, failed);
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, false, "INBOX");
     verify(inbox).open(Folder.READ_WRITE);
@@ -485,7 +489,7 @@ public class EmailBoxServiceTest {
     // must be counted as a failure and the optimistic local change reverted.
     reset(emailBoxStorage);
     when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(null);
-    int failedWhenNotFound = emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, true, true);
+    int failedWhenNotFound = emailBoxService.updateEmailReadStatus(mailRemoteIds, TEST_USER, MailFolder.INBOX, true, true);
     org.junit.jupiter.api.Assertions.assertEquals(1, failedWhenNotFound);
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
@@ -561,10 +565,10 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     List<Long> emailIds = List.of(1212l);
-    assertThrows(IllegalAccessException.class, () -> emailBoxService.deleteEmail(emailIds, TEST_USER));
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.deleteEmail(emailIds, TEST_USER, MailFolder.INBOX));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, "testEmail", "INBOX", false, false, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -578,15 +582,19 @@ public class EmailBoxServiceTest {
     Folder[] folders = new Folder[] { trashFolder };
     when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
-    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    when(inbox.getMessageByUID(1212l)).thenReturn(message);
     when(trashFolder.exists()).thenReturn(true);
     when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
-    emailBoxService.deleteEmail(emailIds, TEST_USER);
+    int failed = emailBoxService.deleteEmail(emailIds, TEST_USER, MailFolder.INBOX);
+    assertEquals(0, failed);
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
     verify(message).setFlag(Flags.Flag.DELETED, true);
     verify(inbox).copyMessages(any(Message[].class), any(Folder.class));
-    verify(inbox).close(true);
+    // UID EXPUNGE removes exactly this message, so the close must NOT expunge the whole
+    // inbox — which is what the delete path used to do on every server, for every call.
+    verify(inbox).expunge(any(Message[].class));
+    verify(inbox).close(false);
     verify(store).close();
   }
 
@@ -599,7 +607,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, "testEmail", "INBOX", false, false, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -614,15 +622,235 @@ public class EmailBoxServiceTest {
     when(trashFolder.exists()).thenReturn(true);
     when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     Message message = mock(Message.class);
-    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    when(inbox.getMessageByUID(1212l)).thenReturn(message);
     doThrow(new MessageRemovedException()).when(message).setFlag(Flags.Flag.DELETED, true);
 
-    emailBoxService.deleteEmail(List.of(1212l), TEST_USER);
+    emailBoxService.deleteEmail(List.of(1212l), TEST_USER, MailFolder.INBOX);
 
     verify(inbox).copyMessages(any(Message[].class), any(Folder.class));
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     // The delete succeeded on the server, so the compensating re-insert must NOT fire.
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  // ---------------------------------------------------------------------------------
+  // EXO-89367: delete and archive act on the folder the message is LISTED in, and say
+  // so when they did not act at all.
+  //
+  // The bug had two halves and both are pinned below. The lookup was folder-blind (a
+  // Sent UID read among inbox rows, and pushed against an open INBOX), and the miss was
+  // silent (getMessageByUID answers null rather than throwing, the old code guarded it
+  // with `if (remoteMessage != null)` and fell off the end — no counter, no log line,
+  // HTTP 200, success toast, message still in Sent).
+  // ---------------------------------------------------------------------------------
+
+  @Test
+  @SneakyThrows
+  void deletingASentMessageMovesTheSentCopyAndLeavesTheInboxAlone() {
+    // The headline case, and the per-folder UID collision made explicit: uid 1212 exists
+    // in BOTH folders and names a different message in each. Acting from Sent must reach
+    // the Sent copy and never once touch the inbox one.
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message inboxMessage = givenAnInboxMessageAt(1212L);
+    Message sentMessage = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(sent).open(Folder.READ_WRITE);
+    verify(sent).copyMessages(any(Message[].class), any(Folder.class));
+    verify(sentMessage).setFlag(Flags.Flag.DELETED, true);
+    // The whole defect in one line: before the fix this is the message that got flagged.
+    verify(inboxMessage, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void aDeleteTheServerNeverTookIsCountedAndPutsTheRowBack() {
+    // The silent half. The row was listed and the server has nothing at that number —
+    // exactly what a Sent uid looked like against the inbox before the fix. It must not
+    // read as a success: the count is what the endpoint answers and what the interface
+    // tells the user, and the row goes back so the message stays visible.
+    IMAPFolder sent = givenASubscribedSentFolder();
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+    when(sent.getMessageByUID(1212L)).thenReturn(null);
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(1, failed);
+    verify(sent, never()).copyMessages(any(), any());
+    verify(emailBoxStorage).createEmail(argThat(email -> email.getId() == null && MailFolder.SENT.equals(email.getFolder())));
+  }
+
+  @Test
+  @SneakyThrows
+  void aDeleteRefusesAUidThatNowCarriesSomebodyElsesMessage() {
+    // The same identity check the Trash actions make, now that this path flags and
+    // expunges in the INBOX and in Sent too: a renumbered mailbox must stop the
+    // operation, not take a stranger's message to the Trash with it.
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message stranger = givenAMessageInFolderAt(sent, 1212L, "<stranger@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<mine@host>");
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(1, failed);
+    verify(sent, never()).copyMessages(any(), any());
+    verify(stranger, never()).setFlag(Flags.Flag.DELETED, true);
+    verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void anArchiveWithNowhereToFileItFailsEveryIdAndKeepsEveryRow() {
+    // A mailbox with no Archive folder. The old code copied nowhere, flagged nothing and
+    // answered success — the same silence as the missing message, from the other end.
+    IMAPFolder sent = givenASubscribedSentFolder();
+    givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(1, failed);
+    verify(sent, never()).open(anyInt());
+    verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void archivingFromTheArchiveFolderIsRefusedBeforeAnythingIsTouched() {
+    // The destination is the source: copying a message into the folder it is already in
+    // and removing the original costs it its uid and its row and gains nothing. There is
+    // no reading of "archive this archived message" worth acting on.
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+
+    int failed = emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.ARCHIVE);
+
+    assertEquals(1, failed);
+    // Refused before anything local is touched and before a connection is even opened.
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    // Same for Gmail's All Mail superset, which is the very folder the archive files into.
+    assertEquals(1, emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.ALL_MAIL));
+  }
+
+  @Test
+  @SneakyThrows
+  void deletingFromTheTrashIsRefusedRatherThanTurnedIntoAPermanentDelete() {
+    // The trap this must never fall into. "Delete" from the Trash has only one possible
+    // meaning left — destroy — and quietly giving the ordinary Delete button that meaning
+    // would make an irreversible action out of the reversible one, in the one list whose
+    // purpose is that things can still be taken back from it. purgeEmail is that action,
+    // deliberately behind its own endpoint and its own confirmation.
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.TRASH);
+
+    assertEquals(1, failed);
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    // And a draft is not mail to be filed away either: discarding one is its own action.
+    assertEquals(1, emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.DRAFTS));
+  }
+
+  @Test
+  @SneakyThrows
+  void aReadFlagIsPushedAgainstTheFolderTheRowIsListedIn() {
+    // Simply opening a message marks it read, so a folder-blind push is not a rare edge:
+    // it fires on every message opened out of Sent or Archive, clearing \Seen on whatever
+    // inbox message carries the same number, with nothing on any screen to account for it.
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message inboxMessage = givenAnInboxMessageAt(1212L);
+    Message sentMessage = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+
+    int failed = emailBoxService.updateEmailReadStatus(List.of(1212L), TEST_USER, MailFolder.SENT, true, true);
+
+    assertEquals(0, failed);
+    verify(sent).open(Folder.READ_WRITE);
+    verify(sentMessage).setFlag(Flags.Flag.SEEN, true);
+    verify(inboxMessage, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    // The mirror is written under the same folder, or the row and the flag drift apart.
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, MailFolder.SENT);
+  }
+
+  /**
+   * A mailbox whose subscribed folders are a Sent and a Trash — enough for a delete out
+   * of Sent to find both its source and its destination.
+   *
+   * @return the mocked Sent folder
+   */
+  @SneakyThrows
+  private IMAPFolder givenASubscribedSentFolder() {
+    IMAPFolder sent = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(sent.exists()).thenReturn(true);
+    lenient().when(sent.getAttributes()).thenReturn(new String[] { "\\Sent" });
+    lenient().when(sent.getFullName()).thenReturn("Sent");
+    lenient().when(sent.isOpen()).thenReturn(true);
+    IMAPFolder trash = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(trash.exists()).thenReturn(true);
+    lenient().when(trash.getAttributes()).thenReturn(new String[] { "\\Trash" });
+    lenient().when(trash.getFullName()).thenReturn("Trash");
+    givenAMailboxListing(sent, trash);
+    return sent;
+  }
+
+  /**
+   * The message the INBOX holds at a given uid — the one a folder-blind operation would
+   * reach for, and the one every folder-aware assertion checks stayed untouched.
+   *
+   * @param uid the uid it sits at, inside the INBOX
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private Message givenAnInboxMessageAt(long uid) {
+    Folder inbox = trashStore().getFolder("INBOX");
+    Message message = mock(Message.class);
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { "<inbox@host>" });
+    lenient().when(((UIDFolder) inbox).getMessageByUID(uid)).thenReturn(message);
+    return message;
+  }
+
+  /**
+   * The message a given folder holds at a given uid, carrying a given Message-ID.
+   *
+   * @param folder the folder holding it
+   * @param uid the uid it sits at, inside that folder
+   * @param messageId the Message-ID the server's copy carries
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private Message givenAMessageInFolderAt(IMAPFolder folder, long uid, String messageId) {
+    Message message = mock(Message.class);
+    lenient().when(folder.getMessageByUID(uid)).thenReturn(message);
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { messageId });
+    return message;
+  }
+
+  /**
+   * One cached row, in a named folder, pinned to a Message-ID — the mirror's side of the
+   * message the server holds.
+   *
+   * @param folder the {@link MailFolder} the row carries
+   * @param uid the uid the row remembers
+   * @param messageId the Message-ID the row remembers
+   */
+  private void givenACachedRow(String folder, long uid, String messageId) {
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder(folder);
+    row.setMailHeaderId(messageId);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(uid),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(folder),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(row);
   }
 
   // ---------------------------------------------------------------------------------
@@ -961,10 +1189,10 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
     List<Long> emailIds = List.of(1212l);
-    assertThrows(IllegalAccessException.class, () -> emailBoxService.archiveEmail(emailIds, TEST_USER));
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.archiveEmail(emailIds, TEST_USER, MailFolder.INBOX));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Email email = email(TEST_USER);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false)).thenReturn(email);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, "testEmail", "INBOX", false, false, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -978,14 +1206,16 @@ public class EmailBoxServiceTest {
     Folder[] folders = new Folder[] { archiveFolder };
     when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
-    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    when(inbox.getMessageByUID(1212l)).thenReturn(message);
     when(archiveFolder.exists()).thenReturn(true);
     when(archiveFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
-    emailBoxService.archiveEmail(emailIds, TEST_USER);
+    int failed = emailBoxService.archiveEmail(emailIds, TEST_USER, MailFolder.INBOX);
+    assertEquals(0, failed);
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(inbox).open(Folder.READ_WRITE);
     verify(inbox).copyMessages(any(Message[].class), any(Folder.class));
-    verify(inbox).close(true);
+    verify(inbox).expunge(any(Message[].class));
+    verify(inbox).close(false);
     verify(store).close();
   }
 
@@ -6519,15 +6749,15 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
 
-    emailBoxService.updateEmailReadStatus(List.of(1212l), TEST_USER, true, false);
+    emailBoxService.updateEmailReadStatus(List.of(1212l), TEST_USER, MailFolder.INBOX, true, false);
 
     verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
   }
 
   @Test
   void aNoOpReadStatusCallBroadcastsNothing() throws Exception {
-    emailBoxService.updateEmailReadStatus(List.of(), TEST_USER, true, false);
-    emailBoxService.updateEmailReadStatus(null, TEST_USER, true, false);
+    emailBoxService.updateEmailReadStatus(List.of(), TEST_USER, MailFolder.INBOX, true, false);
+    emailBoxService.updateEmailReadStatus(null, TEST_USER, MailFolder.INBOX, true, false);
 
     // Nothing changed, so nothing to announce
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
@@ -6538,8 +6768,8 @@ public class EmailBoxServiceTest {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, null, "INBOX", true, true, false))
-                                                                                                            .thenReturn(email(TEST_USER));
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, "testEmail", "INBOX", false, false, false))
+                                                                                                               .thenReturn(email(TEST_USER));
     IMAPStore store = mock(IMAPStore.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -6551,9 +6781,9 @@ public class EmailBoxServiceTest {
     when(folder.listSubscribed("*")).thenReturn(new Folder[] { trashFolder });
     when(trashFolder.exists()).thenReturn(true);
     when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
-    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(mock(Message.class));
+    when(inbox.getMessageByUID(1212l)).thenReturn(mock(Message.class));
 
-    emailBoxService.deleteEmail(List.of(1212l), TEST_USER);
+    emailBoxService.deleteEmail(List.of(1212l), TEST_USER, MailFolder.INBOX);
 
     // Removing rows the badge counts changes it just as reading them does
     verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);

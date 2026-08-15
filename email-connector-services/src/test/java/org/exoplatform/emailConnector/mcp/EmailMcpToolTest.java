@@ -312,7 +312,7 @@ class EmailMcpToolTest {
     Email email = buildEmail(EMAIL_ID);
     EmailAttachment attachment = new EmailAttachment(1L, REMOTE_ID, "1.2", "invoice.pdf", "application/pdf", new byte[] { 1, 2, 3 }, MailFolder.INBOX, null, null, null);
     email.getContent().setAttachments(List.of(attachment));
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
 
     List<EmailAttachmentModel> attachments = emailMcpTool.listAttachments(REMOTE_ID);
 
@@ -332,7 +332,7 @@ class EmailMcpToolTest {
   void listAttachmentsReturnsEmptyWhenNone() throws Exception {
     Email email = buildEmail(EMAIL_ID);
     email.getContent().setAttachments(null);
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(false), eq(false), eq(false))).thenReturn(email);
 
     assertTrue(emailMcpTool.listAttachments(REMOTE_ID).isEmpty());
   }
@@ -341,23 +341,23 @@ class EmailMcpToolTest {
 
   @Test
   void markReadDelegatesToService() throws Exception {
-    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(true), eq(true))).thenReturn(0);
+    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(0);
     String message = emailMcpTool.markRead(List.of(REMOTE_ID));
-    verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(true), eq(true));
+    verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true));
     assertEquals("Marked 1 email(s) as read.", message);
   }
 
   @Test
   void markUnreadDelegatesToService() throws Exception {
-    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(false), eq(true))).thenReturn(0);
+    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(false), eq(true))).thenReturn(0);
     String message = emailMcpTool.markUnread(List.of(REMOTE_ID));
-    verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(false), eq(true));
+    verify(emailBoxService).updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(false), eq(true));
     assertEquals("Marked 1 email(s) as unread.", message);
   }
 
   @Test
   void markReadReportsAllFailuresAsFailure() throws Exception {
-    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(true), eq(true))).thenReturn(1);
+    when(emailBoxService.updateEmailReadStatus(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(1);
     String message = emailMcpTool.markRead(List.of(REMOTE_ID));
     // When every email fails, the message must be phrased as a clear failure and
     // must not claim any success.
@@ -368,7 +368,7 @@ class EmailMcpToolTest {
   @Test
   void markReadReportsPartialFailure() throws Exception {
     List<Long> ids = List.of(REMOTE_ID, 888L);
-    when(emailBoxService.updateEmailReadStatus(eq(ids), eq(USERNAME), eq(true), eq(true))).thenReturn(1);
+    when(emailBoxService.updateEmailReadStatus(eq(ids), eq(USERNAME), eq(MailFolder.INBOX), eq(true), eq(true))).thenReturn(1);
     String message = emailMcpTool.markRead(ids);
     assertEquals("Marked 1 of 2 email(s) as read; 1 failed (message not found on server or IMAP write denied).", message);
   }
@@ -406,7 +406,7 @@ class EmailMcpToolTest {
     original.setMailHeaderId("<original-message-id@server>");
     original.setSubject("Question");
     original.setSender(new EmailSender("Alice", "alice@example.com", null, null));
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
 
     emailMcpTool.replyEmail(REMOTE_ID, "<p>My answer</p>");
 
@@ -430,7 +430,7 @@ class EmailMcpToolTest {
     original.setTo(List.of(new EmailRecipient(null, "testuser1@example.com", null, true),
                            new EmailRecipient(null, "dave@example.com", null, false)));
     original.setCc(List.of(new EmailRecipient(null, "erin@example.com", null, false)));
-    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(eq(REMOTE_ID), eq(USERNAME), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(original);
 
     UserEmailSetting setting = new UserEmailSetting();
     setting.setEmailAddress("testuser1@example.com");
@@ -585,17 +585,17 @@ class EmailMcpToolTest {
 
   @Test
   void archiveEmailDelegatesToService() throws Exception {
-    when(emailBoxService.archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME))).thenReturn(0);
+    when(emailBoxService.archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX))).thenReturn(0);
     String result = emailMcpTool.archiveEmail(List.of(REMOTE_ID));
-    verify(emailBoxService).archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME));
+    verify(emailBoxService).archiveEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX));
     assertTrue(result.contains("Archived 1 of 1"));
   }
 
   @Test
   void deleteEmailDelegatesToService() throws Exception {
-    when(emailBoxService.deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME))).thenReturn(0);
+    when(emailBoxService.deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX))).thenReturn(0);
     String result = emailMcpTool.deleteEmail(List.of(REMOTE_ID));
-    verify(emailBoxService).deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME));
+    verify(emailBoxService).deleteEmail(eq(List.of(REMOTE_ID)), eq(USERNAME), eq(MailFolder.INBOX));
     assertTrue(result.contains("Deleted 1 of 1"));
   }
 }

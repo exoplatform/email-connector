@@ -1052,12 +1052,14 @@ export default {
      *
      * The one place in the mailbox that pushes a read status, which is why the
      * read-only folders are held back HERE rather than at each of the four places
-     * that ask for one. And they have to be held back, for a reason stronger than
-     * the write being pointless: the push opens the INBOX and sets \Seen on whatever
-     * message carries that UID there (EXO-89367). Since simply OPENING a message
-     * marks it read, browsing the Trash would otherwise quietly clear the unread
-     * flag of unrelated inbox mail, one message per trashed mail read — with nothing
-     * on any screen to account for it.
+     * that ask for one.
+     *
+     * The push is folder-aware now (EXO-89367): it opens the folder the ROW is listed
+     * in and flags the message THAT folder holds at that id, so reading a message out
+     * of Sent or Archive no longer clears the unread flag of whatever inbox message
+     * happened to carry the same number. What is left of the old restriction is the
+     * Trash, and for its own reason: marking a message the user has thrown away read is
+     * not a state worth writing to their mail server.
      *
      * Not marked read locally either, deliberately: showing a trashed message turn
      * read would promise a state nothing is saving, and the next sync would take it
@@ -1079,12 +1081,49 @@ export default {
         }
         return false;
       });
-      if (emailIdsToUpdate.length > 0) {
-        this.$emailConnectorMailBoxService.updateEmailsReadStatus(
-          emailIdsToUpdate,
-          read
-        );
-      }
+      this.byOwnFolder(emailIdsToUpdate).forEach(([folder, ids]) =>
+        this.$emailConnectorMailBoxService.updateEmailsReadStatus(ids, read, folder));
+    },
+    /**
+     * The folder a message id belongs to — the ROW's own, which is the only one the
+     * server can address it by.
+     *
+     * Looked up in the three places this drawer holds rows, and they genuinely differ:
+     * the listed window is one folder's, but a server search result carries whichever
+     * folder it was found in, and the opened message keeps the folder it was opened
+     * from. Sending the LISTED folder instead would be right for the list and wrong for
+     * both of the others.
+     *
+     * Falls back to INBOX for an id from none of the three, which is what a row written
+     * before the mailbox held other folders means.
+     *
+     * @param {Number} mailRemoteId the message's IMAP UID
+     * @returns {String} the folder that id is numbered in
+     */
+    folderOfEmail(mailRemoteId) {
+      const row = (this.emails || []).find(email => email.mailRemoteId === mailRemoteId)
+        || (this.searchServerResults || []).find(result => result.mailRemoteId === mailRemoteId)
+        || (this.email?.mailRemoteId === mailRemoteId ? this.email : null);
+      return row?.folder || 'INBOX';
+    },
+    /**
+     * Groups message ids by the folder each one is listed in, so one request goes out
+     * per folder rather than one request carrying ids the server cannot tell apart.
+     *
+     * In a plain listing this yields a single group — a folder window holds one folder's
+     * rows. It yields more than one when the selection came from a search across
+     * folders, and that is the case the grouping exists for.
+     *
+     * @param {Array<Number>} emailIds the ids to act on
+     * @returns {Array} [folder, ids] pairs, empty when there is nothing to do
+     */
+    byOwnFolder(emailIds = []) {
+      const groups = new Map();
+      emailIds.forEach(id => {
+        const folder = this.folderOfEmail(id);
+        groups.set(folder, (groups.get(folder) || []).concat(id));
+      });
+      return Array.from(groups.entries());
     },
     // Toggle the favorite-only view from the chip row, reloading the listed
     // folder (the favorite subset is answered server-side).
@@ -1249,35 +1288,23 @@ export default {
         alertMessage: this.$t(errorKey, { 0: failedUpdates }),
       }}));
     },
+    /**
+     * Moves messages to the Trash, one request per folder they are listed in.
+     *
+     * The count in the answer is the message the user gets, and it now counts things it
+     * never used to: a message the server does not have at that id is a FAILED delete,
+     * not a quiet nothing (EXO-89367). Before, deleting from Sent removed the row on
+     * screen, answered success, and the message was still there after a reload.
+     *
+     * @param {Array<Number>} emailIdsToDelete the IMAP UIDs to delete
+     * @returns {void}
+     */
     deleteEmails(emailIdsToDelete = []) {
       this.deletedEmailIds.push(...emailIdsToDelete);
-      if (emailIdsToDelete.length > 0) {
-        this.$emailConnectorMailBoxService.deleteEmails(emailIdsToDelete)
-          .then((deleteResult) => {
-            if ((deleteResult.failedDeletions ?? 0) > 0) {
-              const alertMessage = this.$t(deleteResult.failedDeletions === 1 ? 'emailConnector.mailBox.list.drawer.delete.email.error' : 'emailConnector.mailBox.list.drawer.delete.emails.error', {
-                0: deleteResult.failedDeletions,
-              });
-              document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-                alertType: 'error',
-                alertMessage: alertMessage,
-                alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
-                alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
-              }}));
-            }
-          })
-          .catch(() => { 
-            const alertMessage = this.$t(emailIdsToDelete.length === 1 ? 'emailConnector.mailBox.list.drawer.delete.email.error' : 'emailConnector.mailBox.list.drawer.delete.emails.error', {
-              0: emailIdsToDelete.length,
-            });
-            document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-              alertType: 'error',
-              alertMessage: alertMessage,
-              alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
-              alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
-            }}));
-          });
-      }
+      this.byOwnFolder(emailIdsToDelete).forEach(([folder, ids]) =>
+        this.$emailConnectorMailBoxService.deleteEmails(ids, folder)
+          .then(deleteResult => this.alertOnActionFailures(deleteResult.failedDeletions ?? 0, 'delete'))
+          .catch(() => this.alertOnActionFailures(ids.length, 'delete')));
     },
     /**
      * Puts trashed messages back into the inbox.
@@ -1297,8 +1324,8 @@ export default {
       }
       this.restoredEmailIds.push(...emailIdsToRestore);
       this.$emailConnectorMailBoxService.restoreEmails(emailIdsToRestore)
-        .then(restoreResult => this.alertOnTrashActionFailures(restoreResult.failedRestores ?? 0, 'restore'))
-        .catch(() => this.alertOnTrashActionFailures(emailIdsToRestore.length, 'restore'));
+        .then(restoreResult => this.alertOnActionFailures(restoreResult.failedRestores ?? 0, 'restore'))
+        .catch(() => this.alertOnActionFailures(emailIdsToRestore.length, 'restore'));
     },
     /**
      * Removes trashed messages from the mail server for good.
@@ -1315,13 +1342,18 @@ export default {
       }
       this.purgedEmailIds.push(...emailIdsToPurge);
       this.$emailConnectorMailBoxService.purgeEmails(emailIdsToPurge)
-        .then(purgeResult => this.alertOnTrashActionFailures(purgeResult.failedPurges ?? 0, 'purge'))
-        .catch(() => this.alertOnTrashActionFailures(emailIdsToPurge.length, 'purge'));
+        .then(purgeResult => this.alertOnActionFailures(purgeResult.failedPurges ?? 0, 'purge'))
+        .catch(() => this.alertOnActionFailures(emailIdsToPurge.length, 'purge'));
     },
     /**
-     * The error alert both Trash actions raise, and the place the partial-failure story
-     * is told: a selection can fail halfway, the earlier messages having already moved,
-     * so the count is what is shown rather than "it failed".
+     * The error alert every one of the four mail actions raises, and the place the
+     * partial-failure story is told: a selection can fail halfway, the earlier messages
+     * having already moved, so the count is what is shown rather than "it failed".
+     *
+     * One alert for all four rather than a copy per action, because the count they are
+     * reporting only recently started meaning the same thing in all of them: a delete or
+     * an archive the mail server did not perform used to be counted as nothing at all
+     * and shown as a success (EXO-89367). The four i18n keys differ only by the verb.
      *
      * Nothing is put back into the listing on failure. The failed rows are back in the
      * database (the backend re-created them), so the honest way to see them again is the
@@ -1329,10 +1361,11 @@ export default {
      * would be this drawer guessing at what the server decided.
      *
      * @param {Number} failures how many messages the action could not be applied to
-     * @param {String} action 'restore' or 'purge', which picks the message
+     * @param {String} action 'delete', 'archive', 'restore' or 'purge', which picks the
+     *        message
      * @returns {void}
      */
-    alertOnTrashActionFailures(failures, action) {
+    alertOnActionFailures(failures, action) {
       if (failures <= 0) {
         return;
       }
@@ -1344,35 +1377,18 @@ export default {
         alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
       }}));
     },
+    /**
+     * Moves messages to the Archive, one request per folder they are listed in.
+     *
+     * @param {Array<Number>} emailIdsToArchive the IMAP UIDs to archive
+     * @returns {void}
+     */
     archiveEmails(emailIdsToArchive = []) {
       this.archivedEmailIds.push(...emailIdsToArchive);
-      if (emailIdsToArchive.length > 0) {
-        this.$emailConnectorMailBoxService.archiveEmails(emailIdsToArchive)
-          .then(archiveResult => {
-            if ((archiveResult.failedArchives ?? 0) > 0) {
-              const alertMessage = this.$t(archiveResult.failedArchives === 1 ? 'emailConnector.mailBox.list.drawer.archive.email.error' : 'emailConnector.mailBox.list.drawer.archive.emails.error', {
-                0: archiveResult.failedArchives,
-              });
-              document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-                alertType: 'error',
-                alertMessage: alertMessage,
-                alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
-                alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
-              }}));
-            }
-          })
-          .catch(() => { 
-            const alertMessage = this.$t(emailIdsToArchive.length === 1 ? 'emailConnector.mailBox.list.drawer.archive.email.error' : 'emailConnector.mailBox.list.drawer.archive.emails.error', {
-              0: emailIdsToArchive.length,
-            });
-            document.dispatchEvent(new CustomEvent('alert-message', {detail: {
-              alertType: 'error',
-              alertMessage: alertMessage,
-              alertLinkText: this.$t('emailConnector.mailBox.list.drawer.see.label'),
-              alertLinkCallback: () => this.$emailConnectorCommonService.openEmailBox(),
-            }}));
-          });
-      }
+      this.byOwnFolder(emailIdsToArchive).forEach(([folder, ids]) =>
+        this.$emailConnectorMailBoxService.archiveEmails(ids, folder)
+          .then(archiveResult => this.alertOnActionFailures(archiveResult.failedArchives ?? 0, 'archive'))
+          .catch(() => this.alertOnActionFailures(ids.length, 'archive')));
     },
     async loadEmailBox() {
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
