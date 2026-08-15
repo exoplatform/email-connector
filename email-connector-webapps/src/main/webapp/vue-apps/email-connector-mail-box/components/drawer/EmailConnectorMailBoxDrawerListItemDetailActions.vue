@@ -16,9 +16,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-layout>
+    <!-- The toolbar seam, handed BOTH the opened message and the conversation it belongs
+         to. `email` is what it has always carried and nothing that reads it today has to
+         change; `thread` is added beside it, so a contributor that cares about the whole
+         exchange can act on it and one that does not can carry on ignoring it.
+
+         Why the conversation reaches the header at all: this bar speaks for what the
+         drawer has open, and when a reader opens a conversation of several messages,
+         what it has open is the conversation — not the one message that happened to be
+         clicked in the list behind it. The header had no way to tell the two apart,
+         because it is the drawer's title bar and the reader that knows is the drawer's
+         content. See the `thread-context` event on
+         EmailConnectorMailBoxDrawerThreadContent, which is where this comes from. -->
     <extension-registry-components
       :params="{
         email,
+        thread: threadParams,
       }"
       name="EmailDetail"
       type="email-detail-toolbar"
@@ -76,8 +89,40 @@ export default {
       type: Object,
       default: () => null,
     },
+    // The conversation the opened message belongs to, as the reader assembled it:
+    // {threadId, messages, subject}, drafts already excluded. Null while nothing is
+    // open, and null in any drawer that does not render a reader — this toolbar is used
+    // in both, and the message actions below never needed it.
+    thread: {
+      type: Object,
+      default: () => null,
+    },
   },
   computed: {
+    /**
+     * The conversation as the extension seam receives it: what the reader assembled,
+     * plus the one thing a contributor cannot work out for itself without repeating
+     * this add-on's definition of a thread.
+     *
+     * "More than one message" is the rule EXO-89373 already applies to the per-message
+     * menu, and it is counted on the reader's `messages` — which holds the exchange
+     * without its drafts. A mail with an unsent reply under it is one mail being read,
+     * not a conversation, and the conversation's actions would have nothing to work on.
+     *
+     * Answers a normalized object rather than null when nothing is open, so a consumer
+     * reads one shape and only ever has to test `isThread`.
+     *
+     * @returns {Object} {isThread, threadId, messages, subject}
+     */
+    threadParams() {
+      const messages = this.thread?.messages || [];
+      return {
+        isThread: !!this.thread?.threadId && messages.length > 1,
+        threadId: this.thread?.threadId || null,
+        messages,
+        subject: this.thread?.subject || this.email?.subject || null,
+      };
+    },
     /**
      * Whether the opened message sits in a folder the interface may only read
      * (Trash), in which case this toolbar offers nothing that writes.
