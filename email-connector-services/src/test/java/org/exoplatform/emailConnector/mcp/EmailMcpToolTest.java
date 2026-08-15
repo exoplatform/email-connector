@@ -24,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -102,7 +104,7 @@ class EmailMcpToolTest {
 
   @Test
   void getEmailById() throws Exception {
-    when(emailBoxService.getEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(buildEmail(EMAIL_ID));
+    when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(buildEmail(EMAIL_ID));
 
     EmailModel model = emailMcpTool.getEmailById(EMAIL_ID);
 
@@ -117,8 +119,25 @@ class EmailMcpToolTest {
 
   @Test
   void getEmailByIdNotFoundFails() throws Exception {
-    when(emailBoxService.getEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(null);
+    when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> emailMcpTool.getEmailById(EMAIL_ID));
+  }
+
+  /**
+   * An id is guessable, and this tool is reached from outside: an agent hands it a
+   * number. The refusal has to come from the read itself, so the plain lookup -- which
+   * finds a row by technical id alone -- must not be the one used. Asserting the refusal
+   * alone would still pass if somebody restored the plain call, hence the never().
+   *
+   * @throws Exception never thrown; declared by the tool's own contract
+   */
+  @Test
+  void getEmailByIdRefusesSomebodyElsesEmail() throws Exception {
+    when(emailBoxService.getOwnedEmailById(eq(EMAIL_ID), eq(USERNAME))).thenThrow(new IllegalAccessException("not yours"));
+
+    assertThrows(IllegalAccessException.class, () -> emailMcpTool.getEmailById(EMAIL_ID));
+
+    verify(emailBoxService, never()).getEmailById(anyLong(), any());
   }
 
   // --- list_emails ---------------------------------------------------------
