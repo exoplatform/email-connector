@@ -115,13 +115,13 @@ public class EmailMcpTool implements McpToolPlugin {
    * <p>
    * Reads through {@link EmailBoxService#getOwnedEmailById}, not the plain lookup:
    * that one finds a row by its technical id alone and lets the username merely
-   * decorate what comes back, which is right for a caller that has already
-   * established who owns the row and wrong for anything reached from outside. This
-   * is reached from outside -- an agent hands it an id -- and an id is guessable, so
-   * it takes the same read {@code EmailBoxRest} takes. It refuses another user's
-   * mail rather than returning it.
+   * decorate what comes back, which is right for a caller that has already established
+   * who owns the row and wrong for anything reached from outside. This is reached from
+   * outside — an agent hands it an id — and an id is guessable, so it is the same read
+   * {@code EmailBoxRest} does. It refuses another user's mail rather than returning it.
    *
-   * @param emailId the cached email's local database id
+   * @param emailId the cached email's local database id, as carried by every email this
+   *          toolset returns
    * @return the email, with its body flattened to plain text
    * @throws ObjectNotFoundException if no such email is cached
    * @throws IllegalAccessException if the email belongs to somebody else
@@ -287,14 +287,29 @@ public class EmailMcpTool implements McpToolPlugin {
    * The truncation is marked in the text rather than silent: a reader that cannot see
    * where a message stopped will summarise the missing half with the same confidence
    * as the rest.
+   * <p>
+   * What each message IS given is its identity: its {@code email_id}, its
+   * {@code mail_remote_id} and the folder that UID belongs to (see
+   * {@link #toThreadMessageModel}). Both cuts above are then recoverable — a body cut
+   * at {@link #THREAD_BODY_MAX_CHARS} is one {@code get_email_by_id} away from being
+   * read whole — and a reply can be threaded onto the message it answers rather than
+   * onto whatever a subject-and-sender search happens to surface first.
+   * <p>
+   * Where a thread_id comes from: {@code list_emails}, {@code get_email_by_id} and
+   * {@code get_email_full}, which read the local cache and carry the conversation id on
+   * every message. NOT {@code search_emails}: a search hit is an envelope the mail
+   * server answered with, and a message outside the local sync window has no cached row
+   * and therefore no computed conversation id at all. From a hit, chain its
+   * {@code mail_remote_id} through {@code get_email_full} first.
    *
-   * @param threadId the conversation id, as carried by every listed or fetched email
+   * @param threadId the conversation id, as carried by every cached email read
    * @return the conversation's real messages, oldest first
    * @throws IllegalAccessException if the user has no usable mailbox
    */
   public List<EmailThreadMessageModel> getEmailThread(String threadId) throws IllegalAccessException {
     if (StringUtils.isBlank(threadId)) {
-      throw new IllegalArgumentException("thread_id is required: it is carried by every email returned by the other tools.");
+      throw new IllegalArgumentException("thread_id is required: it is carried by every email returned by list_emails, "
+          + "get_email_by_id and get_email_full. A search hit does not carry one — fetch it with get_email_full first.");
     }
     List<Email> thread = emailBoxService.getThread(threadId, getCurrentUserName());
     List<Email> messages = thread.stream().filter(email -> StringUtils.isBlank(email.getDraftLocalId())).toList();
@@ -505,7 +520,11 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Map an Email domain object to the MCP EmailModel, flattening the HTML body to
-   * plain text and surfacing the mailRemoteId needed to chain write tools.
+   * plain text and surfacing the two ids needed to chain the other tools: the
+   * mailRemoteId the write tools key on, and the threadId {@code get_email_thread}
+   * takes. The thread id is on the domain object for every cached read, and was simply
+   * being dropped here — while the conversation tool's description told callers to
+   * expect it (EXO-89372).
    */
   private EmailModel toEmailModel(Email email, boolean includeUserEmail) {
     EmailContent content = email.getContent();
@@ -515,6 +534,7 @@ public class EmailMcpTool implements McpToolPlugin {
     EmailModel model = new EmailModel();
     model.setId(email.getId());
     model.setMailRemoteId(email.getMailRemoteId());
+    model.setThreadId(email.getThreadId());
     model.setUserId(email.getUserId());
     model.setUserEmail(includeUserEmail ? email.getUserEmail() : null);
     model.setSubject(email.getSubject());
@@ -531,14 +551,31 @@ public class EmailMcpTool implements McpToolPlugin {
 
   /**
    * Map one message of a conversation to what a reader of the whole conversation
-   * needs: who wrote it, when, about what, what it said, and what came with it.
+   * needs: who wrote it, when, about what, what it said, what came with it — and how
+   * to act on it afterwards.
+   * <p>
+   * That last part is the whole of {@code EXO-89372}. A message read in a conversation
+   * used to arrive with no identifier at all, so the one thing a reader most often
+   * wants next — reply to THIS message, read the body that was cut, list what was
+   * attached — could only be attempted by searching the mailbox again for a subject and
+   * a sender and hoping the newest hit was the same message. Both ids the toolset keys
+   * on are therefore carried here, and the folder with them: a UID names a message
+   * within one folder only, and a conversation reliably spans INBOX and SENT.
+   * <p>
+   * The folder is passed through exactly as stored rather than defaulted to INBOX when
+   * it is missing. Defaulting it would be the same silent assumption EXO-89367 was
+   * about; a message that cannot say where it lives should say nothing, and the tool's
+   * description tells the caller not to act on the UID of one that does not.
    *
    * @param email the cached message
    * @return its conversation-reading shape
    */
   private EmailThreadMessageModel toThreadMessageModel(Email email) {
     EmailSender sender = email.getSender();
-    return new EmailThreadMessageModel(sender == null ? null : sender.getName(),
+    return new EmailThreadMessageModel(email.getId(),
+                                       email.getMailRemoteId(),
+                                       email.getFolder(),
+                                       sender == null ? null : sender.getName(),
                                        sender == null ? null : sender.getAddress(),
                                        email.getReceivedDate(),
                                        email.getSubject(),
