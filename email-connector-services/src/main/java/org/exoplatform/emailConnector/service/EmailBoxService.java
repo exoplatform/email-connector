@@ -2753,7 +2753,8 @@ public class EmailBoxService {
    * {@code EmailThreadingUtils#positionDraftsAfterTheirParent}), so nothing in this
    * method distinguishes it. The reader is where a draft stops looking like mail.
    *
-   * @param threadId the conversation id (see {@link #computeThreadId})
+   * @param threadId the conversation id (see {@link #computeThreadId}), with or
+   *          without its angle brackets (see {@link #toggleThreadIdBrackets})
    * @param username the mailbox owner
    * @return the thread's messages in reading order, each with body and recipients
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
@@ -2764,7 +2765,81 @@ public class EmailBoxService {
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
-    return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
+    // The id as given wins, always: a caller holding the stored spelling costs exactly
+    // one read, the way it always did. The other spelling is only ever asked for once
+    // the stored one has answered with nothing -- see toggleThreadIdBrackets for why a
+    // bracketless id is a normal arrival rather than a malformed one.
+    List<Email> thread = emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
+    if (!thread.isEmpty()) {
+      return thread;
+    }
+    String alternateThreadId = toggleThreadIdBrackets(threadId);
+    if (alternateThreadId == null) {
+      return thread;
+    }
+    List<Email> alternateThread = emailBoxStorage.getEmailsByThreadId(username,
+                                                                     alternateThreadId,
+                                                                     userEmailSetting.getEmailAddress());
+    return alternateThread.isEmpty() ? thread : alternateThread;
+  }
+
+  /**
+   * The same conversation id spelled the other way: {@code <id@host>} bare, and a bare
+   * {@code id@host} wrapped. Null when there is no other spelling to try.
+   * <p>
+   * A thread id IS a {@code Message-ID}, and RFC 5322 spells a Message-ID inside angle
+   * brackets — which is how it is stored, and so how it must be queried. The reason the
+   * bracketless spelling has to resolve too is not tolerance for malformed input: the
+   * id reaches the AI thread actions through prompt text that the chat drawer renders as
+   * HTML, where {@code <a27866e4-...@host>} is indistinguishable from a tag and is eaten
+   * as one. What arrives at {@link #getThread} on that path is therefore the bare id, by
+   * construction, every time. It named a real conversation and returned an empty list,
+   * and the model then truthfully reported that the conversation had no messages in it.
+   * <p>
+   * Toggling rather than normalising, because neither spelling is privileged here: the
+   * caller's own spelling is tried first and this is only the second guess.
+   *
+   * @param threadId the conversation id as the caller spelled it
+   * @return the alternate spelling, or null when the id is blank
+   */
+  private String toggleThreadIdBrackets(String threadId) {
+    if (StringUtils.isBlank(threadId)) {
+      return null;
+    }
+    if (threadId.startsWith("<") && threadId.endsWith(">")) {
+      return threadId.substring(1, threadId.length() - 1);
+    }
+    return "<" + threadId + ">";
+  }
+
+  /**
+   * The spelling of a conversation id that actually names cached messages — the id as
+   * given when it resolves, its bracket-toggled twin when only that one does, and the
+   * id as given when neither resolves (nothing to correct, and the caller's own id is
+   * the honest answer).
+   * <p>
+   * Needed by {@link #completeThread} and not by {@link #getThread}, which settles the
+   * same question on the rows it has already read. Completion cannot: it hands the id to
+   * {@link #completeThreadFromArchive}, which keys an IMAP search and a thread merge on
+   * it, so the id has to be right BEFORE the work rather than after it. Given the bare
+   * spelling it found no cached messages, skipped the archive lookup entirely and then
+   * read back nothing — the same empty conversation as {@link #getThread}'s, arrived at
+   * by a different route.
+   *
+   * @param username the mailbox owner
+   * @param threadId the conversation id as the caller spelled it
+   * @param userEmail the owner's own address, for the read
+   * @return the spelling to work with, never null when the input is not
+   */
+  private String resolveStoredThreadId(String username, String threadId, String userEmail) {
+    if (!emailBoxStorage.getEmailsByThreadId(username, threadId, userEmail).isEmpty()) {
+      return threadId;
+    }
+    String alternateThreadId = toggleThreadIdBrackets(threadId);
+    if (alternateThreadId != null && !emailBoxStorage.getEmailsByThreadId(username, alternateThreadId, userEmail).isEmpty()) {
+      return alternateThreadId;
+    }
+    return threadId;
   }
 
   /**
@@ -2773,7 +2848,8 @@ public class EmailBoxService {
    * the cached thread instantly and pulls the archived tail in the background — the
    * IMAP round-trip lives here, not on the drawer's opening path.
    *
-   * @param threadId the conversation id opened by the user
+   * @param threadId the conversation id opened by the user, with or without its angle
+   *          brackets (see {@link #toggleThreadIdBrackets})
    * @param username the mailbox owner
    * @return the thread's messages including any newly recovered archived ones
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
@@ -2784,10 +2860,14 @@ public class EmailBoxService {
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
+    // Settled before the archive lookup, not after it: the id keys an IMAP search and a
+    // thread merge down there, both of which quietly do nothing when it is spelled the
+    // way the caller's HTML left it rather than the way the rows carry it.
+    String resolvedThreadId = resolveStoredThreadId(username, threadId, userEmailSetting.getEmailAddress());
     // Completion keeps the opened thread id as the canonical one, so the id the reader
     // (and the already-rendered inbox list) holds stays valid on the next open.
-    completeThreadFromArchive(username, threadId, userEmailSetting);
-    return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
+    completeThreadFromArchive(username, resolvedThreadId, userEmailSetting);
+    return emailBoxStorage.getEmailsByThreadId(username, resolvedThreadId, userEmailSetting.getEmailAddress());
   }
 
   /**
