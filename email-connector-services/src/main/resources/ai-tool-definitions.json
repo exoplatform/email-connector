@@ -3,7 +3,7 @@
     {
       "name": "get_email_by_id",
       "title": "Get an email",
-      "description": "Retrieve email content identified by its local id.",
+      "description": "Retrieve email content identified by its local id. The email carries its mail_remote_id, to chain into the write tools, and its thread_id, to read the whole conversation with get_email_thread. An email that is not the current user's is refused.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -21,7 +21,7 @@
     {
       "name": "list_emails",
       "title": "List emails",
-      "description": "Retrieve a page of the current user's emails from the synced inbox mirror. Paginated: 'offset' (default 0) and 'limit' (default 10) page through the mirror, and 'unread_only' keeps only unread emails. Each email carries its mail_remote_id to chain into other tools. Call sync_now first if you need the freshest messages.",
+      "description": "Retrieve a page of the current user's emails from the synced inbox mirror. Paginated: 'offset' (default 0) and 'limit' (default 10) page through the mirror, and 'unread_only' keeps only unread emails. Each email carries its mail_remote_id to chain into other tools. Call sync_now first if you need the freshest messages. Each email also carries its thread_id, to read the whole conversation with get_email_thread.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -76,7 +76,7 @@
     {
       "name": "search_emails",
       "title": "Search emails",
-      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender (NOT the body), 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit says whether it is unread and whether the user favorited it (starred), and carries mail_remote_id to chain into get_email_full, reply_email, mark_read and the other tools.",
+      "description": "Search the user's mailbox on the mail server itself (IMAP SEARCH), so it finds messages anywhere in the folder, not only in the recently synced local copy. At least one criterion is required. 'query' matches the subject or the sender (NOT the body), 'from' matches the sender only, 'unread' keeps only unread messages, 'sinceDays' keeps only messages received in the last N days, 'folder' is INBOX (default), SENT or ARCHIVE, and 'limit' caps how many come back (default 20, max 50). Returns 'total_matches' — how many matched on the server — alongside the newest hits, so say what you did not see when the total is larger than the list. Each hit says whether it is unread and whether the user favorited it (starred), and carries mail_remote_id to chain into get_email_full, reply_email, mark_read and the other tools. A hit carries no thread_id (it is an envelope read off the server, not a cached row): fetch it with get_email_full first if you need the conversation.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -98,7 +98,7 @@
     {
       "name": "get_email_full",
       "title": "Get full email",
-      "description": "Fetch a single email in full by its IMAP mail_remote_id, including recipients, body and attachment metadata. Binary attachment content is not returned.",
+      "description": "Fetch a single email in full by its IMAP mail_remote_id, including recipients, body and attachment metadata. Binary attachment content is not returned. The email carries its thread_id, to read the whole conversation with get_email_thread.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -134,7 +134,7 @@
     {
       "name": "get_email_thread",
       "title": "Read a whole conversation",
-      "description": "Read every message of one conversation at once, oldest first, identified by the thread_id carried by every email returned by list_emails, search_emails, get_email_by_id and get_email_full. Each message comes back with its sender name and address, its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, and never assume the missing part agrees with the part you can see.",
+      "description": "Read every message of one conversation at once, oldest first. The thread_id is carried by every email returned by list_emails, get_email_by_id and get_email_full; a search_emails hit does NOT carry one (a hit is an envelope from the mail server, and a message outside the local sync window has no cached row and so no conversation id) — chain its mail_remote_id through get_email_full first to obtain the thread_id. Each message comes back with its email_id, its mail_remote_id, the folder that UID belongs to (INBOX, SENT, ARCHIVE or ALL_MAIL), its sender name and address, its date, its subject, its body as plain text and the names of its attachments. Use it before summarising or replying to a thread, instead of fetching its messages one by one. Unsent drafts are never included. Only the 25 most recent messages are returned, and each body is cut at 1500 characters and ends with '… [truncated]' when it was: treat a truncated body as a message you have only partly read, never assume the missing part agrees with the part you can see, and pass its email_id to get_email_by_id to read it whole. To act on a message of the conversation, use its ids rather than searching for it again: email_id goes to get_email_by_id, and mail_remote_id goes to reply_email, reply_all, forward_email, mark_read, list_attachments, archive_email and delete_email. Those mail_remote_id tools are INBOX-scoped and IMAP UIDs are numbered per folder, so pass a mail_remote_id ONLY from a message whose folder is INBOX; for a message in SENT, ARCHIVE or ALL_MAIL, or one that reports no folder at all, the same number names a different message and must not be used — read it with email_id instead, and thread a reply onto the most recent INBOX message of the conversation.",
       "input_schema": {
         "type": "object",
         "properties": {
