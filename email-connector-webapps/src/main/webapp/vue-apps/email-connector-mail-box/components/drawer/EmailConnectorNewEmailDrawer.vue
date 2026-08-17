@@ -339,6 +339,22 @@ export default {
       this.resetDraftTracking();
       this.title = this.drawerTitle(email, forward);
       this.seedRecipients(email, forward, replyAll, prefill);
+      if (!email && prefill?.to?.length) {
+        this.to = this.toRecipients(prefill.to);
+      }
+      // A subject and a body, seeded the same way the recipients are. Opening
+      // the composer from elsewhere was only ever half an offer: an add-on with
+      // something to send -- a visio room's link, a document, a note -- could
+      // open the drawer but not put the thing in the message, so the user was
+      // left to paste it themselves. The fields are already here and already
+      // bound; they were simply never filled from a prefill.
+      if (!email && prefill?.subject) {
+        this.email.subject = prefill.subject;
+      }
+      if (!email && prefill?.body) {
+        this.email.content.body = prefill.body;
+      }
+      this.title = forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.title') : email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
       if (email) {
         if (forward) {
           this.email.content.body = this.buildForwardedBody(email);
