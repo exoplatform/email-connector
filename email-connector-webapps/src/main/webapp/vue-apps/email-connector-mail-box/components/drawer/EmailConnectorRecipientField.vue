@@ -37,7 +37,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          will not shrink below its content otherwise, and the box pushed the
          label out of the row. -->
     <div class="d-flex align-center">
-      <v-label :for="fieldId" class="flex-grow-0 flex-shrink-0" style="width: 34px;">
+      <v-label
+        :for="fieldId"
+        class="flex-grow-0 flex-shrink-0"
+        style="min-width: 34px;">
         <span class="text-subtitle-color">{{ label }}</span>
       </v-label>
       <div class="d-flex flex-wrap align-center flex-grow-1" style="min-width: 0;">
@@ -76,7 +79,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @keydown.down.prevent="moveHighlight(1)"
           @keydown.up.prevent="moveHighlight(-1)"
           @keydown.esc="onEscape"
-          @keydown.delete="onBackspace"
+          @keydown.backspace="onBackspace"
           @blur="onBlur" />
       </div>
     </div>
@@ -186,6 +189,21 @@ export default {
       searchToken: 0,
     };
   },
+  watch: {
+    /**
+     * Publishes whatever is typed but not yet committed, so a parent can tell
+     * "nothing addressed" from "addressed, not yet turned into a chip". Without
+     * it a composer that gates Send on the chip list alone leaves the user with
+     * a filled To field and a dead button, and a disabled button takes no
+     * mousedown, so clicking it cannot even blur the input into committing.
+     *
+     * @param {string} typed - the term now in the input
+     * @returns {void}
+     */
+    term(typed) {
+      this.$emit('pending', (typed || '').trim());
+    },
+  },
   computed: {
     /**
      * The placeholder, shown only while the field is empty: repeating "Add
@@ -259,10 +277,20 @@ export default {
      */
     splitOnSeparators() {
       const parts = this.term.split(SEPARATORS);
-      this.term = parts.pop();
-      parts.map(part => part.trim())
+      const tail = parts.pop();
+      // A part that is not an address stays in the input beside the tail rather
+      // than disappearing: the same guarantee commitTypedAddress already makes,
+      // which the separator path used to break. Pasting three addresses of which
+      // one is malformed must leave that one visible, not two chips and silence.
+      const rejected = parts.map(part => part.trim())
         .filter(part => part)
-        .forEach(part => this.addAddress(part));
+        .filter(part => !this.addAddress(part));
+      this.term = rejected.concat(tail ? [tail] : []).join(', ');
+      // addAddress reported each rejection in turn, so the last one would be the
+      // only one named; report them together instead.
+      this.errorMessage = rejected.length
+        ? this.$t('emailConnector.mailBox.newEmail.drawer.recipients.invalid', {0: rejected.join(', ')})
+        : null;
     },
     /**
      * Debounces the suggestion query, dropping the list as soon as the field is
@@ -445,11 +473,17 @@ export default {
       this.emitRecipients(recipients);
     },
     /**
-     * Hides the suggestion list.
+     * Hides the suggestion list, and cancels any search still pending.
+     *
+     * Dropping the timer here rather than in each caller is what stops a chip
+     * that was just committed from being followed, a moment later, by a list
+     * reopening for the term the user had already moved past — where a second
+     * Enter would commit a suggestion nobody looked at.
      *
      * @returns {void}
      */
     closeSuggestions() {
+      window.clearTimeout(this.searchTimeout);
       this.suggestions = [];
       this.highlightedIndex = -1;
     },

@@ -843,6 +843,22 @@ public class EmailContactServiceTest {
   }
 
   @Test
+  void aDirectoryRowWhoseProfileAddressMovedStillAppearsOnce() {
+    // Enrichment replaces a DIRECTORY row's stored address with the live profile
+    // one. Keying the merge before that happens files the row under an address
+    // the emitted suggestion no longer carries, so the directory half looks the
+    // same person up by their live address, misses, and adds them a second time.
+    givenStoreSuggestions("jane", directoryContact(1L, "old@example.com", "Jane", "jane"));
+    givenDirectorySearch("jane", "jane");
+    givenDirectoryProfile("jane", "Jane Doe", "new@example.com", "jane-avatar", "/jane");
+
+    List<EmailContactSuggestion> suggestions = suggest("jane", 10);
+
+    assertEquals(List.of("new@example.com"), suggestions.stream().map(EmailContactSuggestion::getAddress).toList());
+    assertEquals("Jane Doe", suggestions.get(0).getDisplayName());
+  }
+
+  @Test
   void aStoreRowWithNoPlatformProfileIsNotAPlatformUser() {
     givenStoreSuggestions("bob", collectedContact(1L, "bob@outside.org", "Bob"));
 

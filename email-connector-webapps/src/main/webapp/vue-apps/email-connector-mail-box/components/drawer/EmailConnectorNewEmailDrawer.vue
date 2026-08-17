@@ -41,7 +41,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="mx-4"
         field-id="to"
         :label="$t('emailConnector.mailBox.newEmail.drawer.to.label')"
-        :placeholder="$t('emailConnector.mailBox.newEmail.drawer.to.placeholder')" />
+        :placeholder="$t('emailConnector.mailBox.newEmail.drawer.to.placeholder')"
+        @pending="pendingTo = $event" />
       <v-divider />
       <div>
         <email-connector-recipient-field
@@ -118,6 +119,9 @@ export default {
       to: [],
       cc: [],
       bcc: [],
+      // What is typed into To but not yet a chip. Send stays reachable while it
+      // holds something, so clicking Send can blur the field into committing it.
+      pendingTo: '',
       email: {
         mailHeaderId: null,
         to: [],
@@ -144,12 +148,18 @@ export default {
   },
   computed: {
     /**
-     * Whether Send is unavailable: no recipient, or an attachment still going up.
+     * Whether Send is unavailable: no recipient at all, or an attachment still
+     * going up.
+     *
+     * A recipient typed but not yet committed counts: the button must stay live
+     * so that pressing it blurs the field, which commits the chip, before the
+     * click lands. A disabled button receives no mousedown, so gating on the
+     * chip list alone left a filled To field with no way to send from it.
      *
      * @returns {boolean} true when sending must wait
      */
     disabled() {
-      return !this.to.length || this.attachments.some(attachment => attachment.uploading);
+      return (!this.to.length && !this.pendingTo) || this.attachments.some(attachment => attachment.uploading);
     },
     /**
      * Whether closing the drawer would throw away work, and so needs confirming.
@@ -304,6 +314,14 @@ export default {
         this.email = email;
       }
       else {
+        // Send is reachable while To holds uncommitted text, so that clicking it
+        // blurs the field and commits the chip first. When that text was not a
+        // usable address the field keeps it and adds no chip, and we would
+        // otherwise send to nobody -- so stop here and leave the field's own
+        // message on screen.
+        if (!this.to.length) {
+          return;
+        }
         // The send API takes plain addresses; the chips' names and avatars are
         // the field's business and stop here.
         this.email.to = this.toAddresses(this.to);

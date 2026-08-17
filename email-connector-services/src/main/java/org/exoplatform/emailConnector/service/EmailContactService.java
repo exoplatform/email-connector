@@ -218,11 +218,16 @@ public class EmailContactService {
     int size = sanitizeSuggestLimit(limit);
     Map<String, EmailContactSuggestion> byAddress = new LinkedHashMap<>();
     for (EmailContact contact : emailContactStorage.suggestContacts(username, query, size)) {
+      // Enrich before keying, never after: for a DIRECTORY row enrichment
+      // replaces the stored address with the live profile one, so keying on the
+      // stored value would file the entry under an address the emitted
+      // suggestion no longer carries. appendDirectoryMatches then looks the same
+      // person up by their live address, misses, and adds them a second time.
+      enrichForDisplay(contact);
       String address = EmailContactUtils.normalizeAddress(contact.getPrimaryEmail());
       if (address == null || byAddress.containsKey(address)) {
         continue;
       }
-      enrichForDisplay(contact);
       byAddress.put(address, toSuggestion(contact));
     }
     if (StringUtils.isNotBlank(query) && byAddress.size() < size) {

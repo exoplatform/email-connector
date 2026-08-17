@@ -141,14 +141,9 @@ public class EmailContactRestTest {
   void suggestWithoutATermIsStillAValidRequest() throws Exception {
     // A blank term is the "field just opened" case, not an error: the service
     // answers the user's top contacts and never touches the directory.
-    when(emailContactService.suggestRecipients(anyString(), any(), anyInt())).thenReturn(List.of());
-    mockMvc.perform(get(CONTACTS_PATH + "/suggest").with(testSimpleUser())).andExpect(status().isOk());
-  }
-
-  @Test
-  void suggestIsNotSwallowedByTheContactIdRoute() throws Exception {
-    // "/contacts/suggest" and "/contacts/{id}" share a path segment; the literal
-    // has to win, or the type-ahead 400s on an unparseable id.
+    // The same request also proves the route itself: "/contacts/suggest" and
+    // "/contacts/{id}" share a path segment, and the literal has to win or the
+    // type-ahead 400s on an unparseable id.
     when(emailContactService.suggestRecipients(anyString(), any(), anyInt())).thenReturn(List.of());
     mockMvc.perform(get(CONTACTS_PATH + "/suggest").with(testSimpleUser())).andExpect(status().isOk());
     verify(emailContactService, never()).getContact(anyLong(), anyString());
