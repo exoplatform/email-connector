@@ -66,7 +66,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon
           class="icon-default-color mx-auto"
           size="16">
-          {{ threadFavorite ? 'far fa-star' : 'fas fa-star' }}
+          {{ threadFavorite ? 'fas fa-star' : 'far fa-star' }}
         </v-icon>
       </v-sheet>
       <span v-if="threadFavorite">

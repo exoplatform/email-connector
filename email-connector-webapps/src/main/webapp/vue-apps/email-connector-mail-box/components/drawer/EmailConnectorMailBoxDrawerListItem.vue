@@ -116,7 +116,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 :favorite="threadFavorite"
                 :can-toggle="canToggleFavorite && !selectMode"
                 class="me-1"
-                :box-size="18"
+                :size="18"
                 @toggle="toggleThreadFavorite" />
               <v-list-item-subtitle v-text="receivedDate" />
             </v-list-item-action>

@@ -191,6 +191,18 @@ public class EmailBoxService {
   // The IMAP name of the inbox, as opposed to MailFolder.INBOX, our own folder discriminator.
   private static final String     INBOX_FOLDER_NAME                                           = "INBOX";
 
+  // The store/folder teardown and connection failures every IMAP-touching method reports
+  // identically. Kept as constants so the wording stays one string across all of them.
+  private static final String     STORE_CLOSE_ERROR_MESSAGE                                   = "Error when closing store";
+
+  private static final String     INBOX_CLOSE_ERROR_MESSAGE                                   = "Error when closing inbox";
+
+  private static final String     STORE_CONNECT_ERROR_MESSAGE                                 =
+                                                                                              "Error when connecting store for user {}";
+
+  private static final String     STORE_CONNECT_ERROR_FORMAT                                  =
+                                                                                              "Error when connecting store for user %s";
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
@@ -543,7 +555,7 @@ public class EmailBoxService {
           store.close();
         }
       } catch (MessagingException messagingException) {
-        LOG.warn("Error when closing store", messagingException);
+        LOG.warn(STORE_CLOSE_ERROR_MESSAGE, messagingException);
       }
     }
   }
@@ -1885,22 +1897,22 @@ public class EmailBoxService {
       emailAttachment.setMimeType(mimeType);
       return emailAttachment;
     } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       try {
         if (inbox != null && inbox.isOpen()) {
           inbox.close(false);
         }
       } catch (MessagingException messagingException) {
-        LOG.warn("Error when closing inbox", messagingException);
+        LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, messagingException);
       }
       try {
         if (store != null && store.isConnected()) {
           store.close();
         }
       } catch (MessagingException messagingException) {
-        LOG.warn("Error when closing store", messagingException);
+        LOG.warn(STORE_CLOSE_ERROR_MESSAGE, messagingException);
       }
     }
   }
@@ -2096,22 +2108,22 @@ public class EmailBoxService {
         }
       } catch (Exception e) {
         emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, !readStatus, MailFolder.INBOX);
-        LOG.error("Error when connecting store for user {}", username, e);
-        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+        LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
+        throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
         try {
           if (inbox != null && inbox.isOpen()) {
             inbox.close(false);
           }
         } catch (MessagingException e) {
-          LOG.warn("Error when closing inbox", e);
+          LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, e);
         }
         try {
           if (store != null && store.isConnected()) {
             store.close();
           }
         } catch (MessagingException e) {
-          LOG.warn("Error when closing store", e);
+          LOG.warn(STORE_CLOSE_ERROR_MESSAGE, e);
         }
       }
       // Read/unread transitions are what the App Center badge reflects; without
@@ -2188,7 +2200,7 @@ public class EmailBoxService {
       try {
         if (updateRemoteStarredStatus) {
           store = userEmailSettingService.connect(userEmailSetting);
-          inbox = store.getFolder("INBOX");
+          inbox = store.getFolder(INBOX_FOLDER_NAME);
           inbox.open(Folder.READ_WRITE);
         }
         for (Long mailRemoteId : mailRemoteIds) {
@@ -2221,22 +2233,22 @@ public class EmailBoxService {
         }
       } catch (Exception e) {
         emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, MailFolder.INBOX);
-        LOG.error("Error when connecting store for user {}", username, e);
-        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+        LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
+        throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
         try {
           if (inbox != null && inbox.isOpen()) {
             inbox.close(false);
           }
         } catch (MessagingException e) {
-          LOG.warn("Error when closing inbox", e);
+          LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, e);
         }
         try {
           if (store != null && store.isConnected()) {
             store.close();
           }
         } catch (MessagingException e) {
-          LOG.warn("Error when closing store", e);
+          LOG.warn(STORE_CLOSE_ERROR_MESSAGE, e);
         }
       }
     }
@@ -2306,7 +2318,7 @@ public class EmailBoxService {
           }
         }
       } catch (Exception e) {
-        LOG.error("Error when connecting store for user {}", username, e);
+        LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
         emails.stream().forEach(email -> {
           email.setId(null);
           emailBoxStorage.createEmail(email);
@@ -2317,21 +2329,21 @@ public class EmailBoxService {
             });
           }
         });
-        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+        throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
         try {
           if (inbox != null && inbox.isOpen()) {
             inbox.close(true);
           }
         } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing inbox", messagingException);
+          LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, messagingException);
         }
         try {
           if (store != null && store.isConnected()) {
             store.close();
           }
         } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing store", messagingException);
+          LOG.warn(STORE_CLOSE_ERROR_MESSAGE, messagingException);
         }
         // Removing mirror rows changes the unread count whenever any of them
         // was unread, so the badge has to be told exactly as for a read/unread
@@ -2394,7 +2406,7 @@ public class EmailBoxService {
           }
         }
       } catch (Exception e) {
-        LOG.error("Error when connecting store for user {}", username, e);
+        LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
         emails.stream().forEach(email -> {
           email.setId(null);
           emailBoxStorage.createEmail(email);
@@ -2405,21 +2417,21 @@ public class EmailBoxService {
             });
           }
         });
-        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+        throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
         try {
           if (inbox != null && inbox.isOpen()) {
             inbox.close(true);
           }
         } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing inbox", messagingException);
+          LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, messagingException);
         }
         try {
           if (store != null && store.isConnected()) {
             store.close();
           }
         } catch (MessagingException messagingException) {
-          LOG.warn("Error when closing store", messagingException);
+          LOG.warn(STORE_CLOSE_ERROR_MESSAGE, messagingException);
         }
         // Archiving removes the rows from the inbox the badge counts, so an
         // unread mail leaving the inbox changes the count just as reading it
@@ -4341,8 +4353,8 @@ public class EmailBoxService {
         LOG.warn("No Sent folder found via SPECIAL-USE or fallback names for user {}", username);
       }
     } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       try {
         if (sentFolder != null && sentFolder.isOpen()) {
@@ -4356,7 +4368,7 @@ public class EmailBoxService {
           store.close();
         }
       } catch (MessagingException messagingException) {
-        LOG.warn("Error when closing store", messagingException);
+        LOG.warn(STORE_CLOSE_ERROR_MESSAGE, messagingException);
       }
     }
   }

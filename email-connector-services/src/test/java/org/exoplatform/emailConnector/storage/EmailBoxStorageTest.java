@@ -236,6 +236,8 @@ public class EmailBoxStorageTest {
     // duplicated rows would leave messages wearing a stale recent badge.
     assertEquals(ids, issued.stream().flatMap(List::stream).toList());
   }
+
+  @Test
   void updateEmailStarredStatusSkipsTheDatabaseOnEmptyList() {
     // Called once per direction on every folder sync; when no star changed it must
     // not cost a statement, exactly like the recent-badge clear.
