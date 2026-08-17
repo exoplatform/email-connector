@@ -66,7 +66,7 @@ public class EmailBoxRest {
 
   @GetMapping()
   @Secured("users")
-  @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE for the in-app folder switch)")
+  @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE for the in-app folder switch), optionally restricted to the starred ones")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -75,9 +75,12 @@ public class EmailBoxRest {
   public EmailBox getEmailBox(HttpServletRequest request,
                               @Parameter(description = "Folder to list: INBOX, SENT or ARCHIVE")
                               @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
-                              String folder) {
+                              String folder,
+                              @Parameter(description = "When true, only the starred emails (IMAP \\Flagged) are returned")
+                              @RequestParam(value = "starred", required = false, defaultValue = "false")
+                              boolean starred) {
     try {
-      return emailBoxService.getEmailBox(request.getRemoteUser(), folder);
+      return emailBoxService.getEmailBox(request.getRemoteUser(), folder, starred);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -307,6 +310,35 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       emailBoxService.updateEmailReadStatus(mailRemoteIds, request.getRemoteUser(), readStatus, true);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  @PatchMapping("/starred")
+  @Secured("users")
+  @Operation(summary = "Stars or unstars emails", method = "PATCH", description = "Sets or clears the IMAP \\Flagged flag ('star') of the given emails, locally and on the mail server, so the star shows in every mail client. Returns the number of emails whose remote update failed (their local change is reverted).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Conflict"), })
+  public Map<String, Integer> updateEmailStarredStatus(HttpServletRequest request,
+                                                       @Parameter(description = "Email remote ids", required = true)
+                                                       @RequestBody
+                                                       List<Long> mailRemoteIds,
+                                                       @RequestParam("starred")
+                                                       boolean starred) {
+    try {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      int failedUpdates = emailBoxService.updateEmailStarredStatus(mailRemoteIds, request.getRemoteUser(), starred, true);
+      Map<String, Integer> response = new HashMap<>();
+      response.put("failedUpdates", failedUpdates);
+      return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {

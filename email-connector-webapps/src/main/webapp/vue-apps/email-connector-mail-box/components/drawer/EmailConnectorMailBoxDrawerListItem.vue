@@ -99,7 +99,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                   class="text-light-color ms-1 font-weight-regular">{{ threadCount }}</span>
               </v-list-item-title>
             </v-list-item-content>
-            <v-list-item-action class="my-0">
+            <v-list-item-action class="my-0 flex-row align-center">
+              <!-- Quiet favorite, next to the date (the unread dot keeps the left edge):
+                   always there when set, offered on hover to set it.
+                   It keeps its box at all times and only fades, exactly like the row
+                   actions below. Anything that takes the icon out of the layout -- v-if,
+                   or v-show, which sets display:none -- resizes the row as the pointer
+                   arrives: the date shifts, the pointer ends up over different content,
+                   the hover drops, and the row flickers as long as the cursor rests. -->
+              <email-connector-mail-box-drawer-favorite-toggle
+                v-if="!selectMode"
+                :style="{
+                  opacity: threadFavorite || isHover ? 1 : 0,
+                  pointerEvents: threadFavorite || isHover ? 'auto' : 'none'
+                }"
+                :favorite="threadFavorite"
+                :can-toggle="canToggleFavorite && !selectMode"
+                class="me-1"
+                :size="18"
+                @toggle="toggleThreadFavorite" />
               <v-list-item-subtitle v-text="receivedDate" />
             </v-list-item-action>
           </v-list-item>
@@ -219,6 +237,16 @@ export default {
     threadUnread() {
       return this.thread ? this.thread.unreadCount > 0 : !this.email.read;
     },
+    // A thread shows the favorite when any of its listed messages carries the flag,
+    // the same any-of rule as unread.
+    threadFavorite() {
+      return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
+    },
+    // The favorite is pushed through the INBOX folder, so only inbox rows can toggle
+    // it; in Sent/Archive it stays a read-only indicator.
+    canToggleFavorite() {
+      return (this.email.folder || 'INBOX') === 'INBOX';
+    },
     selected() {
       return this.threadIds.every(id => this.selectedEmails.includes(id));
     },
@@ -245,6 +273,11 @@ export default {
     emitSelect(selected) {
       // A thread selects/deselects as a whole: one select-email per message id.
       this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, selected }));
+    },
+    // Favorite/unfavorite the whole row, i.e. every listed message of the thread —
+    // matching how the row's read/unread action treats a conversation.
+    toggleThreadFavorite() {
+      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds);
     },
     openDetail() {
       if (this.selectMode) {

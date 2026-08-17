@@ -16,7 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -230,6 +230,18 @@ public class EmailBoxServiceTest {
   }
 
   @Test
+  void getEmailBoxStarredOnlyReadsTheStarredSubset() throws Exception {
+    // The starred filter must go through the dedicated starred query, not load the
+    // whole folder and filter in memory.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX, true);
+    verify(emailBoxStorage).getStarredEmails(TEST_USER, "INBOX");
+    verify(emailBoxStorage, never()).getEmails(anyString(), anyString());
+  }
+
+  @Test
   void deleteUserEmails() {
     emailBoxService.deleteUserEmails(TEST_USER);
     verify(emailBoxStorage).getEmails(TEST_USER);
@@ -316,6 +328,70 @@ public class EmailBoxServiceTest {
     org.junit.jupiter.api.Assertions.assertEquals(1, failedWhenNotFound);
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
+  }
+
+  @Test
+  void updateEmailStarredStatus() throws Exception {
+    // The star toggle follows the read-status discipline exactly: optimistic local
+    // write, then the \Flagged push to the IMAP server -- the flag on the server is
+    // what makes the star visible in Gmail and on the user's phone.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    List<Long> mailRemoteIds = List.of(1212l);
+    assertThrows(IllegalAccessException.class,
+                 () -> emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, false));
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, false);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
+    reset(emailBoxStorage);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    int failed = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, true);
+    assertEquals(0, failed);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
+    verify(inbox).open(Folder.READ_WRITE);
+    verify(message).setFlag(Flags.Flag.FLAGGED, true);
+    verify(inbox).close(false);
+    verify(store).close();
+
+    // getMessageByUID returns null (UID unknown to the server): the remote update
+    // must be counted as a failure and the optimistic local star reverted.
+    reset(emailBoxStorage);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(null);
+    int failedWhenNotFound = emailBoxService.updateEmailStarredStatus(mailRemoteIds, TEST_USER, true, true);
+    assertEquals(1, failedWhenNotFound);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
+  }
+
+  @Test
+  void updateEmailStarredStatusRevertsWhenTheServerRejectsTheFlag() throws Exception {
+    // The compensating revert is not optional: a star the server refused must not
+    // survive locally, or the mailbox shows a star no other mail client will ever
+    // see -- the exact desync the server-side flag exists to prevent.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    Message message = mock(Message.class);
+    when(((UIDFolder) inbox).getMessageByUID(1212l)).thenReturn(message);
+    doThrow(new MessagingException("STORE rejected")).when(message).setFlag(Flags.Flag.FLAGGED, true);
+    int failed = emailBoxService.updateEmailStarredStatus(List.of(1212l), TEST_USER, true, true);
+    assertEquals(1, failed);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, true, "INBOX");
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1212l), TEST_USER, false, "INBOX");
   }
 
   @Test
@@ -1132,6 +1208,7 @@ public class EmailBoxServiceTest {
                                                                      anyBoolean(),
                                                                      anyBoolean());
     verify(emailBoxStorage, never()).updateEmailReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    verify(emailBoxStorage, never()).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
     verify(emailBoxStorage, never()).markEmailAsNotRecent(anyLong(), anyString(), anyString());
     verify(emailBoxStorage, never()).markEmailsAsNotRecent(anyList(), anyString(), anyString());
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
@@ -1172,6 +1249,56 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).markEmailsAsNotRecent(List.of(5L), TEST_USER, "INBOX");
     verify(emailBoxStorage, never()).markEmailAsNotRecent(anyLong(), anyString(), anyString());
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void starChangesMadeElsewhereAreAppliedAsBulkUpdates() {
+    // A star set or cleared in another client (phone, Gmail) rides the same
+    // reconcile as read/unread: applied as at most two bulk statements, one per
+    // direction — never one statement per message. The exact-count verification is
+    // the regression guard: a per-message implementation would still produce the
+    // right end state, and only the statement count would betray it.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = new MimeMessage[5];
+    List<Email> cached = new ArrayList<>();
+    // UIDs 1-2: starred on the server, not in the cache -> one bulk star.
+    messages[0] = flaggedMessage(false, true);
+    messages[1] = flaggedMessage(false, true);
+    cached.add(cachedEmail(1, false, false, false));
+    cached.add(cachedEmail(2, false, false, false));
+    // UID 3: unstarred on the server, starred in the cache -> one bulk unstar.
+    messages[2] = flaggedMessage(false, false);
+    cached.add(cachedEmail(3, false, false, true));
+    // UIDs 4-5: star matches in both directions -> touched by no statement.
+    messages[3] = flaggedMessage(false, true);
+    cached.add(cachedEmail(4, false, false, true));
+    messages[4] = flaggedMessage(false, false);
+    cached.add(cachedEmail(5, false, false, false));
+    mockInboxWithMessages(userEmailSetting, messages);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "INBOX")).thenReturn(cached);
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(1L, 2L), TEST_USER, true, "INBOX");
+    verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(List.of(3L), TEST_USER, false, "INBOX");
+    verify(emailBoxStorage, times(2)).updateEmailStarredStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    verify(emailBoxStorage, never()).updateEmailReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
+  void syncCachesTheServerStarWhenCreating() {
+    // A message starred in another client BEFORE it was ever cached here must land
+    // already starred: createEmails reads \Flagged off the same prefetched FLAGS as
+    // SEEN, so a fresh cache shows the same stars as the phone.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    MimeMessage[] messages = { flaggedMessage(false, true), flaggedMessage(false, false) };
+    mockInboxWithMessages(userEmailSetting, messages);
+    emailBoxService.synchronize(TEST_USER);
+    ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage, times(2)).createEmail(emailCaptor.capture());
+    assertTrue(emailCaptor.getAllValues().get(0).isStarred());
+    assertFalse(emailCaptor.getAllValues().get(1).isStarred());
   }
 
   @Test
@@ -1605,6 +1732,23 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * Same as {@link #flaggedMessage(boolean)} with the server-side {@code \Flagged}
+   * (star) flag also stubbed — for the starred-reconcile tests. The two flags ride
+   * the same prefetched FLAGS item in production, so stubbing them on one mock is
+   * the honest shape.
+   *
+   * @param seen the server-side SEEN flag
+   * @param flagged the server-side FLAGGED flag
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private MimeMessage flaggedMessage(boolean seen, boolean flagged) {
+    MimeMessage message = flaggedMessage(seen);
+    lenient().when(message.isSet(Flags.Flag.FLAGGED)).thenReturn(flagged);
+    return message;
+  }
+
+  /**
    * A cached row as the light sync view returns it: ids, flags and threading state,
    * no body. Threading is already backfilled (non-empty thread id, captured empty
    * Thread-Index root) so the reconcile tests exercise pure flag logic; the backfill
@@ -1625,6 +1769,22 @@ public class EmailBoxServiceTest {
     email.setThreadIndexRoot("");
     email.setUserId(TEST_USER);
     email.setFolder("INBOX");
+    return email;
+  }
+
+  /**
+   * Same as {@link #cachedEmail(long, boolean, boolean)} with the cached starred
+   * flag also set — for the starred-reconcile tests.
+   *
+   * @param uid the IMAP UID
+   * @param read the cached read flag
+   * @param recent the cached recent flag
+   * @param starred the cached starred flag
+   * @return the light row
+   */
+  private Email cachedEmail(long uid, boolean read, boolean recent, boolean starred) {
+    Email email = cachedEmail(uid, read, recent);
+    email.setStarred(starred);
     return email;
   }
 
@@ -2752,7 +2912,8 @@ public class EmailBoxServiceTest {
                      false,
                      false,
                      false,
-                     null);
+                     null,
+                     false);
   }
 
   private EmailConnector emailConnector() {

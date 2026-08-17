@@ -114,8 +114,17 @@ const attachmentMapIconsExtensions = new Map([
   ['folder', folder],
 ]);
  
-export function getEmailBox(folder) {
-  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+export function getEmailBox(folder, favoriteOnly) {
+  const params = new URLSearchParams();
+  if (folder && folder !== 'INBOX') {
+    params.append('folder', folder);
+  }
+  // The favorite view: same folder listing, restricted server-side to the
+  // messages carrying the IMAP \Flagged flag ('favorite').
+  if (favoriteOnly) {
+    params.append('starred', 'true');
+  }
+  const query = params.toString() ? `?${params}` : '';
   return fetch(`/email-connector/rest/email-box${query}`, {
     headers: {
       'Content-Type': 'application/json'
@@ -538,6 +547,38 @@ export function updateEmailsReadStatus(mailRemoteIds, readStatus) {
     if (!resp?.ok) {
       throw new Error('Error when updating emails read status');
     }
+  });
+}
+
+/**
+ * Favorites or unfavorites messages (by IMAP id): sets or clears the mail server's own
+ * \Flagged flag, so the change shows in every client reading this mailbox. The
+ * server updates its local mirror first, then pushes each flag to IMAP, and
+ * REVERTS the local change of every message the server refused — the answer's
+ * failedUpdates says how many. The caller must reflect that outcome instead of
+ * assuming the push succeeded: a favorite left lit that the server rejected would
+ * silently vanish at the next synchronization.
+ *
+ * @param {Array<Number>} mailRemoteIds the INBOX IMAP UIDs of the messages
+ * @param {Boolean} favorite true to favorite, false to unfavorite
+ * @returns {Promise} resolves with { failedUpdates }
+ */
+export function updateEmailsFavoriteStatus(mailRemoteIds, favorite) {
+  // The endpoint keeps the server's own vocabulary: it pushes the IMAP \Flagged
+  // flag, so its path and parameter are named after it. Only what the user reads
+  // says "favorite".
+  return fetch(`/email-connector/rest/email-box/starred?starred=${favorite}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH',
+    body: JSON.stringify(mailRemoteIds)
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating emails favorite status');
+    }
+    return resp.json();
   });
 }
 
