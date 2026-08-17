@@ -167,7 +167,11 @@ export default {
      * @returns {boolean} true when the composer holds anything
      */
     confirmClose() {
-      return !!(this.email.content.body || this.email.subject) || !!this.to.length || !!this.cc.length || !!this.bcc.length;
+      // A recipient typed but not yet a chip is work too: closing over it used
+      // to discard it silently, which is the same loss the pending term was
+      // introduced to notice.
+      return !!(this.email.content.body || this.email.subject) || !!this.to.length || !!this.cc.length || !!this.bcc.length
+          || !!this.pendingTo;
     }
   },
   methods: {
@@ -294,6 +298,12 @@ export default {
       this.to = [];
       this.cc = [];
       this.bcc = [];
+      // Reset with its siblings: the content template is v-if'd, so the field is
+      // destroyed here and rebuilt with term '' -- an initial value, which the
+      // watcher does not report. Left behind, a stale pending term would render
+      // Send enabled on the next, empty composer, where clicking it would hit
+      // the empty-To guard and do nothing at all.
+      this.pendingTo = '';
       this.email.subject = '';
       this.email.content.body = '';
       this.email.mailHeaderId = null;

@@ -29,8 +29,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
        A raw address is always accepted: this is mail, not a closed directory. -->
   <div>
-    <!-- The label sits in a fixed column so To, Cc and Bcc share one left edge,
-         and the row centres rather than top-aligns: the field carries Vuetify's
+    <!-- The label column has a floor rather than a fixed width: at 34px To, Cc
+         and Bcc share one left edge, and a locale whose label is wider grows
+         that one column instead of clipping the word. The alignment of the three
+         rows is the price, and it is the cheaper of the two.
+         The row centres rather than top-aligns: the field carries Vuetify's
          own vertical padding, so aligning to the top dropped the input a line
          below its label and gave each row a different indent. The chips wrap
          inside their own box, which is what needs min-width 0 -- a flex item
@@ -215,6 +218,12 @@ export default {
       return this.value.length ? '' : this.placeholder;
     },
   },
+  mounted() {
+    // State what this instance holds rather than letting a parent keep the last
+    // one's memory: the field is destroyed and rebuilt with the drawer, and a
+    // fresh term of '' is an initial value the watcher never reports.
+    this.$emit('pending', '');
+  },
   beforeDestroy() {
     window.clearTimeout(this.searchTimeout);
   },
@@ -277,17 +286,37 @@ export default {
      */
     splitOnSeparators() {
       const parts = this.term.split(SEPARATORS);
+      // The last part is still being typed, so it is left in the input rather
+      // than committed -- unlike the settle path, where it is complete too.
       const tail = parts.pop();
-      // A part that is not an address stays in the input beside the tail rather
-      // than disappearing: the same guarantee commitTypedAddress already makes,
-      // which the separator path used to break. Pasting three addresses of which
-      // one is malformed must leave that one visible, not two chips and silence.
-      const rejected = parts.map(part => part.trim())
+      const rejected = this.commitParts(parts);
+      this.term = rejected.concat(tail ? [tail] : []).join(', ');
+      this.reportRejected(rejected);
+    },
+    /**
+     * Turns each candidate into a chip, and hands back the ones that were not
+     * usable addresses so the caller can leave them where the user can see them.
+     *
+     * A part that is not an address must never simply disappear: swallowing it
+     * would let a mail leave without a recipient the user believed they had
+     * added, which is the guarantee commitTypedAddress already makes.
+     *
+     * @param {Array} parts - the candidate addresses
+     * @returns {Array} the rejected parts, in the order they were given
+     */
+    commitParts(parts) {
+      return parts.map(part => part.trim())
         .filter(part => part)
         .filter(part => !this.addAddress(part));
-      this.term = rejected.concat(tail ? [tail] : []).join(', ');
-      // addAddress reported each rejection in turn, so the last one would be the
-      // only one named; report them together instead.
+    },
+    /**
+     * Names every rejected part at once. addAddress reports them one at a time,
+     * so the last one would otherwise be the only one the user is told about.
+     *
+     * @param {Array} rejected - the parts that were not usable addresses
+     * @returns {void}
+     */
+    reportRejected(rejected) {
       this.errorMessage = rejected.length
         ? this.$t('emailConnector.mailBox.newEmail.drawer.recipients.invalid', {0: rejected.join(', ')})
         : null;
@@ -425,6 +454,19 @@ export default {
     commitTypedAddress() {
       const typed = this.term?.trim();
       if (!typed) {
+        return;
+      }
+      // Since rejected parts are kept, the term can legitimately hold separators
+      // ("bad-address, carol@x.com"). Handing that whole string to addAddress
+      // would call it invalid -- true of one half, false of the other, and
+      // ADDRESS_PATTERN excludes ',' so nothing would commit. Settle each part
+      // instead: here the last one is complete too, so it is committed rather
+      // than kept as a tail.
+      if (SEPARATORS.test(typed)) {
+        const rejected = this.commitParts(typed.split(SEPARATORS));
+        this.term = rejected.join(', ');
+        this.reportRejected(rejected);
+        this.closeSuggestions();
         return;
       }
       if (this.addAddress(typed)) {
