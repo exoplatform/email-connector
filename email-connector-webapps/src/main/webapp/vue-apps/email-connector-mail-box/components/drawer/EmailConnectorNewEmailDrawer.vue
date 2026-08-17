@@ -50,14 +50,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="mx-4"
           field-id="cc"
           :label="$t('emailConnector.mailBox.newEmail.drawer.cc.label')"
-          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.cc.placeholder')" />
+          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.cc.placeholder')"
+          @pending="pendingCc = $event" />
         <v-divider />
         <email-connector-recipient-field
           v-model="bcc"
           class="mx-4"
           field-id="bcc"
           :label="$t('emailConnector.mailBox.newEmail.drawer.bcc.label')"
-          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.bcc.placeholder')" />
+          :placeholder="$t('emailConnector.mailBox.newEmail.drawer.bcc.placeholder')"
+          @pending="pendingBcc = $event" />
         <v-divider />
       </div>
       <v-list-item class="pa-0 ms-1 me-4">
@@ -119,9 +121,15 @@ export default {
       to: [],
       cc: [],
       bcc: [],
-      // What is typed into To but not yet a chip. Send stays reachable while it
-      // holds something, so clicking Send can blur the field into committing it.
+      // What is typed into each field but not yet a chip. Send stays reachable
+      // while To holds something, so clicking Send can blur the field into
+      // committing it. After that blur, anything still pending is text the field
+      // REFUSED as an address -- so it is also the signal that the mail would
+      // leave short of a recipient the user believes they addressed. Cc and Bcc
+      // carry it for that second reason only; they never gate Send on their own.
       pendingTo: '',
+      pendingCc: '',
+      pendingBcc: '',
       email: {
         mailHeaderId: null,
         to: [],
@@ -171,7 +179,7 @@ export default {
       // to discard it silently, which is the same loss the pending term was
       // introduced to notice.
       return !!(this.email.content.body || this.email.subject) || !!this.to.length || !!this.cc.length || !!this.bcc.length
-          || !!this.pendingTo;
+          || !!this.pendingTo || !!this.pendingCc || !!this.pendingBcc;
     }
   },
   methods: {
@@ -190,50 +198,105 @@ export default {
      */
     open(email, forward, replyAll, prefill) {
       this.attachments = [];
-      if (!email && prefill?.to?.length) {
-        this.to = this.toRecipients(prefill.to);
-      }
-      this.title = forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.title') : email ? this.$t('emailConnector.mailBox.replyEmail.drawer.title') : this.$t('emailConnector.mailBox.newEmail.drawer.title');
+      this.title = this.drawerTitle(email, forward);
+      this.seedRecipients(email, forward, replyAll, prefill);
       if (email) {
-        if (!forward) {
-          this.to = email.replyTo?.length > 0
-            ? this.toRecipients(email.replyTo)
-            : this.toRecipients([email.sender]);
-          if (replyAll) {
-            this.cc = this.toRecipients([...(email.to || []), ...(email.cc || [])]
-              .filter(item => item.address !== email.userEmail));
-          }
-          this.email.mailHeaderId = email.mailHeaderId;
+        if (forward) {
+          this.email.content.body = this.buildForwardedBody(email);
         }
-        else {
-          const bodyParts = [ 
-            '<br><br>',
-            this.$t('emailConnector.mailBox.forwardEmail.drawer.forwardedMessage'),
-            '<br>',
-            `${this.$t('emailConnector.mailBox.forwardEmail.drawer.from')} ${email.sender.name?.trim()} &lt;${email.sender.address?.trim()}&gt;`,
-            '<br>',
-            `${this.$t('emailConnector.mailBox.forwardEmail.drawer.date')} ${this.$emailConnectorMailBoxService.formatDateString(email.receivedDate, '', this.$t('emailConnector.mailBox.forwardEmail.drawer.date.at'), true)}`
-          ];
-          if (email.subject) {
-            bodyParts.push('<br>');
-            bodyParts.push(`${this.$t('emailConnector.mailBox.forwardEmail.drawer.subject')} ${email.subject}`);
-          }
-          if (email.to?.length) {
-            bodyParts.push('<br>');
-            bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.to.label')} ${email.to.map(item => `${item.name?.trim()} <span>&lt;<a href="mailto:${item.address?.trim()}">${item.address?.trim()}</a>&gt;</span>`).join(', ')}`);
-          }
-          if (email.cc?.length) {
-            bodyParts.push('<br>');
-            bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${email.cc.map(item => `${item.name?.trim()} <span>&lt;<a href="mailto:${item.address?.trim()}">${item.address?.trim()}</a>&gt;</span>`).join(', ')}`);
-          }
-          bodyParts.push('<br><br><br>');
-          bodyParts.push(email.content.body || '');
-          this.email.content.body = bodyParts.join('\n');
-        }
-        this.email.subject = `${forward ? this.$t('emailConnector.mailBox.forwardEmail.drawer.subject.prefix') : this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
+        this.email.subject = `${forward
+          ? this.$t('emailConnector.mailBox.forwardEmail.drawer.subject.prefix')
+          : this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
       }
       this.newEmailDrawer = true;
       this.$nextTick(() => this.measureEditorMaxHeight());
+    },
+    /**
+     * The drawer's heading for the three ways it can be opened.
+     *
+     * @param {object} email - the message being replied to or forwarded, if any
+     * @param {boolean} forward - whether this is a forward
+     * @returns {string} the translated title
+     */
+    drawerTitle(email, forward) {
+      if (forward) {
+        return this.$t('emailConnector.mailBox.forwardEmail.drawer.title');
+      }
+      if (email) {
+        return this.$t('emailConnector.mailBox.replyEmail.drawer.title');
+      }
+      return this.$t('emailConnector.mailBox.newEmail.drawer.title');
+    },
+    /**
+     * Fills To and Cc for the way the composer was opened: a new mail takes the
+     * prefill hand-off, a reply answers the sender (everyone, on reply-all), and
+     * a forward addresses nobody — the user chooses.
+     *
+     * @param {object} email - the message being replied to or forwarded, if any
+     * @param {boolean} forward - whether this is a forward
+     * @param {boolean} replyAll - whether the reply addresses everyone
+     * @param {object} prefill - recipients to seed a new mail with
+     * @returns {void}
+     */
+    seedRecipients(email, forward, replyAll, prefill) {
+      if (!email) {
+        if (prefill?.to?.length) {
+          this.to = this.toRecipients(prefill.to);
+        }
+        return;
+      }
+      if (forward) {
+        return;
+      }
+      this.to = email.replyTo?.length > 0
+        ? this.toRecipients(email.replyTo)
+        : this.toRecipients([email.sender]);
+      if (replyAll) {
+        this.cc = this.toRecipients([...(email.to || []), ...(email.cc || [])]
+          .filter(item => item.address !== email.userEmail));
+      }
+      this.email.mailHeaderId = email.mailHeaderId;
+    },
+    /**
+     * The quoted original that a forward opens with: a header block naming who
+     * sent it, when, and to whom, then the message itself.
+     *
+     * @param {object} email - the message being forwarded
+     * @returns {string} the composer's starting body
+     */
+    buildForwardedBody(email) {
+      const bodyParts = [
+        '<br><br>',
+        this.$t('emailConnector.mailBox.forwardEmail.drawer.forwardedMessage'),
+        '<br>',
+        `${this.$t('emailConnector.mailBox.forwardEmail.drawer.from')} ${email.sender.name?.trim()} &lt;${email.sender.address?.trim()}&gt;`,
+        '<br>',
+        `${this.$t('emailConnector.mailBox.forwardEmail.drawer.date')} ${this.$emailConnectorMailBoxService.formatDateString(email.receivedDate, '', this.$t('emailConnector.mailBox.forwardEmail.drawer.date.at'), true)}`
+      ];
+      if (email.subject) {
+        bodyParts.push('<br>');
+        bodyParts.push(`${this.$t('emailConnector.mailBox.forwardEmail.drawer.subject')} ${email.subject}`);
+      }
+      if (email.to?.length) {
+        bodyParts.push('<br>');
+        bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.to.label')} ${this.quotedRecipients(email.to)}`);
+      }
+      if (email.cc?.length) {
+        bodyParts.push('<br>');
+        bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${this.quotedRecipients(email.cc)}`);
+      }
+      bodyParts.push('<br><br><br>');
+      bodyParts.push(email.content.body || '');
+      return bodyParts.join('\n');
+    },
+    /**
+     * One quoted recipient list for the forwarded header, name then mailto.
+     *
+     * @param {Array} recipients - the addressees to render
+     * @returns {string} the comma-separated markup
+     */
+    quotedRecipients(recipients) {
+      return recipients.map(item => `${item.name?.trim()} <span>&lt;<a href="mailto:${item.address?.trim()}">${item.address?.trim()}</a>&gt;</span>`).join(', ');
     },
     measureEditorMaxHeight(previousHeight = null, attempt = 0) {
       // exo-drawer's opening transition isn't finished right after $nextTick, so we
@@ -304,6 +367,8 @@ export default {
       // Send enabled on the next, empty composer, where clicking it would hit
       // the empty-To guard and do nothing at all.
       this.pendingTo = '';
+      this.pendingCc = '';
+      this.pendingBcc = '';
       this.email.subject = '';
       this.email.content.body = '';
       this.email.mailHeaderId = null;
@@ -325,11 +390,14 @@ export default {
       }
       else {
         // Send is reachable while To holds uncommitted text, so that clicking it
-        // blurs the field and commits the chip first. When that text was not a
-        // usable address the field keeps it and adds no chip, and we would
-        // otherwise send to nobody -- so stop here and leave the field's own
-        // message on screen.
-        if (!this.to.length) {
+        // blurs the field and commits the chip first. By the time we run, that
+        // blur has happened -- so anything STILL pending is text the field
+        // refused as an address, in any of the three rows. Refusing to send on
+        // it covers both shapes of the same loss: no chip at all, and a chip
+        // beside a rejected address ("alice@x.com, bad-address" sending to alice
+        // alone, with the warning about the other half disappearing along with
+        // the drawer). The field's own message stays on screen and explains it.
+        if (!this.to.length || this.pendingTo || this.pendingCc || this.pendingBcc) {
           return;
         }
         // The send API takes plain addresses; the chips' names and avatars are

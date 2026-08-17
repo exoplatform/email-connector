@@ -233,7 +233,7 @@ public class EmailContactService {
     if (StringUtils.isNotBlank(query) && byAddress.size() < size) {
       appendDirectoryMatches(username, query.trim(), size, byAddress);
     }
-    return byAddress.values().stream().limit((long) size).toList();
+    return byAddress.values().stream().limit(size).toList();
   }
 
   /**

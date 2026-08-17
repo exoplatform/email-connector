@@ -152,7 +152,14 @@ const SUGGEST_LIMIT = 10;
 // Deliberately permissive: the field's job is to catch a typo like a missing
 // "@" or a stray space, not to adjudicate RFC 5322. Anything shaped like an
 // address goes through, and the mail server has the last word.
-const ADDRESS_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+//
+// The domain labels exclude "." so the pattern cannot split the tail more than
+// one way. Allowing it in both the label and the separator made the match
+// ambiguous, and a near-miss -- a long dotted run that fails only at the end --
+// cost the engine every split point, quadratically. That is not a form-submit
+// check: it runs per pasted part and again on each keystroke while a rejected
+// part sits in the field, so a pasted token could visibly freeze the tab.
+const ADDRESS_PATTERN = /^[^\s@,;]+@[^\s@,;.]+(\.[^\s@,;.]+)+$/;
 
 // What a user separates addresses with when pasting or typing a list.
 const SEPARATORS = /[,;]/;
@@ -245,7 +252,7 @@ export default {
      */
     initialsOf(suggestion) {
       return (suggestion.displayName || suggestion.address || '').split(/[\s.@_-]+/)
-        .filter(word => word)
+        .filter(Boolean)
         .map(word => word.charAt(0).toUpperCase())
         .slice(0, 2)
         .join('') || '?';
@@ -306,7 +313,7 @@ export default {
      */
     commitParts(parts) {
       return parts.map(part => part.trim())
-        .filter(part => part)
+        .filter(Boolean)
         .filter(part => !this.addAddress(part));
     },
     /**
