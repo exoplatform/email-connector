@@ -273,20 +273,18 @@ export default {
         '<br>',
         `${this.$t('emailConnector.mailBox.forwardEmail.drawer.date')} ${this.$emailConnectorMailBoxService.formatDateString(email.receivedDate, '', this.$t('emailConnector.mailBox.forwardEmail.drawer.date.at'), true)}`
       ];
+      // One append per section: the break and the line it precedes are a single
+      // thing, not two statements that happen to have to stay adjacent.
       if (email.subject) {
-        bodyParts.push('<br>');
-        bodyParts.push(`${this.$t('emailConnector.mailBox.forwardEmail.drawer.subject')} ${email.subject}`);
+        bodyParts.push('<br>', `${this.$t('emailConnector.mailBox.forwardEmail.drawer.subject')} ${email.subject}`);
       }
       if (email.to?.length) {
-        bodyParts.push('<br>');
-        bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.to.label')} ${this.quotedRecipients(email.to)}`);
+        bodyParts.push('<br>', `${this.$t('emailConnector.mailBox.newEmail.drawer.to.label')} ${this.quotedRecipients(email.to)}`);
       }
       if (email.cc?.length) {
-        bodyParts.push('<br>');
-        bodyParts.push(`${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${this.quotedRecipients(email.cc)}`);
+        bodyParts.push('<br>', `${this.$t('emailConnector.mailBox.newEmail.drawer.cc.label')} ${this.quotedRecipients(email.cc)}`);
       }
-      bodyParts.push('<br><br><br>');
-      bodyParts.push(email.content.body || '');
+      bodyParts.push('<br><br><br>', email.content.body || '');
       return bodyParts.join('\n');
     },
     /**
