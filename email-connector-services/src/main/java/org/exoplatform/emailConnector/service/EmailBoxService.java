@@ -2578,7 +2578,7 @@ public class EmailBoxService {
    * broken") or, worse, names an unrelated inbox message whose part "2" happens to
    * exist — so the download quietly hands back somebody else's file. The cached row
    * is now read under the same folder, for the reason
-   * {@link EmailAttachmentDAO#findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder}
+   * {@link org.exoplatform.emailConnector.dao.EmailAttachmentDAO#findByMailRemoteIdAndAttachmentIdAndUserIdAndFolder}
    * gives: the two halves of one answer must not be looked up under different keys.
    * <p>
    * A blank folder means INBOX, which is what every caller written before folders
