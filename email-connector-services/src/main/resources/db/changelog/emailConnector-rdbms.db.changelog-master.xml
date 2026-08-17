@@ -742,7 +742,13 @@
       <column name="FILE_ID"/>
     </createIndex>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-46">
+  <changeSet author="email-connector" id="1.0.0-46" onValidationFail="MARK_RAN">
+    <validCheckSum>ANY</validCheckSum>
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <tableExists tableName="EMAIL_ORPHAN_FILE"/>
+      </not>
+    </preConditions>
     <comment>
       The orphan marker: a file that no row references any more, written down so
       that something can free it later.
@@ -787,9 +793,6 @@
         <constraints nullable="false"/>
       </column>
     </createTable>
-    <createIndex tableName="EMAIL_ORPHAN_FILE" indexName="UQ_EMAIL_ORPHAN_FILE" unique="true">
-      <column name="FILE_ID"/>
-    </createIndex>
     <modifySql dbms="mysql">
       <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
     </modifySql>
@@ -801,7 +804,13 @@
     </comment>
     <createSequence sequenceName="SEQ_EMAIL_ORPHAN_FILE_ID" startValue="1"/>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-48">
+  <changeSet author="email-connector" id="1.0.0-48" onValidationFail="MARK_RAN">
+    <validCheckSum>ANY</validCheckSum>
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <tableExists tableName="EMAIL_THREAD_AI_SUMMARY"/>
+      </not>
+    </preConditions>
     <comment>
       A written summary of one conversation, kept so it is produced once and read
       many times. Numbered 48 because 1.0.0-44's group announced that anything
@@ -856,10 +865,6 @@
         <constraints nullable="false"/>
       </column>
     </createTable>
-    <createIndex tableName="EMAIL_THREAD_AI_SUMMARY" indexName="UQ_EMAIL_THREAD_AI_SUMMARY" unique="true">
-      <column name="USER_ID"/>
-      <column name="THREAD_ID"/>
-    </createIndex>
     <modifySql dbms="mysql">
       <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
     </modifySql>
@@ -871,6 +876,69 @@
       already had to repeat.
     </comment>
     <createSequence sequenceName="SEQ_EMAIL_THREAD_AI_SUMMARY_ID" startValue="1"/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-50" onValidationFail="MARK_RAN">
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <indexExists tableName="EMAIL_ORPHAN_FILE" indexName="UQ_EMAIL_ORPHAN_FILE"/>
+      </not>
+    </preConditions>
+    <comment>
+      EMAIL_ORPHAN_FILE's unique index, in its own changeset rather than beside the
+      table in 1.0.0-46 -- and this separation is the whole point of the changeset,
+      not tidiness.
+
+      modifySql is scoped to the CHANGESET, not to one change inside it. So the
+      " ENGINE=INNODB CHARSET=... COLLATE ..." that 1.0.0-46 needs on its CREATE TABLE
+      was also appended to the CREATE INDEX standing next to it, and MySQL rejects
+      that clause on CREATE INDEX outright: error 1064, syntax error. Liquibase then
+      stops on the failed changeset, the entityManagerFactory never builds, this
+      add-on's Spring context never starts, and -- through the Kernel/Spring bridge --
+      the portal itself does not come up. One misplaced clause, the whole platform.
+
+      It was invisible everywhere except MySQL: modifySql carries dbms="mysql", so a
+      developer on HSQLDB or PostgreSQL never generates the offending statement and
+      sees the changeset apply perfectly. That is why this reached an acceptance
+      server rather than a laptop, and why every index in this file from 1.0.0-19
+      onward already sits apart from any modifySql -- 1.0.0-33 keeps a table and its
+      index together only because it appends nothing.
+
+      Guarded with a precondition because 1.0.0-46 can have got half way: MySQL
+      commits DDL as it goes, so the CREATE TABLE stuck while the CREATE INDEX failed,
+      and a failed changeset is never recorded. On such a database the table is
+      already there and only this index is missing, which is exactly the state the
+      MARK_RAN on 1.0.0-46 and the indexExists check here recover from -- no manual
+      DROP, no data touched. On a database that ran the old 1.0.0-46 successfully (any
+      non-MySQL one) the index exists already and this changeset marks itself ran.
+    </comment>
+    <createIndex tableName="EMAIL_ORPHAN_FILE" indexName="UQ_EMAIL_ORPHAN_FILE" unique="true">
+      <column name="FILE_ID"/>
+    </createIndex>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-51" onValidationFail="MARK_RAN">
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <indexExists tableName="EMAIL_THREAD_AI_SUMMARY" indexName="UQ_EMAIL_THREAD_AI_SUMMARY"/>
+      </not>
+    </preConditions>
+    <comment>
+      EMAIL_THREAD_AI_SUMMARY's unique index on (USER_ID, THREAD_ID), split out of
+      1.0.0-48 for the reason 1.0.0-50 sets out in full.
+
+      This one had not failed yet and would have: 1.0.0-46 halts the changelog before
+      1.0.0-48 is ever reached, so fixing only the first would have moved the same
+      error one changeset along on the next restart. Both carried the same shape --
+      a createTable, a createIndex and a mysql modifySql in one changeset -- and they
+      were the only two in this file that did.
+
+      The uniqueness is what makes a summary belong to one reader's copy of a
+      conversation rather than to the thread id alone, so it is not optional: without
+      the index two users on one mailing list would overwrite each other's summary.
+    </comment>
+    <createIndex tableName="EMAIL_THREAD_AI_SUMMARY" indexName="UQ_EMAIL_THREAD_AI_SUMMARY" unique="true">
+      <column name="USER_ID"/>
+      <column name="THREAD_ID"/>
+    </createIndex>
   </changeSet>
 
 </databaseChangeLog>
