@@ -191,6 +191,20 @@ public class EmailBoxService {
   // The IMAP name of the inbox, as opposed to MailFolder.INBOX, our own folder discriminator.
   private static final String     INBOX_FOLDER_NAME                                           = "INBOX";
 
+  // The store/folder teardown and connect failures. The IMAP methods predating this one still
+  // inline these strings; adopting the constants there is a file-wide cleanup that belongs on
+  // develop, not in a backport -- rewriting those lines drags a lot of untested legacy teardown
+  // into this PR's new code. New code uses the constants.
+  private static final String     STORE_CLOSE_ERROR_MESSAGE                                   = "Error when closing store";
+
+  private static final String     INBOX_CLOSE_ERROR_MESSAGE                                   = "Error when closing inbox";
+
+  private static final String     STORE_CONNECT_ERROR_MESSAGE                                 =
+                                                                                              "Error when connecting store for user {}";
+
+  private static final String     STORE_CONNECT_ERROR_FORMAT                                  =
+                                                                                              "Error when connecting store for user %s";
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
@@ -1114,7 +1128,9 @@ public class EmailBoxService {
 
   /**
    * The fetch profile every sync-side message read relies on. Flags + envelope + UID
-   * come back in one round-trip; without this, isSet(SEEN)/getFrom/getSubject/... each
+   * come back in one round-trip; the FLAGS item carries the message's whole system
+   * flag set, so reading {@code \Flagged} (the star) costs nothing beyond the SEEN
+   * read that was already here. Without this, isSet(SEEN)/getFrom/getSubject/... each
    * trigger their own IMAP FETCH per message — hundreds of round-trips over a
    * high-latency provider like Gmail, which is what makes a large sync appear to take
    * forever. Every header createEmails reads is prefetched too (none is covered by
@@ -1756,6 +1772,24 @@ public class EmailBoxService {
    * @throws IllegalArgumentException if {@code folder} is not a browsable folder
    */
   public EmailBox getEmailBox(String username, String folder) throws IllegalAccessException {
+    return getEmailBox(username, folder, false);
+  }
+
+  /**
+   * Get the user's email box for a given folder, optionally restricted to the
+   * starred messages — the list's starred filter. The filter reads the cached
+   * mirror of the server's {@code \Flagged} flag, so what it shows is exactly the
+   * set of stars the last sync saw (a star set elsewhere appears on the next sync,
+   * a star set here appears immediately because the toggle writes locally first).
+   *
+   * @param username user getting user emails
+   * @param folder the folder to list: {@code INBOX}, {@code SENT} or {@code ARCHIVE}
+   * @param starredOnly when {@code true}, only the starred messages are returned
+   * @return the folder's cached messages plus the per-conversation counts
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   * @throws IllegalArgumentException if {@code folder} is not a browsable folder
+   */
+  public EmailBox getEmailBox(String username, String folder, boolean starredOnly) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -1766,7 +1800,8 @@ public class EmailBoxService {
     if (!MailFolder.INBOX.equals(folder) && !MailFolder.SENT.equals(folder) && !MailFolder.ARCHIVE.equals(folder)) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
-    List<Email> emails = emailBoxStorage.getEmails(username, folder);
+    List<Email> emails = starredOnly ? emailBoxStorage.getStarredEmails(username, folder)
+                                     : emailBoxStorage.getEmails(username, folder);
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
                         userEmailSetting.getEmailConnectorWebmailUrl(),
@@ -2128,6 +2163,98 @@ public class EmailBoxService {
     } catch (Exception e) {
       LOG.warn("Error broadcasting unread emails change for user {}", username, e);
     }
+  }
+
+  /**
+   * Star or unstar one or more emails (by IMAP mailRemoteId): the star IS the mail
+   * server's {@code \Flagged} flag, not platform metadata, so a star set here shows
+   * in Gmail and on the user's phone and vice versa. Same discipline as
+   * {@link #updateEmailReadStatus}: the local mirror is updated optimistically
+   * first, then the flag is pushed to the IMAP server, and each per-message remote
+   * failure (including a message no longer on the server) reverts the local change
+   * for that email and is counted — a star the server never took must not survive
+   * locally, or the two copies silently diverge until the next sync.
+   *
+   * @param mailRemoteIds the IMAP UIDs of the emails to update
+   * @param username the user acting on their own mailbox
+   * @param starred {@code true} to star, {@code false} to unstar
+   * @param updateRemoteStarredStatus whether the flag must also be pushed to the
+   *          IMAP server (skipped, e.g., during sync where the flag comes from the
+   *          server)
+   * @return the number of emails whose remote update failed (0 when everything
+   *         succeeded or when no remote update was requested)
+   * @throws IllegalAccessException if the user is not allowed to update email
+   */
+  public int updateEmailStarredStatus(List<Long> mailRemoteIds,
+                                      String username,
+                                      boolean starred,
+                                      boolean updateRemoteStarredStatus) throws IllegalAccessException {
+    int failedEmailUpdates = 0;
+    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
+      UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+      if (userEmailSetting.getEmailConnectorId() == null
+          || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+        throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
+      }
+      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, starred, MailFolder.INBOX);
+      Store store = null;
+      Folder inbox = null;
+      try {
+        if (updateRemoteStarredStatus) {
+          store = userEmailSettingService.connect(userEmailSetting);
+          inbox = store.getFolder(INBOX_FOLDER_NAME);
+          inbox.open(Folder.READ_WRITE);
+        }
+        for (Long mailRemoteId : mailRemoteIds) {
+          try {
+            if (updateRemoteStarredStatus) {
+              Message remoteMessage = ((UIDFolder) inbox).getMessageByUID(mailRemoteId);
+              // Guard the not-found case explicitly: getMessageByUID returns null
+              // (rather than throwing) when the UID is unknown to the server.
+              if (remoteMessage == null) {
+                emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId),
+                                                                        username,
+                                                                        !starred,
+                                                                        MailFolder.INBOX);
+                failedEmailUpdates++;
+                LOG.warn("Email {} not found on IMAP server for user {}, starred status update reverted",
+                         mailRemoteId,
+                         username);
+                continue;
+              }
+              remoteMessage.setFlag(Flags.Flag.FLAGGED, starred);
+            }
+          } catch (Exception e) {
+            emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(List.of(mailRemoteId),
+                                                                    username,
+                                                                    !starred,
+                                                                    MailFolder.INBOX);
+            failedEmailUpdates++;
+            LOG.error("Error when updating email {} starred status for user {}", mailRemoteId, username, e);
+          }
+        }
+      } catch (Exception e) {
+        emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, username, !starred, MailFolder.INBOX);
+        LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
+        throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+      } finally {
+        try {
+          if (inbox != null && inbox.isOpen()) {
+            inbox.close(false);
+          }
+        } catch (MessagingException e) {
+          LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, e);
+        }
+        try {
+          if (store != null && store.isConnected()) {
+            store.close();
+          }
+        } catch (MessagingException e) {
+          LOG.warn(STORE_CLOSE_ERROR_MESSAGE, e);
+        }
+      }
+    }
+    return failedEmailUpdates;
   }
 
   public int deleteEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
@@ -2763,7 +2890,10 @@ public class EmailBoxService {
                                                 firstHeader(message, HEADER_LIST_ID) != null,
                                                 isPostableList(message),
                                                 firstHeader(message, HEADER_LIST_UNSUBSCRIBE) != null,
-                                                firstHeader(message, HEADER_ORIGINAL_SENDER)));
+                                                firstHeader(message, HEADER_ORIGINAL_SENDER),
+                                                // \Flagged comes off the same prefetched FLAGS as SEEN
+                                                // (buildSyncFetchProfile), so this read costs no round-trip.
+                                                message.isSet(Flags.Flag.FLAGGED)));
           newEmailIds.add(messageUid);
 
         }
@@ -2778,8 +2908,9 @@ public class EmailBoxService {
    * Reconciles the window's already-cached messages against the server, in
    * O(changes) database work: the flag diffs are computed in memory (the flags were
    * prefetched by the batched window FETCH, so this loop does no IMAP I/O) and
-   * applied as at most three bulk statements — one per direction of the read flag,
-   * one clearing the recent badge. Before this existed the known branch of
+   * applied as at most five bulk statements — one per direction of the read flag,
+   * one per direction of the starred flag, one clearing the recent badge. Before
+   * this existed the known branch of
    * createEmails issued one SELECT and two guarded UPDATEs PER message, so a sync
    * that found NOTHING new still ran ~15,000 statements on a 5000-message cache —
    * the cost that made routine sync time scale with mailbox size instead of change
@@ -2796,7 +2927,8 @@ public class EmailBoxService {
    * @param knownEmailsByUid the cached rows of this folder indexed by IMAP UID
    * @param username the mailbox owner
    * @param folderKey the {@link MailFolder} discriminator scoping every write
-   * @return the number of read-flag changes applied, for the sync summary line
+   * @return the number of flag changes (read/unread and starred/unstarred) applied,
+   *         for the sync summary line
    */
   private int reconcileKnownEmails(UIDFolder uidFolder,
                                    Message[] serverMessages,
@@ -2806,6 +2938,8 @@ public class EmailBoxService {
     List<Long> uidsToMarkRead = new ArrayList<>();
     List<Long> uidsToMarkUnread = new ArrayList<>();
     List<Long> uidsToClearRecent = new ArrayList<>();
+    List<Long> uidsToStar = new ArrayList<>();
+    List<Long> uidsToUnstar = new ArrayList<>();
     for (Message message : serverMessages) {
       try {
         long messageUid = uidFolder.getUID(message);
@@ -2817,6 +2951,13 @@ public class EmailBoxService {
         boolean seen = message.isSet(Flags.Flag.SEEN);
         if (seen != email.isRead()) {
           (seen ? uidsToMarkRead : uidsToMarkUnread).add(messageUid);
+        }
+        // \Flagged rides the same prefetched FLAGS as SEEN, so diffing it here costs no
+        // IMAP I/O -- and the server value always wins, which is what makes a star set
+        // on a phone or in Gmail appear here (and an unstar disappear) on the next sync.
+        boolean flagged = message.isSet(Flags.Flag.FLAGGED);
+        if (flagged != email.isStarred()) {
+          (flagged ? uidsToStar : uidsToUnstar).add(messageUid);
         }
         if (email.isRecent()) {
           uidsToClearRecent.add(messageUid);
@@ -2832,10 +2973,16 @@ public class EmailBoxService {
     if (!uidsToMarkUnread.isEmpty()) {
       emailBoxStorage.updateEmailReadStatusByMailRemoteIds(uidsToMarkUnread, username, false, folderKey);
     }
+    if (!uidsToStar.isEmpty()) {
+      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uidsToStar, username, true, folderKey);
+    }
+    if (!uidsToUnstar.isEmpty()) {
+      emailBoxStorage.updateEmailStarredStatusByMailRemoteIds(uidsToUnstar, username, false, folderKey);
+    }
     if (!uidsToClearRecent.isEmpty()) {
       emailBoxStorage.markEmailsAsNotRecent(uidsToClearRecent, username, folderKey);
     }
-    return uidsToMarkRead.size() + uidsToMarkUnread.size();
+    return uidsToMarkRead.size() + uidsToMarkUnread.size() + uidsToStar.size() + uidsToUnstar.size();
   }
 
   /**

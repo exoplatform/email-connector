@@ -130,6 +130,7 @@ public class EmailBoxStorage {
       email.setThreadIndexRoot((String) row[3]);
       email.setRead(Boolean.TRUE.equals(row[4]));
       email.setRecent(Boolean.TRUE.equals(row[5]));
+      email.setStarred(Boolean.TRUE.equals(row[6]));
       email.setUserId(userId);
       email.setFolder(folder);
       return email;
@@ -138,6 +139,23 @@ public class EmailBoxStorage {
 
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
     emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus, folder);
+  }
+
+  /**
+   * Sets or clears the starred flag of all the given messages in one statement —
+   * the starred twin of {@link #updateEmailReadStatusByMailRemoteIds}, and bulk for
+   * the same reason: the sync reconcile applies its whole starred diff through one
+   * call per direction, never one statement per message.
+   *
+   * @param mailRemoteIds the IMAP UIDs to update
+   * @param userId the mailbox owner
+   * @param starred the target starred value
+   * @param folder the folder discriminator scoping the UIDs
+   */
+  public void updateEmailStarredStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean starred, String folder) {
+    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
+      emailBoxDao.updateStarredStatusByMailRemoteIds(mailRemoteIds, userId, starred, folder);
+    }
   }
 
   /**
@@ -298,6 +316,23 @@ public class EmailBoxStorage {
   }
 
   /**
+   * The starred messages of a folder, for the list's starred filter. Filtered in SQL
+   * (see the DAO) rather than over {@link #getEmails(String, String)}'s result, so a
+   * mailbox with three starred messages does not load its whole cached folder, body
+   * CLOBs included, to keep three rows.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return the folder's starred messages, newest first
+   */
+  public List<Email> getStarredEmails(String userId, String folder) {
+    List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findStarredByUserIdAndFolderWithAttachments(userId, folder);
+    return emailBoxEntities.stream()
+                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, null, false, false))
+                           .toList();
+  }
+
+  /**
    * The total number of cached messages per conversation, across every folder, keyed
    * by thread id — so the inbox list can show the full conversation count (Gmail-style)
    * rather than only the messages that happen to be in the inbox.
@@ -448,7 +483,8 @@ public class EmailBoxStorage {
                                                          email.isHasListId(),
                                                          email.isHasListPost(),
                                                          email.isHasListUnsubscribe(),
-                                                         email.getOriginalSender());
+                                                         email.getOriginalSender(),
+                                                         email.isStarred());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -506,7 +542,8 @@ public class EmailBoxStorage {
                               emailBoxEntity.isHasListId(),
                               emailBoxEntity.isHasListPost(),
                               emailBoxEntity.isHasListUnsubscribe(),
-                              emailBoxEntity.getOriginalSender());
+                              emailBoxEntity.getOriginalSender(),
+                              emailBoxEntity.isStarred());
 
       if (withRecipients) {
         InternetAddress[] emailToRecipientsInternetAddresses = toRecipientsInternetAddresses(emailBoxEntity.getTo());

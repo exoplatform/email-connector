@@ -152,6 +152,28 @@ public class EmailBoxRestTest {
   }
 
   @Test
+  void updateEmailStarredStatus() throws Exception {
+    ResultActions response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    List<Long> emailIds = new ArrayList<Long>();
+    response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true").with(testSimpleUser())
+                                                                              .content(asJsonString(emailIds))
+                                                                              .contentType(MediaType.APPLICATION_JSON)
+                                                                              .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isNotFound());
+    emailIds = List.of(123L, 456L, 789L);
+    // The count of remote failures is the one part of this endpoint's contract the front end
+    // reads: it drives the rollback of the optimistic star. Pin the payload, not just the status.
+    when(emailBoxService.updateEmailStarredStatus(emailIds, SIMPLE_USER, true, true)).thenReturn(2);
+    response = mockMvc.perform(patch(EMAIL_BOX_PATH + "/starred?starred=true").with(testSimpleUser())
+                                                                              .content(asJsonString(emailIds))
+                                                                              .contentType(MediaType.APPLICATION_JSON)
+                                                                              .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk()).andExpect(jsonPath("$.failedUpdates").value(2));
+    verify(emailBoxService).updateEmailStarredStatus(emailIds, SIMPLE_USER, true, true);
+  }
+
+  @Test
   void deleteEmail() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH).with(testSimpleUser()));
     response.andExpect(status().isBadRequest());

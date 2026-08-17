@@ -53,6 +53,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.read.label') }}
       </span>
     </v-list-item>
+    <!-- Favorite/unfavorite the conversation: the mail server's own \Flagged flag, so it
+         shows in every client. Inbox only — the flag is pushed through INBOX. -->
+    <v-list-item
+      v-if="canFavorite"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="updateEmailFavoriteStatus">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          {{ threadFavorite ? 'fas fa-star' : 'far fa-star' }}
+        </v-icon>
+      </v-sheet>
+      <span v-if="threadFavorite">
+        {{ $t('emailConnector.mailBox.list.drawer.detail.removeFavorite.label') }}
+      </span>
+      <span v-else>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.addFavorite.label') }}
+      </span>
+    </v-list-item>
     <extension-registry-components
       :params="{
         email,
@@ -126,6 +149,14 @@ export default {
     threadRead() {
       return this.thread ? this.thread.unreadCount === 0 : this.email.read;
     },
+    // A thread shows as favorite when any of its listed messages carries the flag.
+    threadFavorite() {
+      return this.thread ? this.thread.emails.some(message => message.starred) : !!this.email.starred;
+    },
+    // The favorite is pushed through the INBOX folder, so only inbox rows offer it.
+    canFavorite() {
+      return (this.email.folder || 'INBOX') === 'INBOX';
+    },
   },
   methods: {
     selectEmail() {
@@ -135,6 +166,10 @@ export default {
     updateEmailReadStatus() {
       this.$emit('close');
       this.$root.$emit('update-email-read-status', !this.threadRead, this.threadIds);
+    },
+    updateEmailFavoriteStatus() {
+      this.$emit('close');
+      this.$root.$emit('update-email-favorite-status', !this.threadFavorite, this.threadIds);
     },
     deleteEmail() {
       this.$emit('close');
