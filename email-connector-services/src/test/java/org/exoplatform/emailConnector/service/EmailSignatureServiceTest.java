@@ -117,13 +117,29 @@ class EmailSignatureServiceTest {
     String defaultHtml = emailSignatureService.getEmailSignature(TEST_USER).getDefaultHtml();
 
     assertTrue(defaultHtml.contains("Ada Lovelace"), "the name is there");
-    assertTrue(defaultHtml.contains("href=\"http") && defaultHtml.contains("/portal/dw/profile/ada"),
-               "the name links to the ABSOLUTE profile page: a relative link means nothing in a recipient's client");
-    assertTrue(defaultHtml.contains("CTO · Analytical Engines"), "position and company share a line");
+    // Bold text, NOT a link. An internal profile address is upcast by the composer's
+    // content-link plugin into a removable chip -- the name arrived sitting in a blue
+    // box with a cross beside it -- and a profile page redirects an outside recipient
+    // to a login screen, so the link was worth nothing to them either.
+    assertTrue(defaultHtml.contains("<strong>Ada Lovelace</strong>"), "the name is bold");
+    assertFalse(defaultHtml.contains("/portal/dw/profile/ada"), "and is not a link to the profile page");
+    assertTrue(defaultHtml.contains("CTO"), "the position is there");
+    assertTrue(defaultHtml.contains("Analytical Engines"), "the company is there");
     assertTrue(defaultHtml.contains("London, UK"), "city and country share a line");
     assertTrue(defaultHtml.contains("+44 123 456"), "the displayed phone is resolved through the platform's setting");
+    // Blocks, not one run of lines: who, how to reach them, where, then the picture.
+    // An empty block disappears rather than leaving a gap.
+    assertEquals(4, defaultHtml.split("<p>", -1).length - 1, "who, how to reach them, where, then the picture");
+    // The picture is INSIDE the text, and last. Inside, because that is what lets it
+    // be dragged next to the name, resized, or deleted for a signature with no picture
+    // at all -- none of which is possible for something appended after the text.
+    assertTrue(defaultHtml.contains("<img"), "the picture is part of the signature the user edits");
+    assertTrue(defaultHtml.indexOf("<img") > defaultHtml.indexOf("Ada Lovelace"), "and it comes after the words");
     assertTrue(defaultHtml.contains(EmailSignatureService.SIGNATURE_IMAGE_PATH),
-               "the image points at the signature-image endpoint, the address the send path recognises");
+               "pointing at the address the send path swaps for an embedded part");
+    // Also handed over on its own, so the drawer can put it back once deleted.
+    assertTrue(emailSignatureService.getEmailSignature(TEST_USER).getLogoHtml().contains(EmailSignatureService.SIGNATURE_IMAGE_PATH),
+               "the drawer is given the markup it needs to re-insert the picture");
   }
 
   /**
@@ -243,7 +259,7 @@ class EmailSignatureServiceTest {
                                              new EmailSignature(true,
                                                                 "<p>fine</p><script>alert(1)</script>",
                                                                 null,
-                                                                false));
+                                                                false, null));
 
     ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
     verify(settingService).set(eq(Context.USER.id(TEST_USER)),
@@ -270,7 +286,7 @@ class EmailSignatureServiceTest {
                                                                                                  new EmailSignature(true,
                                                                                                                     hugeHtml,
                                                                                                                     null,
-                                                                                                                    false)));
+                                                                                                                    false, null)));
 
     assertEquals("emailConnector.signature.tooLong", refusal.getMessage(), "the message code the front-end translates");
     verify(settingService, never()).set(any(), any(), anyString(), any());
@@ -284,7 +300,7 @@ class EmailSignatureServiceTest {
   @Test
   void whatWasSavedIsWhatComesBack() {
     ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
-    emailSignatureService.saveEmailSignature(TEST_USER, new EmailSignature(false, "<p>mine</p>", null, false));
+    emailSignatureService.saveEmailSignature(TEST_USER, new EmailSignature(false, "<p>mine</p>", null, false, null));
     verify(settingService).set(eq(Context.USER.id(TEST_USER)),
                                eq(UserEmailSettingService.EMAIL_CONNECTOR_SCOPE),
                                eq(EmailSignatureService.EMAIL_SIGNATURE_KEY),

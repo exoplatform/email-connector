@@ -33,7 +33,6 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
-import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.commons.utils.HTMLSanitizer;
 import org.exoplatform.commons.utils.IOUtil;
 import org.exoplatform.emailConnector.model.EmailSignature;
@@ -142,7 +141,8 @@ public class EmailSignatureService {
     return new EmailSignature(setting.getEnabled(),
                               setting.getCustomHtml(),
                               buildDefaultSignature(username, setting),
-                              setting.getLogoFileId() != null);
+                              setting.getLogoFileId() != null,
+                              logoImage(setting));
   }
 
   /**
@@ -262,16 +262,23 @@ public class EmailSignatureService {
   }
 
   /**
-   * Assembles the default signature from the profile as it stands, each line
-   * simply absent when the profile does not fill it: the image, the full name
-   * linked to the profile page, position and company, location, and the phone
-   * the platform is configured to display. Every profile value is escaped as
-   * TEXT on the way into markup — they are user-editable strings, and a name
-   * reading {@code <img onerror=...>} must arrive as a name, not as an element.
+   * The signature this user gets without writing one, composed from what the platform
+   * already knows about them.
+   * <p>
+   * Laid out the way a work signature conventionally is -- who, then how to reach
+   * them, then where they work -- in three blocks rather than one run of lines, so it
+   * reads as a signature instead of a list. Every line is dropped when the profile has
+   * nothing for it, and an entire block disappears when all of its lines do: a
+   * half-filled profile produces a shorter signature, never a "Position:" with
+   * nothing after it.
+   * <p>
+   * The logo goes last, as part of the text. It is also handed over separately on
+   * {@code EmailSignature#logoHtml}, not to be rendered twice but so the drawer has
+   * something to insert when the user has deleted it and wants it back.
    *
-   * @param username the signature's owner
-   * @param setting the stored preference, for the image URL's cache version
-   * @return the signature markup, or an empty string when nothing can be said
+   * @param username the user the signature is for
+   * @param setting the user's stored signature settings
+   * @return the composed markup, or an empty string when the profile says nothing
    */
   private String buildDefaultSignature(String username, EmailSignatureSetting setting) {
     Identity identity = identityManager == null ? null : identityManager.getOrCreateUserIdentity(username);
@@ -279,58 +286,69 @@ public class EmailSignatureService {
     if (profile == null) {
       return "";
     }
-    List<String> lines = new ArrayList<>();
-    String nameLine = nameLine(profile);
-    if (nameLine != null) {
-      lines.add(nameLine);
-    }
-    String positionLine = joinNonBlank(" · ",
-                                       escapeHtml(firstPositionSegment(profile.getPosition())),
-                                       escapeHtml(profileText(profile, Profile.COMPANY)));
-    if (positionLine != null) {
-      lines.add(positionLine);
-    }
-    String locationLine = locationLine(profile);
-    if (locationLine != null) {
-      lines.add(locationLine);
-    }
-    String phone = escapeHtml(displayedPhone(profile));
-    if (phone != null) {
-      lines.add(phone);
-    }
-    String logoImage = logoImage(setting);
-    if (lines.isEmpty() && logoImage == null) {
-      return "";
-    }
-    StringBuilder signature = new StringBuilder();
-    if (logoImage != null) {
-      signature.append("<p>").append(logoImage).append("</p>");
-    }
-    if (!lines.isEmpty()) {
-      signature.append("<p>").append(String.join("<br>", lines)).append("</p>");
-    }
-    return signature.toString();
+    String who = block(nameLine(profile),
+                       escapeHtml(firstPositionSegment(profile.getPosition())),
+                       escapeHtml(profileText(profile, Profile.COMPANY)));
+    String reach = block(emailLine(profile), escapeHtml(displayedPhone(profile)));
+    String where = block(locationLine(profile));
+    // The logo last, and INSIDE the text rather than bolted on after it. The editor
+    // that edits this has an image plugin, so the picture is a thing the user can pick
+    // up and move, resize, or delete outright -- which is the only way to put it
+    // beside the name instead of under it, and the only way to have a signature with
+    // no picture at all. Put it back with the drawer's insert action.
+    String logo = block(logoImage(setting));
+    return StringUtils.defaultString(who) + StringUtils.defaultString(reach) + StringUtils.defaultString(where)
+        + StringUtils.defaultString(logo);
   }
 
   /**
-   * The full name, hyperlinked to the absolute profile page when the profile
-   * knows its own URL — absolute because this line is mailed, and a relative
-   * link means nothing in a recipient's client.
+   * One paragraph of the signature, or nothing at all when it has no lines.
    *
-   * @param profile the sender's profile
-   * @return the line's markup, or null when the profile has no name
+   * @param lines the candidate lines, nulls and blanks ignored
+   * @return the paragraph's markup, or null when every line was empty
+   */
+  private String block(String... lines) {
+    List<String> present = new ArrayList<>();
+    for (String line : lines) {
+      if (StringUtils.isNotBlank(line)) {
+        present.add(line);
+      }
+    }
+    return present.isEmpty() ? null : "<p>" + String.join("<br>", present) + "</p>";
+  }
+
+  /**
+   * The user's address, as something a reader can click rather than retype.
+   *
+   * @param profile the user's profile
+   * @return the mailto link, or null when the profile carries no address
+   */
+  private String emailLine(Profile profile) {
+    String email = escapeHtml(profileText(profile, Profile.EMAIL));
+    return email == null ? null : "<a href=\"mailto:" + email + "\">" + email + "</a>";
+  }
+
+  /**
+   * The name at the top of the signature: bold, and deliberately NOT a link.
+   * <p>
+   * It used to link to the author's profile page, which went wrong twice over. In the
+   * composer the link is an internal platform address, and the editor's content-link
+   * plugin upcasts those into a removable chip -- so the signature opened with the
+   * author's name sitting in a blue box with a cross next to it, looking like a
+   * mistake and one keystroke from being deleted. And for the recipient the link was
+   * worth nothing anyway: a profile page redirects anyone outside the platform to a
+   * login screen.
+   * <p>
+   * Plain bold text is also what a work signature conventionally does -- the links
+   * that earn their place are the address and the company's site, not the sender's
+   * name.
+   *
+   * @param profile the user's profile
+   * @return the name's markup, or null when the profile has no name
    */
   private String nameLine(Profile profile) {
     String fullName = escapeHtml(profile.getFullName());
-    if (fullName == null) {
-      return null;
-    }
-    String profileUrl = profile.getUrl();
-    if (StringUtils.isBlank(profileUrl)) {
-      return "<strong>" + fullName + "</strong>";
-    }
-    String absoluteUrl = StringUtils.defaultString(CommonsUtils.getCurrentDomain()) + profileUrl;
-    return "<a href=\"" + escapeHtml(absoluteUrl) + "\"><strong>" + fullName + "</strong></a>";
+    return fullName == null ? null : "<strong>" + fullName + "</strong>";
   }
 
   /**
