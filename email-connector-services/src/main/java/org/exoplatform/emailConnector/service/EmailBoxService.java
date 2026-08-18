@@ -6204,7 +6204,10 @@ public class EmailBoxService {
     String body = draft.getContent() != null && draft.getContent().getBody() != null ? draft.getContent().getBody() : "";
     List<EmailAttachment> attachments = storedAttachmentsOf(draft);
     SplitBody split = splitInlinePictures(body, attachments, username);
-    if (attachments.isEmpty()) {
+    // Keyed on the related part, not on the attachments: the signature image
+    // produces a related part on a draft that stores no file at all, and a
+    // plain-text body would then carry a cid: pointing at nothing.
+    if (attachments.isEmpty() && split.related() == null) {
       message.setContent(split.body(), "text/html; charset=UTF-8");
     } else if (split.bottomFiles().isEmpty() && split.related() != null) {
       message.setContent(split.related());
