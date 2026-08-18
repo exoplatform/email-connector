@@ -844,7 +844,15 @@ export default {
             // server's own truth, is worse than claiming nothing. loadEmailBox() below
             // carries the truth for the listed window, and the next search answer
             // carries the server's own flags for the search rows.
-            emailIds.forEach(mailRemoteId => this.favoriteOverrides.delete(mailRemoteId));
+            emailIds.forEach(mailRemoteId => {
+              const override = this.favoriteOverrides.get(mailRemoteId);
+              // Guarded exactly as the restamp is: an entry a later toggle replaced
+              // belongs to that toggle's own confirmation, and dropping it here would
+              // leave that toggle's optimistic star with nothing protecting it.
+              if (override && override.favorite === favorite) {
+                this.favoriteOverrides.delete(mailRemoteId);
+              }
+            });
           } else {
             // Every id settled the same way, so the value is known: acknowledge it. For
             // an all-failed batch the revert broadcast below overwrites this with the
