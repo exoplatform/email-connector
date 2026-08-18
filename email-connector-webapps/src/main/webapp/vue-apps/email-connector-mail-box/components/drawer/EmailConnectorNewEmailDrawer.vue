@@ -490,6 +490,158 @@ export default {
       this.attachments = [...this.storedAttachmentChips(draft), ...stillGoingUp];
     },
     /**
+     * Lets a picture be dropped or pasted straight into the message.
+     * <p>
+     * Bound on CKEditor's own paste and drop events rather than on the DOM: the
+     * editable lives in an iframe, so a listener on this component's element never
+     * sees either, and CKEditor hands over the files already extracted from the
+     * clipboard — which is the same path a screenshot takes, since a screenshot
+     * arrives as a pasted file rather than as a drag.
+     * @returns {void}
+     */
+    bindInlineImageDrops() {
+      const editor = this.$refs.emailContent && this.$refs.emailContent.editor;
+      if (!editor || editor.emailInlineImagesBound) {
+        return;
+      }
+      // The editor outlives a single open() of this drawer, so binding on every
+      // ready would stack a second handler and upload each picture twice.
+      editor.emailInlineImagesBound = true;
+      editor.on('paste', this.onEditorFilesDropped);
+      editor.on('drop', this.onEditorFilesDropped);
+    },
+    /**
+     * Takes the images out of a paste or a drop and leaves everything else alone.
+     * <p>
+     * Cancelled only when there is an image to take, so pasting text, a link or a
+     * file that is not a picture behaves exactly as it did. Cancelled when there is,
+     * because CKEditor would otherwise insert the picture as a data URI — which looks
+     * right in this editor and is stripped by Gmail and Outlook on the way out.
+     *
+     * @param {object} event - CKEditor's paste or drop event
+     * @returns {void}
+     */
+    onEditorFilesDropped(event) {
+      const transfer = event?.data?.dataTransfer;
+      const count = transfer && transfer.getFilesCount ? transfer.getFilesCount() : 0;
+      const images = [];
+      for (let index = 0; index < count; index++) {
+        const file = transfer.getFile(index);
+        if (file && (file.type || '').startsWith('image/')) {
+          images.push(file);
+        }
+      }
+      if (!images.length) {
+        return;
+      }
+      event.cancel();
+      images.forEach(image => this.insertInlineImage(image));
+    },
+    /**
+     * Puts one picture in the message: visible at once, then quietly re-pointed at
+     * the copy the draft keeps.
+     * <p>
+     * Shown first as the bytes the browser already has, so the picture appears in the
+     * sentence the moment it is dropped rather than after a round trip. It is then
+     * stored on the draft exactly as an attachment is — the same upload, the same
+     * persist, so it survives closing and reopening for the reasons EXO-89338 covered
+     * — and the address in the text is swapped for the draft's own. That address is
+     * what the send path looks for to decide the picture belongs in the body.
+     * <p>
+     * If storing fails the placeholder is removed rather than left behind: a picture
+     * whose bytes only this browser has would reach the recipient as a broken frame.
+     *
+     * @param {File} file - the dropped or pasted image
+     * @returns {void}
+     */
+    async insertInlineImage(file) {
+      const session = this.draftSession;
+      const editor = this.$refs.emailContent && this.$refs.emailContent.editor;
+      if (!editor) {
+        return;
+      }
+      const token = `pending-${Date.now()}-${Math.round(Math.random() * 100000)}`;
+      const preview = await this.readAsDataUrl(file).catch(() => null);
+      if (!preview || session !== this.draftSession) {
+        return;
+      }
+      editor.insertHtml(`<img src="${preview}" data-email-inline="${token}" style="max-width: 100%;">`);
+      try {
+        const uploadId = this.$uploadService.generateRandomId();
+        const resolvedId = await this.$uploadService.upload(file, uploadId);
+        const stored = await this.persistAttachment({
+          uploadId: resolvedId,
+          name: file.name || 'image',
+          mimeType: file.type,
+          size: file.size,
+        });
+        if (!stored || !stored.id || session !== this.draftSession) {
+          throw new Error('the draft moved on while the picture was going up');
+        }
+        this.pointInlineImageAt(token, this.$emailConnectorMailBoxService.getDraftAttachmentUrl(session.localId, stored.id));
+      } catch (error) {
+        this.pointInlineImageAt(token, null);
+      }
+    },
+    /**
+     * Re-points a placeholder at its stored address, or removes it when there is none.
+     *
+     * @param {string} token - the placeholder's marker
+     * @param {string} source - the address to point at, or null to remove it
+     * @returns {void}
+     */
+    pointInlineImageAt(token, source) {
+      const editor = this.$refs.emailContent && this.$refs.emailContent.editor;
+      const document = editor && editor.document && editor.document.$;
+      const image = document && document.querySelector(`img[data-email-inline="${token}"]`);
+      if (!image) {
+        return;
+      }
+      if (source) {
+        image.setAttribute('src', source);
+        image.removeAttribute('data-email-inline');
+      } else {
+        image.remove();
+      }
+      editor.fire('change');
+    },
+    /**
+     * The dropped file as a data URL, for the moment before it has been stored.
+     *
+     * @param {File} file - the image to read
+     * @returns {Promise} resolves with the data URL
+     */
+    readAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    },
+    /**
+     * The ids of the stored files a body points at, which is what makes a picture
+     * inline rather than an attachment. Read from the text because the text is where
+     * the answer lives: delete the picture from the message and it stops being inline,
+     * with nothing to keep in step.
+     *
+     * @param {string} body - the message body
+     * @returns {Set} the stored attachment ids the body references
+     */
+    inlinedAttachmentIds(body) {
+      const ids = new Set();
+      if (!body) {
+        return ids;
+      }
+      const pattern = /\/email-box\/drafts\/[^/"']+\/attachments\/(\d+)/g;
+      let match = pattern.exec(body);
+      while (match) {
+        ids.add(Number(match[1]));
+        match = pattern.exec(body);
+      }
+      return ids;
+    },
+    /**
      * The files a draft carries, as the chips the composer shows.
      *
      * One mapping for the two ways a draft's files reach the screen — resuming a draft
@@ -502,7 +654,13 @@ export default {
      * @returns {Array} the chips
      */
     storedAttachmentChips(draft) {
-      return (draft?.content?.attachments || []).map((attachment, index) => ({
+      // A picture dropped into the text is a stored file like any other, so it arrives
+      // here with the rest. Left in, the recipient's screenshot would be offered twice:
+      // once where the sentence needs it and once as a paperclip. The body is the only
+      // record of which is which -- deliberately, see the send path.
+      const inlined = this.inlinedAttachmentIds(draft?.content?.body);
+      const files = (draft?.content?.attachments || []).filter(attachment => !inlined.has(attachment?.id));
+      return files.map((attachment, index) => ({
         key: `stored-${attachment.id || index}`,
         id: attachment.id,
         name: attachment.name,
@@ -941,6 +1099,7 @@ export default {
       // time the callback runs the drawer may have closed, or opened on another
       // message, and this editor's starting point is not that one's.
       const session = this.draftSession;
+      this.bindInlineImageDrops();
       this.editorEchoing = true;
       setTimeout(() => {
         this.editorEchoing = false;
