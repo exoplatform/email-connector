@@ -2094,6 +2094,48 @@ public class EmailContactServiceTest {
   }
 
   @Test
+  void theSamePersonReachedByTheirOldAddressAppearsOnce() {
+    // A directory row is found by ANY of its addresses, and its enrichment rewrites
+    // the address to the live profile's. The exact match must therefore be keyed by
+    // the suggestion's own address, or the store loop -- which keys by that same
+    // normalized primaryEmail -- answers the person a second time.
+    EmailContact directoryRow = collectedContact(9L, "bobby@old.example.com", "Bobby Tables");
+    directoryRow.setSource(EmailContactSource.DIRECTORY);
+    directoryRow.setPlatformUsername("bobby");
+    when(emailContactStorage.getContactByAddress(USERNAME, "bobby@old.example.com")).thenReturn(directoryRow);
+    givenStoreSuggestions("bobby@old.example.com", directoryRow);
+    givenDirectoryProfile("bobby", "Bobby Tables", "bobby@new.example.com", "bobby-avatar", "/bobby");
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "bobby@old.example.com", 10);
+    }
+
+    assertEquals(1, suggestions.size());
+    // The answer carries the address the mail would actually reach the person at.
+    assertEquals("bobby@new.example.com", suggestions.get(0).getAddress());
+    assertEquals("Bobby Tables", suggestions.get(0).getDisplayName());
+  }
+
+  @Test
+  void anExactMatchThatFillsTheWindowSkipsTheStoreQuery() {
+    // The chip resolution asks for exactly one suggestion; once the exact match has
+    // answered it, the store's LIKE would be a query whose answer cannot be shown.
+    Profile matched = directoryUserProfile("bobby", "Bobby Tables", "bobby@example.com", "bobby-avatar", "/bobby");
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bobby@example.com")).thenReturn(matched);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "bobby@example.com", 1);
+    }
+
+    assertEquals(1, suggestions.size());
+    assertEquals("Bobby Tables", suggestions.get(0).getDisplayName());
+    verify(emailContactStorage, never()).suggestContacts(anyString(), anyString(), anyInt());
+  }
+
+  @Test
   void aSuppressedRowDoesNotHideTheColleagueBehindTheAddress() {
     // A contact the user deleted must not shadow the directory: the address still
     // belongs to a colleague, and refusing to name them would be the deletion

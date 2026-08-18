@@ -417,13 +417,18 @@ public class EmailContactService {
     int size = sanitizeSuggestLimit(limit);
     Map<String, EmailContactSuggestion> byAddress = new LinkedHashMap<>();
     appendExactAddressMatch(username, query, byAddress);
-    for (EmailContact contact : emailContactStorage.suggestContacts(username, query, size)) {
-      String address = EmailContactUtils.normalizeAddress(contact.getPrimaryEmail());
-      if (address == null || byAddress.containsKey(address)) {
-        continue;
+    // Same window guard as the directory half below: an exact match that already
+    // filled the window (the compose field's chip resolution asks for exactly one)
+    // makes the store's LIKE a query whose answer could not be shown.
+    if (byAddress.size() < size) {
+      for (EmailContact contact : emailContactStorage.suggestContacts(username, query, size)) {
+        String address = EmailContactUtils.normalizeAddress(contact.getPrimaryEmail());
+        if (address == null || byAddress.containsKey(address)) {
+          continue;
+        }
+        enrichForDisplay(contact);
+        byAddress.put(address, toSuggestion(contact));
       }
-      enrichForDisplay(contact);
-      byAddress.put(address, toSuggestion(contact));
     }
     if (StringUtils.isNotBlank(query) && byAddress.size() < size) {
       appendDirectoryMatches(username, query.trim(), size, byAddress);
@@ -473,7 +478,11 @@ public class EmailContactService {
       // as they typed it, unnamed. Falling through to the directory here would
       // resolve the same person and hand back the address its owner just hid.
       if (suggestion.getAddress() != null) {
-        byAddress.put(address, suggestion);
+        // Keyed by the suggestion's OWN address, not the typed one: the enrichment
+        // may have rewritten a directory row's address to the live profile's, and
+        // the store loop keys by that same normalized primaryEmail -- filing this
+        // entry under the typed address would let the loop answer the person twice.
+        byAddress.put(suggestion.getAddress(), suggestion);
       }
       return;
     }
