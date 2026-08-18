@@ -17,6 +17,8 @@
 package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -125,6 +127,86 @@ public class EmailFavoriteServiceTest {
 
     verify(identityManager, never()).getOrCreateUserIdentity(anyString());
     verify(favoriteService, never()).getFavoriteItemsByCreatorAndType(anyString(), anyLong(), anyLong(), anyLong());
+  }
+
+  @Test
+  public void reconcileFavoritesDoesNothingWithoutAnIdentity() throws Exception {
+    // A user with no social identity yet has nothing favorites can be keyed by.
+    when(identityManager.getOrCreateUserIdentity(USERNAME)).thenReturn(null);
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    verify(favoriteService, never()).getFavoriteItemsByCreatorAndType(anyString(), anyLong(), anyLong(), anyLong());
+    verify(favoriteService, never()).createFavorite(any());
+  }
+
+  @Test
+  public void reconcileFavoritesSurvivesAFailingIdentityManager() throws Exception {
+    doThrow(new RuntimeException("identity store unavailable")).when(identityManager).getOrCreateUserIdentity(USERNAME);
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    verify(favoriteService, never()).createFavorite(any());
+  }
+
+  @Test
+  public void reconcileFavoritesSurvivesAFailingMailboxRead() throws Exception {
+    // The read of the flagged mails is inside the guarded block: a failure there
+    // leaves the drawer as it was instead of failing the sync that called this.
+    givenUserIdentity();
+    doThrow(new RuntimeException("storage unavailable")).when(emailBoxStorage).getStarredEmails(anyString(), anyString());
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    verify(favoriteService, never()).createFavorite(any());
+    verify(favoriteService, never()).deleteFavorite(any());
+  }
+
+  @Test
+  public void reconcileFavoritesSurvivesAFavoriteThatCannotBeRemoved() throws Exception {
+    givenUserIdentity();
+    givenFlaggedEmails();
+    givenFavoritedEmailIds("12");
+    doThrow(new RuntimeException("favorite already gone")).when(favoriteService).deleteFavorite(any());
+
+    emailFavoriteService.reconcileFavorites(USERNAME);
+
+    verify(favoriteService, times(1)).deleteFavorite(any());
+  }
+
+  @Test
+  public void isFavorite() throws Exception {
+    givenUserIdentity();
+    when(favoriteService.isFavorite(any(Favorite.class))).thenReturn(true);
+
+    assertTrue(emailFavoriteService.isFavorite(11L, USERNAME));
+
+    ArgumentCaptor<Favorite> asked = ArgumentCaptor.forClass(Favorite.class);
+    verify(favoriteService).isFavorite(asked.capture());
+    assertEquals("11", asked.getValue().getObjectId());
+    assertEquals(EmailFavoriteService.OBJECT_TYPE, asked.getValue().getObjectType());
+    assertEquals(IDENTITY_ID, asked.getValue().getUserIdentityId());
+  }
+
+  @Test
+  public void isFavoriteForAMailThatIsNot() throws Exception {
+    givenUserIdentity();
+    when(favoriteService.isFavorite(any(Favorite.class))).thenReturn(false);
+
+    assertFalse(emailFavoriteService.isFavorite(11L, USERNAME));
+  }
+
+  @Test
+  public void isFavoriteWithoutAResolvableUser() throws Exception {
+    // No username, and a username whose identity carries no id: both answer false
+    // without asking the favorites store, which would otherwise be queried for
+    // identity 0.
+    assertFalse(emailFavoriteService.isFavorite(11L, null));
+    when(identityManager.getOrCreateUserIdentity(USERNAME)).thenReturn(new Identity(null));
+    assertFalse(emailFavoriteService.isFavorite(11L, USERNAME));
+
+    verify(identityManager, never()).getOrCreateUserIdentity(null);
+    verify(favoriteService, never()).isFavorite(any(Favorite.class));
   }
 
   /**

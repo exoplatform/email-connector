@@ -228,6 +228,27 @@ public class EmailBoxRestTest {
   }
 
   @Test
+  void getFavoriteEmailById() throws Exception {
+    // An id the drawer holds but the mailbox no longer has: the entry is dropped, not an error.
+    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser()));
+    response.andExpect(status().isNotFound());
+    verify(emailBoxService).getOwnedEmailById(121L, SIMPLE_USER);
+
+    Email email = new Email();
+    email.setId(121L);
+    email.setSubject("Quarterly report");
+    when(emailBoxService.getOwnedEmailById(121L, SIMPLE_USER)).thenReturn(email);
+    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser()));
+    response.andExpect(status().isOk()).andExpect(jsonPath("$.id").value(121)).andExpect(jsonPath("$.subject").value("Quarterly report"));
+
+    // Somebody else's mail is reported missing rather than forbidden, so a favorite id
+    // never confirms that the email exists.
+    doThrow(IllegalAccessException.class).when(emailBoxService).getOwnedEmailById(anyLong(), anyString());
+    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser()));
+    response.andExpect(status().isNotFound());
+  }
+
+  @Test
   void getAttachmentByMailRemoteIdAnId() throws Exception {
     ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));
     response.andExpect(status().isNotFound());

@@ -2074,7 +2074,10 @@ public class EmailBoxService {
    * @return the email, never another user's
    * @throws IllegalAccessException if the email belongs to somebody else
    */
-  @Transactional
+  // The refusal is stated, not rolled back: this method only reads, so the checked
+  // exception has nothing to undo -- and left implicit, Spring's rollback rules for a
+  // checked exception are the kind of thing a reader has to go and look up.
+  @Transactional(noRollbackFor = IllegalAccessException.class)
   public Email getOwnedEmailById(long id, String username) throws IllegalAccessException {
     Email email = getEmailById(id, username);
     if (email != null && !StringUtils.equals(email.getUserId(), username)) {
