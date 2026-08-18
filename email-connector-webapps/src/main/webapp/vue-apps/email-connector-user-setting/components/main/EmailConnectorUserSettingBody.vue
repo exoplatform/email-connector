@@ -189,6 +189,34 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-action>
         </v-list-item>
         <v-divider class="mx-4" />
+        <!-- The signature: one switch and an editor behind a drawer, following
+             the address-book rows' shape. The switch and the Edit button write
+             the same stored document, so the switch sends the stored markup
+             back along with itself rather than silently blanking it. -->
+        <v-list-item>
+          <v-list-item-content>
+            <v-list-item-title class="text-color">
+              {{ $t('UserSettings.emailConnector.signature.title') }}
+            </v-list-item-title>
+            <v-list-item-subtitle>
+              {{ $t('UserSettings.emailConnector.signature.description') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+          <v-list-item-action class="d-flex flex-row align-center">
+            <v-btn
+              icon
+              :title="$t('UserSettings.emailConnector.signature.edit.tooltip')"
+              @click="$root.$emit('open-email-signature-drawer')">
+              <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+            </v-btn>
+            <v-switch
+              v-model="signatureEnabled"
+              :loading="savingSignature"
+              class="ms-2"
+              @change="saveSignatureEnabled" />
+          </v-list-item-action>
+        </v-list-item>
+        <v-divider class="mx-4" />
         <v-list-item>
           <v-list-item-content>
             <v-list-item-title class="text-color">
@@ -245,6 +273,12 @@ export default {
     notifyCategoryIds: [],
     saving: false,
     resetting: false,
+    signatureEnabled: true,
+    // The stored custom markup, carried so the enable switch can send it back
+    // unchanged: the switch and the editor share one stored document, and a
+    // toggle that omitted the markup would silently erase it.
+    signatureCustomHtml: null,
+    savingSignature: false,
   }),
   computed: {
     /**
@@ -315,8 +349,43 @@ export default {
   created() {
     this.$emailConnectorCommonService.getAvailableEmailCategories()
       .then(list => this.categories = list || []);
+    this.readSignature();
+    // The drawer edits the same stored document this row's switch rides on, so
+    // its saves must be read back here or the switch would write stale markup.
+    this.$root.$on('email-signature-updated', this.readSignature);
   },
   methods: {
+    /**
+     * Reads the signature preference this row's switch shows and protects.
+     * Failing is silent, like the address-book status: an unreadable preference
+     * is not worth an error banner over the whole settings screen.
+     *
+     * @returns {void}
+     */
+    readSignature() {
+      this.$emailConnectorCommonService.getEmailSignature()
+        .then(signature => {
+          this.signatureEnabled = signature?.enabled !== false;
+          this.signatureCustomHtml = signature?.customHtml || null;
+        })
+        .catch(() => null);
+    },
+    /**
+     * Stores the switch, sending the stored markup back with it so a toggle
+     * never erases what the editor wrote.
+     *
+     * @returns {void}
+     */
+    saveSignatureEnabled() {
+      this.savingSignature = true;
+      this.$emailConnectorCommonService.saveEmailSignature({
+        enabled: this.signatureEnabled,
+        customHtml: this.signatureCustomHtml,
+      })
+        .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
+        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.error'), 'error'))
+        .finally(() => this.savingSignature = false);
+    },
     initFromSetting() {
       const setting = this.userEmailSetting || {};
       this.defaultCategoryView = setting.defaultCategoryView ?? null;

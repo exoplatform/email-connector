@@ -350,15 +350,27 @@ export default {
      * Contacts drawer's "compose to" hand-off. It only applies when no email is
      * passed, so reply/forward prefills stay exactly what they were.
      *
+     * The user's signature is injected HERE and only here — never in resume(),
+     * whose body is the draft's verbatim text (the signature is already in it,
+     * or was deleted on purpose), and never at send, which mails what is on
+     * screen. One injection point is what makes duplication structurally
+     * impossible. On a reply it goes ABOVE the quote: the fold boundary is the
+     * first quoted block, and a signature below it would be swallowed by the
+     * fold in the recipient's reader.
+     *
      * @param {object} email - the message being replied to or forwarded
      * @param {boolean} forward - whether this is a forward
      * @param {boolean} replyAll - whether the reply addresses everyone
      * @param {object} prefill - recipients to seed a new mail with
-     * @returns {void}
+     * @returns {Promise} resolves once the composer is open
      */
-    open(email, forward, replyAll, prefill) {
+    async open(email, forward, replyAll, prefill) {
       this.attachments = [];
       this.resetDraftTracking();
+      // Awaited before anything is written into the body, because the prefill
+      // IS the body: patching a signature in after the drawer opened would race
+      // the editor echo and the saved-signature stamp.
+      const signature = await this.signatureBlock();
       this.title = this.drawerTitle(email, forward);
       this.seedRecipients(email, forward, replyAll, prefill);
       // A subject and a body, seeded the same way the recipients are. Opening
@@ -370,17 +382,31 @@ export default {
       if (!email && prefill?.subject) {
         this.email.subject = prefill.subject;
       }
-      if (!email && prefill?.body) {
-        this.email.content.body = prefill.body;
+      if (!email) {
+        // A new mail opens as an empty line for the words, then the signature
+        // under them. When an add-on prefilled a body, that body IS the words,
+        // so the signature goes under it rather than replacing it.
+        const opening = prefill?.body || '';
+        if (signature) {
+          this.email.content.body = opening ? `${opening}<br><br>${signature}` : `<br><br>${signature}`;
+        } else if (opening) {
+          this.email.content.body = opening;
+        }
       }
       if (email) {
         if (forward) {
-          this.email.content.body = this.buildForwardedBody(email);
+          const forwarded = this.buildForwardedBody(email);
+          // Above the forwarded-message header: the forward's own words go at
+          // the top, and the signature belongs to them, not to the quoted mail.
+          this.email.content.body = signature ? `<br><br>${signature}\n${forwarded}` : forwarded;
         } else {
           // The message being answered, quoted under the cursor. Built the same way
           // whether this is a reply or a reply-all: those two differ in who receives
-          // the answer, never in what is being answered.
-          this.email.content.body = replyQuoteBody(this.replyAttribution(email), email.content?.body);
+          // the answer, never in what is being answered. The signature sits between
+          // the caret and the quote — above the fold boundary, where the recipient's
+          // reader actually shows it.
+          const quote = replyQuoteBody(this.replyAttribution(email), email.content?.body);
+          this.email.content.body = signature ? `<br><br>${signature}${quote}` : quote;
         }
         this.email.subject = `${forward
           ? this.$t('emailConnector.mailBox.forwardEmail.drawer.subject.prefix')
@@ -397,6 +423,33 @@ export default {
           this.carryForwardedFiles(email);
         }
       });
+    },
+    /**
+     * The user's EMAIL signature as a block ready to sit in the body, or an
+     * empty string when they turned it off, have none, or it cannot be read —
+     * a composer that fails to open over a signature fetch would be the wrong
+     * trade in every one of those cases.
+     *
+     * Not to be confused with composeSignature() below, which is the draft
+     * dirty-check's fingerprint of the composed state and has nothing to do
+     * with email signatures.
+     *
+     * Fetched fresh on every open rather than cached: the settings screen may
+     * have changed it since, and one small GET per composer open is cheaper
+     * than a staleness bug.
+     *
+     * @returns {Promise<string>} the signature markup, or an empty string
+     */
+    signatureBlock() {
+      return this.$emailConnectorCommonService.getEmailSignature()
+        .then(signature => {
+          if (!signature || signature.enabled === false) {
+            return '';
+          }
+          const html = signature.customHtml || signature.defaultHtml || '';
+          return html ? `<div class="ec-signature">${html}</div>` : '';
+        })
+        .catch(() => '');
     },
     /**
      * Brings the files of the message being forwarded onto this forward, as the same

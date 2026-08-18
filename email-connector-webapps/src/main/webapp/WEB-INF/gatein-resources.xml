@@ -43,6 +43,12 @@
       <depends>
         <module>emailConnectorCommon</module>
       </depends>
+      <!-- The platform's profile-picture cropper, which registers
+           <image-crop-drawer>: the signature drawer borrows it whole for the
+           signature image, exactly as the contact form does for photos. -->
+      <depends>
+        <module>imageCropper</module>
+      </depends>
     </module>
   </portlet>
 
