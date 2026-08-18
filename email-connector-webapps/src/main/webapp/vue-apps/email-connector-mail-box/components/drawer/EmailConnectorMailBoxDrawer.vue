@@ -245,6 +245,10 @@ export default {
       searchServerRunning: false,
       searchServerError: false,
       searchRequestId: 0,
+      // Favorites the user toggled here, each tagged with the search generation that
+      // was in flight at that moment, so a server search answer that left before the
+      // \Flagged push cannot roll the star back. Read only in withLocalFavorites().
+      favoriteOverrides: new Map(),
       searchOpening: false
     };
   },
@@ -616,7 +620,7 @@ export default {
           if (requestId !== this.searchRequestId) {
             return;
           }
-          this.searchServerResults = page?.results || [];
+          this.searchServerResults = this.withLocalFavorites(page?.results || [], requestId);
           this.searchTotalMatches = page?.totalMatches || 0;
         })
         .catch(() => {
@@ -634,6 +638,29 @@ export default {
             this.searchServerRunning = false;
           }
         });
+    },
+    // Adopt a server search answer without letting it undo a favorite toggled while
+    // it was in flight: such an answer was built from the FLAGS the server held
+    // BEFORE the \Flagged push, so its starred is stale for those messages — and
+    // since every hit now carries the flag, adopting it as is puts the star back out
+    // (the list row would show it, the search row would not, until the next search).
+    // Only overrides at least as recent as the request apply; older ones are dropped,
+    // because this answer does reflect them and keeping them would outlive a favorite
+    // changed meanwhile from another mail client. INBOX rows only: UIDs are
+    // per-folder, so the same number elsewhere is another message.
+    withLocalFavorites(results, requestId) {
+      if (!this.favoriteOverrides.size) {
+        return results;
+      }
+      this.favoriteOverrides.forEach((override, mailRemoteId) => {
+        if (override.searchRequestId < requestId) {
+          this.favoriteOverrides.delete(mailRemoteId);
+        }
+      });
+      return results.map(result => {
+        const override = (result.folder || 'INBOX') === 'INBOX' && this.favoriteOverrides.get(result.mailRemoteId);
+        return override ? { ...result, starred: override.favorite } : result;
+      });
     },
     clearSearch() {
       window.clearTimeout(this.searchDebounceTimer);
@@ -756,14 +783,21 @@ export default {
           this.$set(email, 'starred', favorite);
         }
       });
-      // Server hits carry no favorite flag; stamping the toggled ones keeps the
-      // search list truthful once the user favorites a result. INBOX rows only:
-      // UIDs are per-folder, so the same number elsewhere is another message.
+      // A server hit is a snapshot of the FLAGS as they were when the search ran, so
+      // the toggled rows still have to be stamped even though hits now carry the
+      // flag. INBOX rows only: UIDs are per-folder, so the same number elsewhere is
+      // another message.
       this.searchServerResults.forEach(result => {
         if ((result.folder || 'INBOX') === 'INBOX' && ids.has(result.mailRemoteId)) {
           this.$set(result, 'starred', favorite);
         }
       });
+      // And remember it, so a search answer still in flight — which left before the
+      // push and therefore reports the old flag — cannot undo the stamp when it lands.
+      ids.forEach(mailRemoteId => this.favoriteOverrides.set(mailRemoteId, {
+        favorite,
+        searchRequestId: this.searchRequestId,
+      }));
       if (this.email && ids.has(this.email.mailRemoteId) && (this.email.folder || 'INBOX') === 'INBOX') {
         this.$set(this.email, 'starred', favorite);
       }

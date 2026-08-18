@@ -182,21 +182,36 @@ class EmailMcpToolTest {
                                                   new Date(),
                                                   false,
                                                   true,
-                                                  true);
+                                                  false);
+    // A second hit with starred and cached CROSSED the other way: the two booleans are
+    // adjacent in both constructors, so a page where they agree would let a
+    // transposition through unnoticed.
+    EmailSearchResult cachedHit = new EmailSearchResult(43L,
+                                                       MailFolder.INBOX,
+                                                       "Receipt",
+                                                       new EmailSender("Bob", "bob@example.com", null, null),
+                                                       new Date(),
+                                                       false,
+                                                       false,
+                                                       true);
     when(emailBoxService.searchEmails(eq(USERNAME), eq("invoice"), isNull(), eq(false), isNull(), eq(MailFolder.INBOX), anyInt()))
-                                                                                                                                 .thenReturn(new EmailSearchResultPage(List.of(hit),
+                                                                                                                                 .thenReturn(new EmailSearchResultPage(List.of(hit,
+                                                                                                                                                                               cachedHit),
                                                                                                                                                                        90));
 
     EmailSearchResultsModel results = emailMcpTool.searchEmails("invoice", null, null, null, null, null);
 
-    // The count is what keeps the agent honest: it saw one of ninety.
+    // The count is what keeps the agent honest: it saw two of ninety.
     assertEquals(90, results.getTotalMatches());
-    assertEquals(1, results.getResults().size());
+    assertEquals(2, results.getResults().size());
     assertEquals(42L, results.getResults().get(0).getMailRemoteId());
     assertEquals("Invoice due", results.getResults().get(0).getSubject());
-    assertTrue(results.getResults().get(0).isCached());
-    // The favorite the server reported must reach the agent, not stop at the model.
+    // The favorite the server reported must reach the agent, not stop at the model —
+    // here on a hit that is NOT cached, which is the case the whole flag exists for.
     assertTrue(results.getResults().get(0).isStarred());
+    assertFalse(results.getResults().get(0).isCached());
+    assertFalse(results.getResults().get(1).isStarred());
+    assertTrue(results.getResults().get(1).isCached());
   }
 
   @Test

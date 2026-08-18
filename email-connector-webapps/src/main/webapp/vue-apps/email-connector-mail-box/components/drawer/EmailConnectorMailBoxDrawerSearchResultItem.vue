@@ -75,7 +75,7 @@ export default {
     };
   },
   props: {
-    // One search hit: { mailRemoteId, folder, subject, sender, receivedDate, read, cached }.
+    // One search hit: { mailRemoteId, folder, subject, sender, receivedDate, read, starred, cached }.
     result: {
       type: Object,
       default: () => null,

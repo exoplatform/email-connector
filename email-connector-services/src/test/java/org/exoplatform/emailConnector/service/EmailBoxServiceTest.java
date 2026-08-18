@@ -2215,7 +2215,12 @@ public class EmailBoxServiceTest {
     assertTrue(first.isStarred());
     assertFalse(first.isCached());
     assertFalse(page.getResults().get(1).isStarred());
-    verify(inbox, times(1)).fetch(any(Message[].class), any(FetchProfile.class));
+    // ONE batched fetch, and it must ask for FLAGS: without that item in the profile
+    // every isSet(FLAGGED) would turn into its own FETCH against a real server, which
+    // is exactly what "the flag rides along free" claims does not happen.
+    ArgumentCaptor<FetchProfile> profile = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(1)).fetch(any(Message[].class), profile.capture());
+    assertTrue(profile.getValue().contains(FetchProfile.Item.FLAGS));
   }
 
   /**
