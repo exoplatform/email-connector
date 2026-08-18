@@ -2181,6 +2181,49 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A hit reports whether the user favorited it, so a mail favorited long ago shows
+   * its star in the search list even though it is far outside the cached window.
+   * The flag costs nothing extra: it is read from the FLAGS the page already fetches
+   * for the read state, so the batched fetch stays a single call.
+   */
+  @Test
+  @SneakyThrows
+  void searchEmailsReportsTheFavoriteFlagOnEveryHit() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Store store = mock(Store.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    when(store.isConnected()).thenReturn(true);
+    Date now = new Date();
+    MimeMessage plain = searchHit("weekly report 1", "alice@example.com", new Date(now.getTime() - 1000), true);
+    MimeMessage favorited = searchHit("weekly report 2", "bob@example.com", now, true);
+    when(favorited.isSet(Flags.Flag.FLAGGED)).thenReturn(true);
+    when(inbox.search(any(SearchTerm.class))).thenReturn(new Message[] { plain, favorited });
+    when(((UIDFolder) inbox).getUID(plain)).thenReturn(11L);
+    when(((UIDFolder) inbox).getUID(favorited)).thenReturn(12L);
+    when(emailBoxStorage.getCachedMailRemoteIds(TEST_USER, "INBOX", List.of(11L, 12L))).thenReturn(List.of());
+
+    EmailSearchResultPage page = emailBoxService.searchEmails(TEST_USER, "weekly", null, false, null, "INBOX", 20);
+
+    // Newest first: the favorited one leads, and neither is cached — the star must
+    // not depend on the local copy.
+    EmailSearchResult first = page.getResults().get(0);
+    assertTrue(first.isStarred());
+    assertFalse(first.isCached());
+    assertFalse(page.getResults().get(1).isStarred());
+    // ONE batched fetch, and it must ask for FLAGS: without that item in the profile
+    // every isSet(FLAGGED) would turn into its own FETCH against a real server, which
+    // is exactly what "the flag rides along free" claims does not happen.
+    ArgumentCaptor<FetchProfile> profile = ArgumentCaptor.forClass(FetchProfile.class);
+    verify(inbox, times(1)).fetch(any(Message[].class), profile.capture());
+    assertTrue(profile.getValue().contains(FetchProfile.Item.FLAGS));
+  }
+
+  /**
    * When the SEARCH matches more than the requested limit, only the newest tail of
    * the match list is fetched — the batched FETCH must stay bounded by the limit,
    * not by the match count — while the total still reports every match.

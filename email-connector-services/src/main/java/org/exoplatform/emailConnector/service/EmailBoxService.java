@@ -3428,6 +3428,7 @@ public class EmailBoxService {
                                                 : null,
                                             page[i].getReceivedDate(),
                                             page[i].isSet(Flags.Flag.SEEN),
+                                            page[i].isSet(Flags.Flag.FLAGGED),
                                             cachedUids.contains(messageUid)));
         } catch (Exception e) {
           // One unreadable hit must not lose the rest of the page.
