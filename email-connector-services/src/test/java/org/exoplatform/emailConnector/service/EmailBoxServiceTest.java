@@ -153,6 +153,7 @@ import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
+import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
@@ -232,6 +233,9 @@ public class EmailBoxServiceTest {
 
   @MockBean
   private EmailFavoriteService    emailFavoriteService;
+
+  @MockBean
+  private EmailSignatureService   emailSignatureService;
 
   @Autowired
   private EmailBoxService         emailBoxService;
@@ -6885,7 +6889,8 @@ public class EmailBoxServiceTest {
                                      message,
                                      email,
                                      "<p>look</p><img src=\"/email-connector/rest/email-box/drafts/d-1/attachments/7\">",
-                                     new ArrayList<String>());
+                                     new ArrayList<String>(),
+                                     TEST_USER);
 
     assertTrue(message.getContent() instanceof Multipart, "a message with a picture in the text is a multipart");
     Multipart related = (Multipart) message.getContent();
@@ -6930,7 +6935,8 @@ public class EmailBoxServiceTest {
                                      message,
                                      email,
                                      "<img src=\"/email-connector/rest/email-box/drafts/d-1/attachments/7\">",
-                                     new ArrayList<String>());
+                                     new ArrayList<String>(),
+                                     TEST_USER);
 
     Multipart mixed = (Multipart) message.getContent();
     assertTrue(mixed.getContentType().toLowerCase().contains("mixed"), "the outer part carries the bottom files");
@@ -6965,7 +6971,8 @@ public class EmailBoxServiceTest {
                                      message,
                                      email,
                                      "<p>see attached</p>",
-                                     new ArrayList<String>());
+                                     new ArrayList<String>(),
+                                     TEST_USER);
 
     Multipart multipart = (Multipart) message.getContent();
     assertTrue(multipart.getContentType().toLowerCase().contains("mixed"), "unchanged: mixed, not related");
@@ -6992,7 +6999,8 @@ public class EmailBoxServiceTest {
                                      message,
                                      email,
                                      "<img src=\"https://example.com/logo.png\">",
-                                     new ArrayList<String>());
+                                     new ArrayList<String>(),
+                                     TEST_USER);
 
     Multipart multipart = (Multipart) message.getContent();
     assertTrue(multipart.getContentType().toLowerCase().contains("mixed"), "no inline part was invented");
@@ -7010,6 +7018,115 @@ public class EmailBoxServiceTest {
   private FileItem fileItemOf(String content) throws Exception {
     return new FileItem(1L, "file", "application/octet-stream", "email", (long) content.length(), new java.util.Date(),
                         "tester", false, new java.io.ByteArrayInputStream(content.getBytes()));
+  }
+
+  /**
+   * The signature's image reaches the recipient because it travels INSIDE the
+   * message: a {@code multipart/related} part named by a {@code cid:} the body
+   * points at. This is the assertion the whole signature-logo design hangs on —
+   * the two alternatives both fail silently and only outside eXo, where the
+   * platform URL answers a login page and a {@code data:} URI is stripped by
+   * Gmail and Outlook.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void theSignatureLogoTravelsInsideTheMessageAsACidPart() throws Exception {
+    when(emailSignatureService.getSignatureLogo(TEST_USER))
+                                                           .thenReturn(new EmailSignatureLogo("the bytes of the company logo".getBytes(),
+                                                                                              "image/png",
+                                                                                              "logo"));
+    Email email = new Email();
+    Message message = new MimeMessage(Session.getInstance(new Properties()));
+
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "applyContentAndAttachments",
+                                     message,
+                                     email,
+                                     "<p>regards</p><img src=\"/email-connector/rest/user-email-setting/signature/image?v=42\">",
+                                     new ArrayList<String>(),
+                                     TEST_USER);
+
+    assertTrue(message.getContent() instanceof Multipart, "a message with a signature image is a multipart");
+    Multipart related = (Multipart) message.getContent();
+    assertTrue(related.getContentType().toLowerCase().contains("related"),
+               "related: the image belongs in the body, not at the bottom");
+    assertEquals(2, related.getCount(), "the text, then the logo it points at");
+    String body = (String) related.getBodyPart(0).getContent();
+    assertTrue(body.contains("cid:email-signature-logo@exo"), "the body points at the part");
+    assertFalse(body.contains("/user-email-setting/signature/image"),
+                "no address that answers a login page to anyone outside eXo");
+    BodyPart logoPart = related.getBodyPart(1);
+    assertEquals(Part.INLINE, logoPart.getDisposition(), "INLINE, or a client lists the logo as an attachment too");
+    assertArrayEquals(new String[] { "<email-signature-logo@exo>" },
+                      logoPart.getHeader("Content-ID"),
+                      "angle-bracketed in the header, bare in the body reference: RFC 2392");
+  }
+
+  /**
+   * A signature image with no bytes behind it — no custom upload, no branding
+   * logo — is REMOVED from the outgoing body rather than left as a URL: mailed
+   * as it stands, that URL is a broken frame in every external client, which is
+   * exactly the failure this machinery exists to prevent.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSignatureImageWithNoBytesIsRemovedRatherThanMailedBroken() throws Exception {
+    when(emailSignatureService.getSignatureLogo(TEST_USER)).thenReturn(null);
+    Email email = new Email();
+    Message message = new MimeMessage(Session.getInstance(new Properties()));
+
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "applyContentAndAttachments",
+                                     message,
+                                     email,
+                                     "<p>regards</p><img src=\"/email-connector/rest/user-email-setting/signature/image?v=42\">",
+                                     new ArrayList<String>(),
+                                     TEST_USER);
+
+    assertTrue(message.getContent() instanceof String, "with nothing to embed there is no multipart to build");
+    String body = (String) message.getContent();
+    assertTrue(body.contains("regards"), "the text is untouched");
+    assertFalse(body.contains("/user-email-setting/signature/image"), "the frame that would arrive broken is gone");
+    assertFalse(body.contains("<img"), "gone as an element, not just re-pointed");
+  }
+
+  /**
+   * A dropped picture and the signature logo ride in the same
+   * {@code multipart/related}, each under its own content id — the one place
+   * that builds inline parts serving both kinds without either displacing the
+   * other.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDroppedPictureAndTheSignatureLogoShareTheRelatedPart() throws Exception {
+    EmailAttachment picture = new EmailAttachment(7L, null, null, "screenshot.png", "image/png", null,
+                                                  MailFolder.DRAFTS, 77L, 21L, null);
+    when(emailBoxStorage.getAttachmentFileItem(77L)).thenAnswer(invocation -> fileItemOf("picture bytes"));
+    when(emailSignatureService.getSignatureLogo(TEST_USER)).thenReturn(new EmailSignatureLogo("logo bytes".getBytes(),
+                                                                                              "image/png",
+                                                                                              "logo"));
+    Email email = new Email();
+    email.setStoredAttachments(List.of(picture));
+    Message message = new MimeMessage(Session.getInstance(new Properties()));
+
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "applyContentAndAttachments",
+                                     message,
+                                     email,
+                                     "<img src=\"/email-connector/rest/email-box/drafts/d-1/attachments/7\">"
+                                         + "<img src=\"/email-connector/rest/user-email-setting/signature/image\">",
+                                     new ArrayList<String>(),
+                                     TEST_USER);
+
+    Multipart related = (Multipart) message.getContent();
+    assertTrue(related.getContentType().toLowerCase().contains("related"), "one related part carries them both");
+    assertEquals(3, related.getCount(), "the text, the picture, the logo");
+    String body = (String) related.getBodyPart(0).getContent();
+    assertTrue(body.contains("cid:email-inline-7@exo"), "the picture keeps its own id");
+    assertTrue(body.contains("cid:email-signature-logo@exo"), "the logo has its own");
   }
 
   /**
