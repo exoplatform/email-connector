@@ -70,7 +70,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :select-mode="selectMode"
           :current-folder="currentFolder"
           :available-folders="availableFolders"
-          :favorite-only="favoriteOnly"
+          :categories="emailCategories"
+          :category-view-id="categoryViewId"
           :sync-in-progress="syncInProgress" />
       </div>
     </template>
@@ -79,7 +80,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-mail-box-drawer-list-item-detail-actions
           v-if="email && !selectEmailPlaceHolder"
           :email="email" />
-      </div> 
+      </div>
       <email-connector-mail-box-drawer-actions
         v-else-if="!syncBlocked"
         class="d-flex align-center"
@@ -89,7 +90,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :select-mode="selectMode"
         :current-folder="currentFolder"
         :available-folders="availableFolders"
-        :favorite-only="favoriteOnly"
+        :categories="emailCategories"
+        :category-view-id="categoryViewId"
         :sync-in-progress="syncInProgress" />
     </template>
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
@@ -101,13 +103,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :server-error="searchServerError"
         @open-result="openSearchResult" />
       <template v-else>
-        <categories-filter
-          v-model="selectedCategoryId"
-          :category-ids="emailCategoryIds"
+        <email-connector-mail-box-drawer-filter-chips
+          :important-category="importantCategory"
+          :category-view-id="categoryViewId"
+          :favorite-only="favoriteOnly"
+          :unread-only="unreadOnly"
           class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-          object-type="email"
-          scrollable
-          hide-on-empty />
+          @toggle-important="toggleImportantView"
+          @toggle-favorite="onToggleFavoriteFilter"
+          @toggle-unread="toggleUnreadFilter" />
         <email-connector-mail-box-drawer-content
           :emails="emails"
           :email="email"
@@ -146,14 +150,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :server-error="searchServerError"
         @open-result="openSearchResult" />
       <template v-else>
-        <categories-filter
+        <email-connector-mail-box-drawer-filter-chips
           v-if="!expanded"
-          v-model="selectedCategoryId"
-          :category-ids="emailCategoryIds"
+          :important-category="importantCategory"
+          :category-view-id="categoryViewId"
+          :favorite-only="favoriteOnly"
+          :unread-only="unreadOnly"
           class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-          object-type="email"
-          scrollable
-          hide-on-empty />
+          @toggle-important="toggleImportantView"
+          @toggle-favorite="onToggleFavoriteFilter"
+          @toggle-unread="toggleUnreadFilter" />
         <template v-if="hasEmails">
           <template v-if="expanded">
             <email-connector-mail-box-drawer-multi-select-email
@@ -230,15 +236,31 @@ export default {
       // open something themselves, or close the drawer.
       pinnedEmail: false,
       selectEmailPlaceHolder: false,
-      selectedCategoryId: null,
+      // The category VIEW: picking a category in the ⋮ menu switches the list to
+      // it, the way picking Sent or Archive does — single selection, left by
+      // selecting a folder (or re-picking the same category). Holds the id, or
+      // null outside any category view. The Important chip above the list is a
+      // SHORTCUT to this same state for the Important category — one state, two
+      // controls, so the chip, the menu highlight and the title always agree.
+      categoryViewId: null,
+      // The active category view expanded to its subcategories, which is what
+      // rows are matched against.
       selectedCategoryIds: [],
-      emailCategoryIds: [],
+      // The add-on's own categories ({id, name, nameId, icon}), fetched once.
+      emailCategories: [],
+      // Whether the user toggled any filter or view (chip, folder or menu
+      // category) since the drawer opened; the "open on Important" default
+      // only applies while false.
+      filtersTouched: false,
       deletedEmailIds: [],
       archivedEmailIds: [],
       currentFolder: 'INBOX',
       // The favorite view: list only the messages carrying the mail server's
-      // \Flagged flag, in the listed folder. Toggled from the ⋮ menu.
+      // \Flagged flag, in the listed folder. Toggled from the chip row.
       favoriteOnly: false,
+      // The unread view: hide already-read messages. Purely client-side over the
+      // loaded window, like the category filters. Toggled from the chip row.
+      unreadOnly: false,
       searchTerm: '',
       searchServerResults: [],
       searchTotalMatches: 0,
@@ -258,14 +280,31 @@ export default {
     // not data(): Vue 2 does not observe a Map, and nothing renders it directly —
     // withLocalFavorites() is its only reader, and it runs when a search answer lands.
     this.favoriteOverrides = new Map();
-    // The add-on's own email categories are the children of the Inbox category; feeding
-    // their ids to the platform filter makes it open "inside the Inbox" — showing those
-    // children directly as chips, rather than an Inbox parent the user must drill into.
-    // The promise is kept so open() can await the ids before trusting a stored default view.
+    // Plain instance field guarding the async subcategory expansion against
+    // out-of-order answers: only the latest toggle's expansion may land.
+    this.categoryExpansionToken = 0;
+    // The add-on's own categories (Important / Invitation / Notification, each
+    // {id, name, nameId, icon}). All of them are views in the ⋮ menu; Important
+    // additionally gets a shortcut chip above the list. The promise is kept so
+    // open() can await the categories before trusting the "open on Important"
+    // default.
     this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
-      .then(list => this.emailCategoryIds = (list || []).map(category => category.id));
+      .then(list => this.emailCategories = list || []);
+    // Read the "Default view" setting from here rather than from open(), for the
+    // same reason the categories are read from here: both are needed to know
+    // WHICH list to show, and asking for them only once the drawer is opening is
+    // what made the mailbox render the whole inbox and then narrow it to
+    // Important in front of the user. Started at creation, they are settled long
+    // before the first click, so open() awaits nothing in practice.
+    this.readDefaultCategoryView();
+    // The setting is cached, so it has to be re-read when it changes -- otherwise
+    // switching the toggle in the user settings would only take effect on the
+    // next page load.
+    this.onRefreshUserEmailSetting = () => this.readDefaultCategoryView();
+    document.addEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
     this.$root.$on('switch-folder', this.onSwitchFolder);
-    this.$root.$on('toggle-favorite-filter', this.onToggleFavoriteFilter);
+    this.$root.$on('open-category-view', this.openCategoryView);
+    this.$root.$on('enter-select-mode', this.onEnterSelectMode);
     this.$root.$on('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
     this.onOpenEmailDetailContent = (mailRemoteId) => {
@@ -319,27 +358,22 @@ export default {
     // and wrongly show the drawer as synchronizing.
     this.$root.$on('open-mail-box-drawer', async (payload) => {
       const options = payload && typeof payload === 'object' ? payload : {loading: payload};
-      // The message goes up first and the folder loads behind it. Opening the mailbox
-      // first meant a favorited mail waited on the whole inbox — a thousand messages
-      // fetched before its own single one — which felt slow for something the user
-      // asked for by name. The narrow reader is a drawer of its own, mounted beside
-      // this one, so it can show while this list is still empty; the wide reader is a
-      // pane of this drawer and only renders once the folder is there, so that one
-      // still waits.
-      const readerFirst = options.mailRemoteId && !this.expanded;
-      if (readerFirst) {
-        this.openMailFromOutside(options.mailRemoteId);
+      // Opening the mailbox, on a message, on a search, or on nothing in particular.
+      // The payload used to be the plain "loading" flag and callers still pass it
+      // that way, so an object is what marks the richer form: passing one where a
+      // flag is expected would read as truthy and wrongly show the drawer as
+      // synchronizing.
+      if (options.mailRemoteId) {
+        // One message asked for by name -- from the platform's search, or from the
+        // Favorites drawer -- opens the reader on its own. Opening the mailbox behind
+        // it would leave the user standing in a folder they never asked for the
+        // moment they close the message, instead of back where they were looking.
+        await this.openMailFromOutside(options);
+        return;
       }
       await this.open(options.loading);
-      if (readerFirst) {
-        // Hand the reader the conversation and webmail link it opened without.
-        this.$root.$emit('email-detail-context', {
-          emails: this.emails,
-          syncInProgress: this.syncInProgress,
-          webmailUrl: this.webmailUrl,
-        });
-      } else if (options.mailRemoteId) {
-        this.openMailFromOutside(options.mailRemoteId);
+      if (options.searchTerm) {
+        this.openSearchFromOutside(options.searchTerm);
       }
     });
     this.$root.$on('attachment-download-started', (payload) => {
@@ -368,13 +402,15 @@ export default {
     });
   },
   beforeDestroy() {
+    document.removeEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$off('delete-email', this.onDeleteEmail);
     this.$root.$off('archive-email', this.onArchiveEmail);
     this.$root.$off('email-categories-updated', this.onCategoriesUpdated);
     this.$root.$off('switch-folder', this.onSwitchFolder);
-    this.$root.$off('toggle-favorite-filter', this.onToggleFavoriteFilter);
+    this.$root.$off('open-category-view', this.openCategoryView);
+    this.$root.$off('enter-select-mode', this.onEnterSelectMode);
     this.$root.$off('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
   },
@@ -402,6 +438,10 @@ export default {
         if (this.favoriteOnly) {
           title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.favorites')}`;
         }
+        // A category view is a view like a folder, and titles like one.
+        if (this.categoryView) {
+          title = `${title} · ${this.categoryView.name}`;
+        }
         return title;
       }
       return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ?
@@ -412,7 +452,22 @@ export default {
       return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
     },
     hasFullAppLeft() {
-      return this.expanded && (this.hasEmails || this.selectedCategoryId || this.searchActive) && !this.syncBlocked;
+      return this.expanded && (this.hasEmails || this.hasActiveFilters || this.searchActive) && !this.syncBlocked;
+    },
+    // The Important category, which gets a shortcut chip above the list on top
+    // of its ⋮ menu entry; null until categories load (or when the default
+    // categories are not seeded) — the chip simply doesn't show then.
+    importantCategory() {
+      return this.emailCategories.find(category => category.nameId === 'emailImportantCategory') || null;
+    },
+    // The category the list is switched to, or null outside any category view.
+    categoryView() {
+      return this.emailCategories.find(category => category.id === this.categoryViewId) || null;
+    },
+    // Whether any filter or view narrows the list (used to keep the expanded
+    // left pane on screen when a filter empties it).
+    hasActiveFilters() {
+      return this.favoriteOnly || this.unreadOnly || !!this.categoryViewId;
     },
     // The header filter is the platform's own (exo-drawer); it hides the go-back
     // button, so it steps aside while select mode needs that button.
@@ -472,11 +527,22 @@ export default {
       let emails = this.emailBox?.emails || [];
       emails = emails.filter(e => !this.deletedEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.archivedEmailIds.includes(e.mailRemoteId));
+      // The filters combine: each one narrows what the others left, so
+      // "unread favorites in this category" is just everything toggled on. A
+      // category VIEW is single selection (categoryViewId), so at most one
+      // category ever narrows the list; Favorites and Unread apply on top of
+      // whichever view is open.
       // The favorite view: the server already answered with the favorite subset;
       // filtering again here makes a just-unfavorited message leave the list at
       // once instead of waiting for the next reload.
       if (this.favoriteOnly) {
         emails = emails.filter(e => e.starred);
+      }
+      if (this.unreadOnly) {
+        // The one message being read stays listed even once marked read:
+        // opening a mail under the Unread filter must not yank the reader
+        // out from under the user for the select-an-email placeholder.
+        emails = emails.filter(e => !e.read || (this.email && e.mailRemoteId === this.email.mailRemoteId));
       }
       if (this.selectedCategoryIds.length > 0) {
         emails = emails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
@@ -485,9 +551,17 @@ export default {
     }
   },
   watch: {
-    async selectedCategoryId(val) {
+    // The category view changed (opened, replaced or left — from the ⋮ menu or
+    // the Important shortcut chip): expand it to its subcategories, which is
+    // what rows are matched against. The token drops an expansion that
+    // finishes after a newer change already superseded it.
+    async categoryViewId(id) {
       this.cancelSelectMode();
-      this.selectedCategoryIds = val && await this.$emailConnectorMailBoxService.getSubcategoryIds(val) || [];
+      const token = ++this.categoryExpansionToken;
+      const expanded = id ? await this.$emailConnectorMailBoxService.getSubcategoryIds(id) : [];
+      if (token === this.categoryExpansionToken) {
+        this.selectedCategoryIds = expanded;
+      }
     },
     emails() {
       // A search hit, or a mail opened from the Favorites drawer, is often outside
@@ -510,37 +584,69 @@ export default {
         this.$root.$emit('set-opened', null);
       }
       else if (!this.selectEmailPlaceHolder) {
-        this.$root.$emit('set-opened', this.email.mailRemoteId);
+        // No open message when select mode was entered from the ⋮ menu in the
+        // narrow drawer — nothing to re-highlight then.
+        this.$root.$emit('set-opened', this.email?.mailRemoteId || null);
       }
     }
   },
   methods: {
+    /**
+     * Re-reads the user's "Default view" setting into the cached promise open()
+     * awaits. Failing is silent and answers null: an unreadable setting means an
+     * unfiltered inbox, never a blocked drawer.
+     *
+     * @returns {void}
+     */
+    readDefaultCategoryView() {
+      this.defaultCategoryViewPromise = this.$emailConnectorCommonService.getUserEmailSetting()
+        .then(setting => setting && setting.defaultCategoryView || null)
+        .catch(() => null);
+    },
+    /**
+     * Seeds the view the mailbox opens on, before anything is rendered.
+     *
+     * When the user settings' "Default view" toggle is on, the stored default
+     * holds the Important category's id and the mailbox opens on the Important
+     * view — chip lit, menu entry highlighted, title suffixed, one state. When
+     * it is off, or when the stored id is not Important's (one left behind by
+     * the former category select, say), the inbox opens unfiltered.
+     *
+     * Awaited BEFORE the first load on purpose. Doing it afterwards showed the
+     * user the whole inbox and then narrowed it under them, which read as the
+     * mailbox being slow and changing its mind. Both promises are started when
+     * the component is created, so by the time anyone opens the drawer there is
+     * nothing left to wait for.
+     *
+     * A filter the user has already touched still wins: the default only seeds.
+     *
+     * @returns {Promise<void>} resolves once the view is decided
+     */
+    async applyDefaultCategoryView() {
+      const [defaultView] = await Promise.all([this.defaultCategoryViewPromise, this.emailCategoryIdsPromise]);
+      if (this.filtersTouched) {
+        return;
+      }
+      this.categoryViewId = defaultView && this.importantCategory && defaultView === this.importantCategory.id
+        ? this.importantCategory.id : null;
+    },
     async open(loading) {
       if (loading) {
         this.syncInProgress = true;
         await this.$nextTick();
       }
-      // Always (re)open on the inbox, without a leftover search or favorite view.
+      // Always (re)open on the inbox, without leftover search, filter or view state.
       this.currentFolder = 'INBOX';
       this.favoriteOnly = false;
+      this.unreadOnly = false;
+      this.categoryViewId = null;
+      this.filtersTouched = false;
       this.clearSearch();
       this.loading = true;
       this.emailBoxDrawer = true;
+      await this.applyDefaultCategoryView();
       await this.loadEmailBox();
       this.loading = false;
-      // Position the inbox on the user's chosen default category view (if any). The stored
-      // view can point at a category that no longer exists (e.g. a removed default), and
-      // filtering on it would reject — so apply it only once the available category ids are
-      // loaded and the stored id is one of them.
-      this.$emailConnectorCommonService.getUserEmailSetting()
-        .then(async setting => {
-          const defaultView = setting && setting.defaultCategoryView || null;
-          await this.emailCategoryIdsPromise;
-          this.selectedCategoryId = defaultView && this.emailCategoryIds.includes(defaultView) ? defaultView : null;
-        })
-        .catch(() => {
-          // Keep the inbox unfiltered when the setting cannot be read.
-        });
       if (this.syncInProgress) {
         this.startAutoRefresh();
       }
@@ -559,30 +665,74 @@ export default {
       });
     },
     /**
-     * Opens one message picked outside the mailbox — today, from the platform's
-     * global Favorites drawer.
+     * Opens the mailbox on a search someone started elsewhere — today, in the
+     * platform's unified search, which only looks at the locally held mail.
      *
-     * It goes through the same two doors as a search hit, and for the same reason:
-     * such a message is usually not in the listed window. Wide, the reader is a pane
-     * of this drawer, so the message is set here and pinned against the next list
-     * refresh; narrow, the reader is a drawer of its own, which has to be told to
-     * open — setting the message here would only have changed a pane that the narrow
-     * layout never shows, leaving the user looking at the list.
+     * The term is put in the drawer's own filter field rather than searched
+     * silently: the user sees what is being searched, can refine it, and lands in
+     * the field that reaches the whole mailbox, which is the point of coming here.
      *
-     * @param {Number} mailRemoteId the IMAP UID of the message to open
+     * @param {String} term the text to search for
+     * @returns {void}
+     */
+    openSearchFromOutside(term) {
+      const drawer = this.$refs.emailBoxDrawer;
+      if (drawer) {
+        drawer.showFilter = true;
+        drawer.filterText = term;
+      }
+      this.runSearch(term);
+    },
+    /**
+     * Opens one message picked outside the mailbox — from the platform's unified
+     * search, or from the global Favorites drawer.
+     *
+     * Such a message is a search hit in everything but name: it may sit in another
+     * folder, and it may not be held locally at all. So an uncached one is pulled in
+     * before it is opened, and a mailbox busy synchronizing says "one moment" rather
+     * than failing.
+     *
+     * The reader is handed a list containing the message itself. That is not a
+     * detail: the reader works out which folder to read from by looking the id up in
+     * the list it was given, and a UID is only unique within its folder. Handed
+     * nothing, it assumed the inbox -- and every hit that was not a cached inbox
+     * message opened as an empty reader titled "(no subject)".
+     *
+     * @param {Object} opening what to open: {mailRemoteId, folder, cached}
      * @returns {Promise} resolved once the message is on screen
      */
-    async openMailFromOutside(mailRemoteId) {
-      if (!this.expanded) {
-        this.$root.$emit('open-email-detail-drawer', mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl, true);
-        return;
-      }
+    async openMailFromOutside(opening) {
+      // No folder means the inbox, and anything that does not say otherwise is
+      // already cached: that is the Favorites drawer, which only holds cached inbox
+      // mail.
+      const hit = {
+        mailRemoteId: opening.mailRemoteId,
+        folder: opening.folder || 'INBOX',
+        cached: opening.cached !== false,
+      };
+      this.pinnedEmail = true;
       this.loading = true;
       try {
-        this.pinnedEmail = true;
-        this.email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId);
-        this.selectEmailPlaceHolder = false;
-        this.$root.$emit('set-opened', mailRemoteId);
+        if (!hit.cached) {
+          await this.fetchSearchedEmail(hit);
+        }
+        if (this.expanded && this.emailBoxDrawer) {
+          this.email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder);
+          this.selectEmailPlaceHolder = false;
+          this.$root.$emit('set-opened', hit.mailRemoteId);
+        } else {
+          this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer);
+        }
+      } catch (error) {
+        // A mailbox held by a running synchronization is a "one moment", not a
+        // failure.
+        const syncing = error?.status === 409;
+        const messageKey = syncing && 'emailConnector.mailBox.search.syncInProgress'
+          || 'emailConnector.mailBox.search.openError';
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: syncing && 'warning' || 'error',
+          alertMessage: this.$t(messageKey),
+        }}));
       } finally {
         this.loading = false;
       }
@@ -752,8 +902,10 @@ export default {
       this.email = null;
       this.emailBoxDrawer = false;
       this.favoriteOnly = false;
-      this.selectedCategoryId = null;
+      this.unreadOnly = false;
+      this.categoryViewId = null;
       this.selectedCategoryIds = [];
+      this.filtersTouched = false;
       this.deletedEmailIds = [];
       this.archivedEmailIds = [];
     },
@@ -776,12 +928,49 @@ export default {
         );
       }
     },
-    // Toggle the favorite-only view from the ⋮ menu, reloading the listed folder.
+    // Toggle the favorite-only view from the chip row, reloading the listed
+    // folder (the favorite subset is answered server-side).
     onToggleFavoriteFilter() {
+      this.filtersTouched = true;
       this.favoriteOnly = !this.favoriteOnly;
       this.cancelSelectMode();
       this.loading = true;
       this.loadEmailBox().finally(() => this.loading = false);
+    },
+    // Toggle the unread-only view from the chip row; purely client-side, so no
+    // reload — the list recomputes from the loaded window.
+    toggleUnreadFilter() {
+      this.filtersTouched = true;
+      this.unreadOnly = !this.unreadOnly;
+      this.cancelSelectMode();
+    },
+    // The Important chip: a shortcut into (and out of) the Important category
+    // view — the very state the ⋮ menu's Important entry drives, so the chip,
+    // the menu highlight and the title can never disagree.
+    toggleImportantView() {
+      if (this.importantCategory) {
+        this.openCategoryView(this.importantCategory.id);
+      }
+    },
+    // Switch the list to one category — from the ⋮ menu or the Important
+    // shortcut chip — a view like Sent or Archive, not a checkbox: single
+    // selection, replacing whatever category view was active. Picking the
+    // active category again leaves the view, as does selecting any folder.
+    // The Favorites and Unread chips survive the switch and combine with the
+    // view (their chips stay on screen inside it, so nothing narrows the list
+    // invisibly): Favorites' server-answered subset stays loaded and the
+    // category narrows it client-side — no reload needed either way.
+    openCategoryView(categoryId) {
+      this.filtersTouched = true;
+      this.categoryViewId = this.categoryViewId === categoryId ? null : categoryId;
+    },
+    // "Select several" from the ⋮ menu: enter the same multi-select mode a row
+    // checkbox starts, with nothing selected yet.
+    onEnterSelectMode() {
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return;
+      }
+      this.selectMode = true;
     },
     // Patch the favorite flag on every copy this drawer holds: the cached folder
     // window (which the list rows and the search's local matches derive from),
@@ -992,6 +1181,12 @@ export default {
       });
     },
     onSwitchFolder(folder) {
+      // Selecting a folder always leaves the category view — that is the way
+      // back from one, so it works even for the folder already listed.
+      if (this.categoryViewId) {
+        this.filtersTouched = true;
+        this.categoryViewId = null;
+      }
       if (folder === this.currentFolder) {
         return;
       }

@@ -16,7 +16,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-list class="pa-0">
-    <!-- Folder switch: browse the inbox, your sent mail, or archived mail. -->
+    <!-- Folders: browse the inbox, your sent mail, or archived mail. -->
+    <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+      {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
+    </div>
     <v-list-item
       v-for="folder in visibleFolders"
       :key="folder.id"
@@ -28,37 +31,52 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         height="36">
         <v-icon
           class="mx-auto"
-          :class="folder.id === currentFolder ? 'primary--text' : 'icon-default-color'"
+          :class="folder.id === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
           size="16">
           {{ folder.icon }}
         </v-icon>
       </v-sheet>
-      <span :class="{ 'primary--text font-weight-bold': folder.id === currentFolder }">
+      <span :class="{ 'primary--text font-weight-bold': folder.id === currentFolder && !categoryViewId }">
         {{ $t(folder.label) }}
       </span>
     </v-list-item>
-    <!-- Favorite view: the listed folder narrowed to the messages carrying the
-         mail server's \Flagged flag. It reads as one more folder-like view, so
-         it lives with the folder switch rather than with the category chips. -->
-    <v-list-item
-      class="ps-2 pe-3 height-auto"
-      @click="toggleFavoriteFilter()">
-      <v-sheet
-        class="d-flex"
-        width="28"
-        height="36">
-        <v-icon
-          class="mx-auto"
-          :class="favoriteOnly ? 'primary--text' : 'icon-default-color'"
-          size="16">
-          {{ favoriteOnly ? 'fas fa-star' : 'far fa-star' }}
-        </v-icon>
-      </v-sheet>
-      <span :class="{ 'primary--text font-weight-bold': favoriteOnly }">
-        {{ $t('emailConnector.mailBox.list.drawer.folder.favorites') }}
-      </span>
-    </v-list-item>
+    <!-- Categories: the complete list, Important included — its quick chip
+         above the list is a shortcut to the same view this entry opens, so the
+         two can never disagree. Each category is a VIEW like the folders above
+         it, shown with its own declared icon — picking one switches the list to
+         that category and closes the menu; picking it again, or any folder,
+         leaves the view. -->
+    <template v-if="categories.length">
+      <v-divider class="my-1" />
+      <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+        {{ $t('emailConnector.mailBox.list.drawer.menu.categories') }}
+      </div>
+      <v-list-item
+        v-for="category in categories"
+        :key="category.id"
+        class="ps-2 pe-3 height-auto"
+        @click="openCategoryView(category.id)">
+        <v-sheet
+          class="d-flex"
+          width="28"
+          height="36">
+          <v-icon
+            class="mx-auto"
+            :class="category.id === categoryViewId ? 'primary--text' : 'icon-default-color'"
+            size="16">
+            {{ category.icon || 'fa-tag' }}
+          </v-icon>
+        </v-sheet>
+        <span :class="{ 'primary--text font-weight-bold': category.id === categoryViewId }">
+          {{ category.name }}
+        </span>
+      </v-list-item>
+    </template>
     <v-divider class="my-1" />
+    <!-- Actions on the mailbox itself. -->
+    <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+      {{ $t('emailConnector.mailBox.list.drawer.menu.actions') }}
+    </div>
     <!-- Synchronize now (progress is shown by the header spinner while it runs). -->
     <v-list-item
       class="ps-2 pe-3 height-auto"
@@ -76,6 +94,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-sheet>
       <span>
         {{ $t('emailConnector.mailBox.list.drawer.sync.tooltip') }}
+      </span>
+    </v-list-item>
+    <!-- Select mode: multi-select rows to read/archive/delete in bulk. -->
+    <v-list-item
+      class="ps-2 pe-3 height-auto"
+      @click="enterSelectMode()">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="icon-default-color mx-auto"
+          size="16">
+          fa-check-square
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.menu.selectSeveral') }}
       </span>
     </v-list-item>
     <extension-registry-components
@@ -124,10 +160,18 @@ export default {
       type: Array,
       default: () => ['INBOX'],
     },
-    // Whether the favorite view is on, highlighted like the active folder.
-    favoriteOnly: {
-      type: Boolean,
-      default: false,
+    // The categories offered as views ({id, name, icon}) — the add-on's full
+    // set, Important included (its chip above the list is a shortcut to the
+    // same view). Empty hides the section.
+    categories: {
+      type: Array,
+      default: () => [],
+    },
+    // The category the list is currently switched to (highlighted like the
+    // current folder), or null outside any category view.
+    categoryViewId: {
+      type: [Number, String],
+      default: null,
     },
     syncInProgress: {
       type: Boolean,
@@ -144,20 +188,43 @@ export default {
     };
   },
   computed: {
-    // Only offer folders that have mail; the inbox is always listed.
+    /**
+     * Only offer folders that have mail; the inbox is always listed.
+     *
+     * @returns {Array} the folder descriptors to display
+     */
     visibleFolders() {
       return this.folders.filter(folder => folder.id === 'INBOX' || this.availableFolders.includes(folder.id));
     },
   },
   methods: {
+    /**
+     * Switches the listed folder. Always emitted, even for the folder already
+     * listed: inside a category view, re-picking the current folder is the way
+     * back to its plain view.
+     *
+     * @param {String} folder the folder id (INBOX / SENT / ARCHIVE)
+     * @returns {void}
+     */
     switchFolder(folder) {
-      if (folder !== this.currentFolder) {
-        this.$root.$emit('switch-folder', folder);
-      }
+      this.$root.$emit('switch-folder', folder);
     },
-    toggleFavoriteFilter() {
-      this.$root.$emit('toggle-favorite-filter');
+    /**
+     * Switches the list to one category — a view like a folder, not a checkbox:
+     * single selection, and the menu closes on the click. Picking the active
+     * category again leaves the view.
+     *
+     * @param {Number} categoryId the category id to switch to
+     * @returns {void}
+     */
+    openCategoryView(categoryId) {
+      this.$root.$emit('open-category-view', categoryId);
     },
+    /**
+     * Triggers an immediate synchronization of the mailbox (guarded while one runs).
+     *
+     * @returns {void}
+     */
     synchronize() {
       if (this.syncInProgress) {
         return;
@@ -167,6 +234,19 @@ export default {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.list.drawer.sync.success'), 'success');
       });
     },
+    /**
+     * Enters the multi-select mode on the list (same mode a row checkbox starts).
+     *
+     * @returns {void}
+     */
+    enterSelectMode() {
+      this.$root.$emit('enter-select-mode');
+    },
+    /**
+     * Opens the user's webmail in a new tab.
+     *
+     * @returns {void}
+     */
     openWebmail() {
       this.$root.$emit('open-webmail');
     },

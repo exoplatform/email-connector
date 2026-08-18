@@ -41,7 +41,7 @@ export default {
         emailAddress: '',
         emailPassword: ''
       }
-    }; 
+    };
   },
   mounted() {
     document.addEventListener('quick-action-mailBox-drawer', this.openDrawer);

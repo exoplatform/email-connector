@@ -76,8 +76,27 @@ extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
  * detail: {mailRemoteId} — the IMAP UID of the message to open.
  */
 document.addEventListener('open-email-box-mail', event => {
-  const mailRemoteId = event?.detail?.mailRemoteId;
-  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, mailRemoteId));
+  // The whole payload travels: a UID alone is not enough to find a message. UIDs are
+  // per-folder, and a message the caller found on the server may not be in the local
+  // cache at all -- both of which the mailbox knows how to handle, and neither of
+  // which the caller should have to.
+  const opening = event?.detail || {};
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, opening));
+});
+
+/*
+ * Opens the mailbox on a search, from anywhere in the platform: the entry in the
+ * platform's unified search uses it to hand over the term the user typed there.
+ *
+ * The global search only looks at the mail this add-on holds locally, so that no
+ * search in the platform waits on IMAP. This is the way through to the rest: the
+ * mailbox's own search field, which reaches the whole mailbox and says what it found.
+ *
+ * detail: {term} — the text to search for.
+ */
+document.addEventListener('open-email-box-search', event => {
+  const searchTerm = event?.detail?.term;
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {searchTerm}));
 });
 
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
@@ -88,7 +107,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
   }
 }
 
-async function initConnectorsMailBox(exoi18n, mailRemoteId) {
+async function initConnectorsMailBox(exoi18n, opening) {
   const appId = 'emailConenctor-mailBox-quick-actions';
   if (!document.querySelector(`#${appId}`)) {
     const parent = document.createElement('div');
@@ -96,8 +115,9 @@ async function initConnectorsMailBox(exoi18n, mailRemoteId) {
     document.querySelector('#vuetify-apps').appendChild(parent);
     await initConnectorsDrawerApp(appId, exoi18n, eXo.env.portal.maxFileSize);
   }
-  // No id simply means "just open the mailbox", which is what the quick action does.
-  document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer', {detail: {mailRemoteId}}));
+  // No payload simply means "just open the mailbox", which is what the quick action
+  // does; a payload says what to open it on.
+  document.dispatchEvent(new CustomEvent('quick-action-mailBox-drawer', {detail: opening || {}}));
 }
 
 function initConnectorsDrawerApp(appId, exoi18n) {
