@@ -49,4 +49,15 @@ public class EmailSignature {
    * company logo. What the settings screen needs to offer "reset the image".
    */
   private boolean customLogo;
+
+  /**
+   * The logo's markup, kept OUT of the text above rather than built into it.
+   * <p>
+   * The text is edited in a rich editor that has no image plugin, so an img tag
+   * inside it is stripped by the editor's content filter and the stripped copy is
+   * what gets saved -- which is how a signature silently loses its logo the first
+   * time it is edited. Held apart, the logo cannot be edited away by accident, and
+   * the composer decides where it goes.
+   */
+  private String  logoHtml;
 }
