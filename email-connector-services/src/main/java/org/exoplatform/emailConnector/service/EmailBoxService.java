@@ -83,6 +83,7 @@ import javax.mail.internet.MimeMessage;
 import javax.mail.internet.MimeMultipart;
 import javax.mail.internet.MimeUtility;
 import javax.mail.search.AndTerm;
+import javax.mail.util.ByteArrayDataSource;
 import javax.mail.search.ComparisonTerm;
 import javax.mail.search.FlagTerm;
 import javax.mail.search.FromStringTerm;
@@ -141,6 +142,7 @@ import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
+import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
@@ -484,6 +486,22 @@ public class EmailBoxService {
   private static final Pattern    DRAFT_ATTACHMENT_SOURCE                                   =
                                                           Pattern.compile("/email-box/drafts/[^/]+/attachments/(\\d+)(?:[?#].*)?$");
 
+  /**
+   * A composer image address that names the sender's signature image — the one
+   * endpoint {@code EmailSignatureService#SIGNATURE_IMAGE_PATH} serves, custom
+   * picture or company logo alike. Tolerant of a trailing query for the same
+   * reason the draft pattern is: the composer versions the URL for caching.
+   */
+  private static final Pattern    SIGNATURE_LOGO_SOURCE                                     =
+                                                        Pattern.compile("/user-email-setting/signature/image(?:[?#].*)?$");
+
+  /**
+   * The content id the signature image travels under, one per message — the
+   * body references it bare, the part's header carries it angle-bracketed, both
+   * per RFC 2392, exactly like the draft pictures' {@code email-inline-N@exo}.
+   */
+  private static final String     SIGNATURE_LOGO_CID                                        = "email-signature-logo@exo";
+
   private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE              =
                                                                                  "User %s is not allowed to synchronize email";
 
@@ -670,6 +688,9 @@ public class EmailBoxService {
 
   @Autowired
   private UserEmailSettingService userEmailSettingService;
+
+  @Autowired
+  private EmailSignatureService   emailSignatureService;
 
   @Autowired
   private EmailBoxStorage         emailBoxStorage;
@@ -4001,7 +4022,7 @@ public class EmailBoxService {
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
     try {
-      MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds);
+      MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds, username);
       applyThreadingHeaders(message, email, username);
       deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
     } catch (MessagingException | UnsupportedEncodingException e) {
@@ -4055,6 +4076,7 @@ public class EmailBoxService {
    * @param pinnedMessageId the Message-ID this message must go out with, or null to
    *          let JavaMail mint one — see {@link PinnedMessageIdMimeMessage}
    * @param uploadIds mutable list populated with the upload ids that were attached
+   * @param username the sender, whose signature image the body may point at
    * @return the message, ready for its threading headers and the wire
    * @throws MessagingException if the message cannot be built
    * @throws UnsupportedEncodingException if the user's display name cannot be encoded
@@ -4063,7 +4085,8 @@ public class EmailBoxService {
                                            UserEmailSetting userEmailSetting,
                                            EmailConnector emailConnector,
                                            String pinnedMessageId,
-                                           List<String> uploadIds) throws MessagingException, UnsupportedEncodingException {
+                                           List<String> uploadIds,
+                                           String username) throws MessagingException, UnsupportedEncodingException {
     String emailAddress = userEmailSetting.getEmailAddress();
     MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, userEmailSetting), pinnedMessageId);
     Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
@@ -4108,7 +4131,7 @@ public class EmailBoxService {
       String href = link.attr("href");
       link.attr("href", currentDomain + href);
     }
-    applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds);
+    applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds, username);
     return message;
   }
 
@@ -4713,7 +4736,8 @@ public class EmailBoxService {
     List<String> uploadIds = new ArrayList<>();
     draft.setStoredAttachments(storedAttachments);
     try {
-      MimeMessage message = buildOutgoingMessage(draft, userEmailSetting, emailConnector, stored.getMailHeaderId(), uploadIds);
+      MimeMessage message =
+                          buildOutgoingMessage(draft, userEmailSetting, emailConnector, stored.getMailHeaderId(), uploadIds, username);
       applyStoredThreadingHeaders(message, stored);
       deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
     } catch (MessagingException | UnsupportedEncodingException e) {
@@ -5888,7 +5912,7 @@ public class EmailBoxService {
         LOG.info("No Drafts folder found for user {}; the draft stays local only", username);
         return saved;
       }
-      MimeMessage message = buildDraftMessage(saved, userEmailSetting);
+      MimeMessage message = buildDraftMessage(saved, userEmailSetting, username);
       draftsFolder.open(Folder.READ_WRITE);
       long appendedUid = appendDraftMessage(draftsFolder, message, saved.getMailHeaderId(), username);
       if (appendedUid <= 0) {
@@ -6264,13 +6288,15 @@ public class EmailBoxService {
    *
    * @param draft the stored draft
    * @param userEmailSetting the user's connector binding, for their own address
+   * @param username the draft's owner, whose signature image the body may point at
    * @return the message to append
    * @throws MessagingException if the message cannot be built
    * @throws UnsupportedEncodingException if the user's display name cannot be encoded
    */
   private MimeMessage buildDraftMessage(Email draft,
-                                        UserEmailSetting userEmailSetting) throws MessagingException,
-                                                                          UnsupportedEncodingException {
+                                        UserEmailSetting userEmailSetting,
+                                        String username) throws MessagingException,
+                                                        UnsupportedEncodingException {
     String emailAddress = userEmailSetting.getEmailAddress();
     // A draft is never transmitted, so this session needs no transport properties at
     // all -- it exists only to give the MimeMessage a context to be built in.
@@ -6284,7 +6310,7 @@ public class EmailBoxService {
     message.setSentDate(draft.getDraftUpdatedDate() != null ? draft.getDraftUpdatedDate() : new Date());
     String body = draft.getContent() != null && draft.getContent().getBody() != null ? draft.getContent().getBody() : "";
     List<EmailAttachment> attachments = storedAttachmentsOf(draft);
-    SplitBody split = splitInlinePictures(body, attachments);
+    SplitBody split = splitInlinePictures(body, attachments, username);
     if (attachments.isEmpty()) {
       message.setContent(split.body(), "text/html; charset=UTF-8");
     } else if (split.bottomFiles().isEmpty() && split.related() != null) {
@@ -6487,13 +6513,15 @@ public class EmailBoxService {
    * @param email the composed email holding the optional {@code attachments}
    * @param bodyHtml the sanitized HTML body
    * @param uploadIds mutable list populated with the upload ids that were attached
+   * @param username the sender, whose signature image the body may point at
    * @throws MessagingException if a body part cannot be built
    */
   private void applyContentAndAttachments(Message message,
                                           Email email,
                                           String bodyHtml,
-                                          List<String> uploadIds) throws MessagingException {
-    SplitBody split = splitInlinePictures(bodyHtml, storedAttachments(email));
+                                          List<String> uploadIds,
+                                          String username) throws MessagingException {
+    SplitBody split = splitInlinePictures(bodyHtml, storedAttachments(email), username);
     List<EmailAttachment> bottomFiles = split.bottomFiles();
     boolean hasUploads = !CollectionUtils.isEmpty(email.getAttachments());
 
@@ -6567,26 +6595,140 @@ public class EmailBoxService {
    * that stores the draft on the mail server — because a draft opened on a phone is
    * read by the same clients as a sent mail, and would show a broken frame for every
    * picture if only one of the two knew about this.
+   * <p>
+   * Two kinds of picture belong in the body, and both come through here so there is
+   * exactly one place that builds inline parts: the draft's own stored files the user
+   * dropped into the text, and the sender's SIGNATURE image — the company logo or
+   * the user's own — whose bytes come from
+   * {@link EmailSignatureService#getSignatureLogo}. The signature image is a part of
+   * the message for the same reason the dropped pictures are: its platform URL is
+   * behind a login and a {@code data:} URI is stripped by Gmail and Outlook, so
+   * embedding it under a {@code cid:} is the only form every recipient renders.
    *
    * @param bodyHtml the body as written
    * @param stored the stored files the message carries
+   * @param username the sender, whose signature image the body may point at
    * @return the split, never null
    * @throws MessagingException if a body part cannot be built
    */
-  private SplitBody splitInlinePictures(String bodyHtml, List<EmailAttachment> stored) throws MessagingException {
+  private SplitBody splitInlinePictures(String bodyHtml,
+                                        List<EmailAttachment> stored,
+                                        String username) throws MessagingException {
     Map<Long, String> inlineCids = new LinkedHashMap<>();
     String body = rewriteInlineImageSources(bodyHtml, stored, inlineCids);
-    List<EmailAttachment> inlineImages = stored.stream().filter(a -> inlineCids.containsKey(a.getId())).toList();
+    List<InlinePicture> pictures = new ArrayList<>();
+    for (EmailAttachment image : stored) {
+      if (inlineCids.containsKey(image.getId())) {
+        String mimeType = StringUtils.defaultIfBlank(image.getMimeType(), DEFAULT_ATTACHMENT_MIME_TYPE);
+        String fileName = StringUtils.defaultIfBlank(image.getName(), DEFAULT_ATTACHMENT_NAME);
+        pictures.add(new InlinePicture(new StoredFileDataSource(emailBoxStorage, image.getFileId(), fileName, mimeType),
+                                       fileName,
+                                       mimeType,
+                                       inlineCids.get(image.getId()),
+                                       image.getSize() == null ? 0L : image.getSize()));
+      }
+    }
+    if (bodyReferencesSignatureLogo(body)) {
+      EmailSignatureLogo signatureLogo = resolveSignatureLogo(username);
+      body = rewriteSignatureLogoSource(body, signatureLogo != null);
+      if (signatureLogo != null) {
+        pictures.add(new InlinePicture(new ByteArrayDataSource(signatureLogo.bytes(),
+                                                               StringUtils.defaultIfBlank(signatureLogo.mimeType(),
+                                                                                          DEFAULT_ATTACHMENT_MIME_TYPE)),
+                                       signatureLogo.fileName(),
+                                       signatureLogo.mimeType(),
+                                       SIGNATURE_LOGO_CID,
+                                       signatureLogo.bytes().length));
+      }
+    }
     List<EmailAttachment> bottomFiles = stored.stream().filter(a -> !inlineCids.containsKey(a.getId())).toList();
-    if (inlineImages.isEmpty()) {
+    if (pictures.isEmpty()) {
       return new SplitBody(body, null, bottomFiles, 0L);
     }
     MimeMultipart related = new MimeMultipart("related");
     MimeBodyPart htmlPart = new MimeBodyPart();
     htmlPart.setContent(body, "text/html; charset=UTF-8");
     related.addBodyPart(htmlPart);
-    long inlineSize = addInlineImageParts(related, inlineImages, inlineCids);
+    long inlineSize = addInlineImageParts(related, pictures);
     return new SplitBody(body, related, bottomFiles, inlineSize);
+  }
+
+  /**
+   * Whether the body points at the sender's signature image — the cheap textual
+   * question, asked before paying for a parse and a logo read that almost every
+   * signature-less message would waste.
+   *
+   * @param body the body as written
+   * @return true when the signature image endpoint appears in it
+   */
+  private boolean bodyReferencesSignatureLogo(String body) {
+    return StringUtils.contains(body, EmailSignatureService.SIGNATURE_IMAGE_PATH);
+  }
+
+  /**
+   * The sender's signature image, fenced: a signature whose image cannot be
+   * read costs that image, never the mail the user pressed Send on.
+   *
+   * @param username the sender
+   * @return the image, or null when there is none or it could not be read
+   */
+  private EmailSignatureLogo resolveSignatureLogo(String username) {
+    try {
+      return emailSignatureService.getSignatureLogo(username);
+    } catch (Exception e) {
+      LOG.warn("The signature image of user {} could not be resolved; the message goes out without it", username, e);
+      return null;
+    }
+  }
+
+  /**
+   * Points the body's signature image at the part that will carry it — or, when
+   * there is no image to carry, removes the element outright: left as it is, the
+   * platform URL would reach every external recipient as a broken frame behind a
+   * login page, which is precisely the failure this machinery exists to prevent.
+   * <p>
+   * Parsed rather than pattern-matched, for the same reasons as
+   * {@link #rewriteInlineImageSources}: an {@code src} can be quoted either way,
+   * and the path can appear in text that is not an attribute at all.
+   *
+   * @param body the body as written
+   * @param logoAvailable whether there are bytes to embed
+   * @return the body with the signature image re-pointed or removed, or unchanged
+   */
+  private String rewriteSignatureLogoSource(String body, boolean logoAvailable) {
+    if (StringUtils.isBlank(body)) {
+      return body;
+    }
+    Document document = Jsoup.parse(body);
+    boolean changed = false;
+    for (Element image : document.select("img[src]")) {
+      if (!SIGNATURE_LOGO_SOURCE.matcher(image.attr("src")).find()) {
+        continue;
+      }
+      if (logoAvailable) {
+        image.attr("src", "cid:" + SIGNATURE_LOGO_CID);
+      } else {
+        image.remove();
+      }
+      changed = true;
+    }
+    return changed ? document.body().html() : body;
+  }
+
+  /**
+   * One picture the body points at, whatever it is backed by — a stored draft
+   * file or the sender's signature image — reduced to exactly what writing its
+   * MIME part needs. This is what keeps {@link #addInlineImageParts} the single
+   * place inline parts are built, instead of a second, signature-flavoured copy
+   * of the same three lines drifting from the first.
+   *
+   * @param dataSource where the bytes come from
+   * @param fileName the name the part is labelled with
+   * @param mimeType its content type
+   * @param cid the content id the body references it by
+   * @param size its size in bytes, which counts towards the outgoing cap
+   */
+  private record InlinePicture(DataSource dataSource, String fileName, String mimeType, String cid, long size) {
   }
 
   /**
@@ -6671,29 +6813,24 @@ public class EmailBoxService {
    * sufficient: the disposition asks a client not to list the part at the bottom, the
    * header is what the body's {@code cid:} reference resolves against. The header is
    * angle-bracketed as RFC 2392 requires, while the reference in the body is not.
+   * <p>
+   * Deliberately the ONLY place an inline part is written. The pictures arrive
+   * already reduced to {@link InlinePicture} — a dropped draft file and the
+   * sender's signature image are indistinguishable here, which is what keeps the
+   * two from drifting apart on the details nobody notices until a recipient does.
    *
    * @param related the {@code multipart/related} being built
-   * @param images the stored rows the body names
-   * @param inlineCids the content id minted for each of them
+   * @param pictures the pictures the body names
    * @return the total size of the parts added
    * @throws MessagingException if a body part cannot be built
    */
-  private long addInlineImageParts(MimeMultipart related,
-                                   List<EmailAttachment> images,
-                                   Map<Long, String> inlineCids) throws MessagingException {
+  private long addInlineImageParts(MimeMultipart related, List<InlinePicture> pictures) throws MessagingException {
     long totalSize = 0;
-    for (EmailAttachment image : images) {
-      String mimeType = StringUtils.defaultIfBlank(image.getMimeType(), DEFAULT_ATTACHMENT_MIME_TYPE);
-      String fileName = StringUtils.defaultIfBlank(image.getName(), DEFAULT_ATTACHMENT_NAME);
-      totalSize += image.getSize() == null ? 0L : image.getSize();
-      MimeBodyPart imagePart = attachmentBodyPart(new StoredFileDataSource(emailBoxStorage,
-                                                                          image.getFileId(),
-                                                                          fileName,
-                                                                          mimeType),
-                                                  fileName,
-                                                  mimeType);
+    for (InlinePicture picture : pictures) {
+      totalSize += picture.size();
+      MimeBodyPart imagePart = attachmentBodyPart(picture.dataSource(), picture.fileName(), picture.mimeType());
       imagePart.setDisposition(Part.INLINE);
-      imagePart.setHeader("Content-ID", "<" + inlineCids.get(image.getId()) + ">");
+      imagePart.setHeader("Content-ID", "<" + picture.cid() + ">");
       related.addBodyPart(imagePart);
     }
     return totalSize;
