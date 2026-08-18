@@ -134,6 +134,9 @@ public class EmailThreadAiSummaryTest {
   private EmailFavoriteService    emailFavoriteService;
 
   @MockBean
+  private EmailSignatureService   emailSignatureService;
+
+  @MockBean
   private ApplicationEventPublisher eventPublisher;
 
   @MockBean
