@@ -96,6 +96,9 @@ public class UserEmailSettingServiceTest {
   @MockBean
   private ApplicationEventPublisher eventPublisher;
 
+  @MockBean
+  private EmailSignatureService     emailSignatureService;
+
   @Autowired
   private UserEmailSettingService   userEmailSettingService;
 
@@ -306,6 +309,9 @@ public class UserEmailSettingServiceTest {
   void deleteUserEmailSetting() {
     userEmailSettingService.deleteUserEmailSetting(TEST_USER);
     verify(settingService).remove(any(Context.class), any(Scope.class), anyString());
+    // Disconnecting takes the signature along -- its own settings document and its
+    // uploaded image file, which nothing else would ever clean up.
+    verify(emailSignatureService).deleteEmailSignature(TEST_USER);
   }
 
   @Test
