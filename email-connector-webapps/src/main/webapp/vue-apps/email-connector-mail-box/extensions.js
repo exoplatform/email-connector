@@ -77,6 +77,65 @@ extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
  * and it writes width and height as ATTRIBUTES on the img -- which is the one form of
  * sizing mail clients agree on. A style would be dropped by Outlook.
  */
+/*
+ * The signature editor is its own type, and a deliberately bare one.
+ *
+ * It shares none of the composer's editing furniture: a signature has nothing to
+ * attach, nothing to dictate and nobody to mention, and every one of those buttons was
+ * showing up in a drawer four fields tall. A separate type drops them by simply never
+ * asking -- the attach button is registered for the composer's type alone, and the AI
+ * toolbar items resolve their bindings per editor type and find none for this one.
+ *
+ * It also has no image plugin, on purpose. CKEditor's image widget brought handles for
+ * resizing and a drag that fought the browser's own at every turn: the picture could
+ * only be moved from a handle nobody finds, a native drag pasted the image's address
+ * into the signature as words, and each fix uncovered the next. A signature needs
+ * neither. The size is decided in the cropper, where the picture is chosen, and the
+ * position by inserting it at the cursor -- both of which do the same thing every
+ * time. The img tag itself is safe without any of it: RichEditor turns CKEditor's
+ * content filter off (allowedContent: true), so nothing strips it.
+ *
+ * uploadwidget goes, though: nothing here uploads by drop or paste, and left in it
+ * treats a picture being moved as a new file and inserts a second copy.
+ */
+extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-emailSignature', {
+  id: 'emailSignatureBareEditor',
+  rank: 40,
+  enabled: () => true,
+  getExtension: () => ({
+    removePlugin: 'uploadwidget',
+  }),
+});
+
+extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
+  id: 'attachEmailFile',
+  rank: 30,
+  enabled: () => isDocumentsDeployed(),
+  getExtension: () => {
+    if (window.CKEDITOR) {
+      CKEDITOR.plugins.addExternal('attachEmailFile', '/email-connector/ckeditor/attachEmailFile/', 'plugin.js');
+    }
+    return {
+      extraPlugin: 'attachEmailFile',
+      extraToolbarItem: 'attachEmailFile',
+    };
+  },
+});
+
+/*
+ * Makes the pictures in a message resizable, by giving the email editor CKEditor's
+ * image widget.
+ *
+ * RichEditor removes the plain 'image' plugin for every editor type and adds nothing
+ * in its place, so an <img> in the body is inert: no handles, no way to make a
+ * screenshot smaller than the width it was captured at. Notes solves this by listing
+ * image2 in its own editor configuration; the email editor has no such file, and this
+ * extension point is how it says the same thing.
+ *
+ * image2 rather than image: it is the widget version, it is what notes already runs,
+ * and it writes width and height as ATTRIBUTES on the img -- which is the one form of
+ * sizing mail clients agree on. A style would be dropped by Outlook.
+ */
 extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
   id: 'emailResizableImages',
   rank: 40,
