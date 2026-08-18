@@ -104,6 +104,22 @@ public class EmailContactStorageTest {
   }
 
   @Test
+  void suggestOrdersByUsefulnessAndLowercasesTheTerm() {
+    // The compose type-ahead's whole difference from browse is this ordering, so
+    // it is asserted where it is expressed rather than only where it is executed.
+    when(emailContactDAO.suggestContacts(eq(USERNAME), anyString(), any(Pageable.class))).thenReturn(List.of());
+
+    emailContactStorage.suggestContacts(USERNAME, "  JaNe ", 7);
+
+    ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+    verify(emailContactDAO).suggestContacts(eq(USERNAME), eq("jane"), pageable.capture());
+    assertEquals("seenCount: DESC,lastSeenDate: DESC, NULLS_LAST,sortName: ASC,id: ASC",
+                 pageable.getValue().getSort().toString());
+    assertEquals(7, pageable.getValue().getPageSize());
+    assertEquals(0, pageable.getValue().getPageNumber());
+  }
+
+  @Test
   void searchTermIsLowercasedAndSourceFilterRoutesToTheSourcesQuery() {
     Page<EmailContactEntity> empty = new PageImpl<>(List.of());
     when(emailContactDAO.findContactsBySources(eq(USERNAME), eq(List.of(EmailContactSource.COLLECTED)), anyString(),

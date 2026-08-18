@@ -21,6 +21,8 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -33,6 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.io.ByteArrayInputStream;
 import java.util.Date;
+import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -61,6 +64,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
+import org.exoplatform.emailConnector.model.EmailContactSuggestion;
 import org.exoplatform.emailConnector.service.EmailContactService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -117,6 +121,32 @@ public class EmailContactRestTest {
     when(emailContactService.getContacts(anyString(), eq("bogus"), any(), anyInt(), anyInt()))
                                                                                               .thenThrow(new IllegalArgumentException(EmailContactService.CONTACT_INVALID_SOURCE));
     mockMvc.perform(get(CONTACTS_PATH + "?source=bogus").with(testSimpleUser())).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void suggestAnswersTheRankedList() throws Exception {
+    when(emailContactService.suggestRecipients(anyString(), eq("bob"), anyInt()))
+                                                                                 .thenReturn(List.of(new EmailContactSuggestion("bob@example.org",
+                                                                                                                               "Bob Smith",
+                                                                                                                               "/avatar",
+                                                                                                                               true,
+                                                                                                                               "/bob")));
+    mockMvc.perform(get(CONTACTS_PATH + "/suggest?q=bob").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].address").value("bob@example.org"))
+           .andExpect(jsonPath("$[0].platformUser").value(true));
+  }
+
+  @Test
+  void suggestWithoutATermIsStillAValidRequest() throws Exception {
+    // A blank term is the "field just opened" case, not an error: the service
+    // answers the user's top contacts and never touches the directory.
+    // The same request also proves the route itself: "/contacts/suggest" and
+    // "/contacts/{id}" share a path segment, and the literal has to win or the
+    // type-ahead 400s on an unparseable id.
+    when(emailContactService.suggestRecipients(anyString(), any(), anyInt())).thenReturn(List.of());
+    mockMvc.perform(get(CONTACTS_PATH + "/suggest").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailContactService, never()).getContact(anyLong(), anyString());
   }
 
   @Test
