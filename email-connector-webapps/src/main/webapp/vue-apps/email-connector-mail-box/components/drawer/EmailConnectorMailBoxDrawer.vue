@@ -646,20 +646,22 @@ export default {
     // BEFORE the \Flagged push, so its starred is stale for those messages — and
     // since every hit now carries the flag, adopting it as is puts the star back out
     // (the list row would show it, the search row would not, until the next search).
-    // Only overrides at least as recent as the request apply; older ones are dropped,
-    // because this answer left after the server acknowledged them -- it does reflect
-    // them -- and keeping them would outlive a favorite changed meanwhile from another
-    // mail client. That premise holds because an override carries the generation of the
-    // acknowledgement, not of the optimistic toggle: stamped at toggle time, a search
-    // started while the STORE was still travelling would prune it and take the star
-    // with it, one keystroke past the debounce being enough. INBOX rows only: UIDs are
+    // Only acknowledged overrides older than this request are dropped: this answer left
+    // after the server took their flag -- it does reflect them -- and keeping them would
+    // outlive a favorite changed meanwhile from another mail client. An unacknowledged
+    // one is kept regardless, because the push it belongs to had not reached the server
+    // when this answer was built, whether the search was issued before the
+    // acknowledgement or merely answered before it. INBOX rows only: UIDs are
     // per-folder, so the same number elsewhere is another message.
     withLocalFavorites(results, requestId) {
       if (!this.favoriteOverrides.size) {
         return results;
       }
       this.favoriteOverrides.forEach((override, mailRemoteId) => {
-        if (override.searchRequestId < requestId) {
+        // An override whose push is still travelling is never stale, whatever
+        // generation this answer carries — the server had not taken the flag when it
+        // was built, so its starred cannot be the truth for this message yet.
+        if (override.acknowledged && override.searchRequestId < requestId) {
           this.favoriteOverrides.delete(mailRemoteId);
         }
       });
@@ -785,7 +787,10 @@ export default {
     // window (which the list rows and the search's local matches derive from),
     // the server search hits, and the opened message. No service call here —
     // this is also how a refused push is rolled back visually.
-    applyEmailsFavoriteStatus(favorite, emailIds = []) {
+    // acknowledged tells whether the value carried here is already the mail server's:
+    // false for an optimistic toggle whose \Flagged push is still travelling, true for
+    // the revert broadcast below, which exists precisely because the server refused.
+    applyEmailsFavoriteStatus(favorite, emailIds = [], acknowledged = false) {
       const ids = new Set(emailIds);
       (this.emailBox?.emails || []).forEach(email => {
         if (ids.has(email.mailRemoteId)) {
@@ -803,11 +808,15 @@ export default {
       });
       // And remember it, so a search answer still in flight — which left before the
       // push and therefore reports the old flag — cannot undo the stamp when it lands.
-      // The generation recorded here is provisional: restampFavoriteOverrides() moves
-      // the entry onto the generation current when the server acknowledges the push.
+      // While the push is unacknowledged the entry is immune from pruning whatever
+      // generation an answer carries: an answer can *land* before the acknowledgement
+      // as easily as it can be issued before it, and the star was lost either way.
+      // restampFavoriteOverrides() marks it acknowledged and moves it onto the
+      // generation current at that moment, which is when pruning may resume.
       ids.forEach(mailRemoteId => this.favoriteOverrides.set(mailRemoteId, {
         favorite,
         searchRequestId: this.searchRequestId,
+        acknowledged,
       }));
       if (this.email && ids.has(this.email.mailRemoteId) && (this.email.folder || 'INBOX') === 'INBOX') {
         this.$set(this.email, 'starred', favorite);
@@ -827,11 +836,13 @@ export default {
       this.$emailConnectorMailBoxService.updateEmailsFavoriteStatus(emailIds, favorite)
         .then(result => {
           const failedUpdates = result?.failedUpdates ?? 0;
+          // Before the branch: a partial failure still means the server took the rest,
+          // and it does not say which ones. Left after it, the ids that succeeded kept
+          // the provisional stamp and stayed exposed to the very race above.
+          this.restampFavoriteOverrides(favorite, emailIds);
           if (failedUpdates > 0) {
             this.onFavoriteUpdateFailed(favorite, emailIds, failedUpdates);
-            return;
           }
-          this.restampFavoriteOverrides(favorite, emailIds);
         })
         .catch(() => this.onFavoriteUpdateFailed(favorite, emailIds, emailIds.length));
     },
@@ -845,6 +856,7 @@ export default {
       emailIds.forEach(mailRemoteId => {
         const override = this.favoriteOverrides.get(mailRemoteId);
         if (override && override.favorite === favorite) {
+          override.acknowledged = true;
           override.searchRequestId = this.searchRequestId;
         }
       });
@@ -856,7 +868,10 @@ export default {
     // already truthful: reload the listed window from it.
     onFavoriteUpdateFailed(favorite, emailIds, failedUpdates) {
       if (failedUpdates >= emailIds.length) {
-        this.$root.$emit('apply-email-favorite-status', !favorite, emailIds);
+        // Acknowledged: the server refusing the push is itself the answer, so the
+        // reverted value is the server's own. Left unacknowledged it would be immune
+        // from pruning and outlive a change made later from another mail client.
+        this.$root.$emit('apply-email-favorite-status', !favorite, emailIds, true);
       } else {
         this.loadEmailBox();
       }
