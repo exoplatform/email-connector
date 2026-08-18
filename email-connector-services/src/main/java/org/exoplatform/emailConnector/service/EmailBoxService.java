@@ -54,6 +54,8 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import javax.activation.DataHandler;
@@ -475,6 +477,14 @@ public class EmailBoxService {
 
   private static final Scope        CATEGORY_IMPORT_SCOPE                                     =
                                                                           Scope.APPLICATION.id("CATEGORY_IMPORT");
+
+  /**
+   * A composer image address: the draft attachment endpoint, ending on the row's id.
+   * Kept loose about the draft id in the middle -- it is opaque and only the row
+   * matters -- and tolerant of a trailing query, which a browser may add.
+   */
+  private static final Pattern    DRAFT_ATTACHMENT_SOURCE                                   =
+                                                          Pattern.compile("/email-box/drafts/[^/]+/attachments/(\\d+)(?:[?#].*)?$");
 
   private static final String     USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE              =
                                                                                  "User %s is not allowed to synchronize email";
@@ -6278,14 +6288,23 @@ public class EmailBoxService {
     message.setSentDate(draft.getDraftUpdatedDate() != null ? draft.getDraftUpdatedDate() : new Date());
     String body = draft.getContent() != null && draft.getContent().getBody() != null ? draft.getContent().getBody() : "";
     List<EmailAttachment> attachments = storedAttachmentsOf(draft);
+    SplitBody split = splitInlinePictures(body, attachments);
     if (attachments.isEmpty()) {
-      message.setContent(body, CONTENT_TYPE_HTML_UTF8);
+      message.setContent(split.body(), CONTENT_TYPE_HTML_UTF8);
+    } else if (split.bottomFiles().isEmpty() && split.related() != null) {
+      message.setContent(split.related());
     } else {
       MimeMultipart multipart = new MimeMultipart("mixed");
-      MimeBodyPart htmlPart = new MimeBodyPart();
-      htmlPart.setContent(body, CONTENT_TYPE_HTML_UTF8);
-      multipart.addBodyPart(htmlPart);
-      addStoredAttachmentParts(multipart, attachments);
+      if (split.related() == null) {
+        MimeBodyPart htmlPart = new MimeBodyPart();
+        htmlPart.setContent(split.body(), CONTENT_TYPE_HTML_UTF8);
+        multipart.addBodyPart(htmlPart);
+      } else {
+        MimeBodyPart relatedPart = new MimeBodyPart();
+        relatedPart.setContent(split.related());
+        multipart.addBodyPart(relatedPart);
+      }
+      addStoredAttachmentParts(multipart, split.bottomFiles());
       message.setContent(multipart);
     }
     if (StringUtils.isNotBlank(draft.getInReplyTo())) {
@@ -6448,12 +6467,25 @@ public class EmailBoxService {
   }
 
   /**
-   * Sets the body of an outgoing message. When the composed email carries no
-   * attachment the body is a single {@code text/html} part; otherwise a
-   * {@code multipart/mixed} is built with the HTML body followed by one part per
-   * attachment. Each attachment is resolved from its commons upload id to the
-   * temporary file backing it, so no ecms/documents dependency is required. The
-   * resolved upload ids are collected into {@code uploadIds} for later cleanup.
+   * Sets the body of an outgoing message, and the files that travel with it.
+   * <p>
+   * A picture dropped into the text and a file attached at the bottom are the same
+   * kind of stored row here, and exactly one thing tells them apart: whether the body
+   * points at it. Nothing is written down to mark a row as inline -- see
+   * {@link #rewriteInlineImageSources} for why that is deliberate rather than an
+   * omission.
+   * <p>
+   * The shapes this can produce, and why each exists:
+   * <ul>
+   * <li>nothing attached -- a single {@code text/html} part, as before;</li>
+   * <li>pictures in the text -- a {@code multipart/related} holding the HTML and the
+   * pictures it names, which is the arrangement that makes a mail client draw them
+   * where the text says instead of listing them at the bottom;</li>
+   * <li>files at the bottom -- a {@code multipart/mixed}, with the whole of the above
+   * as its first part so the two never get confused for one another.</li>
+   * </ul>
+   * The size cap counts every part, pictures included: what the receiving server
+   * refuses is the size of the message, not of any one file inside it.
    *
    * @param message the message being composed
    * @param email the composed email holding the optional {@code attachments}
@@ -6465,20 +6497,37 @@ public class EmailBoxService {
                                           Email email,
                                           String bodyHtml,
                                           List<String> uploadIds) throws MessagingException {
-    if (CollectionUtils.isEmpty(email.getAttachments()) && CollectionUtils.isEmpty(email.getStoredAttachments())) {
-      message.setContent(bodyHtml, CONTENT_TYPE_HTML_UTF8);
+    SplitBody split = splitInlinePictures(bodyHtml, storedAttachments(email));
+    List<EmailAttachment> bottomFiles = split.bottomFiles();
+    boolean hasUploads = !CollectionUtils.isEmpty(email.getAttachments());
+
+    if (split.related() == null && bottomFiles.isEmpty() && !hasUploads) {
+      message.setContent(split.body(), CONTENT_TYPE_HTML_UTF8);
       return;
     }
+    if (bottomFiles.isEmpty() && !hasUploads) {
+      message.setContent(split.related());
+      return;
+    }
+    long totalSize = split.inlineSize();
+
     UploadService uploadService = CommonsUtils.getService(UploadService.class);
     MimeMultipart multipart = new MimeMultipart("mixed");
-    MimeBodyPart htmlPart = new MimeBodyPart();
-    htmlPart.setContent(bodyHtml, CONTENT_TYPE_HTML_UTF8);
-    multipart.addBodyPart(htmlPart);
+    if (split.related() == null) {
+      MimeBodyPart htmlPart = new MimeBodyPart();
+      htmlPart.setContent(split.body(), CONTENT_TYPE_HTML_UTF8);
+      multipart.addBodyPart(htmlPart);
+    } else {
+      // The text and its pictures enter the mixed part as one thing. Added flat, a
+      // client has no way to tell which images belong in the body and shows every
+      // one of them at the bottom as well.
+      MimeBodyPart relatedPart = new MimeBodyPart();
+      relatedPart.setContent(split.related());
+      multipart.addBodyPart(relatedPart);
+    }
     // The draft's own stored files first, then this session's uploads, which is the
-    // order the user attached them in — the stored ones are by definition older. Their
-    // sizes count towards the same cap: what matters to the receiving server is the
-    // size of the message, not where each part came from.
-    long totalSize = applyStoredAttachments(multipart, email);
+    // order the user attached them in -- the stored ones are by definition older.
+    totalSize += addStoredAttachmentParts(multipart, bottomFiles);
     if (totalSize > MAX_OUTGOING_ATTACHMENTS_SIZE) {
       throw new IllegalStateException("emailConnector.mailBox.newEmail.attach.maxSize.error");
     }
@@ -6501,6 +6550,157 @@ public class EmailBoxService {
       multipart.addBodyPart(attachmentBodyPart(new FileDataSource(file), fileName, attachment.getMimeType()));
     }
     message.setContent(multipart);
+  }
+
+  /**
+   * A message's body once its pictures have been separated from its attachments.
+   *
+   * @param body the body, with each picture pointing at the part that carries it
+   * @param related the text and its pictures together, or null when there are none
+   * @param bottomFiles the files that belong at the bottom, as attachments
+   * @param inlineSize the size of the pictures, which counts towards the same cap
+   */
+  private record SplitBody(String body, MimeMultipart related, List<EmailAttachment> bottomFiles, long inlineSize) {
+  }
+
+  /**
+   * Separates the pictures a body points at from the files meant for its bottom, and
+   * builds the {@code multipart/related} the first of those need.
+   * <p>
+   * Shared by the two paths that write a message — the one that sends it and the one
+   * that stores the draft on the mail server — because a draft opened on a phone is
+   * read by the same clients as a sent mail, and would show a broken frame for every
+   * picture if only one of the two knew about this.
+   *
+   * @param bodyHtml the body as written
+   * @param stored the stored files the message carries
+   * @return the split, never null
+   * @throws MessagingException if a body part cannot be built
+   */
+  private SplitBody splitInlinePictures(String bodyHtml, List<EmailAttachment> stored) throws MessagingException {
+    Map<Long, String> inlineCids = new LinkedHashMap<>();
+    String body = rewriteInlineImageSources(bodyHtml, stored, inlineCids);
+    List<EmailAttachment> inlineImages = stored.stream().filter(a -> inlineCids.containsKey(a.getId())).toList();
+    List<EmailAttachment> bottomFiles = stored.stream().filter(a -> !inlineCids.containsKey(a.getId())).toList();
+    if (inlineImages.isEmpty()) {
+      return new SplitBody(body, null, bottomFiles, 0L);
+    }
+    MimeMultipart related = new MimeMultipart("related");
+    MimeBodyPart htmlPart = new MimeBodyPart();
+    htmlPart.setContent(body, "text/html; charset=UTF-8");
+    related.addBodyPart(htmlPart);
+    long inlineSize = addInlineImageParts(related, inlineImages, inlineCids);
+    return new SplitBody(body, related, bottomFiles, inlineSize);
+  }
+
+  /**
+   * Points the body's pictures at the parts that will carry them, and says which
+   * stored rows those are.
+   * <p>
+   * A picture the user dropped into the text was uploaded as an ordinary draft file
+   * and the composer wrote its address into the body. That address is the record: a
+   * row is inline when, and only when, the body names it. Deliberately no column
+   * marks it -- a flag would be a second copy of a fact the body already holds, free
+   * to disagree with it the moment someone deletes the picture from the text, and it
+   * would cost a schema change on a surface this add-on has already been burned by.
+   * <p>
+   * The address is replaced by a {@code cid:} reference because neither of the
+   * obvious alternatives survives the trip: a link back to the platform sits behind a
+   * login, so anyone outside eXo sees a broken frame, and a picture pasted into the
+   * body as data is stripped or blocked outright by Gmail, Outlook and most others.
+   * <p>
+   * Parsed rather than pattern-matched: an {@code src} can be quoted either way, and
+   * the word can appear in text that is not an attribute at all.
+   *
+   * @param bodyHtml the sanitized HTML body
+   * @param stored the stored files the message carries
+   * @param inlineCids populated with the content id minted for each referenced row
+   * @return the body with those addresses replaced, or the body unchanged if none
+   */
+  private String rewriteInlineImageSources(String bodyHtml, List<EmailAttachment> stored, Map<Long, String> inlineCids) {
+    Set<Long> storedIds = stored.stream()
+                                                  .map(EmailAttachment::getId)
+                                                  .filter(Objects::nonNull)
+                                                  .collect(Collectors.toSet());
+    if (StringUtils.isBlank(bodyHtml) || storedIds.isEmpty()) {
+      return bodyHtml;
+    }
+    Document document = Jsoup.parse(bodyHtml);
+    for (Element image : document.select("img[src]")) {
+      Long attachmentId = draftAttachmentId(image.attr("src"));
+      if (attachmentId == null || !storedIds.contains(attachmentId)) {
+        continue;
+      }
+      inlineCids.computeIfAbsent(attachmentId, id -> "email-inline-" + id + "@exo");
+      image.attr("src", "cid:" + inlineCids.get(attachmentId));
+    }
+    return inlineCids.isEmpty() ? bodyHtml : document.body().html();
+  }
+
+  /**
+   * The stored row a composer's image address names, or null when it names something
+   * else -- a picture from elsewhere on the web, or another user's mail.
+   *
+   * @param source the {@code src} attribute to read
+   * @return the attachment id, or null
+   */
+  private Long draftAttachmentId(String source) {
+    if (StringUtils.isBlank(source)) {
+      return null;
+    }
+    Matcher matcher = DRAFT_ATTACHMENT_SOURCE.matcher(source);
+    return matcher.find() ? Long.valueOf(matcher.group(1)) : null;
+  }
+
+  /**
+   * Every stored file the composed message carries, ignoring rows whose bytes never
+   * arrived -- there is nothing to send for those, inline or otherwise.
+   *
+   * @param email the composed email
+   * @return the stored files, never null
+   */
+  private List<EmailAttachment> storedAttachments(Email email) {
+    return CollectionUtils.isEmpty(email.getStoredAttachments()) ? List.of()
+                                                                 : email.getStoredAttachments()
+                                                                        .stream()
+                                                                        .filter(a -> a != null && a.getFileId() != null)
+                                                                        .toList();
+  }
+
+  /**
+   * Adds the pictures the body points at, each carrying the content id it is named
+   * by.
+   * <p>
+   * {@code INLINE} and the {@code Content-ID} header are both required and neither is
+   * sufficient: the disposition asks a client not to list the part at the bottom, the
+   * header is what the body's {@code cid:} reference resolves against. The header is
+   * angle-bracketed as RFC 2392 requires, while the reference in the body is not.
+   *
+   * @param related the {@code multipart/related} being built
+   * @param images the stored rows the body names
+   * @param inlineCids the content id minted for each of them
+   * @return the total size of the parts added
+   * @throws MessagingException if a body part cannot be built
+   */
+  private long addInlineImageParts(MimeMultipart related,
+                                   List<EmailAttachment> images,
+                                   Map<Long, String> inlineCids) throws MessagingException {
+    long totalSize = 0;
+    for (EmailAttachment image : images) {
+      String mimeType = StringUtils.defaultIfBlank(image.getMimeType(), DEFAULT_ATTACHMENT_MIME_TYPE);
+      String fileName = StringUtils.defaultIfBlank(image.getName(), DEFAULT_ATTACHMENT_NAME);
+      totalSize += image.getSize() == null ? 0L : image.getSize();
+      MimeBodyPart imagePart = attachmentBodyPart(new StoredFileDataSource(emailBoxStorage,
+                                                                          image.getFileId(),
+                                                                          fileName,
+                                                                          mimeType),
+                                                  fileName,
+                                                  mimeType);
+      imagePart.setDisposition(Part.INLINE);
+      imagePart.setHeader("Content-ID", "<" + inlineCids.get(image.getId()) + ">");
+      related.addBodyPart(imagePart);
+    }
+    return totalSize;
   }
 
   /**
@@ -6671,39 +6871,6 @@ public class EmailBoxService {
     }
   }
 
-  /**
-   * Adds a draft's stored files to the message being sent, reading each one's bytes
-   * back out of the platform's file service.
-   * <p>
-   * This is what makes a draft resumed after a restart send what it shows. Everything
-   * else on the send path works from commons upload ids, which only exist for files
-   * attached during the browser session that is still open; the files a draft has been
-   * carrying since yesterday have none, and a message built from upload ids alone goes
-   * out with the text and without them.
-   * <p>
-   * A file that cannot be read is a hard failure rather than a part quietly left out.
-   * Sending a mail whose attachments are missing, to someone who is expecting them, is
-   * not something the sender can discover afterwards or take back — the branch's own
-   * rule for the mail server holds here too: refuse rather than deliver something that
-   * looks complete and is not. {@link #sendDraft} asks that question before it claims
-   * the row; {@link StoredFileDataSource} is what answers it again at the moment the
-   * bytes are actually written.
-   *
-   * @param multipart the message body being assembled
-   * @param email the draft being sent
-   * @return the total size of the parts added, for the cap the caller keeps counting
-   * @throws MessagingException if a body part cannot be built
-   */
-  private long applyStoredAttachments(MimeMultipart multipart, Email email) throws MessagingException {
-    if (CollectionUtils.isEmpty(email.getStoredAttachments())) {
-      return 0L;
-    }
-    return addStoredAttachmentParts(multipart,
-                                    email.getStoredAttachments()
-                                         .stream()
-                                         .filter(attachment -> attachment != null && attachment.getFileId() != null)
-                                         .toList());
-  }
 
   /**
    * Removes the commons temporary upload resources that backed the attachments
