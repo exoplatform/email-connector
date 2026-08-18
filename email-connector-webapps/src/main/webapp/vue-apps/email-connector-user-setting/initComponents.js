@@ -21,6 +21,7 @@ import EmailConnectorUserSettingConnectorsDrawerList from './components/drawer/c
 import EmailConnectorUserSettingConnectorsDrawerListItem from './components/drawer/connectors/EmailConnectorUserSettingConnectorsDrawerListItem.vue';
 import EmailConnectorUserSettingDrawer from './components/drawer/user-setting/EmailConnectorUserSettingDrawer.vue';
 import EmailConnectorUserSettingDisconnectDrawer from './components/drawer/disconnect/EmailConnectorUserSettingDisconnectDrawer.vue';
+import EmailConnectorUserSettingSignatureDrawer from './components/drawer/signature/EmailConnectorUserSettingSignatureDrawer.vue';
 import EmailConnectorContactsChoiceStep from './components/drawer/common/EmailConnectorContactsChoiceStep.vue';
 
 const components = {
@@ -31,6 +32,7 @@ const components = {
   'email-connector-user-setting-connectors-drawer-list-item': EmailConnectorUserSettingConnectorsDrawerListItem,
   'email-connector-user-setting-drawer': EmailConnectorUserSettingDrawer,
   'email-connector-user-setting-disconnect-drawer': EmailConnectorUserSettingDisconnectDrawer,
+  'email-connector-user-setting-signature-drawer': EmailConnectorUserSettingSignatureDrawer,
   'email-connector-contacts-choice-step': EmailConnectorContactsChoiceStep,
 };
 
