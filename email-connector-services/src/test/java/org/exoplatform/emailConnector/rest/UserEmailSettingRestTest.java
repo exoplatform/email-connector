@@ -145,14 +145,14 @@ public class UserEmailSettingRestTest {
    */
   @Test
   void getAndSaveEmailSignature() throws Exception {
-    when(emailSignatureService.getEmailSignature(SIMPLE_USER)).thenReturn(new EmailSignature(true, null, "<p>me</p>", false));
+    when(emailSignatureService.getEmailSignature(SIMPLE_USER)).thenReturn(new EmailSignature(true, null, "<p>me</p>", false, null));
     mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature").with(testSimpleUser()))
            .andExpect(status().isOk());
     mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/signature").with(testSimpleUser())
                                                                .content(asJsonString(new EmailSignature(true,
                                                                                                         "<p>mine</p>",
                                                                                                         null,
-                                                                                                        false)))
+                                                                                                        false, null)))
                                                                .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk());
     verify(emailSignatureService).saveEmailSignature(eq(SIMPLE_USER), any(EmailSignature.class));
@@ -173,7 +173,7 @@ public class UserEmailSettingRestTest {
                                                                .content(asJsonString(new EmailSignature(true,
                                                                                                         "<p>huge</p>",
                                                                                                         null,
-                                                                                                        false)))
+                                                                                                        false, null)))
                                                                .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest());
   }
