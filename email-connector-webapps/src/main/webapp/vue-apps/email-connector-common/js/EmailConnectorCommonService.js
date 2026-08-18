@@ -182,3 +182,88 @@ export function getAddressBookPublishQueue() {
     return resp.json();
   });
 }
+
+/**
+ * The caller's email signature: the on/off switch, their own markup when they
+ * wrote one, and the default the server composed from their profile.
+ *
+ * @returns {Promise<object>} {enabled, customHtml, defaultHtml, customLogo}
+ */
+export function getEmailSignature() {
+  return fetch('/email-connector/rest/user-email-setting/signature', {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when reading the email signature');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Stores the caller's signature preference. A null (or blank) customHtml means
+ * "back to the default", which then keeps following the profile.
+ *
+ * @param {object} signature - {enabled, customHtml}
+ * @returns {Promise} resolves once stored
+ */
+export function saveEmailSignature(signature) {
+  return fetch('/email-connector/rest/user-email-setting/signature', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify(signature)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when saving the email signature');
+    }
+  });
+}
+
+/**
+ * The signature image's address, versioned so replacing the image is a new URL
+ * rather than a stale browser cache.
+ *
+ * @param {number|string} version - anything that changes when the image does
+ * @returns {string} the image URL
+ */
+export function getSignatureImageUrl(version) {
+  return `/email-connector/rest/user-email-setting/signature/image?v=${version}`;
+}
+
+/**
+ * Replaces the signature image with the picture the platform's cropper
+ * uploaded.
+ *
+ * @param {string} uploadId - the upload id the crop drawer produced
+ * @returns {Promise} resolves once stored
+ */
+export function saveSignatureImage(uploadId) {
+  return fetch(`/email-connector/rest/user-email-setting/signature/image?uploadId=${encodeURIComponent(uploadId)}`, {
+    credentials: 'include',
+    method: 'PUT'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when saving the signature image');
+    }
+  });
+}
+
+/**
+ * Puts the signature image back to the company logo.
+ *
+ * @returns {Promise} resolves once reset
+ */
+export function resetSignatureImage() {
+  return fetch('/email-connector/rest/user-email-setting/signature/image', {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when resetting the signature image');
+    }
+  });
+}
