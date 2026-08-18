@@ -116,6 +116,9 @@ public class UserEmailSettingService {
   @Autowired
   private ApplicationEventPublisher eventPublisher;
 
+  @Autowired
+  private EmailSignatureService     emailSignatureService;
+
   /**
    * Connect user email setting.
    *
@@ -302,6 +305,10 @@ public class UserEmailSettingService {
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void deleteUserEmailSetting(String username) {
     settingService.remove(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+    // The signature belongs to the mail account's composer, so disconnecting the
+    // mailbox takes it along -- its stored document AND its uploaded image file,
+    // which nothing else would ever clean up.
+    emailSignatureService.deleteEmailSignature(username);
     eventPublisher.publishEvent(new EmailBoxCleanupEvent(username));
   }
 

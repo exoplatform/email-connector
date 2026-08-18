@@ -18,6 +18,11 @@
 
 package org.exoplatform.emailConnector.rest;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -49,7 +54,10 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.emailConnector.model.EmailSignature;
+import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -84,6 +92,9 @@ public class UserEmailSettingRestTest {
 
   @MockBean
   private UserEmailSettingService userEmailSettingService;
+
+  @MockBean
+  private EmailSignatureService   emailSignatureService;
 
   @Autowired
   private SecurityFilterChain     filterChain;
@@ -124,6 +135,85 @@ public class UserEmailSettingRestTest {
   void getUserEmailConnectors() throws Exception {
     ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
+  }
+
+  /**
+   * The signature round trip at the HTTP level: reading answers the service's
+   * model, storing hands the body to the service under the caller's own name.
+   *
+   * @throws Exception when the mock HTTP plumbing misbehaves
+   */
+  @Test
+  void getAndSaveEmailSignature() throws Exception {
+    when(emailSignatureService.getEmailSignature(SIMPLE_USER)).thenReturn(new EmailSignature(true, null, "<p>me</p>", false));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/signature").with(testSimpleUser())
+                                                               .content(asJsonString(new EmailSignature(true,
+                                                                                                        "<p>mine</p>",
+                                                                                                        null,
+                                                                                                        false)))
+                                                               .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailSignatureService).saveEmailSignature(eq(SIMPLE_USER), any(EmailSignature.class));
+  }
+
+  /**
+   * The service's size-cap refusal comes back as the 400 the exception contract
+   * promises, message code and all — what lets the settings screen say WHY.
+   *
+   * @throws Exception when the mock HTTP plumbing misbehaves
+   */
+  @Test
+  void aTooLongSignatureAnswers400() throws Exception {
+    doThrow(new IllegalArgumentException("emailConnector.signature.tooLong")).when(emailSignatureService)
+                                                                             .saveEmailSignature(eq(SIMPLE_USER),
+                                                                                                 any(EmailSignature.class));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/signature").with(testSimpleUser())
+                                                               .content(asJsonString(new EmailSignature(true,
+                                                                                                        "<p>huge</p>",
+                                                                                                        null,
+                                                                                                        false)))
+                                                               .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * The signature image: bytes with an honest content type when there is one,
+   * a plain 404 when there is none — never a broken 200.
+   *
+   * @throws Exception when the mock HTTP plumbing misbehaves
+   */
+  @Test
+  void getSignatureImage() throws Exception {
+    when(emailSignatureService.getSignatureLogo(SIMPLE_USER)).thenReturn(new EmailSignatureLogo(new byte[] { 1, 2 },
+                                                                                                "image/png",
+                                                                                                "logo"));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    when(emailSignatureService.getSignatureLogo(SIMPLE_USER)).thenReturn(null);
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/signature/image").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
+  }
+
+  /**
+   * Replacing and resetting the signature image, including the 400 a dead
+   * upload id earns.
+   *
+   * @throws Exception when the mock HTTP plumbing misbehaves
+   */
+  @Test
+  void saveAndDeleteSignatureImage() throws Exception {
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/signature/image?uploadId=up1").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailSignatureService).saveSignatureLogo(SIMPLE_USER, "up1");
+    doThrow(new IllegalArgumentException("emailConnector.signature.logo.uploadGone")).when(emailSignatureService)
+                                                                                     .saveSignatureLogo(SIMPLE_USER, "gone");
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/signature/image?uploadId=gone").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/signature/image").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailSignatureService).deleteSignatureLogo(SIMPLE_USER);
   }
 
   private RequestPostProcessor testSimpleUser() {
