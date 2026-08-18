@@ -66,7 +66,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :placeholder="$t('emailConnector.mailBox.newEmail.drawer.subject.placeholder')" />
       </v-list-item>
       <v-divider />
-      <div ref="editorWrapper" class="mx-4 mt-3">
+      <div ref="editorWrapper" class="mx-4 mt-3 position-relative">
+        <div
+          v-if="draggingImage"
+          class="d-flex flex-column align-center justify-center position-absolute z-index-two rounded"
+          style="inset: 0; pointer-events: none; border: 3px dashed var(--allPagesPrimaryColor, #578dc9); background-color: var(--allPagesBaseBackground, #fff); opacity: 0.92;">
+          <v-icon size="32" color="primary">fas fa-image</v-icon>
+          <span class="text-subtitle-2 primary--text mt-2">{{ $t('emailConnector.mailBox.newEmail.drawer.content.dropImage') }}</span>
+        </div>
         <rich-editor
           v-if="editorMaxHeight"
           ref="emailContent"
@@ -184,6 +191,7 @@ export default {
         },
       },
       attachments: [],
+      draggingImage: false,
       loading: false,
       title: '',
       editorMaxHeight: 0,
@@ -506,6 +514,54 @@ export default {
       editor.emailInlineImagesBound = true;
       editor.on('paste', this.onEditorFilesDropped);
       editor.on('drop', this.onEditorFilesDropped);
+      // Also on the editor's own document: while a file is dragged over the editable
+      // the pointer is inside the iframe, and the drawer around it is told nothing.
+      const editorDocument = editor.document && editor.document.$;
+      if (editorDocument) {
+        editorDocument.addEventListener('dragover', this.onDragOverEditor);
+        editorDocument.addEventListener('drop', this.onDragLeftEditor);
+      }
+      const wrapper = this.$refs.editorWrapper;
+      if (wrapper) {
+        wrapper.addEventListener('dragover', this.onDragOverEditor);
+        wrapper.addEventListener('drop', this.onDragLeftEditor);
+      }
+    },
+    /**
+     * Shows the drop target while a file is being dragged over the editor.
+     * <p>
+     * Driven off {@code dragover}, which repeats while the pointer moves, rather than
+     * off the enter/leave pair: those fire on every element the pointer crosses, so
+     * counting them across an iframe boundary flickers. Instead the marker is put up
+     * on each {@code dragover} and taken down shortly after they stop arriving, which
+     * is steady wherever the pointer goes.
+     * <p>
+     * Only for a drag that carries files — dragging a word of text around the message
+     * is not an invitation to drop a picture.
+     *
+     * @param {object} event - the browser drag event
+     * @returns {void}
+     */
+    onDragOverEditor(event) {
+      const types = event?.dataTransfer?.types;
+      if (!types || !Array.prototype.includes.call(types, 'Files')) {
+        return;
+      }
+      // Without this the browser opens the dropped file in a new tab instead.
+      event.preventDefault();
+      this.draggingImage = true;
+      clearTimeout(this.dragOverTimer);
+      this.dragOverTimer = setTimeout(() => this.draggingImage = false, 150);
+    },
+    /**
+     * Takes the drop target down at once, rather than waiting for the timer, so it
+     * does not linger over the picture that has just landed.
+     *
+     * @returns {void}
+     */
+    onDragLeftEditor() {
+      clearTimeout(this.dragOverTimer);
+      this.draggingImage = false;
     },
     /**
      * Takes the images out of a paste or a drop and leaves everything else alone.
