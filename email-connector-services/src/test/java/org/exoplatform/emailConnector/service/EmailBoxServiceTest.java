@@ -179,6 +179,9 @@ public class EmailBoxServiceTest {
   @MockBean
   private ApplicationEventPublisher eventPublisher;
 
+  @MockBean
+  private EmailFavoriteService    emailFavoriteService;
+
   @Autowired
   private EmailBoxService         emailBoxService;
 
@@ -290,6 +293,40 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     emailBoxService.getEmailById(121l, TEST_USER);
     verify(emailBoxStorage).getEmailById(121l, TEST_USER, "testEmail");
+  }
+
+  @Test
+  void getOwnedEmailById() throws IllegalAccessException {
+    // The Favorites drawer reaches this with an id the platform stored, and an id is
+    // guessable, so ownership is checked here rather than assumed by the caller.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    Email email = new Email();
+    email.setId(121l);
+    email.setUserId(TEST_USER);
+    when(emailBoxStorage.getEmailById(121l, TEST_USER, "testEmail")).thenReturn(email);
+    assertSame(email, emailBoxService.getOwnedEmailById(121l, TEST_USER));
+  }
+
+  @Test
+  void getOwnedEmailByIdOfSomebodyElse() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    Email email = new Email();
+    email.setId(121l);
+    email.setUserId("someoneelse");
+    when(emailBoxStorage.getEmailById(121l, TEST_USER, "testEmail")).thenReturn(email);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.getOwnedEmailById(121l, TEST_USER));
+  }
+
+  @Test
+  void getOwnedEmailByIdOfUnknownEmail() throws IllegalAccessException {
+    // Nothing cached under that id: null, not a refusal — the REST layer turns both
+    // into the same 404 anyway.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(emailBoxStorage.getEmailById(121l, TEST_USER, "testEmail")).thenReturn(null);
+    assertNull(emailBoxService.getOwnedEmailById(121l, TEST_USER));
   }
 
   @Test

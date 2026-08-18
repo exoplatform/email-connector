@@ -224,6 +224,11 @@ export default {
       selectMode: false,
       expanded: false,
       email: null,
+      // A mail opened from outside the mailbox (the global Favorites drawer) is
+      // pinned open: it is legitimately absent from the listed window, and a list
+      // reload must not take the reader back from the user. Cleared as soon as they
+      // open something themselves, or close the drawer.
+      pinnedEmail: false,
       selectEmailPlaceHolder: false,
       selectedCategoryId: null,
       selectedCategoryIds: [],
@@ -301,8 +306,35 @@ export default {
     this.$root.$on('open-email-detail-drawer', () => {
       this.email = null;
     });
-    this.$root.$on('open-mail-box-drawer', (loading) => {
-      this.open(loading); 
+    // Opening the mailbox, optionally straight onto one message — that is how the
+    // global Favorites drawer hands a mail over. The payload used to be the plain
+    // "loading" flag and callers still pass it that way, so an object is what marks
+    // the richer form: passing one where a flag is expected would read as truthy
+    // and wrongly show the drawer as synchronizing.
+    this.$root.$on('open-mail-box-drawer', async (payload) => {
+      const options = payload && typeof payload === 'object' ? payload : {loading: payload};
+      // The message goes up first and the folder loads behind it. Opening the mailbox
+      // first meant a favorited mail waited on the whole inbox — a thousand messages
+      // fetched before its own single one — which felt slow for something the user
+      // asked for by name. The narrow reader is a drawer of its own, mounted beside
+      // this one, so it can show while this list is still empty; the wide reader is a
+      // pane of this drawer and only renders once the folder is there, so that one
+      // still waits.
+      const readerFirst = options.mailRemoteId && !this.expanded;
+      if (readerFirst) {
+        this.openMailFromOutside(options.mailRemoteId);
+      }
+      await this.open(options.loading);
+      if (readerFirst) {
+        // Hand the reader the conversation and webmail link it opened without.
+        this.$root.$emit('email-detail-context', {
+          emails: this.emails,
+          syncInProgress: this.syncInProgress,
+          webmailUrl: this.webmailUrl,
+        });
+      } else if (options.mailRemoteId) {
+        this.openMailFromOutside(options.mailRemoteId);
+      }
     });
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
@@ -452,9 +484,10 @@ export default {
       this.selectedCategoryIds = val && await this.$emailConnectorMailBoxService.getSubcategoryIds(val) || [];
     },
     emails() {
-      // A search hit opened in the reader is often outside the listed folder view;
-      // a background refresh must not knock it out for the placeholder.
-      if (this.searchActive) {
+      // A search hit, or a mail opened from the Favorites drawer, is often outside
+      // the listed folder view; a background refresh must not knock it out for the
+      // placeholder.
+      if (this.searchActive || this.pinnedEmail) {
         return;
       }
       if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
@@ -507,6 +540,9 @@ export default {
       }
     },
     openEmailDetailContent(mailRemoteId) {
+      // Opening from the list is the user choosing again: whatever was pinned open
+      // from elsewhere gives way to it.
+      this.pinnedEmail = false;
       this.loading = true;
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId).then((email) => {
         this.updateEmailsReadStatus(true, [mailRemoteId]);
@@ -515,6 +551,35 @@ export default {
       }).finally(() => {
         this.loading = false;
       });
+    },
+    /**
+     * Opens one message picked outside the mailbox — today, from the platform's
+     * global Favorites drawer.
+     *
+     * It goes through the same two doors as a search hit, and for the same reason:
+     * such a message is usually not in the listed window. Wide, the reader is a pane
+     * of this drawer, so the message is set here and pinned against the next list
+     * refresh; narrow, the reader is a drawer of its own, which has to be told to
+     * open — setting the message here would only have changed a pane that the narrow
+     * layout never shows, leaving the user looking at the list.
+     *
+     * @param {Number} mailRemoteId the IMAP UID of the message to open
+     * @returns {Promise} resolved once the message is on screen
+     */
+    async openMailFromOutside(mailRemoteId) {
+      if (!this.expanded) {
+        this.$root.$emit('open-email-detail-drawer', mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl, true);
+        return;
+      }
+      this.loading = true;
+      try {
+        this.pinnedEmail = true;
+        this.email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId);
+        this.selectEmailPlaceHolder = false;
+        this.$root.$emit('set-opened', mailRemoteId);
+      } finally {
+        this.loading = false;
+      }
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
@@ -637,6 +702,7 @@ export default {
       }
     },
     close() {
+      this.pinnedEmail = false;
       this.categoryWatchDeadline = null;
       this.stopAutoRefresh();
       this.clearSearch();
