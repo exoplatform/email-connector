@@ -245,10 +245,6 @@ export default {
       searchServerRunning: false,
       searchServerError: false,
       searchRequestId: 0,
-      // Favorites the user toggled here, each tagged with the search generation that
-      // was in flight at that moment, so a server search answer that left before the
-      // \Flagged push cannot roll the star back. Read only in withLocalFavorites().
-      favoriteOverrides: new Map(),
       searchOpening: false
     };
   },
@@ -256,6 +252,12 @@ export default {
     this.isRefreshing = false;
     // Plain instance field: a pending timeout id needs no reactivity.
     this.searchDebounceTimer = null;
+    // Favorites the user toggled here, each tagged with the search generation that was
+    // current when the mail server acknowledged the \Flagged push, so a search answer
+    // that left before that acknowledgement cannot roll the star back. A plain field,
+    // not data(): Vue 2 does not observe a Map, and nothing renders it directly —
+    // withLocalFavorites() is its only reader, and it runs when a search answer lands.
+    this.favoriteOverrides = new Map();
     // The add-on's own email categories are the children of the Inbox category; feeding
     // their ids to the platform filter makes it open "inside the Inbox" — showing those
     // children directly as chips, rather than an Inbox parent the user must drill into.
@@ -645,8 +647,12 @@ export default {
     // since every hit now carries the flag, adopting it as is puts the star back out
     // (the list row would show it, the search row would not, until the next search).
     // Only overrides at least as recent as the request apply; older ones are dropped,
-    // because this answer does reflect them and keeping them would outlive a favorite
-    // changed meanwhile from another mail client. INBOX rows only: UIDs are
+    // because this answer left after the server acknowledged them -- it does reflect
+    // them -- and keeping them would outlive a favorite changed meanwhile from another
+    // mail client. That premise holds because an override carries the generation of the
+    // acknowledgement, not of the optimistic toggle: stamped at toggle time, a search
+    // started while the STORE was still travelling would prune it and take the star
+    // with it, one keystroke past the debounce being enough. INBOX rows only: UIDs are
     // per-folder, so the same number elsewhere is another message.
     withLocalFavorites(results, requestId) {
       if (!this.favoriteOverrides.size) {
@@ -733,6 +739,9 @@ export default {
       this.categoryWatchDeadline = null;
       this.stopAutoRefresh();
       this.clearSearch();
+      // Nothing prunes an override until a server answer lands, so a user who toggles
+      // stars and never searches again would keep the entries for the page's lifetime.
+      this.favoriteOverrides.clear();
       // Also empty the drawer's own header filter field for the next open.
       this.$refs.emailBoxDrawer?.resetFilter?.();
       document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
@@ -794,6 +803,8 @@ export default {
       });
       // And remember it, so a search answer still in flight — which left before the
       // push and therefore reports the old flag — cannot undo the stamp when it lands.
+      // The generation recorded here is provisional: restampFavoriteOverrides() moves
+      // the entry onto the generation current when the server acknowledges the push.
       ids.forEach(mailRemoteId => this.favoriteOverrides.set(mailRemoteId, {
         favorite,
         searchRequestId: this.searchRequestId,
@@ -818,9 +829,25 @@ export default {
           const failedUpdates = result?.failedUpdates ?? 0;
           if (failedUpdates > 0) {
             this.onFavoriteUpdateFailed(favorite, emailIds, failedUpdates);
+            return;
           }
+          this.restampFavoriteOverrides(favorite, emailIds);
         })
         .catch(() => this.onFavoriteUpdateFailed(favorite, emailIds, emailIds.length));
+    },
+    // Move the confirmed overrides onto the search generation in flight NOW that the
+    // server has taken the flag. Until this runs an override carries the generation of
+    // the optimistic toggle, which any search issued while the push travelled would
+    // outrank -- and that search's answer, built from the FLAGS as they were before the
+    // push, would put the star back out. An entry whose favorite no longer matches was
+    // overwritten by a later toggle; it belongs to that toggle's own confirmation.
+    restampFavoriteOverrides(favorite, emailIds = []) {
+      emailIds.forEach(mailRemoteId => {
+        const override = this.favoriteOverrides.get(mailRemoteId);
+        if (override && override.favorite === favorite) {
+          override.searchRequestId = this.searchRequestId;
+        }
+      });
     },
     // Reflect a refused push. When everything failed (or the lone message did),
     // the exact set to roll back is known: broadcast the revert so every copy —
