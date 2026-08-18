@@ -62,17 +62,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ $t('UserSettings.emailConnector.defaultView.description') }}
             </v-list-item-subtitle>
           </v-list-item-content>
-          <v-list-item-action class="pe-6">
-            <v-select
-              v-model="defaultCategoryView"
-              :items="defaultViewItems"
-              :menu-props="{ offsetY: true, maxHeight: 260 }"
-              item-text="name"
-              item-value="id"
-              style="width: 200px; padding-top: 0;"
-              dense
-              outlined
-              hide-details
+          <v-list-item-action>
+            <v-switch
+              v-model="openOnImportant"
+              :loading="saving"
+              :disabled="!importantCategory"
               @change="save" />
           </v-list-item-action>
         </v-list-item>
@@ -171,8 +165,22 @@ export default {
     syncInProgress() {
       return this.userEmailSetting?.emailSyncStatus === 'IN_PROGRESS';
     },
-    defaultViewItems() {
-      return [{ id: null, name: this.$t('UserSettings.emailConnector.defaultView.none') }, ...this.categories];
+    // The add-on's Important category, or null while categories load. The
+    // default-view toggle is disabled until it is known, since the toggle
+    // stores that category's id.
+    importantCategory() {
+      return this.categories.find(category => category.nameId === 'emailImportantCategory') || null;
+    },
+    // The default-view toggle, backed by the same stored setting the select it
+    // replaces used: on = the Important category's id is stored as the default
+    // category view, off = nothing is stored (no migration needed).
+    openOnImportant: {
+      get() {
+        return !!this.importantCategory && this.defaultCategoryView === this.importantCategory.id;
+      },
+      set(value) {
+        this.defaultCategoryView = value && this.importantCategory ? this.importantCategory.id : null;
+      },
     },
   },
   watch: {

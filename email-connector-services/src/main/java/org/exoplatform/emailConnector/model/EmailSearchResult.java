@@ -58,4 +58,10 @@ public class EmailSearchResult {
   // Whether the message is already in the local cache — i.e. openable without
   // another IMAP round-trip.
   private boolean     cached;
+
+  // A short piece of the message around what was searched for, or its opening words
+  // when the match was in the subject or the sender. Only a hit read from the local
+  // cache can carry one: a hit found on the server is envelope-only, and fetching
+  // each body to quote it would cost one round-trip per result.
+  private String      excerpt;
 }

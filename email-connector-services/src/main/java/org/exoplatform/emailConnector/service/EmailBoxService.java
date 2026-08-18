@@ -23,6 +23,7 @@ import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -242,6 +243,12 @@ public class EmailBoxService {
   // envelope fetched, so the result list's cost stays one bounded batched FETCH
   // whatever the match count. The full count is still reported to the caller.
   private static final int        SEARCH_MAX_RESULTS                                          = 50;
+
+  /** How much of a message to quote when the search matched nothing in its body. */
+  private static final int        EXCERPT_LENGTH                                              = 180;
+
+  /** How much text to keep on either side of the words that matched. */
+  private static final int        EXCERPT_CONTEXT                                             = 80;
 
   // Concurrent IMAP connections used to prefetch new message bodies during a sync.
   // Bodies are the one per-message cost the batched FETCH profile cannot absorb: each
@@ -2571,7 +2578,7 @@ public class EmailBoxService {
 
   /**
    * The add-on's own email categories a user can assign — Important / Invitation /
-   * Notification / To review — resolved to their localized name. These are the leaf
+   * Notification / To review — resolved to their localized name and their declared icon. These are the leaf
    * categories seeded from the add-on's {@code default-categories.json}, returned
    * whether or not they are already in use, so the picker always offers the full set.
    *
@@ -2581,11 +2588,20 @@ public class EmailBoxService {
    */
   public List<EmailCategory> getAvailableEmailCategories(String username, Locale locale) {
     List<EmailCategory> categories = new ArrayList<>();
-    for (Long categoryId : getDefaultEmailCategoryIds()) {
+    for (String nameId : DEFAULT_EMAIL_CATEGORY_NAME_IDS) {
+      Long categoryId = getDefaultEmailCategoryId(nameId);
+      if (categoryId == null) {
+        continue;
+      }
       try {
         CategoryWithName category = categoryService.getCategory(categoryId, username, locale);
         if (category != null) {
-          categories.add(new EmailCategory(categoryId, category.getName()));
+          // The nameId travels with the category: the display name is localized,
+          // so the interface keys on the nameId to single out the Important
+          // category (surfaced as its own filter chip in the mailbox). The icon
+          // travels too — it is the category's own, persisted by the importer
+          // from default-categories.json, so the interface never hardcodes one.
+          categories.add(new EmailCategory(categoryId, category.getName(), nameId, category.getIcon()));
         }
       } catch (ObjectNotFoundException | IllegalAccessException e) {
         // Skip a default category the user cannot see (unexpected with *:/platform/users).
@@ -2603,16 +2619,31 @@ public class EmailBoxService {
   public List<Long> getDefaultEmailCategoryIds() {
     List<Long> ids = new ArrayList<>();
     for (String nameId : DEFAULT_EMAIL_CATEGORY_NAME_IDS) {
-      SettingValue<?> settingValue = settingService.get(CATEGORY_IMPORT_CONTEXT, CATEGORY_IMPORT_SCOPE, nameId);
-      if (settingValue != null && settingValue.getValue() != null) {
-        try {
-          ids.add(Long.parseLong(settingValue.getValue().toString()));
-        } catch (NumberFormatException e) {
-          LOG.debug("Invalid category id stored for {}", nameId);
-        }
+      Long categoryId = getDefaultEmailCategoryId(nameId);
+      if (categoryId != null) {
+        ids.add(categoryId);
       }
     }
     return ids;
+  }
+
+  /**
+   * Resolves one default email category's id from the {@code nameId -> id} mapping
+   * the platform's category importer persisted in settings.
+   *
+   * @param nameId the category's declared nameId (see {@code default-categories.json})
+   * @return the category id, or null when the importer has not created it (yet)
+   */
+  private Long getDefaultEmailCategoryId(String nameId) {
+    SettingValue<?> settingValue = settingService.get(CATEGORY_IMPORT_CONTEXT, CATEGORY_IMPORT_SCOPE, nameId);
+    if (settingValue != null && settingValue.getValue() != null) {
+      try {
+        return Long.parseLong(settingValue.getValue().toString());
+      } catch (NumberFormatException e) {
+        LOG.debug("Invalid category id stored for {}", nameId);
+      }
+    }
+    return null;
   }
 
   public void sendEmail(Email email, String username) throws IllegalAccessException {
@@ -3324,6 +3355,138 @@ public class EmailBoxService {
   }
 
   /**
+   * Search only what is already cached locally, for the platform's unified search.
+   * <p>
+   * The global search bar fires every connector at once and shows the page when the
+   * slowest answers. This add-on is the only one that could go to a mail server, and
+   * an IMAP round-trip next to a set of Elasticsearch queries would make every
+   * search in the platform wait on email — including the ones that were never about
+   * email. So this reads the local mirror and answers immediately;
+   * {@link #searchEmails} remains the way to reach the whole mailbox, offered from
+   * the results as a deliberate second step.
+   * <p>
+   * The matching is done in Java rather than in SQL on purpose: the subject and body
+   * are CLOB columns, and HSQLDB refuses {@code LOCATE} on a CLOB, so a database-side
+   * text search would work on MySQL and fail on a developer's machine. The set is
+   * bounded by the mailbox cache size, so filtering it in memory is cheap.
+   *
+   * @param username the mailbox owner
+   * @param query free text matched against the subject, the sender and the body
+   * @param limit how many hits to return, newest first
+   * @return the newest matching cached messages plus how many matched in total
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public EmailSearchResultPage searchCachedEmails(String username, String query, int limit) throws IllegalAccessException {
+    return searchCachedEmails(username, query, false, limit);
+  }
+
+  /**
+   * The same search, narrowed to the messages the user favorited.
+   * <p>
+   * This is what the unified search's Favorites filter asks for. A favorite here is
+   * the mail server's {@code \Flagged} flag, the same one the mailbox shows, so the
+   * filter agrees with what the user sees in their webmail.
+   *
+   * @param username the mailbox owner
+   * @param query free text matched against the subject, the sender and the body
+   * @param favoritesOnly when {@code true}, only favorited messages match
+   * @param limit how many hits to return, newest first
+   * @return the newest matching cached messages plus how many matched in total
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public EmailSearchResultPage searchCachedEmails(String username,
+                                                  String query,
+                                                  boolean favoritesOnly,
+                                                  int limit) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEARCH_EMAIL_MESSAGE, username));
+    }
+    if (StringUtils.isBlank(query)) {
+      throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
+    }
+    String term = query.trim().toLowerCase();
+    List<Email> matches = emailBoxStorage.getEmails(username)
+                                         .stream()
+                                         .filter(email -> !favoritesOnly || email.isStarred())
+                                         .filter(email -> matchesCachedEmail(email, term))
+                                         .sorted(Comparator.comparing(Email::getReceivedDate,
+                                                                      Comparator.nullsLast(Comparator.reverseOrder())))
+                                         .toList();
+    List<EmailSearchResult> results = matches.stream()
+                                             .limit(Math.max(limit, 1))
+                                             .map(email -> new EmailSearchResult(email.getMailRemoteId(),
+                                                                                 email.getFolder(),
+                                                                                 email.getSubject(),
+                                                                                 email.getSender(),
+                                                                                 email.getReceivedDate(),
+                                                                                 email.isRead(),
+                                                                                 email.isStarred(),
+                                                                                 true,
+                                                                                 buildExcerpt(email, term)))
+                                             .toList();
+    return new EmailSearchResultPage(results, matches.size(), favoritesOnly);
+  }
+
+  /**
+   * A short piece of the message to show under the subject in the results.
+   * <p>
+   * It is the text around the searched words when the body is what matched, so the
+   * reader can see why the message came back; when the match was in the subject or
+   * the sender, it is simply how the message opens. The body is reduced to text
+   * first, or the quote would be a mouthful of markup.
+   *
+   * @param email the cached message
+   * @param term the searched text, already lower-cased and trimmed
+   * @return the excerpt, or {@code null} when the message has no readable body
+   */
+  private String buildExcerpt(Email email, String term) {
+    String body = email.getContent() == null ? null : email.getContent().getBody();
+    if (StringUtils.isBlank(body)) {
+      return null;
+    }
+    String text = Jsoup.parse(body).text().trim();
+    if (StringUtils.isBlank(text)) {
+      return null;
+    }
+    int match = StringUtils.indexOfIgnoreCase(text, term);
+    if (match < 0) {
+      return StringUtils.abbreviate(text, EXCERPT_LENGTH);
+    }
+    int start = Math.max(0, match - EXCERPT_CONTEXT);
+    int end = Math.min(text.length(), match + term.length() + EXCERPT_CONTEXT);
+    String window = text.substring(start, end).trim();
+    return (start > 0 ? "… " : "") + window + (end < text.length() ? " …" : "");
+  }
+
+  /**
+   * Whether a cached message matches the searched text, over its subject, its sender
+   * and its body.
+   * <p>
+   * The body is stored as HTML, so it is reduced to text before matching: without
+   * that, a search for "style" or "div" would hit half the mailbox on markup the
+   * user never sees.
+   *
+   * @param email the cached message
+   * @param term the searched text, already lower-cased and trimmed
+   * @return {@code true} when the message matches
+   */
+  private boolean matchesCachedEmail(Email email, String term) {
+    if (StringUtils.containsIgnoreCase(email.getSubject(), term)) {
+      return true;
+    }
+    EmailSender sender = email.getSender();
+    if (sender != null
+        && (StringUtils.containsIgnoreCase(sender.getName(), term)
+            || StringUtils.containsIgnoreCase(sender.getAddress(), term))) {
+      return true;
+    }
+    String body = email.getContent() == null ? null : email.getContent().getBody();
+    return StringUtils.isNotBlank(body) && StringUtils.containsIgnoreCase(Jsoup.parse(body).text(), term);
+  }
+
+  /**
    * Server-side mailbox search: an IMAP {@code SEARCH} over one remote folder, so a
    * user finds mail anywhere in that folder — a 161k-message inbox, not just the
    * ~1000-message local cache window (0.6% of it on the reference mailbox, which is
@@ -3368,6 +3531,36 @@ public class EmailBoxService {
                                             Integer sinceDays,
                                             String folder,
                                             int limit) throws IllegalAccessException {
+    return searchEmails(username, query, from, unreadOnly, false, sinceDays, folder, limit);
+  }
+
+  /**
+   * The same server-side search, narrowed to the messages the user favorited.
+   * <p>
+   * The narrowing is done by the mail server, as one more term of the IMAP SEARCH:
+   * asking for everything and dropping the rest here would return the newest hits and
+   * then throw most of them away, leaving an older favorite invisible behind a page of
+   * discarded matches.
+   *
+   * @param username the mailbox owner
+   * @param query free text matched against the subject or the sender
+   * @param from text matched against the sender only, may be blank
+   * @param unreadOnly when {@code true}, only unread messages match
+   * @param favoritesOnly when {@code true}, only messages carrying \Flagged match
+   * @param sinceDays only messages received in the last N days match, null for no limit
+   * @param folder the folder to search: INBOX, SENT or ARCHIVE
+   * @param limit how many hits to return
+   * @return the newest matching messages plus the total match count
+   * @throws IllegalAccessException if the user is not allowed to search their mailbox
+   */
+  public EmailSearchResultPage searchEmails(String username,
+                                            String query,
+                                            String from,
+                                            boolean unreadOnly,
+                                            boolean favoritesOnly,
+                                            Integer sinceDays,
+                                            String folder,
+                                            int limit) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -3382,7 +3575,7 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
     }
     Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
-    SearchTerm searchTerm = buildEmailSearchTerm(query, from, unreadOnly, since);
+    SearchTerm searchTerm = buildEmailSearchTerm(query, from, unreadOnly, favoritesOnly, since);
     if (searchTerm == null) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
@@ -3429,13 +3622,16 @@ public class EmailBoxService {
                                             page[i].getReceivedDate(),
                                             page[i].isSet(Flags.Flag.SEEN),
                                             page[i].isSet(Flags.Flag.FLAGGED),
-                                            cachedUids.contains(messageUid)));
+                                            cachedUids.contains(messageUid),
+                                            // Envelope-only: quoting the body would cost
+                                            // one round-trip per hit.
+                                            null));
         } catch (Exception e) {
           // One unreadable hit must not lose the rest of the page.
           LOG.debug("Skipping an unreadable search hit in folder {} for user {}", folder, username, e);
         }
       }
-      return new EmailSearchResultPage(results, found.length);
+      return new EmailSearchResultPage(results, found.length, favoritesOnly);
     } catch (SearchException e) {
       // The server refused the CRITERIA, not the mailbox — the CHARSET path: a query
       // carrying accents ("réunion") makes JavaMail issue SEARCH CHARSET UTF-8, and a
@@ -3641,6 +3837,24 @@ public class EmailBoxService {
    * @return the combined term, or null when no criterion at all was given
    */
   static SearchTerm buildEmailSearchTerm(String query, String from, boolean unreadOnly, Date since) {
+    return buildEmailSearchTerm(query, from, unreadOnly, false, since);
+  }
+
+  /**
+   * The same term, with the favorites narrowing the unified search's filter asks for.
+   *
+   * @param query free text matched against the subject or the sender
+   * @param from text matched against the sender only
+   * @param unreadOnly when {@code true}, only unread messages match
+   * @param favoritesOnly when {@code true}, only messages carrying \Flagged match
+   * @param since only messages received after this date match
+   * @return the IMAP search term, or {@code null} when no criterion was given
+   */
+  static SearchTerm buildEmailSearchTerm(String query,
+                                         String from,
+                                         boolean unreadOnly,
+                                         boolean favoritesOnly,
+                                         Date since) {
     List<SearchTerm> terms = new ArrayList<>();
     if (StringUtils.isNotBlank(query)) {
       terms.add(new OrTerm(new SubjectTerm(query.trim()), new FromStringTerm(query.trim())));
@@ -3650,6 +3864,9 @@ public class EmailBoxService {
     }
     if (unreadOnly) {
       terms.add(new FlagTerm(new Flags(Flags.Flag.SEEN), false));
+    }
+    if (favoritesOnly) {
+      terms.add(new FlagTerm(new Flags(Flags.Flag.FLAGGED), true));
     }
     if (since != null) {
       terms.add(new ReceivedDateTerm(ComparisonTerm.GE, since));

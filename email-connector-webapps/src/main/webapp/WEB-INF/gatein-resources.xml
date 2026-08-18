@@ -241,4 +241,27 @@
       <module>extensionRegistry</module>
     </depends>
   </module>
+
+  <!-- The unified-search connector's front-end half. The connector descriptor names
+       it as SHARED/EmailSearch, so the module name here IS that contract: the search
+       app requires it to register the row component and to call formatSearchResult on
+       our REST answer. No load-group: it is required by name, when a search runs. -->
+  <module>
+    <name>EmailSearch</name>
+    <script>
+      <path>/js/emailSearch.bundle.js</path>
+    </script>
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>vuetify</module>
+    </depends>
+    <depends>
+      <module>eXoVueI18n</module>
+    </depends>
+    <depends>
+      <module>commonVueComponents</module>
+    </depends>
+  </module>
 </gatein-resources>
