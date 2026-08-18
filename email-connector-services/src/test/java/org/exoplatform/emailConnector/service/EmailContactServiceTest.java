@@ -22,9 +22,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -56,6 +58,7 @@ import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContact;
 import org.exoplatform.emailConnector.model.EmailContactSource;
+import org.exoplatform.emailConnector.model.EmailContactSuggestion;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
@@ -66,6 +69,9 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
+import org.exoplatform.social.core.profile.ProfileFilter;
+
+import lombok.SneakyThrows;
 
 @ExtendWith(MockitoExtension.class)
 @SpringBootTest(classes = { EmailContactService.class })
@@ -795,7 +801,191 @@ public class EmailContactServiceTest {
                                             100);
   }
 
+  // ---------------------------------------------------------------- recipient suggestions
+
+  @Test
+  void suggestionsKeepTheStoreOrderAndAppendTheDirectoryAfterIt() {
+    // The store's own ranking (frequency, then recency) is the storage's job and is
+    // asserted against a real database in EmailContactDAOTest; what this asserts is
+    // the merge: every store row first, directory-only matches after them.
+    givenStoreSuggestions("bob", collectedContact(1L, "bob@example.org", "Bob Smith"));
+    givenDirectorySearch("bob", "bobby");
+    givenDirectoryProfile("bobby", "Bobby Tables", "bobby@example.com", "bobby-avatar", "/bobby");
+
+    List<EmailContactSuggestion> suggestions = suggest("bob", 10);
+
+    assertEquals(List.of("bob@example.org", "bobby@example.com"),
+                 suggestions.stream().map(EmailContactSuggestion::getAddress).toList());
+    assertEquals("Bobby Tables", suggestions.get(1).getDisplayName());
+    assertTrue(suggestions.get(1).isPlatformUser());
+    assertEquals("/bobby", suggestions.get(1).getProfileUrl());
+  }
+
+  @Test
+  void aColleagueWhoIsAlsoACollectedContactAppearsOnce() {
+    // The same person reached from both halves: one chip, the store's row, with the
+    // platform profile supplying the live avatar and profile link.
+    givenStoreSuggestions("jane", collectedContact(1L, "jane@example.com", "Jane"));
+    givenDirectorySearch("jane", "jane");
+    givenDirectoryProfile("jane", "Jane Doe", "jane@example.com", "jane-avatar", "/jane");
+
+    Profile matched = profile("Jane Doe", "jane@example.com", "jane-avatar", "/jane");
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("jane@example.com")).thenReturn(matched);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "jane", 10);
+    }
+
+    assertEquals(1, suggestions.size());
+    assertEquals("jane@example.com", suggestions.get(0).getAddress());
+    assertEquals("jane-avatar", suggestions.get(0).getAvatarUrl());
+    assertTrue(suggestions.get(0).isPlatformUser());
+  }
+
+  @Test
+  void aDirectoryRowWhoseProfileAddressMovedStillAppearsOnce() {
+    // Enrichment replaces a DIRECTORY row's stored address with the live profile
+    // one. Keying the merge before that happens files the row under an address
+    // the emitted suggestion no longer carries, so the directory half looks the
+    // same person up by their live address, misses, and adds them a second time.
+    givenStoreSuggestions("jane", directoryContact(1L, "old@example.com", "Jane", "jane"));
+    givenDirectorySearch("jane", "jane");
+    givenDirectoryProfile("jane", "Jane Doe", "new@example.com", "jane-avatar", "/jane");
+
+    List<EmailContactSuggestion> suggestions = suggest("jane", 10);
+
+    assertEquals(List.of("new@example.com"), suggestions.stream().map(EmailContactSuggestion::getAddress).toList());
+    assertEquals("Jane Doe", suggestions.get(0).getDisplayName());
+  }
+
+  @Test
+  void aStoreRowWithNoPlatformProfileIsNotAPlatformUser() {
+    givenStoreSuggestions("bob", collectedContact(1L, "bob@outside.org", "Bob"));
+
+    List<EmailContactSuggestion> suggestions = suggest("bob", 10);
+
+    assertEquals(1, suggestions.size());
+    assertFalse(suggestions.get(0).isPlatformUser());
+    assertNull(suggestions.get(0).getProfileUrl());
+  }
+
+  @Test
+  void aBlankTermAnswersTheTopOfTheStoreAndNeverTheDirectory() {
+    // Opening the field offers the people already written to; a blank term must not
+    // become a way to dump the company address book.
+    givenStoreSuggestions(null, collectedContact(1L, "bob@example.org", "Bob"));
+
+    List<EmailContactSuggestion> suggestions = suggest("  ", 10);
+
+    assertEquals(1, suggestions.size());
+    verifyNoInteractions(identityManager);
+  }
+
+  @Test
+  void theSuggestionWindowIsDefaultedAndCapped() {
+    givenStoreSuggestions(null);
+
+    suggest(null, 0);
+    verify(emailContactStorage).suggestContacts(USERNAME, null, EmailContactService.SUGGEST_DEFAULT_LIMIT);
+
+    suggest(null, 1000);
+    verify(emailContactStorage).suggestContacts(USERNAME, null, EmailContactService.SUGGEST_MAX_LIMIT);
+  }
+
+  @Test
+  void theDirectoryIsNotQueriedWhenTheStoreAlreadyFilledTheWindow() {
+    givenStoreSuggestions("bob", collectedContact(1L, "bob@example.org", "Bob"));
+
+    suggest("bob", 1);
+
+    verifyNoInteractions(identityManager);
+  }
+
+  @Test
+  void theActingUserIsNeverSuggestedToThemselves() {
+    givenStoreSuggestions("ali");
+    givenDirectorySearch("ali", USERNAME);
+
+    assertTrue(suggest("ali", 10).isEmpty());
+  }
+
+  @Test
+  void aFailingDirectoryStillAnswersTheStore() throws Exception {
+    // A recipient field that errors out mid-typing is worse than one offering
+    // fewer names.
+    givenStoreSuggestions("bob", collectedContact(1L, "bob@example.org", "Bob"));
+    when(identityManager.getIdentitiesByProfileFilter(anyString(), any(ProfileFilter.class), anyLong(), anyLong()))
+                                                                                                                  .thenThrow(new IllegalStateException("directory down"));
+
+    assertEquals(1, suggest("bob", 10).size());
+  }
+
   // ---------------------------------------------------------------- helpers
+
+  /**
+   * Answers the suggestions with the address→profile lookup stubbed away, so a
+   * test that is not about platform enrichment does not have to mock it.
+   *
+   * @param query what the user typed
+   * @param limit the requested window
+   * @return the suggestions
+   */
+  private List<EmailContactSuggestion> suggest(String query, int limit) {
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      return emailContactService.suggestRecipients(USERNAME, query, limit);
+    }
+  }
+
+  /**
+   * Stubs the store's half of the suggestion merge, for whatever window the
+   * service ends up asking for.
+   *
+   * @param term the term the service normalizes the query to
+   * @param contacts the ranked rows the storage answers
+   */
+  private void givenStoreSuggestions(String term, EmailContact... contacts) {
+    lenient().when(emailContactStorage.suggestContacts(eq(USERNAME), term == null ? any() : eq(term), anyInt()))
+             .thenReturn(List.of(contacts));
+  }
+
+  /**
+   * Stubs the platform directory's half of the suggestion merge.
+   *
+   * @param term the searched text
+   * @param platformUsernames the identities the directory answers
+   */
+  @SneakyThrows
+  private void givenDirectorySearch(String term, String... platformUsernames) {
+    List<Identity> identities = new ArrayList<>();
+    for (String platformUsername : platformUsernames) {
+      Identity identity = mock(Identity.class);
+      lenient().when(identity.getRemoteId()).thenReturn(platformUsername);
+      identities.add(identity);
+    }
+    when(identityManager.getIdentitiesByProfileFilter(anyString(),
+                                                      argThat(filter -> filter != null && term.equals(filter.getName())),
+                                                      anyLong(),
+                                                      anyLong())).thenReturn(identities);
+  }
+
+  /**
+   * A mocked platform profile.
+   *
+   * @param fullName the profile's full name
+   * @param email the profile's email
+   * @param avatarUrl the profile's avatar
+   * @param profileUrl the profile's page link
+   * @return the profile
+   */
+  private Profile profile(String fullName, String email, String avatarUrl, String profileUrl) {
+    Profile profile = mock(Profile.class);
+    lenient().when(profile.getFullName()).thenReturn(fullName);
+    lenient().when(profile.getEmail()).thenReturn(email);
+    lenient().when(profile.getAvatarUrl()).thenReturn(avatarUrl);
+    lenient().when(profile.getUrl()).thenReturn(profileUrl);
+    return profile;
+  }
 
   /**
    * Marks the one-time backfill as already done, so group collection runs.
