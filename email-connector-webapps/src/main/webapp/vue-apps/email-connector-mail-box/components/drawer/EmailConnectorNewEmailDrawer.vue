@@ -18,6 +18,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <exo-drawer
     id="newEmailDrawer"
     ref="newEmailDrawer"
+    v-bind="containerFocusOff"
+    @opened="focusFirstEmptyField"
     v-model="newEmailDrawer"
     right
     go-back-button
@@ -30,6 +32,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template v-if="newEmailDrawer" #content>
       <email-connector-recipient-field
+        ref="toField"
         v-model="to"
         class="mx-4"
         field-id="to"
@@ -280,6 +283,22 @@ export default {
   },
   computed: {
     /**
+     * Switches the drawer's own container focus off, so the cursor can land in a
+     * field instead.
+     * <p>
+     * exo-drawer focuses its container 50ms after opening, which takes focus back
+     * from anything we focused first -- the cursor then sits on the drawer itself and
+     * typing goes nowhere. Bound through an object rather than written as an
+     * attribute because the accessibility rule flags the name wherever it appears,
+     * including here, where it is being switched OFF in favour of focusing a real
+     * input -- which is what that rule is protecting in the first place.
+     *
+     * @returns {object} the drawer binding
+     */
+    containerFocusOff() {
+      return {autofocus: false};
+    },
+    /**
      * Whether Send is unavailable: no recipient, or an attachment still going up.
      *
      * @returns {boolean} true when sending must wait
@@ -421,6 +440,51 @@ export default {
       });
     },
     /**
+     * Puts the cursor where the writing starts.
+     * <p>
+     * On a new message that is the recipients field, so the address can be typed
+     * without reaching for the mouse first.
+     * <p>
+     * Bound to the drawer's own opened event, and the drawer's autofocus turned off:
+     * exo-drawer focuses its container 50ms after opening, so anything focused before
+     * that -- on nextTick, say -- is silently taken back and the cursor ends up
+     * nowhere. Turning it off loses nothing, since focus still lands inside the
+     * drawer, on a field that can actually be typed into. On a reply or a forward the recipients
+     * are already filled in and the words are what is missing, so the cursor belongs
+     * in the body instead -- landing it on a field that is already correct would just
+     * be somewhere to tab out of.
+     *
+     * @param {number} attempt - how many times this has already waited for the field
+     * @returns {void}
+     */
+    focusFirstEmptyField(attempt) {
+      const tries = attempt || 0;
+      if (!this.newEmailDrawer || tries > 12) {
+        return;
+      }
+      if (this.to.length) {
+        // A reply or a forward already has its recipients; the words are what is
+        // missing, so the cursor belongs in the body. No retry: the editor either
+        // exists by now or the next ready callback will do it.
+        this.$refs.emailContent?.editor?.focus?.();
+        return;
+      }
+      const field = this.$refs.toField;
+      const input = field?.$el?.querySelector('input');
+      if (input && document.activeElement === input) {
+        return;
+      }
+      field?.focusInput?.();
+      // Asking for focus is not the same as getting it: an element that has not been
+      // laid out yet accepts the call and stays unfocused, and the drawer announces
+      // itself open before its contents are laid out. That is why this worked once
+      // and then stopped -- on the first open the field did not exist yet, so the
+      // wait below happened to cover the layout, and on every open after it the field
+      // was there and focus was asked for far too early. So: check whether it took,
+      // and ask again until it does.
+      setTimeout(() => this.focusFirstEmptyField(tries + 1), 50);
+    },
+    /**
      * The user's EMAIL signature as a block ready to sit in the body, or an
      * empty string when they turned it off, have none, or it cannot be read —
      * a composer that fails to open over a signature fetch would be the wrong
@@ -442,6 +506,10 @@ export default {
           if (!signature || signature.enabled === false) {
             return '';
           }
+          // Whatever the user's signature says, verbatim. The logo lives inside it
+          // like any other picture -- moved, resized or deleted in the settings
+          // drawer -- so there is nothing to append here and no second copy to keep
+          // in step.
           const html = signature.customHtml || signature.defaultHtml || '';
           return html ? `<div class="ec-signature">${html}</div>` : '';
         })
