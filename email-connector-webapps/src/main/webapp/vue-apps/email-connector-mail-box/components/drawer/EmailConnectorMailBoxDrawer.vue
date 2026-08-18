@@ -836,10 +836,21 @@ export default {
       this.$emailConnectorMailBoxService.updateEmailsFavoriteStatus(emailIds, favorite)
         .then(result => {
           const failedUpdates = result?.failedUpdates ?? 0;
-          // Before the branch: a partial failure still means the server took the rest,
-          // and it does not say which ones. Left after it, the ids that succeeded kept
-          // the provisional stamp and stayed exposed to the very race above.
-          this.restampFavoriteOverrides(favorite, emailIds);
+          if (failedUpdates > 0 && failedUpdates < emailIds.length) {
+            // A partial refusal is the one outcome where the correct value is NOT known
+            // per message: the answer carries a count, not which ids it refused. So the
+            // overrides for the batch are dropped rather than asserted — claiming the
+            // requested star for a message the server rejected, and marking it the
+            // server's own truth, is worse than claiming nothing. loadEmailBox() below
+            // carries the truth for the listed window, and the next search answer
+            // carries the server's own flags for the search rows.
+            emailIds.forEach(mailRemoteId => this.favoriteOverrides.delete(mailRemoteId));
+          } else {
+            // Every id settled the same way, so the value is known: acknowledge it. For
+            // an all-failed batch the revert broadcast below overwrites this with the
+            // rolled-back value, itself acknowledged.
+            this.restampFavoriteOverrides(favorite, emailIds);
+          }
           if (failedUpdates > 0) {
             this.onFavoriteUpdateFailed(favorite, emailIds, failedUpdates);
           }
