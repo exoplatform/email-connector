@@ -7130,6 +7130,40 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A draft that stores no file at all still gets its signature logo as a
+   * related part. The draft builder used to branch on "has attachments", which
+   * was the same question as "has a related part" until the signature image
+   * arrived — a signature-only draft would then have gone up as plain text
+   * whose {@code cid:} pointed at nothing.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftWithOnlyTheSignatureLogoKeepsItInsideTheMessage() throws Exception {
+    when(emailSignatureService.getSignatureLogo(TEST_USER)).thenReturn(new EmailSignatureLogo("logo bytes".getBytes(),
+                                                                                              "image/png",
+                                                                                              "logo"));
+    Email draft = new Email();
+    draft.setContent(new EmailContent("<p>hi</p><img src=\"/email-connector/rest/user-email-setting/signature/image\">",
+                                      null,
+                                      null));
+
+    MimeMessage message = ReflectionTestUtils.invokeMethod(emailBoxService,
+                                                           "buildDraftMessage",
+                                                           draft,
+                                                           userEmailSetting(),
+                                                           TEST_USER);
+
+    assertTrue(message.getContent() instanceof Multipart,
+               "the signature logo needs a related part even on a draft that stores no file");
+    Multipart related = (Multipart) message.getContent();
+    assertTrue(related.getContentType().toLowerCase().contains("related"), "related, carrying the logo the body names");
+    assertEquals(2, related.getCount(), "the text, then the logo");
+    assertTrue(((String) related.getBodyPart(0).getContent()).contains("cid:email-signature-logo@exo"),
+               "the body points at the part");
+  }
+
+  /**
    * The draft the mail server keeps carries its pictures the same way a sent message
    * does, so opening that draft on a phone shows them.
    * <p>
