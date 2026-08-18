@@ -6237,4 +6237,195 @@ public class EmailBoxServiceTest {
                               "testUploadId",
                               "", null);
   }
+  /**
+   * A picture dropped into the text travels inside the message, and the body points
+   * at it — which is the only arrangement a mail client outside eXo can draw.
+   * <p>
+   * The two alternatives both fail silently, which is why this is asserted rather
+   * than assumed: a link back to the platform sits behind a login, so the recipient
+   * gets a broken frame, and a picture inlined as a data URI is stripped outright by
+   * Gmail and Outlook. Neither failure is visible from inside eXo, where the reader
+   * would render either one perfectly.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aPictureInTheTextIsSentInsideTheMessageAndReferencedByContentId() throws Exception {
+    EmailAttachment picture = new EmailAttachment(7L, null, null, "screenshot.png", "image/png", null,
+                                                  MailFolder.DRAFTS, 77L, 21L, null);
+    when(emailBoxStorage.getAttachmentFileItem(77L)).thenAnswer(invocation -> fileItemOf("the bytes of a picture"));
+    Email email = new Email();
+    email.setStoredAttachments(List.of(picture));
+    Message message = new MimeMessage(Session.getInstance(new Properties()));
+
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "applyContentAndAttachments",
+                                     message,
+                                     email,
+                                     "<p>look</p><img src=\"/email-connector/rest/email-box/drafts/d-1/attachments/7\">",
+                                     new ArrayList<String>());
+
+    assertTrue(message.getContent() instanceof Multipart, "a message with a picture in the text is a multipart");
+    Multipart related = (Multipart) message.getContent();
+    assertTrue(related.getContentType().toLowerCase().contains("related"),
+               "related, not mixed: that relationship is what says the picture belongs in the body");
+    assertEquals(2, related.getCount(), "the text, then the picture it points at");
+
+    String body = (String) related.getBodyPart(0).getContent();
+    assertTrue(body.contains("cid:email-inline-7@exo"), "the body points at the part, not at a platform URL");
+    assertFalse(body.contains("/email-box/drafts/"), "no address that only resolves for someone logged into eXo");
+
+    BodyPart imagePart = related.getBodyPart(1);
+    assertEquals(Part.INLINE, imagePart.getDisposition(), "INLINE, or a client lists it at the bottom as well");
+    assertArrayEquals(new String[] { "<email-inline-7@exo>" },
+                      imagePart.getHeader("Content-ID"),
+                      "angle-bracketed in the header, bare in the body reference: RFC 2392");
+  }
+
+  /**
+   * A message that has both a picture in the text and a file at the bottom keeps them
+   * apart: the text and its picture as one thing, the file alongside.
+   * <p>
+   * Flattening the two would put the picture at the bottom as well, so the recipient
+   * sees the screenshot twice — once in the sentence it explains and once as an
+   * attachment. That is the failure this shape exists to prevent.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aPictureInTheTextAndAFileAtTheBottomDoNotGetConfused() throws Exception {
+    EmailAttachment picture = new EmailAttachment(7L, null, null, "screenshot.png", "image/png", null,
+                                                  MailFolder.DRAFTS, 77L, 21L, null);
+    EmailAttachment report = new EmailAttachment(9L, null, null, "report.pdf", "application/pdf", null,
+                                                 MailFolder.DRAFTS, 99L, 21L, null);
+    when(emailBoxStorage.getAttachmentFileItem(anyLong())).thenAnswer(invocation -> fileItemOf("bytes"));
+    Email email = new Email();
+    email.setStoredAttachments(List.of(picture, report));
+    Message message = new MimeMessage(Session.getInstance(new Properties()));
+
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "applyContentAndAttachments",
+                                     message,
+                                     email,
+                                     "<img src=\"/email-connector/rest/email-box/drafts/d-1/attachments/7\">",
+                                     new ArrayList<String>());
+
+    Multipart mixed = (Multipart) message.getContent();
+    assertTrue(mixed.getContentType().toLowerCase().contains("mixed"), "the outer part carries the bottom files");
+    assertEquals(2, mixed.getCount(), "the text-with-its-picture, then the file");
+    assertTrue(mixed.getBodyPart(0).getContent() instanceof Multipart, "the text and its picture enter as one part");
+    Multipart related = (Multipart) mixed.getBodyPart(0).getContent();
+    assertEquals(2, related.getCount(), "the text, then the picture");
+    assertEquals("report.pdf", mixed.getBodyPart(1).getFileName(), "the file the user attached stays at the bottom");
+    assertEquals(Part.ATTACHMENT, mixed.getBodyPart(1).getDisposition(), "and stays an attachment");
+  }
+
+  /**
+   * A file the body does not point at is left exactly where it was: at the bottom,
+   * in a plain multipart/mixed.
+   * <p>
+   * Guards the rule that decides everything else here — a stored row is inline when,
+   * and only when, the body names it. Were that reversed, every ordinary attachment
+   * would quietly become an inline part and vanish from the recipient's attachment
+   * list.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aFileTheBodyDoesNotMentionStaysAnOrdinaryAttachment() throws Exception {
+    when(emailBoxStorage.getAttachmentFileItem(77L)).thenAnswer(invocation -> fileItemOf("bytes"));
+    Email email = new Email();
+    email.setStoredAttachments(List.of(attachmentRow()));
+    Message message = new MimeMessage(Session.getInstance(new Properties()));
+
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "applyContentAndAttachments",
+                                     message,
+                                     email,
+                                     "<p>see attached</p>",
+                                     new ArrayList<String>());
+
+    Multipart multipart = (Multipart) message.getContent();
+    assertTrue(multipart.getContentType().toLowerCase().contains("mixed"), "unchanged: mixed, not related");
+    assertEquals(2, multipart.getCount(), "the body, then the file");
+    assertEquals(Part.ATTACHMENT, multipart.getBodyPart(1).getDisposition());
+    assertFalse(((String) multipart.getBodyPart(0).getContent()).contains("cid:"), "nothing was rewritten");
+  }
+
+  /**
+   * A picture hosted somewhere else entirely — a logo in a signature, an image pasted
+   * from the web — is left alone rather than hunted for among the draft's files.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aPictureFromElsewhereOnTheWebIsLeftAlone() throws Exception {
+    Email email = new Email();
+    email.setStoredAttachments(List.of(attachmentRow()));
+    when(emailBoxStorage.getAttachmentFileItem(77L)).thenAnswer(invocation -> fileItemOf("bytes"));
+    Message message = new MimeMessage(Session.getInstance(new Properties()));
+
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "applyContentAndAttachments",
+                                     message,
+                                     email,
+                                     "<img src=\"https://example.com/logo.png\">",
+                                     new ArrayList<String>());
+
+    Multipart multipart = (Multipart) message.getContent();
+    assertTrue(multipart.getContentType().toLowerCase().contains("mixed"), "no inline part was invented");
+    assertTrue(((String) multipart.getBodyPart(0).getContent()).contains("https://example.com/logo.png"),
+               "the address it came with is the address it keeps");
+  }
+
+  /**
+   * A {@link FileItem} over the given text, fresh on every call as the real file
+   * service hands one back.
+   *
+   * @param content the bytes the file should hold
+   * @return a file item backed by those bytes
+   */
+  private FileItem fileItemOf(String content) throws Exception {
+    return new FileItem(1L, "file", "application/octet-stream", "email", (long) content.length(), new java.util.Date(),
+                        "tester", false, new java.io.ByteArrayInputStream(content.getBytes()));
+  }
+
+  /**
+   * The draft the mail server keeps carries its pictures the same way a sent message
+   * does, so opening that draft on a phone shows them.
+   * <p>
+   * Worth its own test because the draft is written by a different method than the one
+   * that sends, and the two drifting apart is invisible from inside eXo: the reader
+   * here resolves both shapes happily, and only a real client opening the draft would
+   * show the broken frame.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aDraftKeepsItsPicturesInsideTheMessageToo() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.appendUIDMessages(any(Message[].class))).thenReturn(new AppendUID[] { new AppendUID(1L, 4242L) });
+    EmailAttachment picture = new EmailAttachment(7L, null, null, "screenshot.png", "image/png", null,
+                                                  MailFolder.DRAFTS, 77L, 21L, null);
+    givenAStoredDraftCarrying(picture, "the bytes of a picture".getBytes());
+    when(emailBoxStorage.markDraftUploaded(eq(TEST_USER), anyString(), anyLong(), any()))
+                                                                                        .thenAnswer(invocation -> uploaded(invocation.getArgument(2)));
+    Email draft = draft("draft-1");
+    draft.setContent(new EmailContent("<img src=\"/email-connector/rest/email-box/drafts/draft-1/attachments/7\">",
+                                      null,
+                                      null));
+
+    emailBoxService.saveDraft(draft, TEST_USER, true);
+
+    ArgumentCaptor<Message[]> appended = ArgumentCaptor.forClass(Message[].class);
+    verify(draftsFolder).appendUIDMessages(appended.capture());
+    Multipart related = (Multipart) appended.getValue()[0].getContent();
+    assertTrue(related.getContentType().toLowerCase().contains("related"),
+               "the draft's picture belongs in its body, exactly as it will when sent");
+    assertTrue(((String) related.getBodyPart(0).getContent()).contains("cid:email-inline-7@exo"),
+               "and the body points at it rather than at an address only eXo can resolve");
+    assertEquals(Part.INLINE, related.getBodyPart(1).getDisposition());
+  }
+
 }
