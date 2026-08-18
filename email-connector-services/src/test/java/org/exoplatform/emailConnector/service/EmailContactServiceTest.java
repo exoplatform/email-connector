@@ -2035,6 +2035,157 @@ public class EmailContactServiceTest {
   }
 
   @Test
+  void aFullAddressResolvesToTheColleagueBehindItEvenWhenNobodyCollectedThem() {
+    // EXO-89250: the two name-based halves could not answer this. The store's LIKE
+    // only finds somebody already collected, and the directory searches names only,
+    // so typing a colleague's whole address matched nothing and the compose field
+    // committed a bare address chip.
+    givenStoreSuggestions("bobby@example.com");
+    Profile matched = directoryUserProfile("bobby", "Bobby Tables", "bobby@example.com", "bobby-avatar", "/bobby");
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bobby@example.com")).thenReturn(matched);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "bobby@example.com", 10);
+    }
+
+    assertEquals(1, suggestions.size());
+    assertEquals("bobby@example.com", suggestions.get(0).getAddress());
+    assertEquals("Bobby Tables", suggestions.get(0).getDisplayName());
+    assertEquals("bobby-avatar", suggestions.get(0).getAvatarUrl());
+    assertTrue(suggestions.get(0).isPlatformUser());
+    assertEquals("/bobby", suggestions.get(0).getProfileUrl());
+  }
+
+  @Test
+  void anExactAddressLeadsTheAnswerAheadOfEveryNameMatch() {
+    // Ordering is the claim: having typed the whole address, that is who they meant,
+    // so it outranks a row that merely happens to contain the same characters.
+    givenStoreSuggestions("bobby@example.com", collectedContact(1L, "someone@example.org", "Bobby Lookalike"));
+    Profile matched = directoryUserProfile("bobby", "Bobby Tables", "bobby@example.com", "bobby-avatar", "/bobby");
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bobby@example.com")).thenReturn(matched);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "bobby@example.com", 10);
+    }
+
+    assertEquals(List.of("bobby@example.com", "someone@example.org"),
+                 suggestions.stream().map(EmailContactSuggestion::getAddress).toList());
+  }
+
+  @Test
+  void aFullAddressTheUserHasCollectedAnswersTheirOwnRowRatherThanTheDirectory() {
+    // The store wins here for the same reason it wins the de-duplication: the row
+    // carries this user's own name for the person.
+    givenStoreSuggestions("bobby@example.com");
+    EmailContact stored = collectedContact(7L, "bobby@example.com", "Bobby from accounting");
+    when(emailContactStorage.getContactByAddress(USERNAME, "bobby@example.com")).thenReturn(stored);
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "bobby@example.com", 10);
+    }
+
+    assertEquals(1, suggestions.size());
+    assertEquals("Bobby from accounting", suggestions.get(0).getDisplayName());
+  }
+
+  @Test
+  void theSamePersonReachedByTheirOldAddressAppearsOnce() {
+    // A directory row is found by ANY of its addresses, and its enrichment rewrites
+    // the address to the live profile's. The exact match must therefore be keyed by
+    // the suggestion's own address, or the store loop -- which keys by that same
+    // normalized primaryEmail -- answers the person a second time.
+    EmailContact directoryRow = collectedContact(9L, "bobby@old.example.com", "Bobby Tables");
+    directoryRow.setSource(EmailContactSource.DIRECTORY);
+    directoryRow.setPlatformUsername("bobby");
+    when(emailContactStorage.getContactByAddress(USERNAME, "bobby@old.example.com")).thenReturn(directoryRow);
+    givenStoreSuggestions("bobby@old.example.com", directoryRow);
+    givenDirectoryProfile("bobby", "Bobby Tables", "bobby@new.example.com", "bobby-avatar", "/bobby");
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "bobby@old.example.com", 10);
+    }
+
+    assertEquals(1, suggestions.size());
+    // The answer carries the address the mail would actually reach the person at.
+    assertEquals("bobby@new.example.com", suggestions.get(0).getAddress());
+    assertEquals("Bobby Tables", suggestions.get(0).getDisplayName());
+  }
+
+  @Test
+  void anExactMatchThatFillsTheWindowSkipsTheStoreQuery() {
+    // The chip resolution asks for exactly one suggestion; once the exact match has
+    // answered it, the store's LIKE would be a query whose answer cannot be shown.
+    Profile matched = directoryUserProfile("bobby", "Bobby Tables", "bobby@example.com", "bobby-avatar", "/bobby");
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bobby@example.com")).thenReturn(matched);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "bobby@example.com", 1);
+    }
+
+    assertEquals(1, suggestions.size());
+    assertEquals("Bobby Tables", suggestions.get(0).getDisplayName());
+    verify(emailContactStorage, never()).suggestContacts(anyString(), anyString(), anyInt());
+  }
+
+  @Test
+  void aSuppressedRowDoesNotHideTheColleagueBehindTheAddress() {
+    // A contact the user deleted must not shadow the directory: the address still
+    // belongs to a colleague, and refusing to name them would be the deletion
+    // silently costing them the resolution.
+    givenStoreSuggestions("bobby@example.com");
+    EmailContact suppressed = collectedContact(7L, "bobby@example.com", "Bobby from accounting");
+    suppressed.setSuppressed(true);
+    when(emailContactStorage.getContactByAddress(USERNAME, "bobby@example.com")).thenReturn(suppressed);
+    Profile matched = directoryUserProfile("bobby", "Bobby Tables", "bobby@example.com", "bobby-avatar", "/bobby");
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("bobby@example.com")).thenReturn(matched);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "bobby@example.com", 10);
+    }
+
+    assertEquals(1, suggestions.size());
+    assertEquals("Bobby Tables", suggestions.get(0).getDisplayName());
+  }
+
+  @Test
+  void theUsersOwnAddressIsNeverSuggestedBackToThem() {
+    givenStoreSuggestions("me@example.com");
+    Profile mine = directoryUserProfile(USERNAME, "My Self", "me@example.com", "my-avatar", "/me");
+
+    List<EmailContactSuggestion> suggestions;
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail("me@example.com")).thenReturn(mine);
+      suggestions = emailContactService.suggestRecipients(USERNAME, "me@example.com", 10);
+    }
+
+    assertTrue(suggestions.isEmpty());
+  }
+
+  @Test
+  void aHalfTypedAddressCostsNeitherAStoreReadNorADirectoryQuery() {
+    // The gate exists for this: an address is resolved once it HAS a domain, so
+    // typing one does not spend a lookup per keystroke.
+    givenStoreSuggestions("bobby@exam");
+
+    try (MockedStatic<EmailConnectorUtils> utils = mockStatic(EmailConnectorUtils.class)) {
+      utils.when(() -> EmailConnectorUtils.getUserProfileByEmail(anyString())).thenReturn(null);
+      emailContactService.suggestRecipients(USERNAME, "bobby@exam", 10);
+      utils.verify(() -> EmailConnectorUtils.getUserProfileByEmail("bobby@exam"), never());
+    }
+
+    verify(emailContactStorage, never()).getContactByAddress(anyString(), anyString());
+  }
+
+  @Test
   void aColleagueWhoIsAlsoACollectedContactAppearsOnce() {
     // The same person reached from both halves: one chip, the store's row, with the
     // platform profile supplying the live avatar and profile link.
@@ -2224,6 +2375,30 @@ public class EmailContactServiceTest {
     lenient().when(profile.getEmail()).thenReturn(email);
     lenient().when(profile.getAvatarUrl()).thenReturn(avatarUrl);
     lenient().when(profile.getUrl()).thenReturn(profileUrl);
+    return profile;
+  }
+
+  /**
+   * A platform profile as {@code getUserProfileByEmail} answers one: carrying its
+   * identity, which is what tells the address resolver whether it has just found
+   * the acting user themselves.
+   *
+   * @param platformUsername the identity behind the profile
+   * @param fullName the display name
+   * @param email the profile address
+   * @param avatarUrl the avatar
+   * @param profileUrl the profile link
+   * @return the mocked profile
+   */
+  private Profile directoryUserProfile(String platformUsername,
+                                       String fullName,
+                                       String email,
+                                       String avatarUrl,
+                                       String profileUrl) {
+    Profile profile = profile(fullName, email, avatarUrl, profileUrl);
+    Identity identity = mock(Identity.class);
+    lenient().when(identity.getRemoteId()).thenReturn(platformUsername);
+    lenient().when(profile.getIdentity()).thenReturn(identity);
     return profile;
   }
 

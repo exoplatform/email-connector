@@ -52,6 +52,13 @@ public final class EmailContactUtils {
   private static final Pattern COMBINING_MARKS  = Pattern.compile("\\p{M}+");
 
   /**
+   * A COMPLETE address: a local part, an {@code @}, and a domain carrying a dot.
+   * Deliberately the same shape the compose field's own ADDRESS_PATTERN accepts,
+   * so a chip the interface lets the user commit is one the server recognises.
+   */
+  private static final Pattern COMPLETE_ADDRESS  = Pattern.compile("[^\\s@,;]+@[^\\s@,;]+\\.[^\\s@,;]+");
+
+  /**
    * The most a contact note may hold, matching the NOTE_TEXT column. Applied on
    * every write path — form, import, sync — so the cap is a property of the
    * store, not of whichever door the note came in by.
@@ -72,6 +79,23 @@ public final class EmailContactUtils {
     }
     String normalized = address.trim().toLowerCase(Locale.ROOT);
     return normalized.indexOf('@') > 0 ? normalized : null;
+  }
+
+  /**
+   * Whether a string is a complete address rather than merely address-shaped.
+   * <p>
+   * {@link #normalizeAddress(String)} answers a different question -- "could this
+   * be a key" -- for which an {@code @} anywhere past the first character is
+   * enough. This one answers "has the user finished typing it", and it exists
+   * because the callers that resolve an address against the platform directory
+   * pay an organisation query to do it: gating them on a domain that has a dot
+   * keeps a half-typed {@code sam@} from spending one per keystroke.
+   *
+   * @param address the raw address, may be null
+   * @return {@code true} when the string is a complete address
+   */
+  public static boolean isCompleteAddress(String address) {
+    return address != null && COMPLETE_ADDRESS.matcher(address.trim()).matches();
   }
 
   /**
