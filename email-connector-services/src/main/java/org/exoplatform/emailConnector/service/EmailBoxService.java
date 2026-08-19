@@ -2586,7 +2586,6 @@ public class EmailBoxService {
     Folder inbox = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting);
-      inbox = store.getFolder(INBOX_FOLDER_NAME);
       inbox = resolveCachedFolder(store, cachedFolder, username);
       if (inbox == null) {
         // The mailbox has no such folder any more (renamed, deleted, or never had one
@@ -3265,31 +3264,6 @@ public class EmailBoxService {
       emailFavoriteService.reconcileFavorites(username);
     }
     return failedEmailUpdates;
-  }
-
-  /**
-   * Counts the unread emails of the locally synced mirror, for the mailbox
-   * owner only.
-   *
-   * @param  username the mailbox owner
-   * @return          the number of unread emails
-   */
-  public long countUnreadEmails(String username) {
-    return emailBoxStorage.countUnreadEmails(username);
-  }
-
-  /**
-   * Signals that a user's unread count may have changed, so that anything
-   * displaying it can refresh.
-   *
-   * @param username the mailbox owner
-   */
-  public void broadcastUnreadCountChanged(String username) {
-    try {
-      listenerService.broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, username, null);
-    } catch (Exception e) {
-      LOG.warn("Error broadcasting unread emails change for user {}", username, e);
-    }
   }
 
   /**
@@ -4017,67 +3991,6 @@ public class EmailBoxService {
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
     try {
-      Message message = new MimeMessage(session);
-      Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
-      message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
-      if (!CollectionUtils.isEmpty(email.getTo())) {
-        String toRecipients = email.getTo()
-                                   .stream()
-                                   .map(EmailRecipient::getAddress)
-                                   .filter(Objects::nonNull)
-                                   .filter(address -> !address.isBlank())
-                                   .collect(Collectors.joining(","));
-        message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(toRecipients));
-      }
-      if (!CollectionUtils.isEmpty(email.getCc())) {
-        String ccRecipients = email.getCc()
-                                   .stream()
-                                   .map(EmailRecipient::getAddress)
-                                   .filter(Objects::nonNull)
-                                   .filter(address -> !address.isBlank())
-                                   .collect(Collectors.joining(","));
-        message.setRecipients(Message.RecipientType.CC, InternetAddress.parse(ccRecipients));
-      }
-      if (!CollectionUtils.isEmpty(email.getBcc())) {
-        String bccRecipients = email.getBcc()
-                                    .stream()
-                                    .map(EmailRecipient::getAddress)
-                                    .filter(Objects::nonNull)
-                                    .filter(address -> !address.isBlank())
-                                    .collect(Collectors.joining(","));
-
-        message.setRecipients(Message.RecipientType.BCC, InternetAddress.parse(bccRecipients));
-      }
-      message.setSubject(email.getSubject());
-      String currentDomain = CommonsUtils.getCurrentDomain();
-      Document contentDoc = Jsoup.parseBodyFragment(HtmlUtils.transform(email.getContent().getBody(), null));
-      for (Element link : contentDoc.select("a[href^=/portal]")) {
-        link.select("i").remove();
-        String href = link.attr("href");
-        link.attr("href", currentDomain + href);
-      }
-      applyContentAndAttachments(message, email, contentDoc.body().html(), uploadIds);
-      if (!StringUtils.isEmpty(email.getMailHeaderId())) {
-        String parentMessageId = email.getMailHeaderId();
-        message.setHeader(HEADER_IN_REPLY_TO, parentMessageId);
-        // RFC 5322 §3.6.4: References is the parent's own References plus the parent's
-        // Message-ID — not just the parent id, otherwise a third message in the chain
-        // loses the link to the first and starts a new thread.
-        String parentReferences = emailBoxStorage.getMailReferencesByMailHeaderId(parentMessageId, username);
-        String referencesHeader = EmailThreadingUtils.buildReferencesHeader(parentReferences, parentMessageId);
-        if (!StringUtils.isEmpty(referencesHeader)) {
-          message.setHeader(HEADER_REFERENCES, referencesHeader);
-        }
-      }
-      Transport.send(message);
-      String emailType = StringUtils.isEmpty(email.getMailHeaderId()) ? "newEmail" : "reply";
-      listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL, username, emailType);
-      publishEmailSentEvent(username, email);
-      try {
-        copyToSentFolder(message, username, userEmailSetting);
-      } catch (IllegalStateException e) {
-        LOG.warn("Email sent but could not be copied to Sent folder for user {}", username, e);
-      }
       MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds);
       applyThreadingHeaders(message, email, username);
       deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
