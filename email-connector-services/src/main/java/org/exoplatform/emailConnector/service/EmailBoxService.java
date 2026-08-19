@@ -298,10 +298,41 @@ public class EmailBoxService {
   // parallel prefetch. Slices are consumed in completion order, so a single slow slice no
   // longer holds anything up -- one message trickling in behind a slow connection once
   // stalled a whole mailbox for minutes while four workers sat idle holding finished
-  // data. What this bounds is total silence: with several connections in flight, nothing
-  // at all completing for this long means the connections are dead, not slow, and the
-  // remaining bodies are fetched serially, which costs a fraction of a second each.
+  // data. What this bounds is total silence among connections that are ALREADY fetching:
+  // nothing arriving for this long from a fleet that has reached the folder means the
+  // connections stalled or died mid-fetch, and the remaining bodies are fetched serially,
+  // which costs a fraction of a second each.
+  // This window used to start when the slices were submitted, and that was wrong: a
+  // worker pays a TLS handshake, an IMAP login and a folder SELECT before its first
+  // FETCH, so a provider merely slow to AUTHENTICATE was judged as a fleet that had
+  // stopped FETCHING. On 12 Aug a Gmail login blew past the 30 s read timeout and, three
+  // minutes later, the same sync abandoned its healthy prefetch reporting dead
+  // connections -- one cause, two symptoms, and the log named the wrong one. The window
+  // now starts when the first worker reports itself connected and SELECTed (see
+  // BodyPrefetchFleet), so a fleet still logging in is never mistaken for a silent one.
   private static final long       BODY_PREFETCH_SLICE_TIMEOUT_MS                              = 90 * 1000L;
+
+  // The outer bound on "not one worker has managed to log in yet". Silence cannot be
+  // judged before the fleet is fetching, but the wait must still end: a provider that
+  // refuses or black-holes logins would otherwise keep the sync thread parked until the
+  // folder deadline. Three minutes is derived from the worst plausible login chain
+  // against the timeouts UserEmailSettingService#connect sets -- a 15 s connect plus the
+  // greeting, CAPABILITY, AUTHENTICATE and SELECT round-trips, each allowed to stall to
+  // just under the 30 s read timeout (~135 s) -- plus margin. A merely slow provider
+  // lands well inside it; a worker still not fetching after it is being refused, and
+  // abandoning promptly is then the right call, because the serial fallback reuses the
+  // sync connection that is ALREADY authenticated.
+  private static final long       BODY_PREFETCH_CONNECT_TIMEOUT_MS                            = 3 * 60 * 1000L;
+
+  // How often the drain resurfaces while the fleet is still logging in, so it notices the
+  // first worker reaching the folder instead of staying parked on the connect bound. Only
+  // paid before the fleet fetches: once it does, the wait is a single blocking poll again.
+  private static final long       BODY_PREFETCH_CONNECT_POLL_MS                               = 5 * 1000L;
+
+  // "No worker has reported itself fetching yet" -- kept out of band rather than using 0,
+  // which is a legal (if absurd) epoch-millis value. Package-visible so the tests can
+  // state that case by name instead of hard-coding the sentinel.
+  static final long               BODY_PREFETCH_NOT_FETCHING                                  = -1L;
 
   // The RFC 7162 capability behind the skip check's flag-change signal. Referenced in
   // two places on purpose: the folder OPEN asks for mod-sequences explicitly, and the
@@ -1276,12 +1307,16 @@ public class EmailBoxService {
       // are still cached by the serial fallback at the bottom of the loop. Insertion
       // (= submission) order is kept, so that fallback also drains newest-first.
       Map<Future<Map<Long, EmailContent>>, long[]> pendingSlices = new LinkedHashMap<>();
+      // Tells the drain when the fleet is actually FETCHING rather than merely submitted,
+      // so a provider slow to authenticate is not judged as a fleet that has gone silent.
+      BodyPrefetchFleet fleet = new BodyPrefetchFleet(System.currentTimeMillis());
       for (long[] uidSlice : uidSlices) {
         pendingSlices.put(completedSlices.submit(() -> prefetchSlice(folderFullName,
                                                                      uidSlice,
                                                                      userEmailSetting,
                                                                      emailConnector,
                                                                      username,
+                                                                     fleet,
                                                                      fetchedParts)),
                           uidSlice);
       }
@@ -1303,11 +1338,20 @@ public class EmailBoxService {
       while (!pendingSlices.isEmpty()) {
         Future<Map<Long, EmailContent>> completed = null;
         if (!prefetchAbandoned) {
-          completed = pollCompletedSlice(completedSlices, deadline, username);
+          completed = pollCompletedSlice(completedSlices, deadline, fleet, username);
           if (completed == null) {
-            // Total silence inside the bound: stop the workers (left running they would
-            // hold their connections busy on messages the sync has given up on) and fall
-            // through to caching every remaining slice with serially-fetched bodies.
+            // Nothing arrived inside the bound -- either the fleet never got logged in, or
+            // it went silent after reaching the folder; pollCompletedSlice tells the two
+            // apart in the log. Stop the workers (left running they would hold their
+            // connections busy on messages the sync has given up on) and fall through to
+            // caching every remaining slice with serially-fetched bodies.
+            // Deliberately no middle gear here: no retry with fewer workers. When a
+            // provider is refusing or stalling logins, opening more connections is exactly
+            // the wrong move, and the serial fallback is the one path that does NOT need a
+            // new login -- it reuses the sync connection, already authenticated. There is
+            // evidence for the misjudgement this bound used to make (12 Aug, see
+            // BODY_PREFETCH_SLICE_TIMEOUT_MS) and none at all for a smaller fleet helping.
+            // Bring measurements before adding one.
             prefetchAbandoned = true;
             pendingSlices.keySet().forEach(pending -> pending.cancel(true));
           }
@@ -1397,34 +1441,117 @@ public class EmailBoxService {
   /**
    * Waits for the next completed prefetch slice -- whichever of the in-flight slices
    * finishes first. Bounded by whichever comes sooner: the whole folder's deadline, or
-   * {@link #BODY_PREFETCH_SLICE_TIMEOUT_MS} of complete silence. The bound is on "no
-   * slice at all completed", not on one particular slice: a single slow slice just
-   * keeps downloading while the finished ones are drained around it, but silence that
-   * long with several connections in flight means the connections are dead, not slow.
+   * the wait bound {@link #bodyPrefetchWaitBound} computes from what the fleet is doing.
+   * The bound is on "no slice at all completed", not on one particular slice: a single
+   * slow slice just keeps downloading while the finished ones are drained around it.
+   * <p>
+   * Two different bounds, because there are two different failures. While no worker has
+   * finished logging in, silence proves nothing about fetching and only the connect bound
+   * applies; once the fleet is fetching, {@link #BODY_PREFETCH_SLICE_TIMEOUT_MS} of
+   * silence means the connections stalled. The wait therefore resurfaces every
+   * {@value #BODY_PREFETCH_CONNECT_POLL_MS} ms while the fleet is still logging in, so
+   * the moment a worker reaches the folder the silence window starts from there instead
+   * of the drain staying parked on the connect bound. Once the fleet fetches, the wait is
+   * a single blocking poll again.
    *
    * @param completedSlices the completion queue the workers hand finished slices to
    * @param deadline the epoch-millis bound shared by every slice of this folder
+   * @param fleet what the prefetch connections have reported doing so far
    * @param username the mailbox owner, for logging
    * @return the next completed slice, or null when the wait timed out or was
    *         interrupted -- the caller falls back to serial body fetching for whatever
    *         is still pending
    */
-  private Future<Map<Long, EmailContent>> pollCompletedSlice(CompletionService<Map<Long, EmailContent>> completedSlices,
-                                                             long deadline,
-                                                             String username) {
-    long waitBound = Math.min(deadline, System.currentTimeMillis() + BODY_PREFETCH_SLICE_TIMEOUT_MS);
+  Future<Map<Long, EmailContent>> pollCompletedSlice(CompletionService<Map<Long, EmailContent>> completedSlices,
+                                                     long deadline,
+                                                     BodyPrefetchFleet fleet,
+                                                     String username) {
+    long pollStartedAt = System.currentTimeMillis();
     try {
-      Future<Map<Long, EmailContent>> completed =
-                                                completedSlices.poll(Math.max(1, waitBound - System.currentTimeMillis()),
-                                                                     TimeUnit.MILLISECONDS);
-      if (completed == null) {
-        LOG.warn("No body prefetch slice of user {} completed in time; the remaining messages are fetched serially", username);
+      while (true) {
+        long now = System.currentTimeMillis();
+        long fetchingSince = fleet.fetchingSince();
+        long waitBound = bodyPrefetchWaitBound(pollStartedAt, fleet.submittedAt(), fetchingSince, deadline);
+        if (now >= waitBound) {
+          logBodyPrefetchGivenUp(fleet, username);
+          return null;
+        }
+        // Capped while the fleet is still logging in, so a worker reaching the folder is
+        // noticed within the granularity rather than at the connect bound.
+        long step = fetchingSince == BODY_PREFETCH_NOT_FETCHING ? Math.min(waitBound - now, BODY_PREFETCH_CONNECT_POLL_MS)
+                                                                : waitBound - now;
+        Future<Map<Long, EmailContent>> completed = completedSlices.poll(Math.max(1, step), TimeUnit.MILLISECONDS);
+        if (completed != null) {
+          return completed;
+        }
       }
-      return completed;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       LOG.warn("Body prefetch interrupted for user {}; the remaining bodies are fetched serially", username, e);
       return null;
+    }
+  }
+
+  /**
+   * When a drain wait that began at {@code pollStartedAt} must stop waiting.
+   * <p>
+   * Pure and package-visible so the timing rule can be tested at any instant instead of
+   * by really sitting out a ninety-second window. The rule:
+   * <ul>
+   * <li>no worker fetching yet -- the fleet is still authenticating, so silence says
+   * nothing about fetching: wait until {@link #BODY_PREFETCH_CONNECT_TIMEOUT_MS} after
+   * the slices were <em>submitted</em>;</li>
+   * <li>the fleet is fetching -- wait {@link #BODY_PREFETCH_SLICE_TIMEOUT_MS} of silence,
+   * counted from the later of this wait's start and the instant the first worker reached
+   * the folder. The {@code max} is what makes the FIRST wait connect-aware (it started at
+   * submission, before any login completed) while leaving every later wait exactly as it
+   * was: those start after slices have been arriving, so they measure silence from their
+   * own start.</li>
+   * </ul>
+   * The folder deadline caps both, so this can never push past the outer bound.
+   *
+   * @param pollStartedAt when this wait began, epoch millis
+   * @param submittedAt when the slices were handed to the pool, epoch millis
+   * @param fetchingSince when the first worker reached the folder, epoch millis, or
+   *          {@link #BODY_PREFETCH_NOT_FETCHING} while none has
+   * @param deadline the folder's outer silence deadline, epoch millis
+   * @return the epoch-millis instant at which the wait gives up
+   */
+  static long bodyPrefetchWaitBound(long pollStartedAt, long submittedAt, long fetchingSince, long deadline) {
+    if (fetchingSince == BODY_PREFETCH_NOT_FETCHING) {
+      return Math.min(deadline, submittedAt + BODY_PREFETCH_CONNECT_TIMEOUT_MS);
+    }
+    return Math.min(deadline, Math.max(pollStartedAt, fetchingSince) + BODY_PREFETCH_SLICE_TIMEOUT_MS);
+  }
+
+  /**
+   * Says which of the two failures the drain just hit, in words that ask the reader for
+   * different things. One message covering both cost real diagnosis time on 12 Aug: the
+   * sync reported dead connections while the actual incident was a login blowing past the
+   * read timeout, and whoever read the log went looking for the wrong thing. Also recorded
+   * on the fleet, so the decision is assertable without parsing the log.
+   *
+   * @param fleet what the prefetch connections reported doing before the wait expired
+   * @param username the mailbox owner, for logging
+   */
+  private void logBodyPrefetchGivenUp(BodyPrefetchFleet fleet, String username) {
+    if (fleet.fetchingSince() == BODY_PREFETCH_NOT_FETCHING) {
+      fleet.givenUp(BodyPrefetchGiveUp.LOGINS_NEVER_COMPLETED);
+      LOG.warn("Not one body prefetch connection of user {} completed its IMAP login and folder SELECT within {}s:"
+          + " the mail provider is refusing or stalling logins, the download itself never started."
+          + " The remaining messages are fetched serially over the sync connection, which is already authenticated."
+          + " Look for a login failure or a read timeout on this account, not for a stalled transfer",
+               username,
+               BODY_PREFETCH_CONNECT_TIMEOUT_MS / 1000);
+    } else {
+      fleet.givenUp(BodyPrefetchGiveUp.FETCHING_WENT_SILENT);
+      LOG.warn("No body prefetch slice of user {} completed within {}s although {} connection(s) had reached the folder"
+          + " and started fetching: those connections stalled or died mid-fetch."
+          + " The remaining messages are fetched serially over the sync connection."
+          + " Look at what happened to the transfers, the logins succeeded",
+               username,
+               BODY_PREFETCH_SLICE_TIMEOUT_MS / 1000,
+               fleet.connectedWorkers());
     }
   }
 
@@ -1449,6 +1576,107 @@ public class EmailBoxService {
     return Map.of();
   }
 
+
+  /**
+   * The two ways the parallel body prefetch can be given up on. They look identical from
+   * the drain -- nothing arrived -- and are opposite incidents: one is the provider not
+   * letting the connections in, the other is the connections dying once inside. They are
+   * named apart because they ask different things of whoever reads the log, and because
+   * conflating them is precisely what misled the 12 Aug diagnosis.
+   */
+  enum BodyPrefetchGiveUp {
+
+    /** Not one worker finished its TLS handshake, IMAP login and folder SELECT. */
+    LOGINS_NEVER_COMPLETED,
+
+    /** Workers reached the folder and started fetching, then stopped delivering. */
+    FETCHING_WENT_SILENT
+  }
+
+  /**
+   * What the prefetch connections have reported doing, shared between the workers and the
+   * sync thread draining them.
+   * <p>
+   * It exists for one reason: the drain must be able to tell a fleet that is still
+   * <em>authenticating</em> from a fleet that has stopped <em>fetching</em>. Submission
+   * time cannot tell them apart -- every worker pays a TLS handshake, an IMAP login and a
+   * folder SELECT before its first FETCH -- so each worker reports itself here the moment
+   * it has the folder open, and the drain's silence window starts from that instead
+   * (see {@link EmailBoxService#bodyPrefetchWaitBound}).
+   * <p>
+   * Read from the sync thread and written from the workers, hence the atomics; the give-up
+   * reason is written and read on the sync thread alone, and is kept only so the decision
+   * is assertable without parsing the log.
+   */
+  static final class BodyPrefetchFleet {
+
+    private final long          submittedAt;
+
+    private final AtomicLong    fetchingSince    = new AtomicLong(BODY_PREFETCH_NOT_FETCHING);
+
+    private final AtomicInteger connectedWorkers = new AtomicInteger();
+
+    private BodyPrefetchGiveUp  givenUp;
+
+    /**
+     * @param submittedAt when the slices were handed to the pool, epoch millis -- the
+     *          origin the connect bound is measured from
+     */
+    BodyPrefetchFleet(long submittedAt) {
+      this.submittedAt = submittedAt;
+    }
+
+    /**
+     * Called by a worker that has connected, authenticated and SELECTed its folder, i.e.
+     * that is about to FETCH. Only the FIRST such report moves the clock: the silence
+     * window opens as soon as any connection is capable of delivering, and a straggler
+     * logging in later must not push it back and hide a fleet that has since gone quiet.
+     */
+    void markFetching() {
+      connectedWorkers.incrementAndGet();
+      fetchingSince.compareAndSet(BODY_PREFETCH_NOT_FETCHING, System.currentTimeMillis());
+    }
+
+    /**
+     * @return when the first worker reached the folder, epoch millis, or
+     *         {@link EmailBoxService#BODY_PREFETCH_NOT_FETCHING} while none has
+     */
+    long fetchingSince() {
+      return fetchingSince.get();
+    }
+
+    /**
+     * @return when the slices were submitted, epoch millis
+     */
+    long submittedAt() {
+      return submittedAt;
+    }
+
+    /**
+     * @return how many workers reported themselves fetching, which is what tells a
+     *         partially-connected fleet from a fully-connected one in the log
+     */
+    int connectedWorkers() {
+      return connectedWorkers.get();
+    }
+
+    /**
+     * Records why the drain stopped waiting.
+     *
+     * @param reason the failure the drain concluded
+     */
+    void givenUp(BodyPrefetchGiveUp reason) {
+      this.givenUp = reason;
+    }
+
+    /**
+     * @return the failure the drain concluded, or null while the prefetch has not been
+     *         given up on
+     */
+    BodyPrefetchGiveUp givenUp() {
+      return givenUp;
+    }
+  }
 
   /**
    * MIME part bodies pulled per message, broken down by the kind of mail they came from.
@@ -1587,6 +1815,7 @@ public class EmailBoxService {
    * @param userEmailSetting the user's connector binding
    * @param emailConnector the resolved connector preset, so no database read happens here
    * @param username the mailbox owner, for logs
+   * @param fleet the fleet clock this worker reports to once it is actually fetching
    * @param fetchedParts counter of MIME part bodies pulled — a shared in-memory adder,
    *          the one thing a worker may touch besides IMAP
    * @return the slice's bodies keyed by IMAP UID
@@ -1596,6 +1825,7 @@ public class EmailBoxService {
                                                 UserEmailSetting userEmailSetting,
                                                 EmailConnector emailConnector,
                                                 String username,
+                                                BodyPrefetchFleet fleet,
                                                 MimePartStats fetchedParts) {
     Map<Long, EmailContent> contents = new HashMap<>();
     Store store = null;
@@ -1604,6 +1834,11 @@ public class EmailBoxService {
       store = userEmailSettingService.connect(userEmailSetting, emailConnector);
       folder = store.getFolder(folderFullName);
       folder.open(Folder.READ_ONLY);
+      // Everything the drain must not confuse with fetching is now behind us: TLS
+      // handshake, IMAP login, folder SELECT. From here the connection does nothing but
+      // FETCH, so silence from here on IS a stalled transfer -- which is exactly what the
+      // drain's silence window is allowed to judge, and not one millisecond earlier.
+      fleet.markFetching();
       UIDFolder uidFolder = (UIDFolder) folder;
       // A UID expunged since the sync connection listed it comes back as a null (or
       // missing) entry; drop it — cleanupObsoleteEmails handles its disappearance.
