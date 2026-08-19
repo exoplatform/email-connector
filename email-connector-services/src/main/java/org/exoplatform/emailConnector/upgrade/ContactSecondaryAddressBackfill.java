@@ -121,11 +121,11 @@ public class ContactSecondaryAddressBackfill {
    * @return how many addresses were filed
    */
   private int fileSecondaryAddresses(EmailContactEntity contact) {
-    if (contact == null || StringUtils.isBlank(contact.getEmails())) {
+    if (contact == null || contact.getEmails() == null || contact.getEmails().isEmpty()) {
       return 0;
     }
     int filed = 0;
-    for (String pair : StringUtils.split(contact.getEmails(), ';')) {
+    for (String pair : contact.getEmails()) {
       // Stored as "type,value" — the value is what a contact is reached at, and the
       // type is presentation this table has no use for.
       String address = EmailContactUtils.normalizeAddress(StringUtils.substringAfterLast(pair, ","));
