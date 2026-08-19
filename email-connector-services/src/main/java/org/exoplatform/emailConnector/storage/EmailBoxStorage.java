@@ -1257,6 +1257,9 @@ public class EmailBoxStorage {
     email.setMailRemoteId(emailBoxEntity.getMailRemoteId());
     email.setUserId(emailBoxEntity.getUserId());
     email.setFolder(emailBoxEntity.getFolder());
+    // Free: it is a column on the row already fetched, and it is how a search hit is
+    // opened back in the conversation it belongs to.
+    email.setMailHeaderId(emailBoxEntity.getMailHeaderId());
     email.setSubject(emailBoxEntity.getSubject());
     email.setReceivedDate(emailBoxEntity.getReceivedDate());
     email.setRead(emailBoxEntity.isRead());
