@@ -1962,6 +1962,9 @@ public class EmailBoxServiceTest {
     mockCategoryIdSetting("emailNotificationCategory", "notANumber");
     mockCategoryIdSetting("emailToReviewCategory", "44");
     assertEquals(List.of(11L, 44L), emailBoxService.getDefaultEmailCategoryIds());
+  }
+
+  @Test
   void bodyPrefetchWaitBoundWaitsOutTheLoginsBeforeJudgingSilence() {
     // The regression this fixes: workers submitted at t=0 have not fetched a byte yet --
     // they are still handshaking, logging in and SELECTing -- so the drain must not judge
