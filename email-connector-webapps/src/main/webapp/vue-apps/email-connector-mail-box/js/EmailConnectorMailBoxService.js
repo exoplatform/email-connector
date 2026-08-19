@@ -310,12 +310,24 @@ export function completeThreadByThreadId(threadId) {
  * @param {String} query free text matched against subject or sender
  * @param {String} folder the folder to search: INBOX, SENT or ARCHIVE
  * @param {Number} limit how many hits to return (newest first)
+ * @param {Boolean} favorites when true, only messages carrying the server's \Flagged
+ *          flag come back, so the mailbox's Favorites chip narrows the search too
+ * @param {Boolean} unread when true, only unread messages come back, for the same
+ *          reason: the chip is lit, so it must still be filtering
  * @returns {Promise} resolves with { results, totalMatches }
  */
-export function searchEmails(query, folder, limit) {
+export function searchEmails(query, folder, limit, favorites, unread) {
   const params = new URLSearchParams({ query, limit });
   if (folder && folder !== 'INBOX') {
     params.append('folder', folder);
+  }
+  // Sent only when on: the endpoint defaults both to false, and an explicit
+  // favorites=false would say "the caller considered this" when it has not.
+  if (favorites) {
+    params.append('favorites', 'true');
+  }
+  if (unread) {
+    params.append('unread', 'true');
   }
   return fetch(`/email-connector/rest/email-box/search?${params}`, {
     headers: {

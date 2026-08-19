@@ -38,6 +38,21 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String folder);
 
   /**
+   * The whole cached mailbox WITHOUT its attachments, for the search over cached mail.
+   * <p>
+   * A separate query rather than reusing {@link #findByUserIdWithAttachments}: that one
+   * joins every attachment row of every message, and the search reads none of them. This
+   * read answers the platform's unified search bar, which asks every connector on each
+   * search, so it runs for every user on searches that have nothing to do with mail.
+   *
+   * @param userId the mailbox owner
+   * @return the cached messages, newest first, attachments not fetched
+   */
+  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByUserIdForSearch(@Param("userId")
+  String userId);
+
+  /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
    * rather than a flag on {@link #findByUserIdAndFolderWithAttachments} so the common
    * unfiltered listing keeps its exact plan, and the filter runs in SQL instead of

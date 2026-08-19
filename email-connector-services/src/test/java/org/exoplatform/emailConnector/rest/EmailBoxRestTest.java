@@ -19,6 +19,8 @@
 package org.exoplatform.emailConnector.rest;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -34,6 +36,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.Date;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -65,6 +68,9 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
+import org.exoplatform.emailConnector.model.EmailSearchResult;
+import org.exoplatform.emailConnector.model.EmailSearchResultPage;
+import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
@@ -260,6 +266,51 @@ public class EmailBoxRestTest {
     when(emailAttachment.getMimeType()).thenReturn("application/pdf");
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/attachments/2122121/2").with(testSimpleUser()));
     response.andExpect(status().isOk());
+  }
+
+  @Test
+  void searchCachedEmails() throws Exception {
+    // The unified search bar's read. Its novel behaviour is the refusal: every other
+    // caught IllegalAccessException in this controller becomes a 401, this one becomes
+    // an EMPTY PAGE, because most users have no mailbox connected and the platform
+    // asks every connector on every search.
+    EmailSearchResult hit = new EmailSearchResult(121L,
+                                                 "INBOX",
+                                                 "Quarterly budget",
+                                                 new EmailSender("Bob", "bob@example.com", null, null),
+                                                 new Date(),
+                                                 false,
+                                                 true,
+                                                 true,
+                                                 "the budget is attached");
+    when(emailBoxService.searchCachedEmails(SIMPLE_USER, "budget", false, 5)).thenReturn(new EmailSearchResultPage(List.of(hit),
+                                                                                                                  1));
+    ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH + "/search/cached?q=budget").with(testSimpleUser()));
+    response.andExpect(status().isOk())
+            .andExpect(jsonPath("$.totalMatches").value(1))
+            .andExpect(jsonPath("$.results[0].subject").value("Quarterly budget"))
+            .andExpect(jsonPath("$.results[0].starred").value(true));
+
+    // The Favorites filter has to reach the service, not just the query string.
+    when(emailBoxService.searchCachedEmails(SIMPLE_USER, "budget", true, 5)).thenReturn(new EmailSearchResultPage(List.of(),
+                                                                                                                 0));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/search/cached?q=budget&favorites=true").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailBoxService).searchCachedEmails(SIMPLE_USER, "budget", true, 5);
+
+    // No mailbox connected: an empty section, not a 401.
+    doThrow(IllegalAccessException.class).when(emailBoxService).searchCachedEmails(anyString(), anyString(), anyBoolean(), anyInt());
+    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/search/cached?q=budget").with(testSimpleUser()));
+    response.andExpect(status().isOk()).andExpect(jsonPath("$.totalMatches").value(0)).andExpect(jsonPath("$.results").isEmpty());
+
+    // A blank query is the service's own message code, surfaced as a 400.
+    doThrow(new IllegalArgumentException("emailConnector.search.criteriaRequired")).when(emailBoxService)
+                                                                                  .searchCachedEmails(anyString(),
+                                                                                                      anyString(),
+                                                                                                      anyBoolean(),
+                                                                                                      anyInt());
+    response = mockMvc.perform(get(EMAIL_BOX_PATH + "/search/cached?q=%20").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
   }
 
   @Test

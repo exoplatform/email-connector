@@ -518,6 +518,7 @@ export default {
         merged.set(key, { categoryIds: [], ...merged.get(key), ...result });
       });
       return Array.from(merged.values())
+        .filter(result => this.searchResultMatchesFilters(result))
         .sort((first, second) => new Date(second.receivedDate) - new Date(first.receivedDate));
     },
     canGoBack() {
@@ -542,7 +543,14 @@ export default {
         // The one message being read stays listed even once marked read:
         // opening a mail under the Unread filter must not yank the reader
         // out from under the user for the select-an-email placeholder.
-        emails = emails.filter(e => !e.read || (this.email && e.mailRemoteId === this.email.mailRemoteId));
+        // Folder as well as UID: a UID is only unique within its folder, and the open
+        // reader can now hold a message from another one (openMailFromOutside,
+        // openSearchResult), so comparing the number alone would spare an unrelated
+        // read message that happens to share it.
+        emails = emails.filter(e => !e.read
+          || (this.email
+            && e.mailRemoteId === this.email.mailRemoteId
+            && (e.folder || this.currentFolder) === (this.email.folder || this.currentFolder)));
       }
       if (this.selectedCategoryIds.length > 0) {
         emails = emails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
@@ -767,7 +775,7 @@ export default {
       const requestId = ++this.searchRequestId;
       this.searchServerRunning = true;
       this.searchServerError = false;
-      this.$emailConnectorMailBoxService.searchEmails(this.searchTerm, this.currentFolder, SEARCH_PAGE_SIZE)
+      this.$emailConnectorMailBoxService.searchEmails(this.searchTerm, this.currentFolder, SEARCH_PAGE_SIZE, this.favoriteOnly, this.unreadOnly)
         .then(page => {
           if (requestId !== this.searchRequestId) {
             return;
@@ -819,6 +827,26 @@ export default {
         const override = (result.folder || 'INBOX') === 'INBOX' && this.favoriteOverrides.get(result.mailRemoteId);
         return override ? { ...result, starred: override.favorite } : result;
       });
+    },
+    // The chips narrow the search the same way they narrow the list. A lit Favorites
+    // chip that stopped filtering the moment the user typed was the defect here: the
+    // search read the mailbox directly and never went through the emails() computed
+    // that applies them.
+    // Favorites and Unread also travel to the server, since both are IMAP flags that
+    // /search takes, so they hold for hits the cache has never seen. A category is
+    // assigned locally after a message is cached, so an uncached hit carries none —
+    // it is left alone rather than silently dropped for lacking what it cannot have.
+    searchResultMatchesFilters(result) {
+      if (this.favoriteOnly && !result.starred) {
+        return false;
+      }
+      if (this.unreadOnly && result.read) {
+        return false;
+      }
+      if (this.selectedCategoryIds.length > 0 && result.cached) {
+        return this.selectedCategoryIds.some(id => (result.categoryIds || []).includes(id));
+      }
+      return true;
     },
     clearSearch() {
       window.clearTimeout(this.searchDebounceTimer);

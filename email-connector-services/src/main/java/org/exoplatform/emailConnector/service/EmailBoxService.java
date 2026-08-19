@@ -3407,7 +3407,7 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
     }
     String term = query.trim().toLowerCase();
-    List<Email> matches = emailBoxStorage.getEmails(username)
+    List<Email> matches = emailBoxStorage.getEmailsForSearch(username)
                                          .stream()
                                          .filter(email -> !favoritesOnly || email.isStarred())
                                          .filter(email -> matchesCachedEmail(email, term))
