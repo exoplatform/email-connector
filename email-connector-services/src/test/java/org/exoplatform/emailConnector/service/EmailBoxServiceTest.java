@@ -909,6 +909,28 @@ public class EmailBoxServiceTest {
 
   @Test
   @SneakyThrows
+  void synchronizeSurvivesFailingBroadcasts() {
+    // A listener that throws is the consumer's problem, never the sync's: the messages
+    // are already cached when these events go out, so a failed broadcast must leave the
+    // run SUCCESS rather than roll a completed download back into FAILURE. All three
+    // announcements are covered here -- the per-group one, the inbox completion and the
+    // whole-mailbox one this PR added.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    mockInboxForSync(userEmailSetting, 3);
+    doThrow(new RuntimeException("listener unavailable")).when(listenerService)
+                                                        .broadcast(anyString(), any(), any());
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), eq(TEST_USER), any());
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED), eq(TEST_USER), any());
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED), eq(TEST_USER), any());
+    assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
+    verify(emailBoxStorage, times(3)).createEmail(any(Email.class));
+  }
+
+  @Test
+  @SneakyThrows
   void getAvailableEmailCategories() {
     mockCategoryIdSetting("emailImportantCategory", "11");
     mockCategoryIdSetting("emailInvitationCategory", null);
