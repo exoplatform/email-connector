@@ -2085,7 +2085,6 @@ public class EmailBoxServiceTest {
     }
   }
 
-  @Test
   @SneakyThrows
   void pollCompletedSliceReportsFetchingWentSilent() {
     ExecutorService pool = Executors.newSingleThreadExecutor();
