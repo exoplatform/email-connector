@@ -171,6 +171,8 @@ public class EmailBoxService {
   // The message headers this service reads by name. Named once so the prefetch list below and
   // the call sites that read them cannot drift apart: a header missing from the prefetch costs
   // a server round-trip per message, and nothing fails loudly when that happens.
+  private static final String    BROADCAST_ERROR_MESSAGE                 = "Error broadcasting '{}' for user {}";
+
   private static final String     HEADER_REFERENCES                                           = "References";
 
   private static final String     HEADER_IN_REPLY_TO                                          = "In-Reply-To";
@@ -586,6 +588,12 @@ public class EmailBoxService {
       // must show: a mail starred from a phone arrives here, and a reset gave
       // every cached mail a new id that the stored favorites no longer match.
       emailFavoriteService.reconcileFavorites(username);
+      if (!inboxOnly) {
+        // Only now is the whole mailbox cached. Anything that reads more than the
+        // inbox has to wait for this rather than for the inbox's own completion --
+        // an inbox-only sync never caches Sent, so it never claims the run is whole.
+        broadcastMailboxSyncCompleted(username);
+      }
     } catch (Exception e) {
       updateEmailSyncStatus(username, SyncStatus.FAILURE);
       LOG.error("Error when user {} synchronization ", username, e);
@@ -1971,7 +1979,26 @@ public class EmailBoxService {
                newEmailIds.size());
       listenerService.broadcast(EmailConnectorUtils.NEW_EMAILS_SYNCED, username, newEmailIds);
     } catch (Exception e) {
-      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.NEW_EMAILS_SYNCED, username, e);
+      LOG.warn(BROADCAST_ERROR_MESSAGE, EmailConnectorUtils.NEW_EMAILS_SYNCED, username, e);
+    }
+  }
+
+  /**
+   * Broadcasts {@link EmailConnectorUtils#MAILBOX_SYNC_COMPLETED} once every folder of
+   * the run has been cached.
+   * <p>
+   * Separate from {@link #broadcastNewEmailsSyncCompleted} because that one fires at
+   * the end of the INBOX, and Sent is cached after it. A consumer that reads sent mail
+   * — the contact backfill does, to learn who the user writes to — starts on the wrong
+   * one and finds an empty folder on a first connection.
+   *
+   * @param username the mailbox owner
+   */
+  private void broadcastMailboxSyncCompleted(String username) {
+    try {
+      listenerService.broadcast(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, List.<Long> of());
+    } catch (Exception e) {
+      LOG.warn(BROADCAST_ERROR_MESSAGE, EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, e);
     }
   }
 
@@ -1995,7 +2022,7 @@ public class EmailBoxService {
                newEmailIds.size());
       listenerService.broadcast(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED, username, newEmailIds);
     } catch (Exception e) {
-      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED, username, e);
+      LOG.warn(BROADCAST_ERROR_MESSAGE, EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED, username, e);
     }
   }
 

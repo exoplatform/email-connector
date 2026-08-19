@@ -38,8 +38,9 @@ import jakarta.annotation.PostConstruct;
  * Glue between the mail flows and contact collection, with no business logic of
  * its own — every event delegates to {@link EmailContactService}. Three feeds:
  * the per-group NEW_EMAILS_SYNCED broadcast (inbox senders, while the sync is
- * still running), the end-of-sync NEW_EMAILS_SYNC_COMPLETED broadcast (the
- * one-time whole-cache backfill hook), and the Spring {@link EmailSentEvent}
+ * still running), the end-of-run MAILBOX_SYNC_COMPLETED broadcast (the one-time
+ * whole-cache backfill hook, which needs Sent cached and so cannot ride the
+ * inbox's own completion), and the Spring {@link EmailSentEvent}
  * (sent-mail recipients — the strongest signal). {@code EmailBoxService}'s sync
  * is not touched at all: collection rides events it already emits.
  */
@@ -49,8 +50,13 @@ public class ContactCollectListener extends Listener<String, List<Long>> {
 
   private static final Log      LOG             = ExoLogger.getLogger(ContactCollectListener.class);
 
+  // NEW_EMAILS_SYNCED collects the messages of the run as they land; the backfill
+  // waits for MAILBOX_SYNC_COMPLETED instead of the inbox's own completion, because
+  // it reads sent mail and Sent is cached after the inbox. Listening to the inbox
+  // event meant a first connection ran the backfill against an empty Sent folder,
+  // collected nobody, and marked itself done for good.
   private static final String[] LISTENER_EVENTS = { EmailConnectorUtils.NEW_EMAILS_SYNCED,
-      EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED };
+      EmailConnectorUtils.MAILBOX_SYNC_COMPLETED };
 
   @Autowired
   private ListenerService       listenerService;

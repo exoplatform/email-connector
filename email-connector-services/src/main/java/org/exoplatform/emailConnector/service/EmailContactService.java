@@ -823,8 +823,15 @@ public class EmailContactService {
     if (existing.isSuppressed()) {
       return false;
     }
-    existing.setSeenCount(existing.getSeenCount() + 1);
-    if (existing.getLastSeenDate() == null || (seenDate != null && seenDate.after(existing.getLastSeenDate()))) {
+    // The counter moves only when the mail is newer than the last one counted, which
+    // makes replay a no-op. Collection re-runs over messages it has already seen --
+    // a mailbox reset re-downloads the whole inbox and every message is created
+    // afresh, so without this a reset counted hundreds of old mails as if they had
+    // just arrived, and the compose autocomplete ranks on exactly this counter.
+    // Accepted cost: two messages sharing a timestamp to the millisecond count once.
+    boolean seenLater = existing.getLastSeenDate() == null || (seenDate != null && seenDate.after(existing.getLastSeenDate()));
+    if (seenLater) {
+      existing.setSeenCount(existing.getSeenCount() + 1);
       existing.setLastSeenDate(seenDate);
     }
     if (StringUtils.isBlank(existing.getDisplayName()) && cleanName != null
