@@ -54,3 +54,48 @@ export function personName(person) {
 export function personLabel(person) {
   return personName(person) || person?.address?.trim() || '';
 }
+
+// The mail reader's generated-avatar palette (EmailConnectorUtils#getSenderDefaultAvatar),
+// mirrored value for value so the same person wears the same color everywhere.
+const AVATAR_PALETTE = [
+  '#EF5350',
+  '#1976D2',
+  '#AB47BC',
+  '#00897B',
+  '#9E9D24',
+  '#FBC02D',
+  '#00BFA5',
+  '#757575',
+  '#F44336',
+  '#2196F3',
+  '#7CB342',
+  '#303F9F',
+  '#4527A0',
+  '#8D6E63',
+  '#FF6F00',
+];
+
+/**
+ * The generated-avatar color for a label, by the reader's own formula.
+ *
+ * @param {string} label - a name, or an address
+ * @returns {string} a hex color
+ */
+export function avatarColor(label) {
+  const value = (label || '').trim();
+  return AVATAR_PALETTE[value.length % AVATAR_PALETTE.length];
+}
+
+/**
+ * Up to two initials standing in for a person with no picture.
+ *
+ * @param {string} label - a name, or an address
+ * @returns {string} the initials, or ? when there is nothing
+ */
+export function avatarInitials(label) {
+  return (label || '').split(/[\s.@_-]+/)
+    .filter(word => word)
+    .map(word => word.charAt(0).toUpperCase())
+    .slice(0, 2)
+    .join('') || '?';
+}
