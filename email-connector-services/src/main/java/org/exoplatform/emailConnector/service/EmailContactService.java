@@ -242,7 +242,10 @@ public class EmailContactService {
       }
     }
     if (StringUtils.isNotBlank(query) && byAddress.size() < size) {
-      appendDirectoryMatches(username, query.trim(), size, byAddress);
+      // StringUtils.trim rather than query.trim(): identical for the non-blank query
+      // this branch guards, and null-safe by contract, so the guard and the call agree
+      // without a reader (or a static analyser) having to pair them up.
+      appendDirectoryMatches(username, StringUtils.trim(query), size, byAddress);
     }
     return byAddress.values().stream().limit(size).toList();
   }

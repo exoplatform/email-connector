@@ -55,7 +55,10 @@ public final class EmailContactUtils {
    * Deliberately the same shape the compose field's own ADDRESS_PATTERN accepts,
    * so a chip the interface lets the user commit is one the server recognises.
    */
-  private static final Pattern COMPLETE_ADDRESS  = Pattern.compile("[^\\s@,;]+@[^\\s@,;]+\\.[^\\s@,;]+");
+  // The domain segments exclude the dot they are separated by, so nothing in this
+  // pattern can match the same character two ways: an address that is not one fails
+  // in a single pass instead of backtracking over every split of the domain.
+  private static final Pattern COMPLETE_ADDRESS  = Pattern.compile("[^\\s@,;]+@[^\\s@,;.]+(?:\\.[^\\s@,;.]+)+");
 
   /**
    * Normalizes an address to the form the store keys by: trimmed and lowercased.
