@@ -241,6 +241,21 @@
     </createIndex>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-22">
+    <!-- ANY, because this id has already run on environments where the changelog held
+         different content under it. The comment below explains that upstream reached this
+         shape in two steps and that the two were collapsed here "because neither has ever run
+         on this lineage" - which was true of a fresh install and false of the acceptance
+         database, where the earlier shape had run. Collapsing shifted every later id down by
+         one, so 22, 23 and 24 now carry what 23, 24 and 25 carried when those rows were
+         written, and Liquibase refused the whole changelog: the bean failed, the Spring
+         context never started, and the platform was down.
+         The content of all three has already been applied there under the previous ids, so
+         they must be accepted rather than replayed - matching on id, author and file finds
+         the existing rows and skips them. Dropping the data to get a clean checksum was not
+         an option on that environment.
+         This is a repair, not a licence: an id that has run anywhere is permanent, and a
+         rebase or a tidy-up must never renumber one. -->
+    <validCheckSum>ANY</validCheckSum>
     <!-- The bulk-mail signals, read from the standard headers at sync time while the
          MimeMessage is still at hand. Consumers only see the cached row, so without these the
          only way to guess is to search the body for the word "unsubscribe", which also matches
@@ -276,6 +291,9 @@
     </addColumn>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-23">
+    <!-- ANY, for the same reason as 1.0.0-22: this id already ran carrying what 1.0.0-24
+         carries today, so its recorded checksum can never match again. -->
+    <validCheckSum>ANY</validCheckSum>
     <!-- Who actually wrote a message that arrived through a mailing list. Google Groups and
          Mailman rewrite From to the list itself ("Name via the-list <the-list@example.com>"),
          so the stored sender identifies the transport, not the author - and a colleague's
@@ -287,6 +305,9 @@
     </addColumn>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-24">
+    <!-- ANY, for the same reason as 1.0.0-22: this id already ran carrying different content,
+         so its recorded checksum can never match again. -->
+    <validCheckSum>ANY</validCheckSum>
     <!-- The reconcile view this change introduced (findSyncViewByUserIdAndFolder) runs on
          every routine sync of every connected mailbox: it filters on (USER_ID, FOLDER) and
          sorts on RECEIVED_DATE. The indexes above cover USER_ID, (USER_ID, THREAD_ID) and
