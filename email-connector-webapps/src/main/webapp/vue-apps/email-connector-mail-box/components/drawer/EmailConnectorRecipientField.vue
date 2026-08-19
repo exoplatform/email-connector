@@ -280,7 +280,7 @@ export default {
      * @returns {string} the label behind the generated avatar
      */
     generatedLabel(person) {
-      return person.displayName || personLabel(person);
+      return personLabel({name: person.displayName || person.name, address: person.address});
     },
     /**
      * The generated-avatar background for a person with no picture.
