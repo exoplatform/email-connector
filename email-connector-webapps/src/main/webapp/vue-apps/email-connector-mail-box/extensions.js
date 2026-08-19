@@ -64,6 +64,32 @@ extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
 });
 
 /*
+ * Makes the pictures in a message resizable, by giving the email editor CKEditor's
+ * image widget.
+ *
+ * RichEditor removes the plain 'image' plugin for every editor type and adds nothing
+ * in its place, so an <img> in the body is inert: no handles, no way to make a
+ * screenshot smaller than the width it was captured at. Notes solves this by listing
+ * image2 in its own editor configuration; the email editor has no such file, and this
+ * extension point is how it says the same thing.
+ *
+ * image2 rather than image: it is the widget version, it is what notes already runs,
+ * and it writes width and height as ATTRIBUTES on the img -- which is the one form of
+ * sizing mail clients agree on. A style would be dropped by Outlook.
+ */
+extensionRegistry.registerExtension('RichEditor', 'ckeditor-extensions-email', {
+  id: 'emailResizableImages',
+  rank: 40,
+  // Unconditional, unlike the attach button above: this needs no other add-on, and an
+  // extension without an enabled() is filtered out unless the editor asks for extra
+  // plugins, which this one does not.
+  enabled: () => true,
+  getExtension: () => ({
+    extraPlugin: 'image2',
+  }),
+});
+
+/*
  * Opens the mailbox on one given message, from anywhere in the platform: the global
  * Favorites drawer uses it to hand over a favorited mail, and any other add-on can do
  * the same without knowing how this app is mounted.
