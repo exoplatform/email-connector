@@ -200,6 +200,18 @@ export default {
       this.attachments = [];
       this.title = this.drawerTitle(email, forward);
       this.seedRecipients(email, forward, replyAll, prefill);
+      // A subject and a body, seeded the same way the recipients are. Opening
+      // the composer from elsewhere was only ever half an offer: an add-on with
+      // something to send -- a visio room's link, a document, a note -- could
+      // open the drawer but not put the thing in the message, so the user was
+      // left to paste it themselves. The fields are already here and already
+      // bound; they were simply never filled from a prefill.
+      if (!email && prefill?.subject) {
+        this.email.subject = prefill.subject;
+      }
+      if (!email && prefill?.body) {
+        this.email.content.body = prefill.body;
+      }
       if (email) {
         if (forward) {
           this.email.content.body = this.buildForwardedBody(email);
