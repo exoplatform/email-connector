@@ -229,7 +229,7 @@ public class EmailBoxTrashExclusionStorageTest {
     emailBoxStorage.createEmail(mail(SEARCH_USER, MailFolder.TRASH, 2L, "<deleted@example.org>", TUESDAY));
 
     assertEquals(List.of("<monday@example.org>"),
-                 emailBoxStorage.getEmailsExcludingTrash(SEARCH_USER).stream().map(Email::getMailHeaderId).toList(),
+                 emailBoxStorage.getEmailsForSearch(SEARCH_USER).stream().map(Email::getMailHeaderId).toList(),
                  "what the user threw away must not be searchable back out of the bin");
   }
 

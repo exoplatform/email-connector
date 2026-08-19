@@ -504,6 +504,8 @@ public class EmailBoxRestTest {
                                                                        .contentType(MediaType.APPLICATION_JSON)
                                                                        .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isUnauthorized());
+  }
+
   /**
    * The forward's own address under a draft's attachments: it answers the draft plus the
    * files that were left behind, and it is NOT the upload endpoint one segment up.

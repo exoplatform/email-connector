@@ -93,11 +93,13 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * search, so it runs for every user on searches that have nothing to do with mail.
    *
    * @param userId the mailbox owner
-   * @return the cached messages, newest first, attachments not fetched
+   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @return the showable cached messages, newest first, attachments not fetched
    */
-  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId ORDER BY email.receivedDate DESC")
+  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder <> :excludedFolder ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByUserIdForSearch(@Param("userId")
-  String userId);
+  String userId, @Param("excludedFolder")
+  String excludedFolder);
 
   /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
