@@ -485,6 +485,12 @@ export default {
      * Adds one raw address as a chip, refusing what is not shaped like an
      * address and ignoring what the field already holds.
      *
+     * The chip goes up straight away as a bare address and is upgraded to the
+     * person behind it afterwards, rather than the other way round: waiting on
+     * the lookup would let an Enter the user has already pressed put nothing in
+     * the field, and a recipient that is not visibly there is one they add twice
+     * or believe they added when they did not.
+     *
      * @param {string} address - the typed address
      * @returns {boolean} true when a chip was added or the address was a
      *          harmless duplicate, false when it was rejected
@@ -496,8 +502,54 @@ export default {
       }
       if (!this.alreadyAdded(address)) {
         this.emitRecipients(this.value.concat([{address: address}]));
+        this.resolveAddedAddress(address);
       }
       return true;
+    },
+    /**
+     * Names the person behind a chip that was committed as a bare address.
+     *
+     * Enter, Tab and blur all commit whatever is typed without waiting for the
+     * suggestion list, which is deliberate — but it meant that typing a whole
+     * address and pressing Enter left an address where the platform knew the
+     * colleague, since the list either had not answered yet or, for somebody
+     * outside the user's contacts, could not answer at all. So the same lookup
+     * is asked once more for this one address, and the chip is upgraded in place
+     * when it comes back with a name.
+     *
+     * The chip is only touched if it is still there and still nameless: the user
+     * may have removed it meanwhile, or a later toggle may have replaced it with
+     * a picked suggestion, and neither should be undone by an answer that left
+     * before it.
+     *
+     * One lookup per committed chip, pasted lists included. That is the same
+     * order as the chips being created, and strictly less than what typing those
+     * addresses by hand already costs through the debounced type-ahead.
+     *
+     * @param {string} address - the address just added as a chip
+     * @returns {void}
+     */
+    resolveAddedAddress(address) {
+      const normalized = (address || '').toLowerCase();
+      this.$emailConnectorMailBoxService.suggestRecipients(address, 1)
+        .then(found => {
+          const match = (found || []).find(suggestion => (suggestion.address || '').toLowerCase() === normalized);
+          if (!match?.displayName) {
+            return;
+          }
+          const index = this.value.findIndex(recipient => (recipient.address || '').toLowerCase() === normalized);
+          if (index < 0 || this.value[index].name) {
+            return;
+          }
+          const named = this.value.slice();
+          named[index] = {...named[index], name: match.displayName, avatarUrl: match.avatarUrl};
+          this.emitRecipients(named);
+        })
+        .catch(() => {
+          // A chip that stays an address still addresses the mail correctly, so a
+          // failing lookup is left silent rather than reported: the user asked to
+          // add a recipient, not to look one up.
+        });
     },
     /**
      * Whether an address is already a chip, compared the way the server keys

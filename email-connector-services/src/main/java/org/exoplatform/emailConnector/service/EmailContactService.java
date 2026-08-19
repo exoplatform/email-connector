@@ -190,6 +190,11 @@ public class EmailContactService {
    * within them, an address the user has written to twenty times outranks an
    * address they were once cc'd on, which is what {@code SEEN_COUNT} is for.
    * <p>
+   * <b>A query that IS an address leads the answer</b>, resolved to the person
+   * reachable there rather than left to the two name-based halves — see
+   * {@link #appendExactAddressMatch(String, String, Map)} for why neither of
+   * them could answer it.
+   * <p>
    * <b>De-duplication</b> is by normalized address, and the store wins: a
    * colleague who is also a collected contact appears once, as their contact
    * row, with the platform profile supplying the live name, avatar and profile
@@ -217,23 +222,94 @@ public class EmailContactService {
   public List<EmailContactSuggestion> suggestRecipients(String username, String query, int limit) {
     int size = sanitizeSuggestLimit(limit);
     Map<String, EmailContactSuggestion> byAddress = new LinkedHashMap<>();
-    for (EmailContact contact : emailContactStorage.suggestContacts(username, query, size)) {
-      // Enrich before keying, never after: for a DIRECTORY row enrichment
-      // replaces the stored address with the live profile one, so keying on the
-      // stored value would file the entry under an address the emitted
-      // suggestion no longer carries. appendDirectoryMatches then looks the same
-      // person up by their live address, misses, and adds them a second time.
-      enrichForDisplay(contact);
-      String address = EmailContactUtils.normalizeAddress(contact.getPrimaryEmail());
-      if (address == null || byAddress.containsKey(address)) {
-        continue;
+    appendExactAddressMatch(username, query, byAddress);
+    // Same window guard as the directory half below: an exact match that already
+    // filled the window (the compose field's chip resolution asks for exactly one)
+    // makes the store's LIKE a query whose answer could not be shown.
+    if (byAddress.size() < size) {
+      for (EmailContact contact : emailContactStorage.suggestContacts(username, query, size)) {
+        // Enrich before keying, never after: for a DIRECTORY row enrichment
+        // replaces the stored address with the live profile one, so keying on the
+        // stored value would file the entry under an address the emitted
+        // suggestion no longer carries. appendDirectoryMatches then looks the same
+        // person up by their live address, misses, and adds them a second time.
+        enrichForDisplay(contact);
+        String address = EmailContactUtils.normalizeAddress(contact.getPrimaryEmail());
+        if (address == null || byAddress.containsKey(address)) {
+          continue;
+        }
+        byAddress.put(address, toSuggestion(contact));
       }
-      byAddress.put(address, toSuggestion(contact));
     }
     if (StringUtils.isNotBlank(query) && byAddress.size() < size) {
       appendDirectoryMatches(username, query.trim(), size, byAddress);
     }
     return byAddress.values().stream().limit(size).toList();
+  }
+
+  /**
+   * Resolves a query that IS an address to the person reachable there, ahead of
+   * any name matching.
+   * <p>
+   * Neither of the two name-based halves can answer this. The store's is a LIKE
+   * over the name and address columns, so it finds a colleague already collected
+   * and nobody else; the directory's searches names only, the way the platform's
+   * own people search does. The address of a colleague the user has never
+   * written to therefore matched nothing at all, the compose field fell back to
+   * committing a bare address, and the recipient stayed an address where the
+   * platform knew the person — EXO-89250.
+   * <p>
+   * It leads the list because an exact address is the least ambiguous thing a
+   * user can type: having typed the whole of it, that is who they meant. The
+   * store is consulted first for the same reason it wins the de-duplication
+   * everywhere else — a row carries this user's own name for the person, and
+   * their own picture for them, both of which outrank the directory's.
+   * <p>
+   * Gated on {@link EmailContactUtils#isCompleteAddress(String)} rather than on
+   * the mere presence of an {@code @}: the directory half costs an organisation
+   * query, and a domain still being typed would spend one per keystroke.
+   *
+   * @param username the acting user, never suggested to themselves
+   * @param query the raw typed text
+   * @param byAddress the merged list so far, mutated in place
+   */
+  private void appendExactAddressMatch(String username, String query, Map<String, EmailContactSuggestion> byAddress) {
+    String address = EmailContactUtils.normalizeAddress(query);
+    if (address == null || StringUtils.isBlank(username) || !EmailContactUtils.isCompleteAddress(address)) {
+      return;
+    }
+    EmailContact stored = emailContactStorage.getContactByAddress(username, address);
+    if (stored != null && !stored.isSuppressed()) {
+      enrichForDisplay(stored);
+      EmailContactSuggestion suggestion = toSuggestion(stored);
+      // A directory-linked row whose owner has since hidden their profile address
+      // comes back blank from the enrichment -- "hidden means hidden" is a property
+      // of that chokepoint. Answering it anyway would offer a chip that addresses
+      // nobody, so the query goes unanswered and the address the user typed stands
+      // as they typed it, unnamed. Falling through to the directory here would
+      // resolve the same person and hand back the address its owner just hid.
+      if (suggestion.getAddress() != null) {
+        // Keyed by the suggestion's OWN address, not the typed one: the enrichment
+        // may have rewritten a directory row's address to the live profile's, and
+        // the store loop keys by that same normalized primaryEmail -- filing this
+        // entry under the typed address would let the loop answer the person twice.
+        byAddress.put(suggestion.getAddress(), suggestion);
+      }
+      return;
+    }
+    Profile profile = EmailConnectorUtils.getUserProfileByEmail(address);
+    if (profile == null) {
+      return;
+    }
+    // Dropped for the same reason the directory half drops it: the store never
+    // holds its owner either, so suggesting yourself would be the one
+    // inconsistency between the halves.
+    String platformUsername = profile.getIdentity() == null ? null : profile.getIdentity().getRemoteId();
+    if (StringUtils.isBlank(platformUsername) || StringUtils.equals(platformUsername, username)) {
+      return;
+    }
+    byAddress.put(address,
+                  new EmailContactSuggestion(address, profile.getFullName(), profile.getAvatarUrl(), true, profile.getUrl()));
   }
 
   /**

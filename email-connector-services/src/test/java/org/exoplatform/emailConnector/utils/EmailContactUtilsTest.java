@@ -44,6 +44,25 @@ public class EmailContactUtilsTest {
   }
 
   @Test
+  void isCompleteAddressWantsADomainWithADot() {
+    assertTrue(EmailContactUtils.isCompleteAddress("jane.doe@example.com"));
+    assertTrue(EmailContactUtils.isCompleteAddress("  jane@example.co.uk  "));
+  }
+
+  @Test
+  void isCompleteAddressRefusesWhatIsStillBeingTyped() {
+    // The point of the distinction: normalizeAddress accepts all of these as keys,
+    // and the callers that pay a directory query per lookup must not.
+    assertFalse(EmailContactUtils.isCompleteAddress(null));
+    assertFalse(EmailContactUtils.isCompleteAddress("jane@"));
+    assertFalse(EmailContactUtils.isCompleteAddress("jane@example"));
+    assertFalse(EmailContactUtils.isCompleteAddress("jane doe@example.com"));
+    assertFalse(EmailContactUtils.isCompleteAddress("jane@example.com, bob@example.com"));
+    // Still a usable key, which is the pair worth stating side by side.
+    assertEquals("jane@example", EmailContactUtils.normalizeAddress("jane@example"));
+  }
+
+  @Test
   void noReplyFilterCatchesTheMachinePlumbing() {
     assertTrue(EmailContactUtils.isNoReplyAddress("no-reply@example.com"));
     assertTrue(EmailContactUtils.isNoReplyAddress("noreply@example.com"));
