@@ -118,6 +118,48 @@ public class MasterChangelogTest {
   }
 
   /**
+   * The three changesets whose ids were reused for different content keep declaring
+   * validCheckSum.
+   * <p>
+   * 1.0.0-22, -23 and -24 already ran on environments where the changelog held other
+   * content under those ids: collapsing an upstream two-step history into one changeset
+   * shifted every later id down by one. Their recorded checksums can therefore never
+   * match again, and without validCheckSum Liquibase refuses the whole changelog — the
+   * bean fails, the Spring context never starts, and the platform is down. That is how
+   * the acceptance environment was lost, so the declarations are load-bearing rather
+   * than decorative, and something a tidy-up would otherwise remove as noise.
+   * <p>
+   * Deliberately pinned to these three ids rather than asserted over the file at large:
+   * validCheckSum is a repair for ids already spent, and a rule encouraging it anywhere
+   * would wave through the next genuine mismatch.
+   *
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  @Test
+  void reusedChangesetIdsKeepAcceptingTheirRecordedCheckSum() throws Exception {
+    List<String> reusedIds = List.of("1.0.0-22", "1.0.0-23", "1.0.0-24");
+    List<String> unprotected = new ArrayList<>();
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder()
+                                   .parse(changelog)
+                                   .getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        Element changeSet = (Element) changeSets.item(i);
+        if (reusedIds.contains(changeSet.getAttribute("id")) && !hasChild(changeSet, "validCheckSum")) {
+          unprotected.add(changeSet.getAttribute("id"));
+        }
+      }
+    }
+    assertTrue(unprotected.isEmpty(),
+               () -> "These ids already ran carrying different content, so their recorded checksums can "
+                   + "never match. Removing validCheckSum stops the platform booting against any database "
+                   + "that ran the earlier changelog. Unprotected changesets: "
+                   + unprotected);
+  }
+
+  /**
    * Whether a changeset holds a direct child element of the given name.
    * <p>
    * Direct children only: a name nested deeper belongs to some other change, and
