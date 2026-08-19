@@ -101,26 +101,35 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :input-value="index === highlightedIndex"
         class="px-2"
         @mousedown.prevent="pick(suggestion)">
+        <!-- 20px and a truncating title are the platform suggester's own measurements
+             (see exo-identity-suggester), so this list sits at the same density as
+             every other suggester in the product.
+
+             The one deliberate deviation is the address on a second line, which the
+             platform's does not have: it deals in identities, where a name is unique.
+             Mail does not. A real store here holds "Veronika Mazour" twice -- a work
+             address and a personal one -- and with the name alone the two rows are
+             indistinguishable at the moment of choosing which one to write to. -->
         <v-list-item-avatar
-          size="28"
-          class="my-1 me-2">
+          size="20"
+          class="my-1 me-3">
           <v-img
             v-if="suggestion.avatarUrl"
             :src="suggestion.avatarUrl" />
           <v-avatar
             v-else
             color="primary"
-            size="28">
+            size="20">
             <span class="white--text text-caption">{{ initialsOf(suggestion) }}</span>
           </v-avatar>
         </v-list-item-avatar>
-        <v-list-item-content class="py-1">
-          <v-list-item-title class="text-color">
+        <v-list-item-content class="py-1" style="min-width: 0;">
+          <v-list-item-title class="text-color text-truncate">
             {{ suggestion.displayName || suggestion.address }}
           </v-list-item-title>
           <v-list-item-subtitle
             v-if="suggestion.displayName"
-            class="text-sub-title">
+            class="text-sub-title text-truncate">
             {{ suggestion.address }}
           </v-list-item-subtitle>
         </v-list-item-content>
@@ -288,6 +297,17 @@ export default {
     /**
      * Turns every complete part of a separated list into a chip and leaves the
      * last, still-unterminated part in the input.
+     *
+     * @returns {void}
+     */
+    /**
+     * Turns everything before a separator into chips, keeping what follows in the
+     * input. Covers typing a comma as much as pasting a whole list.
+     *
+     * A part the field refuses goes BACK into the input, ahead of whatever is still
+     * being typed. The separator must not swallow the very text the user now has to
+     * correct -- the error names it, but naming it in a message the user then has to
+     * retype from is not the same as leaving it where their cursor is.
      *
      * @returns {void}
      */

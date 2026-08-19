@@ -286,6 +286,28 @@ public class EmailContactServiceTest {
   }
 
   @Test
+  void replayedMailDoesNotBumpTheCounterAgain() {
+    // A mailbox reset re-downloads the inbox and every message is created afresh, so
+    // collection runs over mail it has already counted. The counter the compose
+    // autocomplete ranks on must not drift upwards every time that happens.
+    givenBackfillDone();
+    givenWrittenTo("someone@example.org");
+    Date alreadySeen = new Date(2000L);
+    EmailContact existing = collectedContact(5L, "bob@example.org", "Bob Smith");
+    existing.setSeenCount(3);
+    existing.setLastSeenDate(alreadySeen);
+    when(emailContactStorage.getContactByAddress(USERNAME, "bob@example.org")).thenReturn(existing);
+    givenInboxMessages(inboxEmail("Bob Smith", "bob@example.org", email -> email.setReceivedDate(alreadySeen)));
+
+    emailContactService.collectFromSyncedEmails(USERNAME, List.of(1L));
+
+    ArgumentCaptor<EmailContact> updated = ArgumentCaptor.forClass(EmailContact.class);
+    verify(emailContactStorage).updateContact(updated.capture());
+    assertEquals(3, updated.getValue().getSeenCount());
+    assertEquals(alreadySeen, updated.getValue().getLastSeenDate());
+  }
+
+  @Test
   void upsertBackfillsOnlyAnEmptyCollectedName() {
     givenBackfillDone();
     givenWrittenTo("someone@example.org");
