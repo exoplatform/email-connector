@@ -547,7 +547,7 @@ public class EmailContactStorage {
     }
     entity.setSource(EmailContactSource.CARDDAV);
     entity.setPrimaryEmail(data.primaryEmail());
-    entity.setEmails(toEmailsString(data.secondaryEmails()));
+    entity.setEmails(toEmailsList(data.secondaryEmails()));
     entity.setDisplayName(data.displayName());
     entity.setGivenName(data.givenName());
     entity.setFamilyName(data.familyName());
@@ -557,7 +557,7 @@ public class EmailContactStorage {
                                                         data.primaryEmail());
     entity.setSortName(sortName);
     entity.setSortBucket(EmailContactUtils.sortBucketOf(sortName));
-    entity.setPhones(joinValues(data.phones()));
+    entity.setPhones(data.phones() == null || data.phones().isEmpty() ? null : data.phones());
     entity.setOrganization(data.organization());
     entity.setTitle(data.title());
     applyPostalAddress(data.address(), entity);

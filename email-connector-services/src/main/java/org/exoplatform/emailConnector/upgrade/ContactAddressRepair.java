@@ -155,8 +155,8 @@ public class ContactAddressRepair {
     if (primary != null) {
       addresses.add(primary);
     }
-    if (StringUtils.isNotBlank(contact.getEmails())) {
-      for (String pair : StringUtils.split(contact.getEmails(), ';')) {
+    if (contact.getEmails() != null) {
+      for (String pair : contact.getEmails()) {
         // Stored as "type,value" -- the value is what a contact is reached at.
         String secondary = EmailContactUtils.normalizeAddress(StringUtils.substringAfterLast(pair, ","));
         if (secondary != null && !addresses.contains(secondary)) {

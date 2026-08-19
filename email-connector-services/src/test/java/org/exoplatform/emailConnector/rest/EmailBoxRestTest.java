@@ -33,6 +33,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.ArrayList;
@@ -328,6 +329,10 @@ public class EmailBoxRestTest {
     // never confirms that the email exists.
     doThrow(IllegalAccessException.class).when(emailBoxService).getOwnedEmailById(anyLong(), anyString());
     response = mockMvc.perform(get(EMAIL_BOX_PATH + "/favorites/121").with(testSimpleUser()));
+    response.andExpect(status().isNotFound());
+  }
+
+  @Test
   void sendDraft() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/send").with(testSimpleUser()));
     response.andExpect(status().isBadRequest());
