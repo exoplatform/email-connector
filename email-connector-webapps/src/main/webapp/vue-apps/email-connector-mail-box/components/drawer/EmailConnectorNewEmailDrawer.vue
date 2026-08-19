@@ -71,11 +71,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-divider />
       <div ref="editorWrapper" class="mx-4 mt-3 position-relative">
         <div
-          v-if="draggingImage"
+          v-if="draggingImage || storingImages"
           class="d-flex flex-column align-center justify-center position-absolute z-index-two rounded"
           style="inset: 0; pointer-events: none; border: 3px dashed var(--allPagesPrimaryColor, #578dc9); background-color: var(--allPagesBaseBackground, #fff); opacity: 0.92;">
-          <v-icon size="32" color="primary">fas fa-image</v-icon>
-          <span class="text-subtitle-2 primary--text mt-2">{{ $t('emailConnector.mailBox.newEmail.drawer.content.dropImage') }}</span>
+          <v-progress-circular
+            v-if="storingImages"
+            indeterminate
+            size="32"
+            width="3"
+            color="primary" />
+          <v-icon
+            v-else
+            size="32"
+            color="primary">
+            fas fa-image
+          </v-icon>
+          <span class="text-subtitle-2 primary--text mt-2">
+            {{ storingImages && $t('emailConnector.mailBox.newEmail.drawer.content.addingImage') || $t('emailConnector.mailBox.newEmail.drawer.content.dropImage') }}
+          </span>
         </div>
         <rich-editor
           v-if="editorMaxHeight"
@@ -204,6 +217,7 @@ export default {
       },
       attachments: [],
       draggingImage: false,
+      storingImages: 0,
       loading: false,
       title: '',
       editorMaxHeight: 0,
@@ -594,34 +608,26 @@ export default {
       images.forEach(image => this.insertInlineImage(image));
     },
     /**
-     * Puts one picture in the message: visible at once, then quietly re-pointed at
-     * the copy the draft keeps.
+     * Puts one picture in the message, once the draft is holding it.
      * <p>
-     * Shown first as the bytes the browser already has, so the picture appears in the
-     * sentence the moment it is dropped rather than after a round trip. It is then
-     * stored on the draft exactly as an attachment is — the same upload, the same
-     * persist, so it survives closing and reopening for the reasons EXO-89338 covered
-     * — and the address in the text is swapped for the draft's own. That address is
-     * what the send path looks for to decide the picture belongs in the body.
+     * Stored first and inserted after, rather than shown immediately and re-pointed
+     * when the upload lands. The instant preview was the nicer of the two and it is
+     * not what survives here: CKEditor's image widget serialises an image from its own
+     * data, not from the DOM, and filters attributes it does not recognise off the tag.
+     * A placeholder marked with a data attribute would lose its marker, and a src
+     * swapped underneath the widget would not reach getData() -- so the message would
+     * keep the browser-local copy and reach the recipient as a broken frame, or as a
+     * data URI that Gmail strips. Waiting is visible; that is not.
      * <p>
-     * If storing fails the placeholder is removed rather than left behind: a picture
-     * whose bytes only this browser has would reach the recipient as a broken frame.
+     * The wait is covered by the same marker the drop target uses, so the editor says
+     * what it is doing instead of appearing to have swallowed the picture.
      *
      * @param {File} file - the dropped or pasted image
      * @returns {void}
      */
     async insertInlineImage(file) {
       const session = this.draftSession;
-      const editor = this.$refs.emailContent && this.$refs.emailContent.editor;
-      if (!editor) {
-        return;
-      }
-      const token = `pending-${Date.now()}-${Math.round(Math.random() * 100000)}`;
-      const preview = await this.readAsDataUrl(file).catch(() => null);
-      if (!preview || session !== this.draftSession) {
-        return;
-      }
-      editor.insertHtml(`<img src="${preview}" data-email-inline="${token}" style="max-width: 100%;">`);
+      this.storingImages++;
       try {
         const uploadId = this.$uploadService.generateRandomId();
         const resolvedId = await this.$uploadService.upload(file, uploadId);
@@ -631,49 +637,20 @@ export default {
           mimeType: file.type,
           size: file.size,
         });
-        if (!stored || !stored.id || session !== this.draftSession) {
-          throw new Error('the draft moved on while the picture was going up');
+        const editor = this.$refs.emailContent && this.$refs.emailContent.editor;
+        if (!stored || !stored.id || !editor || session !== this.draftSession) {
+          return;
         }
-        this.pointInlineImageAt(token, this.$emailConnectorMailBoxService.getDraftAttachmentUrl(session.localId, stored.id));
+        const source = this.$emailConnectorMailBoxService.getDraftAttachmentUrl(session.localId, stored.id);
+        editor.insertHtml(`<img src="${source}" alt="${file.name || ''}" style="max-width: 100%;">`);
+        editor.fire('change');
       } catch (error) {
-        this.pointInlineImageAt(token, null);
+        // Nothing is put in the message: a picture the recipient could never load is
+        // worse than one that visibly failed to arrive.
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.content.addImageError'), 'error');
+      } finally {
+        this.storingImages--;
       }
-    },
-    /**
-     * Re-points a placeholder at its stored address, or removes it when there is none.
-     *
-     * @param {string} token - the placeholder's marker
-     * @param {string} source - the address to point at, or null to remove it
-     * @returns {void}
-     */
-    pointInlineImageAt(token, source) {
-      const editor = this.$refs.emailContent && this.$refs.emailContent.editor;
-      const document = editor && editor.document && editor.document.$;
-      const image = document && document.querySelector(`img[data-email-inline="${token}"]`);
-      if (!image) {
-        return;
-      }
-      if (source) {
-        image.setAttribute('src', source);
-        image.removeAttribute('data-email-inline');
-      } else {
-        image.remove();
-      }
-      editor.fire('change');
-    },
-    /**
-     * The dropped file as a data URL, for the moment before it has been stored.
-     *
-     * @param {File} file - the image to read
-     * @returns {Promise} resolves with the data URL
-     */
-    readAsDataUrl(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
     },
     /**
      * The ids of the stored files a body points at, which is what makes a picture
