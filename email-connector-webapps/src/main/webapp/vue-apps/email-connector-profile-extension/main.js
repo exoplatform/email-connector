@@ -76,12 +76,18 @@ export function init(container, username) {
  */
 function mountAction(container, username, i18n) {
   const mountPoint = document.createElement('div');
+  // The header centres its own action buttons with my-auto inside a `d-flex justify-end`
+  // row; the container it hands an init() extension is a plain block div, two levels
+  // down from that row, so my-auto had nothing to centre against and the button sat
+  // low. The wrapper establishes the flex context the class expects.
+  mountPoint.className = 'd-flex align-center';
   container.appendChild(mountPoint);
   Vue.createApp({
     template: `
       <v-btn
         :title="label"
         :aria-label="label"
+        :class="{'ms-2': lgAndUp, 'ms-0': !lgAndUp}"
         class="no-border my-auto mb-0"
         icon
         @click="addToContacts">
@@ -98,6 +104,11 @@ function mountAction(container, username, i18n) {
       },
       iconSize() {
         return this.$vuetify.breakpoint.width < this.$vuetify.breakpoint.thresholds.lg ? 16 : 20;
+      },
+      // The same start margin the header puts on its own buttons, at the same
+      // breakpoint: without it this one sat flush against the call button beside it.
+      lgAndUp() {
+        return this.$vuetify.breakpoint.width >= this.$vuetify.breakpoint.thresholds.lg;
       },
     },
     methods: {
