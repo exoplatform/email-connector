@@ -70,6 +70,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             left>
             <v-img :src="recipient.avatarUrl" />
           </v-avatar>
+          <v-avatar
+            v-else
+            :color="generatedColor(recipient)"
+            left>
+            <span class="white--text" style="font-size: 0.6rem">{{ generatedInitials(recipient) }}</span>
+          </v-avatar>
           <span class="text-truncate">{{ chipLabel(recipient) }}</span>
         </v-chip>
         <v-text-field
@@ -129,9 +135,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :src="suggestion.avatarUrl" />
           <v-avatar
             v-else
-            color="primary"
+            :color="generatedColor(suggestion)"
             size="20">
-            <span class="white--text text-caption">{{ initialsOf(suggestion) }}</span>
+            <span class="white--text text-caption">{{ generatedInitials(suggestion) }}</span>
           </v-avatar>
         </v-list-item-avatar>
         <v-list-item-content class="py-1" style="min-width: 0;">
@@ -160,7 +166,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import { personLabel } from '../../js/EmailRecipientDisplay.js';
+import { avatarColor, avatarInitials, personLabel } from '../../js/EmailRecipientDisplay.js';
 
 // Long enough that typing a name does not fire a request per letter, short
 // enough that the list feels attached to the keyboard. Same value as the
@@ -267,17 +273,32 @@ export default {
       return personLabel(recipient);
     },
     /**
-     * The initials standing in for a suggestion with no avatar.
+     * The label a generated avatar is derived from: the person's name when
+     * they have one, their address otherwise.
      *
-     * @param {object} suggestion - the suggestion row
+     * @param {object} person - a recipient chip or a suggestion row
+     * @returns {string} the label behind the generated avatar
+     */
+    generatedLabel(person) {
+      return personLabel({name: person.displayName || person.name, address: person.address});
+    },
+    /**
+     * The generated-avatar background for a person with no picture.
+     *
+     * @param {object} person - a recipient chip or a suggestion row
+     * @returns {string} a hex color
+     */
+    generatedColor(person) {
+      return avatarColor(this.generatedLabel(person));
+    },
+    /**
+     * The initials standing in for a person with no picture.
+     *
+     * @param {object} person - a recipient chip or a suggestion row
      * @returns {string} up to two uppercased initials
      */
-    initialsOf(suggestion) {
-      return (suggestion.displayName || suggestion.address || '').split(/[\s.@_-]+/)
-        .filter(Boolean)
-        .map(word => word.charAt(0).toUpperCase())
-        .slice(0, 2)
-        .join('') || '?';
+    generatedInitials(person) {
+      return avatarInitials(this.generatedLabel(person));
     },
     /**
      * Puts the caret back in the input after a suggestion was picked, so the
