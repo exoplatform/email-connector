@@ -171,6 +171,8 @@ public class EmailBoxService {
   // The message headers this service reads by name. Named once so the prefetch list below and
   // the call sites that read them cannot drift apart: a header missing from the prefetch costs
   // a server round-trip per message, and nothing fails loudly when that happens.
+  private static final String    BROADCAST_ERROR_MESSAGE                 = "Error broadcasting '{}' for user {}";
+
   private static final String     HEADER_REFERENCES                                           = "References";
 
   private static final String     HEADER_IN_REPLY_TO                                          = "In-Reply-To";
@@ -1742,22 +1744,10 @@ public class EmailBoxService {
                newEmailIds.size());
       listenerService.broadcast(EmailConnectorUtils.NEW_EMAILS_SYNCED, username, newEmailIds);
     } catch (Exception e) {
-      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.NEW_EMAILS_SYNCED, username, e);
+      LOG.warn(BROADCAST_ERROR_MESSAGE, EmailConnectorUtils.NEW_EMAILS_SYNCED, username, e);
     }
   }
 
-  /**
-   * Broadcasts {@link EmailConnectorUtils#NEW_EMAILS_SYNC_COMPLETED} once the inbox sync has
-   * cached its last message, carrying ALL the UIDs the run created. The per-group
-   * {@link #broadcastNewEmailsSynced} events stream out while the download is still running,
-   * so on their own a consumer can never tell "the next group has not arrived yet" from
-   * "there is no next group" -- whole-run work (the categorizer's conversation alignment)
-   * hangs off this event. Broadcast even when the sync cached nothing, so a consumer can
-   * close any state left over from a run whose completion it never saw.
-   *
-   * @param username the synchronized user
-   * @param newEmailIds the IMAP UIDs of every email created during this sync
-   */
   /**
    * Broadcasts {@link EmailConnectorUtils#MAILBOX_SYNC_COMPLETED} once every folder of
    * the run has been cached.
@@ -1773,10 +1763,22 @@ public class EmailBoxService {
     try {
       listenerService.broadcast(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, List.<Long> of());
     } catch (Exception e) {
-      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, e);
+      LOG.warn(BROADCAST_ERROR_MESSAGE, EmailConnectorUtils.MAILBOX_SYNC_COMPLETED, username, e);
     }
   }
 
+  /**
+   * Broadcasts {@link EmailConnectorUtils#NEW_EMAILS_SYNC_COMPLETED} once the inbox sync has
+   * cached its last message, carrying ALL the UIDs the run created. The per-group
+   * {@link #broadcastNewEmailsSynced} events stream out while the download is still running,
+   * so on their own a consumer can never tell "the next group has not arrived yet" from
+   * "there is no next group" -- whole-run work (the categorizer's conversation alignment)
+   * hangs off this event. Broadcast even when the sync cached nothing, so a consumer can
+   * close any state left over from a run whose completion it never saw.
+   *
+   * @param username the synchronized user
+   * @param newEmailIds the IMAP UIDs of every email created during this sync
+   */
   private void broadcastNewEmailsSyncCompleted(String username, List<Long> newEmailIds) {
     try {
       LOG.info("Broadcasting '{}' for user {}: the inbox sync ended with {} newly-cached message(s) in total",
@@ -1785,7 +1787,7 @@ public class EmailBoxService {
                newEmailIds.size());
       listenerService.broadcast(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED, username, newEmailIds);
     } catch (Exception e) {
-      LOG.warn("Error broadcasting '{}' for user {}", EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED, username, e);
+      LOG.warn(BROADCAST_ERROR_MESSAGE, EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED, username, e);
     }
   }
 
