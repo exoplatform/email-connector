@@ -48,7 +48,7 @@ for (const key in components) {
  * @returns {Array} the rows to render, newest first
  */
 export function formatSearchResult(response, term) {
-  const results = (response && response.results || []).map(result => ({
+  const results = (response?.results || []).map(result => ({
     ...result,
     // The search app keys rows by id; a UID is only unique within its folder.
     id: `${result.folder}:${result.mailRemoteId}`,
@@ -66,7 +66,7 @@ export function formatSearchResult(response, term) {
     term,
     // The page says whether the Favorites filter was on, so the continuation asks the
     // mail server the same narrowed question rather than a wider one.
-    favoritesOnly: response && response.favoritesOnly || false,
+    favoritesOnly: response?.favoritesOnly || false,
     // The browser-side filter would drop this row too, and with it the rest of the
     // mailbox: what it carries is favorites when the filter is on.
     favorite: true,

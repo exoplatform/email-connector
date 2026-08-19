@@ -1600,7 +1600,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void deletingTheWholeMailboxRemovesTheSyncState() {
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(new ArrayList<>());
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER)).thenReturn(new ArrayList<>());
     emailBoxService.deleteUserEmails(TEST_USER);
     verify(settingService).remove(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
   }
@@ -2188,6 +2188,28 @@ public class EmailBoxServiceTest {
    */
   @Test
   @SneakyThrows
+  void searchCachedEmailsWithoutAnExcerpt() {
+    // The two cases buildExcerpt answers with null: no body at all, and a body whose
+    // markup reduces to nothing. The row still comes back, just without a quote under
+    // the subject.
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
+    Email noBody = email(TEST_USER);
+    noBody.setSubject("budget, no body");
+    noBody.setContent(new EmailContent(null));
+    Email markupOnly = email(TEST_USER);
+    markupOnly.setSubject("budget, markup only");
+    markupOnly.setContent(new EmailContent("<div><br></div>"));
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER)).thenReturn(List.of(noBody, markupOnly));
+
+    EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", false, 10);
+
+    assertEquals(2, page.getTotalMatches());
+    assertTrue(page.getResults().stream().allMatch(result -> result.getExcerpt() == null));
+  }
+
+  @Test
+  @SneakyThrows
   void searchCachedEmailsMatchesSubjectSenderAndBodyText() {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
     when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
@@ -2202,7 +2224,7 @@ public class EmailBoxServiceTest {
     Email markupOnly = email(TEST_USER);
     markupOnly.setSubject("Unrelated");
     markupOnly.setContent(new EmailContent("<div style=\"budget\">unrelated</div>"));
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(bySubject, bySender, byBody, markupOnly));
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER)).thenReturn(List.of(bySubject, bySender, byBody, markupOnly));
 
     EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 10);
 
@@ -2226,7 +2248,7 @@ public class EmailBoxServiceTest {
     favorited.setStarred(true);
     Email plain = email(TEST_USER);
     plain.setSubject("budget, not kept");
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(favorited, plain));
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER)).thenReturn(List.of(favorited, plain));
 
     EmailSearchResultPage narrowed = emailBoxService.searchCachedEmails(TEST_USER, "budget", true, 10);
 
@@ -2255,7 +2277,7 @@ public class EmailBoxServiceTest {
     Email matchedInSubject = email(TEST_USER);
     matchedInSubject.setSubject("Quarterly budget");
     matchedInSubject.setContent(new EmailContent("<p>Opening words of a message that never says the word.</p>"));
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(List.of(matchedInBody, matchedInSubject));
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER)).thenReturn(List.of(matchedInBody, matchedInSubject));
 
     EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 10);
 
@@ -2296,7 +2318,7 @@ public class EmailBoxServiceTest {
       email.setReceivedDate(new Date(System.currentTimeMillis() - i * 1000L));
       emails.add(email);
     }
-    when(emailBoxStorage.getEmails(TEST_USER)).thenReturn(emails);
+    when(emailBoxStorage.getEmailsForSearch(TEST_USER)).thenReturn(emails);
 
     EmailSearchResultPage page = emailBoxService.searchCachedEmails(TEST_USER, "budget", 3);
 

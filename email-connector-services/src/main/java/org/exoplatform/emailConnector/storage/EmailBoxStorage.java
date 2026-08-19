@@ -308,6 +308,45 @@ public class EmailBoxStorage {
                            .toList();
   }
 
+  /**
+   * The cached mailbox as the search over cached mail needs it: subject, sender, body,
+   * dates and flags, and nothing else.
+   * <p>
+   * Deliberately not {@link #getEmails(String)}. That one fetches every attachment, asks
+   * the category service for the linked ids of every single message, and builds an HTML
+   * excerpt per row — all of which the search discards. On the mailbox cache size this
+   * add-on keeps (a thousand messages by default) that is a per-message round trip on a
+   * read the platform's unified search fires on every search, for every user.
+   *
+   * @param userId the mailbox owner
+   * @return the cached messages, newest first, carrying only what a search reads
+   */
+  public List<Email> getEmailsForSearch(String userId) {
+    return emailBoxDao.findByUserIdForSearch(userId).stream().map(this::fromEntityForSearch).toList();
+  }
+
+  @SneakyThrows
+  private Email fromEntityForSearch(EmailBoxEntity emailBoxEntity) {
+    if (emailBoxEntity == null) {
+      return null;
+    }
+    Email email = new Email();
+    email.setId(emailBoxEntity.getId());
+    email.setMailRemoteId(emailBoxEntity.getMailRemoteId());
+    email.setUserId(emailBoxEntity.getUserId());
+    email.setFolder(emailBoxEntity.getFolder());
+    email.setSubject(emailBoxEntity.getSubject());
+    email.setReceivedDate(emailBoxEntity.getReceivedDate());
+    email.setRead(emailBoxEntity.isRead());
+    email.setStarred(emailBoxEntity.isStarred());
+    // The raw body: the caller matches on its text and cuts its own excerpt around the
+    // hit, so reducing it to text here would only do the work twice.
+    email.setContent(new EmailContent(emailBoxEntity.getBody()));
+    String[] emailSenderParts = emailBoxEntity.getSender().split(",");
+    email.setSender(EmailConnectorUtils.getEmailSender(new InternetAddress(emailSenderParts[1], emailSenderParts[0]), false));
+    return email;
+  }
+
   public List<Email> getEmails(String userId, String folder) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndFolderWithAttachments(userId, folder);
     return emailBoxEntities.stream()

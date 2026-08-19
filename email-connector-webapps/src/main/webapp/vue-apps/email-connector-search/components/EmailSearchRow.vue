@@ -154,7 +154,7 @@ export default {
       if (!searched) {
         return escaped;
       }
-      const pattern = new RegExp(`(${searched.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+      const pattern = new RegExp(String.raw`(${searched.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)})`, 'gi');
       return escaped.replace(pattern, '<strong>$1</strong>');
     },
     favoriteLabel() {
