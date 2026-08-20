@@ -66,6 +66,9 @@ public class EzVCardParser implements VCardParser {
 
   private static final Log LOG = ExoLogger.getLogger(EzVCardParser.class);
 
+  /** A birthday the card gave no year for, as the store writes it: {@code --MM-DD}. */
+  private static final String YEARLESS_BIRTHDAY_FORMAT = "--%02d-%02d";
+
   @Override
   public ParsedVCard parse(String vcardText) {
     if (StringUtils.isBlank(vcardText)) {
@@ -252,7 +255,7 @@ public class EzVCardParser implements VCardParser {
                                                                                            partial.getYear(),
                                                                                            partial.getMonth(),
                                                                                            partial.getDate()))
-                                       : String.format("--%02d-%02d", partial.getMonth(), partial.getDate());
+                                       : String.format(YEARLESS_BIRTHDAY_FORMAT, partial.getMonth(), partial.getDate());
     }
     java.time.temporal.Temporal date = birthday.getDate();
     if (date != null && date.isSupported(java.time.temporal.ChronoField.MONTH_OF_YEAR)
@@ -263,10 +266,10 @@ public class EzVCardParser implements VCardParser {
         int year = date.get(java.time.temporal.ChronoField.YEAR);
         // 1604 is the year Apple stamps on "no year": Gregorian-cycle-neutral for
         // their code, meaningless for a person. Showing it would be showing a bug.
-        return year == 1604 ? String.format("--%02d-%02d", month, day)
+        return year == 1604 ? String.format(YEARLESS_BIRTHDAY_FORMAT, month, day)
                             : EmailContactUtils.normalizeBirthday(String.format("%04d-%02d-%02d", year, month, day));
       }
-      return String.format("--%02d-%02d", month, day);
+      return String.format(YEARLESS_BIRTHDAY_FORMAT, month, day);
     }
     // Whatever text the card carried, given one chance at the known spellings.
     return EmailContactUtils.normalizeBirthday(birthday.getText());

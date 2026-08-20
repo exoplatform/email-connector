@@ -4110,7 +4110,9 @@ public class EmailBoxService {
    * @return the combined term, or null when no criterion at all was given
    */
   static SearchTerm buildEmailSearchTerm(String query, String from, boolean unreadOnly, Date since) {
-    return buildEmailSearchTerm(query, from, null, unreadOnly, false, since);
+    // StringUtils.EMPTY rather than null for the absent recipient: isNotBlank treats the
+    // two identically, and the empty string keeps a null out of the six-argument body.
+    return buildEmailSearchTerm(query, from, StringUtils.EMPTY, unreadOnly, false, since);
   }
 
   /**

@@ -69,6 +69,12 @@ public class HttpCardDavClient implements CardDavClient {
   /** getctag is a CalendarServer extension, and its own namespace, not DAV's. */
   private static final String   CALENDARSERVER_NS  = "http://calendarserver.org/ns/";
 
+  /** The CalendarServer property carrying a collection's version. */
+  private static final String   CTAG_PROPERTY      = "getctag";
+
+  /** The multistatus child element wrapping one resource's properties. */
+  private static final String   RESPONSE_ELEMENT   = "response";
+
   private static final Duration CONNECT_TIMEOUT    = Duration.ofSeconds(15);
 
   private static final Duration REQUEST_TIMEOUT    = Duration.ofSeconds(30);
@@ -145,14 +151,14 @@ public class HttpCardDavClient implements CardDavClient {
   @Override
   public String getCtag(AddressBook addressBook, String username, String password) {
     Element response = firstResponse(propfind(addressBook.url(), PROPFIND_COLLECTION, "0", username, password));
-    return response == null ? null : textOf(response, CALENDARSERVER_NS, "getctag");
+    return response == null ? null : textOf(response, CALENDARSERVER_NS, CTAG_PROPERTY);
   }
 
   @Override
   public Map<String, String> listResourceEtags(AddressBook addressBook, String username, String password) {
     Element multistatus = propfind(addressBook.url(), PROPFIND_ETAGS, "1", username, password);
     Map<String, String> etags = new LinkedHashMap<>();
-    for (Element response : childElements(multistatus, DAV_NS, "response")) {
+    for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       String href = textOf(response, DAV_NS, "href");
       String etag = textOf(response, DAV_NS, "getetag");
       // The collection itself comes back in a Depth:1 listing and carries no etag;
@@ -183,7 +189,7 @@ public class HttpCardDavClient implements CardDavClient {
                                                                                                               .build()),
                                 addressBook.url());
     List<ContactResource> resources = new ArrayList<>();
-    for (Element response : childElements(multistatus, DAV_NS, "response")) {
+    for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       String href = textOf(response, DAV_NS, "href");
       String vcard = textOf(response, CARDDAV_NS, "address-data");
       if (StringUtils.isNotBlank(href) && StringUtils.isNotBlank(vcard)) {
@@ -208,7 +214,7 @@ public class HttpCardDavClient implements CardDavClient {
       if (response == null || !isAddressBook(response)) {
         return null;
       }
-      return new AddressBook(url, textOf(response, DAV_NS, "displayname"), textOf(response, CALENDARSERVER_NS, "getctag"));
+      return new AddressBook(url, textOf(response, DAV_NS, "displayname"), textOf(response, CALENDARSERVER_NS, CTAG_PROPERTY));
     } catch (CardDavException e) {
       // Not a collection, or not readable: discovery is the next thing to try, and
       // this attempt failing is the normal path for a server base URL.
@@ -269,12 +275,12 @@ public class HttpCardDavClient implements CardDavClient {
   private List<AddressBook> findAddressBooks(String homeUrl, String username, String password) {
     Element multistatus = propfind(homeUrl, PROPFIND_COLLECTION, "1", username, password);
     List<AddressBook> books = new ArrayList<>();
-    for (Element response : childElements(multistatus, DAV_NS, "response")) {
+    for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       if (isAddressBook(response)) {
         String href = textOf(response, DAV_NS, "href");
         books.add(new AddressBook(resolve(homeUrl, href),
                                   textOf(response, DAV_NS, "displayname"),
-                                  textOf(response, CALENDARSERVER_NS, "getctag")));
+                                  textOf(response, CALENDARSERVER_NS, CTAG_PROPERTY)));
       }
     }
     return books;
@@ -457,7 +463,7 @@ public class HttpCardDavClient implements CardDavClient {
    * @return the first response, or null
    */
   private Element firstResponse(Element multistatus) {
-    List<Element> responses = childElements(multistatus, DAV_NS, "response");
+    List<Element> responses = childElements(multistatus, DAV_NS, RESPONSE_ELEMENT);
     return responses.isEmpty() ? null : responses.get(0);
   }
 
