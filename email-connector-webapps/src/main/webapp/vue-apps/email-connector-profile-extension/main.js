@@ -99,7 +99,6 @@ function mountAction(container, username, i18n) {
       <v-btn
         :title="label"
         :aria-label="label"
-        :class="{'ms-2': lgAndUp, 'ms-0': !lgAndUp}"
         class="no-border my-auto mb-0"
         icon
         @click="addToContacts">
@@ -113,13 +112,6 @@ function mountAction(container, username, i18n) {
     computed: {
       label() {
         return this.$t('emailConnector.contacts.profileAction.add');
-      },
-      // The host renders its own action buttons with this pair and forces mx-0 on every
-      // action container, so a button that sets no ms-* of its own sits flush against its
-      // neighbour. The old card-point version got the spacing from the host, which rendered
-      // the button; this one renders its own and inherits nothing.
-      lgAndUp() {
-        return this.$vuetify.breakpoint.width >= this.$vuetify.breakpoint.thresholds.lg;
       },
       iconSize() {
         return this.$vuetify.breakpoint.width < this.$vuetify.breakpoint.thresholds.lg ? 16 : 20;
