@@ -196,6 +196,8 @@ public class EmailBoxService {
 
   private static final String     HEADER_THREAD_INDEX                                         = "Thread-Index";
 
+  private static final String     HEADER_MESSAGE_ID                                           = "Message-ID";
+
   private static final String     HEADER_AUTO_SUBMITTED                                       = "Auto-Submitted";
 
   private static final String     HEADER_PRECEDENCE                                           = "Precedence";
@@ -587,6 +589,8 @@ public class EmailBoxService {
   private static final String     DEFAULT_ATTACHMENT_NAME                                     = "attachment";
 
   private static final String     DEFAULT_ATTACHMENT_MIME_TYPE                                = "application/octet-stream";
+
+  private static final String     CONTENT_TYPE_HTML_UTF8                                      = "text/html; charset=UTF-8";
 
   @Autowired
   private CategoryLinkService     categoryLinkService;
@@ -2623,7 +2627,7 @@ public class EmailBoxService {
       return emailAttachment;
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       try {
         if (inbox != null && inbox.isOpen()) {
@@ -3115,7 +3119,7 @@ public class EmailBoxService {
       } catch (Exception e) {
         emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, !readStatus, sourceFolder);
         LOG.error("Error when connecting store for user {}", username, e);
-        throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+        throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
         try {
           if (remoteFolder != null && remoteFolder.isOpen()) {
@@ -3478,7 +3482,7 @@ public class EmailBoxService {
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
       rows.values().forEach(this::recreateCachedRow);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       closeFolderQuietly(source, expungeOnClose, sourceFolder, username);
       closeQuietly(null, store, username);
@@ -3706,7 +3710,7 @@ public class EmailBoxService {
       // The COPY destination is not opened: IMAP copies server-side into a folder named
       // by the command, and opening the inbox here would only invite the read-status and
       // expunge semantics of an open folder into a path that wants none of them.
-      Folder inbox = action == TrashAction.RESTORE ? store.getFolder("INBOX") : null;
+      Folder inbox = action == TrashAction.RESTORE ? store.getFolder(INBOX_FOLDER_NAME) : null;
       for (Long mailRemoteId : mailRemoteIds) {
         Email trashRow = trashRows.get(mailRemoteId);
         try {
@@ -3764,7 +3768,7 @@ public class EmailBoxService {
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
       trashRows.values().forEach(this::recreateCachedRow);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       // The folder name the strict lookup just resolved is worth keeping, exactly as
       // the sync keeps it: the alternative is a LIST * per action.
@@ -4743,10 +4747,10 @@ public class EmailBoxService {
    */
   private void applyStoredThreadingHeaders(Message message, Email storedDraft) throws MessagingException {
     if (StringUtils.isNotBlank(storedDraft.getInReplyTo())) {
-      message.setHeader("In-Reply-To", storedDraft.getInReplyTo());
+      message.setHeader(HEADER_IN_REPLY_TO, storedDraft.getInReplyTo());
     }
     if (StringUtils.isNotBlank(storedDraft.getMailReferences())) {
-      message.setHeader("References", storedDraft.getMailReferences());
+      message.setHeader(HEADER_REFERENCES, storedDraft.getMailReferences());
     }
   }
 
@@ -6037,7 +6041,7 @@ public class EmailBoxService {
     if (StringUtils.isBlank(expectedMessageId)) {
       return true;
     }
-    String[] messageIds = message.getHeader("Message-ID");
+    String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
     String actualMessageId = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
     if (StringUtils.equals(actualMessageId, StringUtils.trim(expectedMessageId))) {
       return true;
@@ -6202,7 +6206,7 @@ public class EmailBoxService {
     if (StringUtils.isBlank(messageId)) {
       return -1;
     }
-    Message[] found = draftsFolder.search(new HeaderTerm("Message-ID", messageId));
+    Message[] found = draftsFolder.search(new HeaderTerm(HEADER_MESSAGE_ID, messageId));
     if (found == null || found.length == 0) {
       return -1;
     }
@@ -6275,20 +6279,20 @@ public class EmailBoxService {
     String body = draft.getContent() != null && draft.getContent().getBody() != null ? draft.getContent().getBody() : "";
     List<EmailAttachment> attachments = storedAttachmentsOf(draft);
     if (attachments.isEmpty()) {
-      message.setContent(body, "text/html; charset=UTF-8");
+      message.setContent(body, CONTENT_TYPE_HTML_UTF8);
     } else {
       MimeMultipart multipart = new MimeMultipart("mixed");
       MimeBodyPart htmlPart = new MimeBodyPart();
-      htmlPart.setContent(body, "text/html; charset=UTF-8");
+      htmlPart.setContent(body, CONTENT_TYPE_HTML_UTF8);
       multipart.addBodyPart(htmlPart);
       addStoredAttachmentParts(multipart, attachments);
       message.setContent(multipart);
     }
     if (StringUtils.isNotBlank(draft.getInReplyTo())) {
-      message.setHeader("In-Reply-To", draft.getInReplyTo());
+      message.setHeader(HEADER_IN_REPLY_TO, draft.getInReplyTo());
     }
     if (StringUtils.isNotBlank(draft.getMailReferences())) {
-      message.setHeader("References", draft.getMailReferences());
+      message.setHeader(HEADER_REFERENCES, draft.getMailReferences());
     }
     message.setFlag(Flags.Flag.DRAFT, true);
     message.setFlag(Flags.Flag.SEEN, true);
@@ -6407,14 +6411,14 @@ public class EmailBoxService {
       return;
     }
     String parentMessageId = email.getMailHeaderId();
-    message.setHeader("In-Reply-To", parentMessageId);
+    message.setHeader(HEADER_IN_REPLY_TO, parentMessageId);
     // RFC 5322 §3.6.4: References is the parent's own References plus the parent's
     // Message-ID — not just the parent id, otherwise a third message in the chain
     // loses the link to the first and starts a new thread.
     String parentReferences = emailBoxStorage.getMailReferencesByMailHeaderId(parentMessageId, username);
     String referencesHeader = EmailThreadingUtils.buildReferencesHeader(parentReferences, parentMessageId);
     if (!StringUtils.isEmpty(referencesHeader)) {
-      message.setHeader("References", referencesHeader);
+      message.setHeader(HEADER_REFERENCES, referencesHeader);
     }
   }
 
@@ -6462,13 +6466,13 @@ public class EmailBoxService {
                                           String bodyHtml,
                                           List<String> uploadIds) throws MessagingException {
     if (CollectionUtils.isEmpty(email.getAttachments()) && CollectionUtils.isEmpty(email.getStoredAttachments())) {
-      message.setContent(bodyHtml, "text/html; charset=UTF-8");
+      message.setContent(bodyHtml, CONTENT_TYPE_HTML_UTF8);
       return;
     }
     UploadService uploadService = CommonsUtils.getService(UploadService.class);
     MimeMultipart multipart = new MimeMultipart("mixed");
     MimeBodyPart htmlPart = new MimeBodyPart();
-    htmlPart.setContent(bodyHtml, "text/html; charset=UTF-8");
+    htmlPart.setContent(bodyHtml, CONTENT_TYPE_HTML_UTF8);
     multipart.addBodyPart(htmlPart);
     // The draft's own stored files first, then this session's uploads, which is the
     // order the user attached them in — the stored ones are by definition older. Their
@@ -7892,7 +7896,7 @@ public class EmailBoxService {
    */
   private Folder resolveCachedFolder(Store store, String folder, String username) throws MessagingException {
     if (StringUtils.isBlank(folder) || MailFolder.INBOX.equals(folder)) {
-      return store.getFolder("INBOX");
+      return store.getFolder(INBOX_FOLDER_NAME);
     }
     MailboxSyncState syncState = loadMailboxSyncState(username);
     if (MailFolder.SENT.equals(folder)) {
@@ -8261,9 +8265,9 @@ public class EmailBoxService {
     draft.setTo(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO), username, false));
     draft.setCc(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.CC), username, false));
     draft.setBcc(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC), username, false));
-    String inReplyTo = firstHeader(message, "In-Reply-To");
-    String references = firstHeader(message, "References");
-    String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, "Thread-Index"));
+    String inReplyTo = firstHeader(message, HEADER_IN_REPLY_TO);
+    String references = firstHeader(message, HEADER_REFERENCES);
+    String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, HEADER_THREAD_INDEX));
     draft.setInReplyTo(inReplyTo);
     draft.setMailReferences(references);
     draft.setThreadIndexRoot(threadIndexRoot != null ? threadIndexRoot : "");
@@ -9359,7 +9363,7 @@ public class EmailBoxService {
       }
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
-      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       try {
         if (sentFolder != null && sentFolder.isOpen()) {
@@ -9428,7 +9432,7 @@ public class EmailBoxService {
         super.updateMessageID();
         return;
       }
-      setHeader("Message-ID", messageId);
+      setHeader(HEADER_MESSAGE_ID, messageId);
     }
   }
 }
