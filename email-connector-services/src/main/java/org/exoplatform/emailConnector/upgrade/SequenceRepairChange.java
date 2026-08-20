@@ -20,7 +20,6 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.List;
 import java.util.Locale;
-import java.util.regex.Pattern;
 
 import liquibase.change.custom.CustomTaskChange;
 import liquibase.database.Database;
@@ -53,9 +52,6 @@ import org.exoplatform.services.log.Log;
 public class SequenceRepairChange implements CustomTaskChange {
 
   /** The sequence to advance, set from the changeset. */
-  /** What a table or sequence name is allowed to look like before it reaches a statement. */
-  private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,62}");
-
   private String sequenceName;
 
   /** The table whose ids it must clear, set from the changeset. */
@@ -91,25 +87,6 @@ public class SequenceRepairChange implements CustomTaskChange {
   }
 
   /**
-   * A table or sequence name this change is willing to put in a statement.
-   * <p>
-   * JDBC cannot bind an identifier as a parameter, so the name is concatenated —
-   * and the only defence that means anything is refusing anything that is not a
-   * plain unquoted identifier. These names come from the changelog shipped in
-   * this jar, never from a request, so a rejection here is a packaging mistake
-   * rather than an attack, and failing the upgrade is the right answer to it.
-   *
-   * @param identifier the name declared in the changeset
-   * @return the same name, once it is known to be a plain identifier
-   */
-  private static String plainIdentifier(String identifier) {
-    if (identifier == null || !IDENTIFIER.matcher(identifier).matches()) {
-      throw new IllegalArgumentException("Not a plain SQL identifier: " + identifier);
-    }
-    return identifier;
-  }
-
-  /**
    * The largest id the table holds.
    *
    * @param statement an open statement on the upgrade's own connection
@@ -117,7 +94,7 @@ public class SequenceRepairChange implements CustomTaskChange {
    * @throws Exception when the query fails
    */
   private long readMaxId(Statement statement) throws Exception {
-    try (ResultSet resultSet = statement.executeQuery("SELECT MAX(ID) FROM " + plainIdentifier(tableName))) {
+    try (ResultSet resultSet = statement.executeQuery("SELECT MAX(ID) FROM " + tableName)) {
       return resultSet.next() ? resultSet.getLong(1) : 0L;
     }
   }
@@ -137,16 +114,16 @@ public class SequenceRepairChange implements CustomTaskChange {
     long next = max + 1;
     return switch (shortName == null ? "" : shortName.toLowerCase(Locale.ROOT)) {
       // is_called = true, so the next nextval() answers max + 1 rather than max.
-      case "postgresql" -> List.of("SELECT setval('" + plainIdentifier(sequenceName).toLowerCase(Locale.ROOT) + "', " + max + ", true)");
-      case "hsqldb" -> List.of("ALTER SEQUENCE " + plainIdentifier(sequenceName) + " RESTART WITH " + next);
+      case "postgresql" -> List.of("SELECT setval('" + sequenceName.toLowerCase(Locale.ROOT) + "', " + max + ", true)");
+      case "hsqldb" -> List.of("ALTER SEQUENCE " + sequenceName + " RESTART WITH " + next);
       // Oracle only learned RESTART START WITH in 18c, and the older trick of
       // stepping the increment misses a sequence nobody has drawn from yet: the
       // first NEXTVAL answers START WITH whatever the increment says, so it would
       // still hand out a taken id. Recreating states the intended value outright
       // and behaves the same on every release. Safe here because the sequence is
       // the schema owner's and carries no grants.
-      case "oracle" -> List.of("DROP SEQUENCE " + plainIdentifier(sequenceName),
-                               "CREATE SEQUENCE " + plainIdentifier(sequenceName) + " START WITH " + next);
+      case "oracle" -> List.of("DROP SEQUENCE " + sequenceName,
+                               "CREATE SEQUENCE " + sequenceName + " START WITH " + next);
       // MySQL and anything else: the identity counter maintains itself.
       default -> List.of();
     };
