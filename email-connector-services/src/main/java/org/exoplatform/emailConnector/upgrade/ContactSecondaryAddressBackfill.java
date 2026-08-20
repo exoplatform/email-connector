@@ -21,6 +21,7 @@ import java.util.concurrent.CompletableFuture;
 
 import jakarta.annotation.PostConstruct;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -121,11 +122,11 @@ public class ContactSecondaryAddressBackfill {
    * @return how many addresses were filed
    */
   private int fileSecondaryAddresses(EmailContactEntity contact) {
-    if (contact == null || StringUtils.isBlank(contact.getEmails())) {
+    if (contact == null || CollectionUtils.isEmpty(contact.getEmails())) {
       return 0;
     }
     int filed = 0;
-    for (String pair : StringUtils.split(contact.getEmails(), ';')) {
+    for (String pair : contact.getEmails()) {
       // Stored as "type,value" — the value is what a contact is reached at, and the
       // type is presentation this table has no use for.
       String address = EmailContactUtils.normalizeAddress(StringUtils.substringAfterLast(pair, ","));

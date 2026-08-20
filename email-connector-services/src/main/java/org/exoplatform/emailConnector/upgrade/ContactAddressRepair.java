@@ -22,6 +22,7 @@ import java.util.concurrent.CompletableFuture;
 
 import jakarta.annotation.PostConstruct;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
@@ -155,8 +156,8 @@ public class ContactAddressRepair {
     if (primary != null) {
       addresses.add(primary);
     }
-    if (StringUtils.isNotBlank(contact.getEmails())) {
-      for (String pair : StringUtils.split(contact.getEmails(), ';')) {
+    if (CollectionUtils.isNotEmpty(contact.getEmails())) {
+      for (String pair : contact.getEmails()) {
         // Stored as "type,value" -- the value is what a contact is reached at.
         String secondary = EmailContactUtils.normalizeAddress(StringUtils.substringAfterLast(pair, ","));
         if (secondary != null && !addresses.contains(secondary)) {
