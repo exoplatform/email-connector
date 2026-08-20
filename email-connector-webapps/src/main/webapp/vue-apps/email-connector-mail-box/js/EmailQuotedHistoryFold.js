@@ -439,20 +439,37 @@ function findPlainTextBoundary(lines) {
     if (QUOTED_LINE_PATTERN.test(lines[start])) {
       continue;
     }
-    for (let span = 1; span <= MAX_INTRO_LINES && start + span <= lines.length; span++) {
-      if (QUOTED_LINE_PATTERN.test(lines[start + span - 1])) {
-        break;
-      }
-      const intro = lines.slice(start, start + span).join('\n').trim();
-      if (intro.length > MAX_INTRO_LENGTH) {
-        break;
-      }
-      if (intro && REPLY_INTRO_PATTERNS.some(pattern => pattern.test(intro)) && quotesSomething(lines, start + span)) {
-        return start;
-      }
+    if (introducesAQuoteAt(lines, start)) {
+      return start;
     }
   }
   return -1;
+}
+
+/**
+ * Whether an intro starting on the given line reads as an attribution and actually has a
+ * quote under it. Split out of {@link findPlainTextBoundary} so each half holds one idea:
+ * this weighs a single candidate line, the caller walks the body.
+ *
+ * @param {string[]} lines the body's lines
+ * @param {number} start the candidate attribution's line index
+ * @returns {boolean} true when an intro of at most {@link MAX_INTRO_LINES} lines starts here
+ *          and something is quoted under it
+ */
+function introducesAQuoteAt(lines, start) {
+  for (let span = 1; span <= MAX_INTRO_LINES && start + span <= lines.length; span++) {
+    if (QUOTED_LINE_PATTERN.test(lines[start + span - 1])) {
+      return false;
+    }
+    const intro = lines.slice(start, start + span).join('\n').trim();
+    if (intro.length > MAX_INTRO_LENGTH) {
+      return false;
+    }
+    if (intro && REPLY_INTRO_PATTERNS.some(pattern => pattern.test(intro)) && quotesSomething(lines, start + span)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
