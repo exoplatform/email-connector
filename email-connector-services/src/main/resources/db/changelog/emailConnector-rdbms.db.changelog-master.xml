@@ -322,9 +322,33 @@
     </createIndex>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-25" dbms="oracle,postgresql,hsqldb">
+    <!-- ANY, for the same reason as 1.0.0-22, but only reachable on these three: the shift
+         put STARRED on this id in the earlier changelog, so an Oracle, PostgreSQL or HSQLDB
+         database that ran it holds a row for 1.0.0-25 written by that column. MySQL never
+         recorded this id at all - the dbms attribute skips it there, which is why the
+         acceptance outage showed three mismatches and not five. -->
+    <validCheckSum>ANY</validCheckSum>
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <sequenceExists sequenceName="SEQ_EMAIL_CONTACT_ID"/>
+      </not>
+    </preConditions>
     <createSequence sequenceName="SEQ_EMAIL_CONTACT_ID" startValue="1"/>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-26">
+    <!-- ANY covers the databases that DID record this id carrying the sequence (Oracle,
+         PostgreSQL, HSQLDB - see 1.0.0-25). MySQL recorded nothing here, so there is no
+         checksum to accept and validCheckSum cannot help: Liquibase runs the change and the
+         server rejects a column STARRED that the earlier 1.0.0-25 already added. That is the
+         failure that took acceptance down a second time, after the checksum repair had let
+         the boot get this far. The precondition is what makes the change idempotent - a
+         fresh install adds the column, a database that already has it marks the id ran. -->
+    <validCheckSum>ANY</validCheckSum>
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <columnExists tableName="EMAIL_BOX" columnName="STARRED"/>
+      </not>
+    </preConditions>
     <!-- Local mirror of the IMAP Flagged flag (the "star"). The flag on the server is the
          source of truth: the sync overwrites this column with whatever the server says, so
          a star set in any other mail client shows here and a star set here is pushed back.
@@ -959,6 +983,34 @@
     <createIndex tableName="EMAIL_THREAD_AI_SUMMARY" indexName="UQ_EMAIL_THREAD_AI_SUMMARY" unique="true">
       <column name="USER_ID"/>
       <column name="THREAD_ID"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="email-connector" id="1.0.0-52">
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <indexExists indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE"/>
+      </not>
+    </preConditions>
+    <comment>
+      IDX_EMAIL_BOX_USER_FOLDER_DATE, re-offered under an id of its own.
+
+      1.0.0-24 creates it, and 1.0.0-24 now declares validCheckSum ANY because its id had
+      already run carrying ORIGINAL_SENDER. Accepting the recorded checksum is what lets the
+      platform boot, and it also means Liquibase treats that changeset as done and never runs
+      its body - so on every database repaired that way the index is silently absent. Nothing
+      fails; the reconcile view on the hottest query of the sync path just range-scans
+      USER_ID and sorts a whole mailbox in memory, which reads as "mail got slow" long after
+      anything points at this.
+
+      A new id rather than a renumber: an id that has run anywhere is permanent. This one has
+      run nowhere, so it runs everywhere it is missing and marks itself ran where 1.0.0-24
+      already created the index on a database that followed the current numbering.
+    </comment>
+    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE">
+      <column name="USER_ID"/>
+      <column name="FOLDER"/>
+      <column name="RECEIVED_DATE"/>
     </createIndex>
   </changeSet>
 
