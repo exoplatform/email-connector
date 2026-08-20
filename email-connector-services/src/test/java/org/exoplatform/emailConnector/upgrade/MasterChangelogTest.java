@@ -19,6 +19,8 @@ package org.exoplatform.emailConnector.upgrade;
 import java.sql.Connection;
 import java.sql.DriverManager;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+
 import org.junit.jupiter.api.Test;
 
 import liquibase.Liquibase;
@@ -50,13 +52,15 @@ public class MasterChangelogTest {
    * @throws Exception when a changeset does not apply
    */
   @Test
-  void everyChangesetAppliesToAnEmptyDatabase() throws Exception {
-    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:changelog" + System.nanoTime(), "sa", "")) {
-      Liquibase liquibase = new Liquibase(CHANGELOG,
-                                          new ClassLoaderResourceAccessor(),
-                                          DatabaseFactory.getInstance()
-                                                         .findCorrectDatabaseImplementation(new JdbcConnection(connection)));
-      liquibase.update("");
-    }
+  void everyChangesetAppliesToAnEmptyDatabase() {
+    assertDoesNotThrow(() -> {
+      try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:changelog" + System.nanoTime(), "sa", "")) {
+        Liquibase liquibase = new Liquibase(CHANGELOG,
+                                            new ClassLoaderResourceAccessor(),
+                                            DatabaseFactory.getInstance()
+                                                           .findCorrectDatabaseImplementation(new JdbcConnection(connection)));
+        liquibase.update("");
+      }
+    }, "every changeset of " + CHANGELOG + " must apply to an empty database");
   }
 }

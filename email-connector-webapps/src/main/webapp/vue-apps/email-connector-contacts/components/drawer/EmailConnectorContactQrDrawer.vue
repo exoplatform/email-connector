@@ -84,6 +84,7 @@ export default {
       contactId: null,
       contactName: '',
       message: null,
+      qrCode: null,
     };
   },
   created() {
@@ -144,7 +145,9 @@ export default {
         this.$nextTick(() => {
           if (this.$refs.qrCanvas) {
             this.$refs.qrCanvas.innerHTML = '';
-            new QRCode(this.$refs.qrCanvas, {
+            // The library renders from its constructor; the instance is kept so a
+            // redraw can clear() rather than depend on wiping innerHTML by hand.
+            this.qrCode = new QRCode(this.$refs.qrCanvas, {
               text: vcard,
               width: 280,
               height: 280,

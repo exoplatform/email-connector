@@ -84,16 +84,31 @@ function ensureHostApp() {
       `/email-connector/i18n/locale.portlet.emailConnector.emailConnectorContacts?lang=${lang}`
     ];
     exoi18n.loadLanguageAsync(lang, urls)
-      .then(i18n => Vue.createApp({
-        template: `<email-connector-chat-extension-app id="${appId}" />`,
-        mounted() {
-          resolve();
-        },
-        vuetify: Vue.prototype.vuetifyOptions,
-        i18n,
-      }, `#${appId}`, 'Email Connector Chat Extension'))
+      .then(i18n => mountHostApp(appId, i18n, resolve))
       .catch(reject);
   }));
+}
+
+/**
+ * Mounts the host app, resolving once it is on the page and listening.
+ *
+ * Extracted from ensureHostApp so the require callback, the promise it returns
+ * and the mounted hook do not stack four closures deep in one expression.
+ *
+ * @param {string} appId - the id the host div already carries
+ * @param {object} i18n - the loaded i18n instance
+ * @param {Function} onMounted - called once the app is mounted
+ * @returns {object} the created Vue app
+ */
+function mountHostApp(appId, i18n, onMounted) {
+  return Vue.createApp({
+    template: `<email-connector-chat-extension-app id="${appId}" />`,
+    mounted() {
+      onMounted();
+    },
+    vuetify: Vue.prototype.vuetifyOptions,
+    i18n,
+  }, `#${appId}`, 'Email Connector Chat Extension');
 }
 
 /**

@@ -17,7 +17,9 @@
 
 package org.exoplatform.emailConnector.carddav;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 import org.exoplatform.emailConnector.model.PostalAddress;
 
@@ -63,4 +65,80 @@ public record ParsedVCard(String uid,
                           String website,
                           byte[] photo,
                           String photoMimeType) {
+
+  /**
+   * Value equality that compares the picture by its bytes.
+   * <p>
+   * A record's generated members compare {@code photo} by reference, so two
+   * readings of the same card would never be equal — which is the comparison
+   * the sync's "has this entry changed" logic actually needs.
+   *
+   * @param o the object to compare with
+   * @return whether both carry the same values
+   */
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof ParsedVCard other)) {
+      return false;
+    }
+    return Objects.equals(uid, other.uid())
+           && Objects.equals(formattedName, other.formattedName())
+           && Objects.equals(givenName, other.givenName())
+           && Objects.equals(familyName, other.familyName())
+           && Objects.equals(emails, other.emails())
+           && Objects.equals(phones, other.phones())
+           && Objects.equals(organization, other.organization())
+           && Objects.equals(title, other.title())
+           && Objects.equals(birthday, other.birthday())
+           && Objects.equals(address, other.address())
+           && Objects.equals(note, other.note())
+           && Objects.equals(website, other.website())
+           && Objects.equals(photoMimeType, other.photoMimeType())
+           && Arrays.equals(photo, other.photo());
+  }
+
+  /**
+   * @return a hash consistent with {@link #equals(Object)}, the picture hashed by content
+   */
+  @Override
+  public int hashCode() {
+    return 31 * Objects.hash(uid,
+                             formattedName,
+                             givenName,
+                             familyName,
+                             emails,
+                             phones,
+                             organization,
+                             title,
+                             birthday,
+                             address,
+                             note,
+                             website,
+                             photoMimeType) + Arrays.hashCode(photo);
+  }
+
+  /**
+   * @return the values, the picture rendered as its size so a log line stays readable
+   */
+  @Override
+  public String toString() {
+    return "ParsedVCard[uid=" + uid
+        + ", formattedName=" + formattedName
+        + ", givenName=" + givenName
+        + ", familyName=" + familyName
+        + ", emails=" + emails
+        + ", phones=" + phones
+        + ", organization=" + organization
+        + ", title=" + title
+        + ", birthday=" + birthday
+        + ", address=" + address
+        + ", note=" + note
+        + ", website=" + website
+        + ", photoMimeType=" + photoMimeType
+        + ", photo=" + (photo == null ? "none" : photo.length + " bytes")
+        + "]";
+  }
 }
