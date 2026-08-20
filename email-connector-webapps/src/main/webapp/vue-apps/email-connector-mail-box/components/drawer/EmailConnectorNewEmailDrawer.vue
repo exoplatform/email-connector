@@ -635,11 +635,24 @@ export default {
     /**
      * Lets a picture be dropped or pasted straight into the message.
      * <p>
-     * Bound on CKEditor's own paste and drop events rather than on the DOM: the
-     * editable lives in an iframe, so a listener on this component's element never
-     * sees either, and CKEditor hands over the files already extracted from the
-     * clipboard — which is the same path a screenshot takes, since a screenshot
-     * arrives as a pasted file rather than as a drag.
+     * Bound on CKEditor's own paste and drop events: the editable lives in an iframe,
+     * so a listener on this component's element never sees either, and CKEditor hands
+     * over the files already extracted from the clipboard — which is the same path a
+     * screenshot takes, since a screenshot arrives as a pasted file rather than as a
+     * drag.
+     * <p>
+     * The listeners on the editor survive for its lifetime. The ones on its document do
+     * not, which is the whole of why dragging a picture in stopped working: writing the
+     * body — a signature, a reply quote, a draft being resumed — calls setData, and
+     * setData on a framed editable rewrites that document with document.write after
+     * calling clearListeners() on it. Everything bound here at ready was therefore gone
+     * before the user could drag anything, and with the dragover listener went the
+     * preventDefault that tells the browser a drop is allowed: Blink then fires no drop
+     * event at all, so nothing arrived and nothing complained. Firefox hid it, its own
+     * contenteditable being willing to drop an image in unaided -- the same way its
+     * native resize handles hid the missing image widget in EXO-89447's first round.
+     * <p>
+     * So they are bound on contentDom, which fires again on every one of those rewrites.
      * @returns {void}
      */
     bindInlineImageDrops() {
@@ -652,18 +665,88 @@ export default {
       editor.emailInlineImagesBound = true;
       editor.on('paste', this.onEditorFilesDropped);
       editor.on('drop', this.onEditorFilesDropped);
-      // Also on the editor's own document: while a file is dragged over the editable
-      // the pointer is inside the iframe, and the drawer around it is told nothing.
-      const editorDocument = editor.document && editor.document.$;
-      if (editorDocument) {
-        editorDocument.addEventListener('dragover', this.onDragOverEditor);
-        editorDocument.addEventListener('drop', this.onDragLeftEditor);
-      }
+      editor.on('contentDom', () => this.bindEditorDocumentDrops(editor));
+      this.bindEditorDocumentDrops(editor);
+      // The wrapper is this component's own element, in the page rather than in the
+      // iframe, so it needs binding once and keeps its listeners throughout.
       const wrapper = this.$refs.editorWrapper;
       if (wrapper) {
         wrapper.addEventListener('dragover', this.onDragOverEditor);
-        wrapper.addEventListener('drop', this.onDragLeftEditor);
+        wrapper.addEventListener('drop', this.onEditorDropped);
       }
+    },
+    /**
+     * Puts the drag listeners on the editable's document, however many times it is
+     * rebuilt underneath us.
+     * <p>
+     * Re-adding is free when the document is the same one: these are the component's own
+     * bound methods, so the reference does not change between calls and the browser
+     * ignores a listener it already holds. When the document is a new one — which is the
+     * case this exists for — they are the only way the drag is seen at all.
+     *
+     * @param {object} editor - the CKEditor instance
+     * @returns {void}
+     */
+    bindEditorDocumentDrops(editor) {
+      const editorDocument = editor?.document?.$;
+      if (!editorDocument) {
+        return;
+      }
+      editorDocument.addEventListener('dragover', this.onDragOverEditor);
+      editorDocument.addEventListener('drop', this.onEditorDropped);
+    },
+    /**
+     * Takes the drop target down, and the picture off the event if nobody else has.
+     * <p>
+     * CKEditor's own path is the one that should carry the picture: it works out where
+     * the drop landed, moves the caret there, and hands the files over, so the picture
+     * arrives where it was aimed rather than wherever the cursor happened to be. This
+     * reads the same files straight off the native event, for the drop CKEditor never
+     * hears about — one on the wrapper rather than the editable, or one in a browser
+     * that declines to route it — and defers to that path whenever it did run.
+     * <p>
+     * Only for a drop carrying image files: moving a picture or a word within the
+     * message carries none, and belongs to CKEditor alone.
+     *
+     * @param {DragEvent} event - the native drop event
+     * @returns {void}
+     */
+    onEditorDropped(event) {
+      clearTimeout(this.dragOverTimer);
+      this.draggingImage = false;
+      const images = this.imagesFromTransfer(event.dataTransfer);
+      if (!images.length) {
+        return;
+      }
+      // Prevented for the same reason the editor event is cancelled: without it the
+      // browser navigates away to the dropped file.
+      event.preventDefault();
+      if (this.claimImages(event.dataTransfer)) {
+        images.forEach(image => this.insertInlineImage(image));
+      }
+    },
+    /**
+     * The image files carried by a drop or a paste, and nothing else.
+     *
+     * @param {DataTransfer} transfer - a native DataTransfer, or CKEditor's wrapper
+     * @returns {Array} the image files, empty when there are none
+     */
+    imagesFromTransfer(transfer) {
+      if (!transfer) {
+        return [];
+      }
+      // CKEditor's wrapper answers getFilesCount()/getFile(); a native DataTransfer
+      // answers files. Both are read here so one reading of "which files" serves the
+      // handler on CKEditor's event and the handler on the browser's.
+      const count = transfer.getFilesCount ? transfer.getFilesCount() : (transfer.files?.length ?? 0);
+      const images = [];
+      for (let index = 0; index < count; index++) {
+        const file = transfer.getFile ? transfer.getFile(index) : transfer.files[index];
+        if (file && (file.type || '').startsWith('image/')) {
+          images.push(file);
+        }
+      }
+      return images;
     },
     /**
      * Shows the drop target while a file is being dragged over the editor.
@@ -692,16 +775,6 @@ export default {
       this.dragOverTimer = setTimeout(() => this.draggingImage = false, 150);
     },
     /**
-     * Takes the drop target down at once, rather than waiting for the timer, so it
-     * does not linger over the picture that has just landed.
-     *
-     * @returns {void}
-     */
-    onDragLeftEditor() {
-      clearTimeout(this.dragOverTimer);
-      this.draggingImage = false;
-    },
-    /**
      * Takes the images out of a paste or a drop and leaves everything else alone.
      * <p>
      * Cancelled only when there is an image to take, so pasting text, a link or a
@@ -714,19 +787,41 @@ export default {
      */
     onEditorFilesDropped(event) {
       const transfer = event?.data?.dataTransfer;
-      const count = transfer && transfer.getFilesCount ? transfer.getFilesCount() : 0;
-      const images = [];
-      for (let index = 0; index < count; index++) {
-        const file = transfer.getFile(index);
-        if (file && (file.type || '').startsWith('image/')) {
-          images.push(file);
-        }
-      }
+      const images = this.imagesFromTransfer(transfer);
       if (!images.length) {
         return;
       }
+      // Cancelled whether or not this is the handler that ends up inserting: what
+      // cancelling prevents is CKEditor putting the picture in as a data URI, which
+      // looks right here and is stripped by Gmail and Outlook on the way out.
       event.cancel();
-      images.forEach(image => this.insertInlineImage(image));
+      if (this.claimImages(transfer)) {
+        images.forEach(image => this.insertInlineImage(image));
+      }
+    },
+    /**
+     * Claims a transfer's pictures, or reports that another handler already has them.
+     * <p>
+     * One dropped picture reaches this component up to three ways: CKEditor's drop event,
+     * the paste its own drop handling spawns out of that drop, and the browser's drop on
+     * the editable. Which of them fire, and in what order, differs by browser and by
+     * which plugins are loaded -- so rather than reason about that, all three claim here
+     * and the transfer they share carries the answer. Marking the transfer rather than a
+     * component field keeps it to the one drop: the mark cannot outlive the object it is
+     * written on.
+     *
+     * @param {DataTransfer} transfer - a native DataTransfer, or CKEditor's wrapper
+     * @returns {boolean} true for the first caller, false for the ones after it
+     */
+    claimImages(transfer) {
+      // CKEditor's wrapper and the browser's event hold the same native transfer, so
+      // that is what carries the mark -- the wrapper only when there is no native one.
+      const claimed = transfer.$ ?? transfer;
+      if (claimed.emailInlineImagesTaken) {
+        return false;
+      }
+      claimed.emailInlineImagesTaken = true;
+      return true;
     },
     /**
      * Puts one picture in the message, once the draft is holding it.
