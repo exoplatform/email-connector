@@ -16,6 +16,9 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.Arrays;
+import java.util.Objects;
+
 /**
  * The image a signature carries, bytes and honest content type together —
  * either the file the user uploaded through the cropper or the platform's
@@ -29,4 +32,43 @@ package org.exoplatform.emailConnector.model;
  * @param fileName the name the MIME part is labelled with
  */
 public record EmailSignatureLogo(byte[] bytes, String mimeType, String fileName) {
+
+  /**
+   * The generated equals compares the byte array by identity, so two logos holding the same
+   * image would read as different and a signature would look changed when it is not.
+   *
+   * @param o the object to compare with
+   * @return whether both carry the same values, the image compared by content
+   */
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof EmailSignatureLogo other)) {
+      return false;
+    }
+    return Objects.equals(mimeType, other.mimeType())
+           && Objects.equals(fileName, other.fileName())
+           && Arrays.equals(bytes, other.bytes());
+  }
+
+  /**
+   * @return a hash consistent with {@link #equals(Object)}, the image hashed by content
+   */
+  @Override
+  public int hashCode() {
+    return 31 * Objects.hash(mimeType, fileName) + Arrays.hashCode(bytes);
+  }
+
+  /**
+   * @return the values, the image rendered as its size so a log line stays readable
+   */
+  @Override
+  public String toString() {
+    return "EmailSignatureLogo[mimeType=" + mimeType
+        + ", fileName=" + fileName
+        + ", bytes=" + (bytes == null ? "none" : bytes.length + " bytes")
+        + "]";
+  }
 }

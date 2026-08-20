@@ -6654,7 +6654,7 @@ public class EmailBoxService {
     }
     MimeMultipart related = new MimeMultipart("related");
     MimeBodyPart htmlPart = new MimeBodyPart();
-    htmlPart.setContent(body, "text/html; charset=UTF-8");
+    htmlPart.setContent(body, CONTENT_TYPE_HTML_UTF8);
     related.addBodyPart(htmlPart);
     long inlineSize = addInlineImageParts(related, pictures);
     return new SplitBody(body, related, bottomFiles, inlineSize);

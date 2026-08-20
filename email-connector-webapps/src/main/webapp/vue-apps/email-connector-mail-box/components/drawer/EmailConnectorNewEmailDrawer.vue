@@ -401,35 +401,10 @@ export default {
       if (!email && prefill?.subject) {
         this.email.subject = prefill.subject;
       }
-      if (!email) {
-        // A new mail opens as an empty line for the words, then the signature
-        // under them. When an add-on prefilled a body, that body IS the words,
-        // so the signature goes under it rather than replacing it.
-        const opening = prefill?.body || '';
-        if (signature) {
-          this.email.content.body = opening ? `${opening}<br><br>${signature}` : `<br><br>${signature}`;
-        } else if (opening) {
-          this.email.content.body = opening;
-        }
-      }
       if (email) {
-        if (forward) {
-          const forwarded = this.buildForwardedBody(email);
-          // Above the forwarded-message header: the forward's own words go at
-          // the top, and the signature belongs to them, not to the quoted mail.
-          this.email.content.body = signature ? `<br><br>${signature}\n${forwarded}` : forwarded;
-        } else {
-          // The message being answered, quoted under the cursor. Built the same way
-          // whether this is a reply or a reply-all: those two differ in who receives
-          // the answer, never in what is being answered. The signature sits between
-          // the caret and the quote — above the fold boundary, where the recipient's
-          // reader actually shows it.
-          const quote = replyQuoteBody(this.replyAttribution(email), email.content?.body);
-          this.email.content.body = signature ? `<br><br>${signature}${quote}` : quote;
-        }
-        this.email.subject = `${forward
-          ? this.$t('emailConnector.mailBox.forwardEmail.drawer.subject.prefix')
-          : this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
+        this.seedAnsweredBody(email, forward, signature);
+      } else {
+        this.seedNewMailBody(prefill, signature);
       }
       this.newEmailDrawer = true;
       this.$nextTick(() => this.measureEditorMaxHeight());
@@ -442,6 +417,51 @@ export default {
           this.carryForwardedFiles(email);
         }
       });
+    },
+    /**
+     * The body a new mail opens with: an empty line for the words, then the signature
+     * under them. When an add-on prefilled a body, that body IS the words, so the
+     * signature goes under it rather than replacing it.
+     *
+     * @param {object} prefill - recipients and content to seed a new mail with
+     * @param {string} signature - the signature block, empty when the user has none
+     * @returns {void}
+     */
+    seedNewMailBody(prefill, signature) {
+      const opening = prefill?.body || '';
+      if (signature) {
+        this.email.content.body = opening ? `${opening}<br><br>${signature}` : `<br><br>${signature}`;
+      } else if (opening) {
+        this.email.content.body = opening;
+      }
+    },
+    /**
+     * The subject and body of a reply or a forward: the message being answered, quoted
+     * under the cursor, with the signature above the fold boundary.
+     *
+     * @param {object} email - the message being replied to or forwarded
+     * @param {boolean} forward - whether this is a forward
+     * @param {string} signature - the signature block, empty when the user has none
+     * @returns {void}
+     */
+    seedAnsweredBody(email, forward, signature) {
+      if (forward) {
+        const forwarded = this.buildForwardedBody(email);
+        // Above the forwarded-message header: the forward's own words go at
+        // the top, and the signature belongs to them, not to the quoted mail.
+        this.email.content.body = signature ? `<br><br>${signature}\n${forwarded}` : forwarded;
+      } else {
+        // The message being answered, quoted under the cursor. Built the same way
+        // whether this is a reply or a reply-all: those two differ in who receives
+        // the answer, never in what is being answered. The signature sits between
+        // the caret and the quote — above the fold boundary, where the recipient's
+        // reader actually shows it.
+        const quote = replyQuoteBody(this.replyAttribution(email), email.content?.body);
+        this.email.content.body = signature ? `<br><br>${signature}${quote}` : quote;
+      }
+      this.email.subject = `${forward
+        ? this.$t('emailConnector.mailBox.forwardEmail.drawer.subject.prefix')
+        : this.$t('emailConnector.mailBox.replyEmail.drawer.subject.prefix')} ${email.subject || ''}`;
     },
     /**
      * Puts the cursor where the writing starts.
