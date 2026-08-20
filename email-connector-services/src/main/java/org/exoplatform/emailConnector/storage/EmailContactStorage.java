@@ -533,7 +533,7 @@ public class EmailContactStorage {
     }
     entity.setSource(EmailContactSource.CARDDAV);
     entity.setPrimaryEmail(data.primaryEmail());
-    entity.setEmails(toEmailsString(data.secondaryEmails()));
+    entity.setEmails(toEmailsList(data.secondaryEmails()));
     entity.setDisplayName(data.displayName());
     entity.setGivenName(data.givenName());
     entity.setFamilyName(data.familyName());
@@ -543,7 +543,7 @@ public class EmailContactStorage {
                                                         data.primaryEmail());
     entity.setSortName(sortName);
     entity.setSortBucket(EmailContactUtils.sortBucketOf(sortName));
-    entity.setPhones(joinValues(data.phones()));
+    entity.setPhones(cleanValues(data.phones()));
     entity.setOrganization(data.organization());
     entity.setTitle(data.title());
     applyPostalAddress(data.address(), entity);
@@ -998,14 +998,14 @@ public class EmailContactStorage {
    * Joins plain values with semicolons for storage.
    *
    * @param values the values, may be null
-   * @return the joined string, or null when there is nothing to store
+   * @return the trimmed values, or null when there is nothing to store
    */
-  private String joinValues(List<String> values) {
+  private List<String> cleanValues(List<String> values) {
     if (values == null || values.isEmpty()) {
       return null;
     }
-    String joined = values.stream().filter(StringUtils::isNotBlank).map(String::trim).reduce((a, b) -> a + ";" + b).orElse(null);
-    return StringUtils.isBlank(joined) ? null : joined;
+    List<String> cleaned = values.stream().filter(StringUtils::isNotBlank).map(String::trim).toList();
+    return cleaned.isEmpty() ? null : cleaned;
   }
 
   /**

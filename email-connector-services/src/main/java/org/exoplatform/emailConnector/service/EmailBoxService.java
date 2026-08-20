@@ -3848,8 +3848,6 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.search.invalidSinceDays");
     }
     Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(sinceDays));
-    SearchTerm searchTerm = buildEmailSearchTerm(query, from, unreadOnly, favoritesOnly, since);
-    Date since = sinceDays == null ? null : new Date(System.currentTimeMillis() - sinceDays * 86400000L);
     SearchTerm searchTerm = buildEmailSearchTerm(query, from, to, unreadOnly, favoritesOnly, since);
     if (searchTerm == null) {
       throw new IllegalArgumentException("emailConnector.search.criteriaRequired");
