@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.InputStream;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -118,18 +119,69 @@ public class MasterChangelogTest {
   }
 
   /**
-   * The three changesets whose ids were reused for different content keep declaring
+   * A database holding content whose id was never recorded still updates.
+   * <p>
+   * This is the acceptance failure, reproduced. The checksum repair let the boot get past
+   * 1.0.0-22 to -24 and it then died on 1.0.0-26: on MySQL the earlier numbering had added
+   * STARRED under 1.0.0-25, so the column was present while 1.0.0-26 held no row to accept.
+   * Liquibase ran the change and the server rejected a duplicate column, the liquibase bean
+   * failed, and the platform was down.
+   * <p>
+   * Deleting the row after a clean run reproduces exactly that shape — the change applied,
+   * its id unrecorded — without needing a database that followed the old numbering. Before
+   * the precondition this throws; with it the changeset marks itself ran and the update
+   * completes. 1.0.0-52 is exercised the same way, being the same kind of guard.
+   *
+   * @throws Exception when the changelog cannot be read or applied
+   */
+  @Test
+  void aChangesetWhoseContentIsAlreadyThereMarksItselfRan() throws Exception {
+    String url = "jdbc:hsqldb:mem:reused" + System.nanoTime();
+    try (Connection connection = DriverManager.getConnection(url, "sa", "")) {
+      newLiquibase(connection).update("");
+      // The change is applied but its id is not recorded: what an environment looks like
+      // when the content arrived under a different id.
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("DELETE FROM DATABASECHANGELOG WHERE ID IN ('1.0.0-26', '1.0.0-52')");
+      }
+      newLiquibase(connection).update("");
+    }
+  }
+
+  /**
+   * A Liquibase bound to an open connection, so a test can run the changelog twice against
+   * one database.
+   *
+   * @param connection the open connection
+   * @return the Liquibase instance
+   * @throws Exception when the database implementation cannot be resolved
+   */
+  private Liquibase newLiquibase(Connection connection) throws Exception {
+    return new Liquibase(CHANGELOG,
+                         new ClassLoaderResourceAccessor(),
+                         DatabaseFactory.getInstance()
+                                        .findCorrectDatabaseImplementation(new JdbcConnection(connection)));
+  }
+
+  /**
+   * The changesets whose ids were reused for different content keep declaring
    * validCheckSum.
    * <p>
-   * 1.0.0-22, -23 and -24 already ran on environments where the changelog held other
+   * 1.0.0-22 through -26 already ran on environments where the changelog held other
    * content under those ids: collapsing an upstream two-step history into one changeset
-   * shifted every later id down by one. Their recorded checksums can therefore never
-   * match again, and without validCheckSum Liquibase refuses the whole changelog — the
-   * bean fails, the Spring context never starts, and the platform is down. That is how
-   * the acceptance environment was lost, so the declarations are load-bearing rather
-   * than decorative, and something a tidy-up would otherwise remove as noise.
+   * shifted every later id down by one, up to 1.0.0-27 where the two numberings meet
+   * again. Their recorded checksums can therefore never match again, and without
+   * validCheckSum Liquibase refuses the whole changelog — the bean fails, the Spring
+   * context never starts, and the platform is down. That is how the acceptance
+   * environment was lost, so the declarations are load-bearing rather than decorative,
+   * and something a tidy-up would otherwise remove as noise.
    * <p>
-   * Deliberately pinned to these three ids rather than asserted over the file at large:
+   * -25 and -26 were added after the first repair: the outage reported three mismatches
+   * rather than five because 1.0.0-25 carries {@code dbms="oracle,postgresql,hsqldb"} and
+   * MySQL therefore recorded neither it nor, in the earlier numbering, -26. Those two ids
+   * are exposed on the other three databases exactly as -22 to -24 are on every one.
+   * <p>
+   * Deliberately pinned to these ids rather than asserted over the file at large:
    * validCheckSum is a repair for ids already spent, and a rule encouraging it anywhere
    * would wave through the next genuine mismatch.
    *
@@ -137,7 +189,7 @@ public class MasterChangelogTest {
    */
   @Test
   void reusedChangesetIdsKeepAcceptingTheirRecordedCheckSum() throws Exception {
-    List<String> reusedIds = List.of("1.0.0-22", "1.0.0-23", "1.0.0-24");
+    List<String> reusedIds = List.of("1.0.0-22", "1.0.0-23", "1.0.0-24", "1.0.0-25", "1.0.0-26");
     List<String> unprotected = new ArrayList<>();
     DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
     factory.setNamespaceAware(true);
@@ -157,6 +209,55 @@ public class MasterChangelogTest {
                    + "never match. Removing validCheckSum stops the platform booting against any database "
                    + "that ran the earlier changelog. Unprotected changesets: "
                    + unprotected);
+  }
+
+  /**
+   * The changesets whose content may already be present under another id guard on the
+   * object itself rather than on a checksum.
+   * <p>
+   * validCheckSum and a precondition answer two different questions, and the second
+   * outage turned on the difference. validCheckSum accepts a row Liquibase already has:
+   * it repairs an id that RAN carrying something else. It says nothing about an id that
+   * never ran at all — Liquibase executes that one, and the database rejects a column,
+   * sequence or index that is already there. 1.0.0-26 is exactly that case on MySQL,
+   * where the earlier numbering had added STARRED under 1.0.0-25 and this id holds no
+   * row to accept.
+   * <p>
+   * 1.0.0-52 is here for the mirror-image reason: it re-offers the index that 1.0.0-24
+   * creates, because accepting 1.0.0-24's recorded checksum also means never running its
+   * body. Without the precondition it would fail on every database that followed the
+   * current numbering and already has the index.
+   *
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  @Test
+  void changesetsWhoseContentMayAlreadyExistMarkThemselvesRanInstead() throws Exception {
+    List<String> guardedIds = List.of("1.0.0-25", "1.0.0-26", "1.0.0-52");
+    List<String> unguarded = new ArrayList<>();
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder()
+                                   .parse(changelog)
+                                   .getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        Element changeSet = (Element) changeSets.item(i);
+        if (!guardedIds.contains(changeSet.getAttribute("id"))) {
+          continue;
+        }
+        NodeList preConditions = changeSet.getElementsByTagNameNS("*", "preConditions");
+        boolean marksRan = preConditions.getLength() > 0
+            && "MARK_RAN".equals(((Element) preConditions.item(0)).getAttribute("onFail"));
+        if (!marksRan) {
+          unguarded.add(changeSet.getAttribute("id"));
+        }
+      }
+    }
+    assertTrue(unguarded.isEmpty(),
+               () -> "These changesets carry content that another id may already have applied, so they must "
+                   + "mark themselves ran rather than replay it — validCheckSum cannot help an id that holds "
+                   + "no recorded row. Unguarded changesets: "
+                   + unguarded);
   }
 
   /**
