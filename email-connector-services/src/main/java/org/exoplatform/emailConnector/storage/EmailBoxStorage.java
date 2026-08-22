@@ -1227,9 +1227,7 @@ public class EmailBoxStorage {
    */
   public List<Email> getEmails(String userId) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdWithAttachments(userId);
-    return emailBoxEntities.stream()
-                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, null, false, false))
-                           .toList();
+    return toListing(emailBoxEntities, userId);
   }
 
   /**
@@ -1280,9 +1278,7 @@ public class EmailBoxStorage {
 
   public List<Email> getEmails(String userId, String folder) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndFolderWithAttachments(userId, folder);
-    return emailBoxEntities.stream()
-                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, null, false, false))
-                           .toList();
+    return toListing(emailBoxEntities, userId);
   }
 
   /**
@@ -1297,9 +1293,7 @@ public class EmailBoxStorage {
    */
   public List<Email> getStarredEmails(String userId, String folder) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findStarredByUserIdAndFolderWithAttachments(userId, folder);
-    return emailBoxEntities.stream()
-                           .map(emailBoxEntity -> fromEntity(emailBoxEntity, true, true, userId, null, false, false))
-                           .toList();
+    return toListing(emailBoxEntities, userId);
   }
 
   /**
@@ -1801,7 +1795,43 @@ public class EmailBoxStorage {
     }
   }
 
-  @SneakyThrows
+  /**
+   * Maps a page of cached rows for a list, asking social once for the categories of the
+   * whole page instead of once per row.
+   * <p>
+   * The per-row call was one query per message: five hundred serial SELECTs to draw a
+   * default mailbox, five thousand at the size an administrator may configure, and all
+   * of it repeated on every refresh of the list. This is the shape
+   * {@link #getThreadSummaries} already uses for the same reason — ask once, then
+   * decorate the rows by lookup.
+   *
+   * @param emailBoxEntities the page's rows
+   * @param userId the mailbox owner
+   * @return the rows as list DTOs, in the order given
+   */
+  private List<Email> toListing(List<EmailBoxEntity> emailBoxEntities, String userId) {
+    if (emailBoxEntities == null || emailBoxEntities.isEmpty()) {
+      return List.of();
+    }
+    List<String> linkedObjectIds = emailBoxEntities.stream()
+                                                   .map(EmailBoxEntity::getId)
+                                                   .filter(Objects::nonNull)
+                                                   .map(String::valueOf)
+                                                   .toList();
+    Map<String, List<Long>> linkedCategoryIds = categoryLinkService.getLinkedIds(EmailCategoryPlugin.OBJECT_TYPE,
+                                                                                 linkedObjectIds);
+    return emailBoxEntities.stream()
+                           .map(emailBoxEntity -> fromEntity(emailBoxEntity,
+                                                             true,
+                                                             true,
+                                                             userId,
+                                                             null,
+                                                             false,
+                                                             false,
+                                                             linkedCategoryIds))
+                           .toList();
+  }
+
   private Email fromEntity(EmailBoxEntity emailBoxEntity,
                            boolean withAttachments,
                            boolean isExcerpt,
@@ -1809,6 +1839,30 @@ public class EmailBoxStorage {
                            String userEmail,
                            boolean withRecipients,
                            boolean withProfile) {
+    return fromEntity(emailBoxEntity, withAttachments, isExcerpt, userId, userEmail, withRecipients, withProfile, null);
+  }
+
+  /**
+   * As above, with the category links of a whole page already in hand.
+   * <p>
+   * A read of one message looks its categories up itself, which is one query and the
+   * right shape for one row. A listing hands the map in: {@link #toListing} asks social
+   * once for the page and every row is then a lookup, where before each row was a query
+   * of its own — five hundred of them on a default mailbox, five thousand at the size an
+   * administrator may configure.
+   *
+   * @param linkedCategoryIds the page's links keyed by email id, or null to look this
+   *          row's up on its own
+   */
+  @SneakyThrows
+  private Email fromEntity(EmailBoxEntity emailBoxEntity,
+                           boolean withAttachments,
+                           boolean isExcerpt,
+                           String userId,
+                           String userEmail,
+                           boolean withRecipients,
+                           boolean withProfile,
+                           Map<String, List<Long>> linkedCategoryIds) {
     if (emailBoxEntity == null) {
       return null;
     } else {
@@ -1842,9 +1896,13 @@ public class EmailBoxStorage {
       content.setHtml(isHtmlBody(emailBoxEntity));
       String[] emailSenderParts = splitStoredPerson(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
-      List<Long> categoryIds = categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE,
-                                                                                   String.valueOf(emailBoxEntity.getId()),
-                                                                                   0));
+      String linkedObjectId = String.valueOf(emailBoxEntity.getId());
+      // An id absent from the page's map has no categories — social leaves it out rather
+      // than answering an empty list, so "not linked" and "not asked for" stay different
+      // things there and collapse to the same empty list here.
+      List<Long> categoryIds = linkedCategoryIds != null
+          ? linkedCategoryIds.getOrDefault(linkedObjectId, List.of())
+          : categoryLinkService.getLinkedIds(new CategoryObject(EmailCategoryPlugin.OBJECT_TYPE, linkedObjectId, 0));
       Email email = new Email(emailBoxEntity.getId(),
                               emailBoxEntity.getMailRemoteId(),
                               emailBoxEntity.getMailHeaderId(),
