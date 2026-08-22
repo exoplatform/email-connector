@@ -1410,8 +1410,11 @@ export default {
           .catch(() => this.alertOnActionFailures(ids.length, 'archive')));
     },
     async loadEmailBox() {
+      const wasSyncing = this.syncInProgress;
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
-      this.emails = this.emailBox.emails || [];
+      // `emails` is a computed off `emailBox`, so it follows the line above on its own.
+      // Assigning to it did nothing except log "computed property was assigned to but it
+      // has no setter" on every load, and once per poll while a watch was running.
       this.syncInProgress = !this.emailBox.emailSyncStatus || this.emailBox.emailSyncStatus === 'IN_PROGRESS';
       this.webmailUrl = this.emailBox.webmailUrl;
       this.$root.$emit('refresh-emails', this.emails);
@@ -1420,7 +1423,16 @@ export default {
         this.categoryWatchDeadline = null;
       } else {
         this.$root.$emit('synchronize-finished');
-        this.watchIncomingCategories();
+        // Only when a sync has just finished under us, or a watch armed by one is still
+        // running. The watch exists to catch the categories that land in the minute after
+        // a sync, so a mailbox that was already synced when the drawer opened has nothing
+        // to wait for — and arming it there was the drawer re-requesting the whole mailbox
+        // every 2s for up to thirty polls, on every open, to watch a number that could not
+        // change. A running sync is polled by its own path (see the synchronize-in-progress
+        // listener and open()), so nothing here is what keeps that up to date.
+        if (wasSyncing || this.categoryWatchDeadline) {
+          this.watchIncomingCategories();
+        }
       }
     },
     // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
