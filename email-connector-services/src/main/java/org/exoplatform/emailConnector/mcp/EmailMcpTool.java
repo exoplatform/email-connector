@@ -51,6 +51,9 @@ import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+
 import io.meeds.mcp.server.plugin.McpToolPlugin;
 
 /**
@@ -63,6 +66,8 @@ import io.meeds.mcp.server.plugin.McpToolPlugin;
 @Service
 @Profile("mcp-server")
 public class EmailMcpTool implements McpToolPlugin {
+
+  private static final Log              LOG                  = ExoLogger.getLogger(EmailMcpTool.class);
 
   /** Hits returned when the caller names no limit: a readable page, not a dump. */
   private static final int              DEFAULT_SEARCH_LIMIT = 20;
@@ -148,8 +153,40 @@ public class EmailMcpTool implements McpToolPlugin {
                    .filter(email -> !Boolean.TRUE.equals(unreadOnly) || !email.isRead())
                    .skip(getInteger(offset, DEFAULT_OFFSET))
                    .limit(getInteger(limit, DEFAULT_LIMIT))
+                   .map(this::withBody)
                    .map(email -> toEmailModel(email, false))
                    .toList();
+  }
+
+  /**
+   * Re-reads one listed row whole, so this tool keeps answering with the message.
+   * <p>
+   * A list read no longer carries bodies: the mailbox drawer renders one truncated line
+   * of the excerpt and never reads them, and carrying every cached message's HTML for it
+   * was one of the costs of opening the drawer. This tool did read them, so it fetches
+   * the few it is about to return — the page is ten rows by default, and this runs on an
+   * agent's triage call rather than on the drawer's hot path, which is the whole point
+   * of putting the cost here.
+   * <p>
+   * A row that cannot be re-read is answered as it was listed rather than failing the
+   * call: the agent then sees a message with no body, which is what it would have seen
+   * had the row lost its body for any other reason, and the rest of the page still
+   * arrives.
+   *
+   * @param email the listed row
+   * @return the same message read whole, or the listed row if it cannot be re-read
+   */
+  private Email withBody(Email email) {
+    if (email.getId() == null || email.getContent() != null && email.getContent().getBody() != null) {
+      return email;
+    }
+    try {
+      Email whole = emailBoxService.getOwnedEmailById(email.getId(), getCurrentUserName());
+      return whole == null ? email : whole;
+    } catch (IllegalAccessException e) {
+      LOG.debug("Could not re-read email {} whole for the agent listing; answering it as listed", email.getId(), e);
+      return email;
+    }
   }
 
   /**
