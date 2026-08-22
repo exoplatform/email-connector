@@ -355,9 +355,34 @@ public class EmailBoxStorageTest {
     assertEquals(2l, retrievedEmailEntities.get(0).getId());
     assertEquals(1212l, retrievedEmailEntities.get(0).getMailRemoteId());
     assertEquals("subject", retrievedEmailEntities.get(0).getSubject());
-    assertEquals("body", retrievedEmailEntities.get(0).getContent().getBody());
+    // A list read carries the preview and NOT the message: the list renders one
+    // truncated line of the excerpt and never reads the body, so shipping it would send
+    // every cached message's HTML to the browser twice — once raw, once as the text
+    // pulled out of it — for a pane that shows neither.
+    assertNull(retrievedEmailEntities.get(0).getContent().getBody());
     assertEquals("body", retrievedEmailEntities.get(0).getContent().getExcerpt());
     assertEquals("sender", retrievedEmailEntities.get(0).getSender().getName());
+  }
+
+  /**
+   * A draft keeps its body even in a list read.
+   * <p>
+   * The composer resumes a draft straight from the row it was listed in — the list item
+   * emits {@code resume-draft} with the row itself — so a listed draft without its body
+   * reopens empty, losing what the user had written. This is the one exception to the
+   * rule the test above pins, and it is decided from the row rather than from the
+   * caller, so a read path added later cannot forget it.
+   */
+  @Test
+  void aListedDraftKeepsItsBodySoTheComposerCanResumeIt() {
+    EmailBoxEntity storedDraft = draftEntity("draft-1", 1L, "half a sentence");
+    when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(List.of(storedDraft));
+
+    List<Email> listed = emailBoxStorage.getEmails("root");
+
+    assertEquals(1, listed.size());
+    assertEquals("half a sentence", listed.get(0).getContent().getBody());
+    assertEquals("half a sentence", listed.get(0).getContent().getExcerpt());
   }
 
   @Test

@@ -81,6 +81,12 @@ public class EmailBoxStorage {
   // Largest IN list issued in one statement. Oracle refuses past 1000 literals (ORA-01795);
   // the margin leaves room for the other bound parameters of the same query.
   private static final int    IN_CLAUSE_MAX_SIZE = 900;
+
+  // How much of a body is parsed to build a list excerpt, and how much of the resulting
+  // text is kept. See excerptOf.
+  private static final int    EXCERPT_SOURCE_LENGTH = 4000;
+
+  private static final int    EXCERPT_MAX_LENGTH    = 300;
   // What a missing display name looked like for as long as the writers concatenated
   // one: the word itself, in the name half of a stored name,address pair. The writers
   // no longer produce it; the rows that already hold it are still being read every
@@ -1808,6 +1814,7 @@ public class EmailBoxStorage {
     } else {
       List<EmailAttachment> attachments = withAttachments
           && emailBoxEntity.getAttachments() != null ? emailBoxEntity.getAttachments().stream().map(this::fromEmailAttachmentEntity).filter(Objects::nonNull).toList() : null;
+      String body = emailBoxEntity.getBody();
       String excerpt = null;
       if (isExcerpt) {
         // A row with no body at all. Every message this table held before drafts had
@@ -1817,10 +1824,21 @@ public class EmailBoxStorage {
         // the whole folder listing answer 500 (and the cached search, and the
         // disconnect cleanup, which map the same way). An empty body has an empty
         // excerpt, which is what the list already renders as "no content".
-        String body = emailBoxEntity.getBody();
-        excerpt = StringUtils.isBlank(body) ? "" : Jsoup.parse(body).text().trim();
+        excerpt = StringUtils.isBlank(body) ? "" : excerptOf(body);
       }
-      EmailContent content = new EmailContent(emailBoxEntity.getBody(), excerpt, attachments);
+      // isExcerpt marks a LIST read — the caller wants a preview, not the message. The
+      // list renders one truncated line of the excerpt and never reads the body, so
+      // carrying it would ship every cached message's HTML to the browser twice over
+      // (once raw, once as the text pulled out of it) for a pane that shows neither.
+      //
+      // Drafts keep theirs: the composer resumes one straight from the row it was
+      // listed in (the list item emits `resume-draft` with the row itself), so a draft
+      // without its body reopens empty. Decided from the row rather than at the call
+      // site, for the reason the recipient block below already gives — "a draft is
+      // always read whole" is a property of the row, and the next read path added
+      // should not have to remember it.
+      boolean listedWithoutBody = isExcerpt && StringUtils.isBlank(emailBoxEntity.getDraftLocalId());
+      EmailContent content = new EmailContent(listedWithoutBody ? null : body, excerpt, attachments);
       content.setHtml(isHtmlBody(emailBoxEntity));
       String[] emailSenderParts = splitStoredPerson(emailBoxEntity.getSender());
       InternetAddress emailSenderAddress = new InternetAddress(emailSenderParts[1], emailSenderParts[0]);
@@ -1892,6 +1910,29 @@ public class EmailBoxStorage {
       }
       return email;
     }
+  }
+
+  /**
+   * The one line of text the list shows under a subject.
+   * <p>
+   * Only the head of the body is parsed. The excerpt is a preview — the list renders a
+   * single CSS-truncated line of it — so the rest of the message can never reach the
+   * screen, and building a whole HTML DOM to throw all but its first sentence away is
+   * the sort of work that goes unnoticed until the row count grows. A mailbox caches a
+   * thousand messages by default and may be configured for five thousand.
+   * <p>
+   * The prefix is cut generously enough that the line is full even when the message
+   * opens with markup rather than words — a signature image, a tracking pixel, a table
+   * wrapper — and Jsoup is content to parse a fragment, so a tag cut in half costs the
+   * excerpt nothing.
+   *
+   * @param body the stored body, never blank
+   * @return the excerpt, trimmed
+   */
+  private String excerptOf(String body) {
+    String head = body.length() > EXCERPT_SOURCE_LENGTH ? body.substring(0, EXCERPT_SOURCE_LENGTH) : body;
+    String text = Jsoup.parse(head).text().trim();
+    return text.length() > EXCERPT_MAX_LENGTH ? text.substring(0, EXCERPT_MAX_LENGTH).trim() : text;
   }
 
   /**
