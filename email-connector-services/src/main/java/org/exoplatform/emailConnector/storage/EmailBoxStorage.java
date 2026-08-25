@@ -31,7 +31,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import javax.mail.internet.InternetAddress;
+import jakarta.mail.internet.InternetAddress;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;

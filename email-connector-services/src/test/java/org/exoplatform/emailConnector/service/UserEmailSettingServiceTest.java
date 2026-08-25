@@ -37,9 +37,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
 
-import javax.mail.MessagingException;
-import javax.mail.Session;
-import javax.mail.Store;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Session;
+import jakarta.mail.Store;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

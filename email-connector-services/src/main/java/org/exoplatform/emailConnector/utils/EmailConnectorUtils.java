@@ -37,17 +37,17 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import javax.activation.DataHandler;
+import jakarta.activation.DataHandler;
 import javax.imageio.ImageIO;
-import javax.mail.Address;
-import javax.mail.BodyPart;
-import javax.mail.Message;
-import javax.mail.MessagingException;
-import javax.mail.Part;
-import javax.mail.internet.ContentType;
-import javax.mail.internet.InternetAddress;
-import javax.mail.internet.MimeMultipart;
-import javax.mail.internet.MimeUtility;
+import jakarta.mail.Address;
+import jakarta.mail.BodyPart;
+import jakarta.mail.Message;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Part;
+import jakarta.mail.internet.ContentType;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeMultipart;
+import jakarta.mail.internet.MimeUtility;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
