@@ -125,10 +125,11 @@ public class EmailConnectorStorage {
     if (emailConnector == null) {
       return null;
     } else {
-      // The CardDAV URL goes LAST, and has to be passed rather than set: the entity
-      // is @AllArgsConstructor, so declaring a field regenerates the constructor and
-      // this call has to grow with it. Last is what keeps every existing argument on
-      // its own field -- and the compiler, not a reviewer, is what enforces that.
+      // The CardDAV URL and the auth provider name go LAST, and have to be passed
+      // rather than set: the entity is @AllArgsConstructor, so declaring a field
+      // regenerates the constructor and this call has to grow with it. Last is what
+      // keeps every existing argument on its own field -- and the compiler, not a
+      // reviewer, is what enforces that.
       return new EmailConnectorEntity(emailConnector.getId(),
                                       emailConnector.getName(),
                                       emailConnector.getImageFileId(),
@@ -140,7 +141,8 @@ public class EmailConnectorStorage {
                                       emailConnector.getSmtpSecurityType(),
                                       emailConnector.isActive(),
                                       emailConnector.getWebmailUrl(),
-                                      emailConnector.getCarddavUrl());
+                                      emailConnector.getCarddavUrl(),
+                                      emailConnector.getAuthProviderName());
     }
   }
 
@@ -172,7 +174,8 @@ public class EmailConnectorStorage {
                                                          null,
                                                          null,
                                                          emailConnectorEntity.getWebmailUrl(),
-                                                         emailConnectorEntity.getCarddavUrl());
+                                                         emailConnectorEntity.getCarddavUrl(),
+                                                         emailConnectorEntity.getAuthProviderName());
       return emailConnector;
     }
   }
