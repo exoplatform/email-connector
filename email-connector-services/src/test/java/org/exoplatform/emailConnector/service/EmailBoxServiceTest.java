@@ -7553,7 +7553,7 @@ public class EmailBoxServiceTest {
                               false,
                               true,
                               "testUploadId",
-                              "", null);
+                              "", null, null);
   }
   /**
    * A picture dropped into the text travels inside the message, and the body points

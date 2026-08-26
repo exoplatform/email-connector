@@ -27,6 +27,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
+
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -78,4 +80,15 @@ public class EmailConnectorEntity {
    */
   @Column(name = "CARDDAV_URL")
   private String  carddavUrl;
+
+  /**
+   * Name of the {@link org.exoplatform.services.connector.credentials.ConnectorCredentialsProvider}
+   * this connector is configured to use (e.g. "personal", "bluemind-sudo").
+   * Defaults to Personal, the only mode that requires no administrator
+   * action beyond this connector's own IMAP/SMTP settings - every connector
+   * created before this field existed backfills to the same value via the
+   * migration's column default.
+   */
+  @Column(name = "AUTH_PROVIDER_NAME")
+  private String  authProviderName = PersonalCredentialsProvider.NAME;
 }

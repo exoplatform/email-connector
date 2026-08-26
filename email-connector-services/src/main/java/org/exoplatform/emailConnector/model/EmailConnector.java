@@ -64,6 +64,13 @@ public class EmailConnector {
    */
   private String  carddavUrl;
 
+  /**
+   * Name of the {@link org.exoplatform.services.connector.credentials.ConnectorCredentialsProvider}
+   * this connector uses (e.g. "personal", "bluemind-sudo"). Declared LAST for
+   * the same reason as carddavUrl above.
+   */
+  private String  authProviderName;
+
   public EmailConnector(Long id,
                         String name,
                         Long imageFileId,
