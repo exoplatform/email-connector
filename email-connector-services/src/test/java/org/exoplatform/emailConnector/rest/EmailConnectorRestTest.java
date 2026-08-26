@@ -339,7 +339,7 @@ public class EmailConnectorRestTest {
                               false,
                               true,
                               "testUploadId",
-                              "", null);
+                              "", null, null);
   }
 
   @SneakyThrows
