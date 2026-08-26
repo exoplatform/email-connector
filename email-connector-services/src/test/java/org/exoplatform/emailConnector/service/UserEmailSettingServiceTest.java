@@ -600,7 +600,7 @@ public class UserEmailSettingServiceTest {
                               false,
                               true,
                               "testUploadId",
-                              "", null);
+                              "", null, null);
   }
 
   private UserEmailSetting userEmailSetting() {
