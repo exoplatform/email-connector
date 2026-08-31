@@ -64,9 +64,11 @@ export function init(container, username) {
         exoi18n.loadLanguageAsync(lang, url).then(i18n => mountAction(container, username, i18n)));
     })
     .catch(error => {
-      // The guard flag is set before the request, so leaving it set on a transient failure
-      // would suppress the action for the rest of the page view. Clear it and let a later
-      // init() try again.
+      // Clear the flag so it does not outlive the failure. It does not buy a retry in this
+      // page view: the host guards on the descriptor, not the element - ProfileHeaderActions
+      // sets action.isStartedInit = true before the async work and never clears it, and the
+      // descriptor is the registry's singleton - so init() is called once per page load
+      // whatever this flag says.
       delete container.dataset.emailConnectorContactMounted;
       console.warn('Could not add the email-connector profile header action', error);
     });
