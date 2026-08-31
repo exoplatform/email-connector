@@ -49,6 +49,9 @@ export function init(container, username) {
     return;
   }
   container.dataset.emailConnectorContactMounted = 'true';
+  // A REST round-trip per profile view, where the old card extension had none: it read the
+  // user object the card already held. The header point hands init() the username only, not
+  // the user, so there is nothing here to read it from.
   fetch(`/portal/rest/v1/social/users/${encodeURIComponent(username)}`, {credentials: 'include'})
     .then(response => response.ok && response.json() || null)
     .then(user => {
@@ -59,6 +62,13 @@ export function init(container, username) {
       const url = `/email-connector/i18n/locale.portlet.emailConnector.emailConnectorContacts?lang=${lang}`;
       window.require(['SHARED/eXoVueI18n'], exoi18n =>
         exoi18n.loadLanguageAsync(lang, url).then(i18n => mountAction(container, username, i18n)));
+    })
+    .catch(error => {
+      // The guard flag is set before the request, so leaving it set on a transient failure
+      // would suppress the action for the rest of the page view. Clear it and let a later
+      // init() try again.
+      delete container.dataset.emailConnectorContactMounted;
+      console.warn('Could not add the email-connector profile header action', error);
     });
 }
 
@@ -77,6 +87,11 @@ export function init(container, username) {
 function mountAction(container, username, i18n) {
   const mountPoint = document.createElement('div');
   container.appendChild(mountPoint);
+  // An Element, not a selector string, which every other call site in social passes.
+  // Deliberate and supported: Vue.createApp's target is `typeof el === 'string' ?
+  // document.querySelector(...) : el` (social -> vue-apps/common/initComponents.js:158),
+  // so a node is handed straight to $mount. There is no selector for this div - it is
+  // created here and never given an id.
   Vue.createApp({
     template: `
       <v-btn

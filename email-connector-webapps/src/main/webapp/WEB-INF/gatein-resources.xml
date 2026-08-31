@@ -327,6 +327,16 @@
     <script>
       <path>/js/emailConnectorProfileExtension.bundle.js</path>
     </script>
+    <!-- init() mounts a Vuetify app of its own, so this module needs vue and vuetify
+         in its own right. They are already on every page that can reach this code, so
+         declaring them costs nothing and stops the module being correct only by virtue
+         of the profile-header portlet's environment. -->
+    <depends>
+      <module>vue</module>
+    </depends>
+    <depends>
+      <module>vuetify</module>
+    </depends>
     <!-- Required lazily as SHARED/eXoVueI18n from init(): requirejs only knows a
          shared module on a page where something depends on it. -->
     <depends>
