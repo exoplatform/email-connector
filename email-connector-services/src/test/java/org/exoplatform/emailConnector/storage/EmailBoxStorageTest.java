@@ -37,6 +37,8 @@ import static org.mockito.Mockito.when;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.LongStream;
 
@@ -61,11 +63,13 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.upload.UploadService;
 
 import io.meeds.social.category.service.CategoryLinkService;
+import io.meeds.social.category.model.CategoryObject;
 
 @SpringBootTest(classes = { EmailBoxStorage.class })
 @ExtendWith(MockitoExtension.class)
@@ -355,9 +359,66 @@ public class EmailBoxStorageTest {
     assertEquals(2l, retrievedEmailEntities.get(0).getId());
     assertEquals(1212l, retrievedEmailEntities.get(0).getMailRemoteId());
     assertEquals("subject", retrievedEmailEntities.get(0).getSubject());
-    assertEquals("body", retrievedEmailEntities.get(0).getContent().getBody());
+    // A list read carries the preview and NOT the message: the list renders one
+    // truncated line of the excerpt and never reads the body, so shipping it would send
+    // every cached message's HTML to the browser twice — once raw, once as the text
+    // pulled out of it — for a pane that shows neither.
+    assertNull(retrievedEmailEntities.get(0).getContent().getBody());
     assertEquals("body", retrievedEmailEntities.get(0).getContent().getExcerpt());
     assertEquals("sender", retrievedEmailEntities.get(0).getSender().getName());
+  }
+
+  /**
+   * A listing asks social once for the whole page's categories, never once per row.
+   * <p>
+   * The per-row call was the drawer's dominant cost: one query per message, so five
+   * hundred serial SELECTs on a default mailbox and five thousand at the size an
+   * administrator may configure, repeated on every refresh of the list. Asserted by
+   * counting the calls rather than by timing anything — the count is the property, and
+   * a timing test on a build machine would only be flaky.
+   */
+  @Test
+  void aListingAsksForThePagesCategoriesOnceNotPerRow() {
+    List<EmailBoxEntity> page = new ArrayList<>();
+    for (long id = 1; id <= 25; id++) {
+      EmailBoxEntity entity = draftEntity("draft-" + id, id, "body " + id);
+      entity.setId(id);
+      entity.setDraftLocalId(null);
+      page.add(entity);
+    }
+    when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(page);
+    when(categoryLinkService.getLinkedIds(eq(EmailCategoryPlugin.OBJECT_TYPE),
+                                          anyList())).thenReturn(Map.of("3", List.of(77L)));
+
+    List<Email> listed = emailBoxStorage.getEmails("root");
+
+    assertEquals(25, listed.size());
+    verify(categoryLinkService, times(1)).getLinkedIds(eq(EmailCategoryPlugin.OBJECT_TYPE), anyList());
+    verify(categoryLinkService, never()).getLinkedIds(any(CategoryObject.class));
+    // the page's map decorates the rows it names, and says "none" for the rest
+    assertEquals(List.of(77L), listed.stream().filter(e -> e.getId() == 3L).findFirst().orElseThrow().getCategoryIds());
+    assertTrue(listed.stream().filter(e -> e.getId() == 4L).findFirst().orElseThrow().getCategoryIds().isEmpty());
+  }
+
+  /**
+   * A draft keeps its body even in a list read.
+   * <p>
+   * The composer resumes a draft straight from the row it was listed in — the list item
+   * emits {@code resume-draft} with the row itself — so a listed draft without its body
+   * reopens empty, losing what the user had written. This is the one exception to the
+   * rule the test above pins, and it is decided from the row rather than from the
+   * caller, so a read path added later cannot forget it.
+   */
+  @Test
+  void aListedDraftKeepsItsBodySoTheComposerCanResumeIt() {
+    EmailBoxEntity storedDraft = draftEntity("draft-1", 1L, "half a sentence");
+    when(emailBoxDAO.findByUserIdWithAttachments("root")).thenReturn(List.of(storedDraft));
+
+    List<Email> listed = emailBoxStorage.getEmails("root");
+
+    assertEquals(1, listed.size());
+    assertEquals("half a sentence", listed.get(0).getContent().getBody());
+    assertEquals("half a sentence", listed.get(0).getContent().getExcerpt());
   }
 
   @Test
