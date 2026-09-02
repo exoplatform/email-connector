@@ -59,6 +59,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.lang.ref.WeakReference;
 import java.util.function.Consumer;
 
 import javax.activation.DataHandler;
@@ -642,6 +643,14 @@ public class EmailBoxService {
   // weak key so the memo dies with the connection it describes. This is what makes
   // "one walk per rediscovery" literally true: before it, a mailbox missing four of
   // the five folders paid four LIST pairs per sync, one per resolver.
+  //
+  // The VALUE must never reach the key, or the weak key is never collected: a
+  // WeakHashMap holds its values strongly, and an IMAPFolder holds its Store. So the
+  // memo keeps names and attributes (the classifier's records) and only WEAK handles
+  // to the listed folders (see FolderWalk) -- a handle collected between the walk and
+  // its use is re-obtained from the store by name, which costs no round-trip -- and
+  // the entry is dropped explicitly wherever a store is closed, so the memo's life is
+  // the connection's even before the collector looks.
   private final Map<Store, Rediscovery>          rediscoveries         = Collections.synchronizedMap(new WeakHashMap<>());
 
   // Mailboxes with a synchronization running right now, so two can never overlap and cache
@@ -986,6 +995,9 @@ public class EmailBoxService {
       // Null when the load itself failed -- there is then nothing to persist.
       if (syncState != null) {
         saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      }
+      if (store != null) {
+        rediscoveries.remove(store);
       }
       try {
         if (store != null && store.isConnected()) {
@@ -1416,6 +1428,26 @@ public class EmailBoxService {
                         false,
                         customFolder.getSnapshot(),
                         snapshot -> captured[0] = snapshot);
+    // The opt-out takes no sync guard (a preference must not wait on a sync), so it can
+    // land WHILE this folder is being synced: its rows deleted, its memory cleared, and
+    // then the sync above re-inserting a window of rows nobody asked for -- resurfaced
+    // in conversations and search, and never cleaned, since a disabled folder is never
+    // synced again. So the opt-in is re-read after the sync, and a folder opted out in
+    // the meantime loses what the sync wrote. The registry's own sync writes carry the
+    // same guard in their WHERE clause, so the memory cannot be re-planted either.
+    EmailFolder current;
+    try {
+      current = emailFolderService.getFolder(username, customFolder.getId());
+    } catch (IllegalArgumentException gone) {
+      current = null;
+    }
+    if (current == null || !current.isSyncEnabled()) {
+      LOG.info("Folder '{}' of user {} was opted out while it was being synced; dropping what the sync wrote",
+               customFolder.getRemoteName(),
+               username);
+      deleteUserEmails(username, customFolder.getKey());
+      return;
+    }
     emailFolderService.recordSync(username, customFolder.getId(), captured[0]);
   }
 
@@ -1702,7 +1734,7 @@ public class EmailBoxService {
     if (alreadyWalked != null) {
       // This connection already walked and classified the whole list: its answer is
       // fresher than any remembered name, and a probe would only cost a round-trip.
-      return alreadyWalked.folder(folderKey);
+      return alreadyWalked.folder(store, folderKey);
     }
     if (StringUtils.isNotBlank(rememberedName)) {
       Folder cached = store.getFolder(rememberedName);
@@ -1710,7 +1742,7 @@ public class EmailBoxService {
         return imapFolder;
       }
     }
-    return rediscoverBuiltInFolders(store, syncState).folder(folderKey);
+    return rediscoverBuiltInFolders(store, syncState).folder(store, folderKey);
   }
 
   /**
@@ -1753,6 +1785,14 @@ public class EmailBoxService {
    * A folder the server lists without a name is kept too -- it can still be matched by
    * attribute, which is how the {@code \All} lookup always worked -- but never
    * registered as the user's, since there is nothing to show for it.
+   * <p>
+   * No {@code exists()} probe: a folder the server listed a moment ago exists, and
+   * JavaMail's probe is one more {@code LIST} per folder -- forty folders, forty
+   * round-trips, twice for the subscribed ones, on every walk. The server that wants
+   * to list a name that cannot be opened says so with {@code \NonExistent} (RFC 5258)
+   * or {@code \Noselect}, and both are read off the attributes the listing already
+   * carried. Everything else read here -- name, attributes, separator -- comes off the
+   * listing too, so a walk is exactly its two {@code LIST} commands.
    *
    * @param folder the listed folder
    * @param subscribed which listing it came from
@@ -1761,7 +1801,7 @@ public class EmailBoxService {
    * @throws MessagingException if the folder's attributes cannot be read
    */
   private void describe(Folder folder, boolean subscribed, FolderWalk walk, Set<String> seenNames) throws MessagingException {
-    if (!(folder instanceof IMAPFolder imapFolder) || !imapFolder.exists()) {
+    if (!(folder instanceof IMAPFolder imapFolder)) {
       return;
     }
     String fullName = imapFolder.getFullName();
@@ -1772,11 +1812,13 @@ public class EmailBoxService {
     Set<String> attributeSet = attributes == null ? Set.of() : new LinkedHashSet<>(Arrays.asList(attributes));
     char separator = imapFolder.getSeparator();
     String delimiter = separator == 0 || separator == Character.MAX_VALUE ? null : String.valueOf(separator);
-    boolean selectable = attributeSet.stream().noneMatch(attribute -> "\\Noselect".equalsIgnoreCase(attribute));
+    boolean selectable = attributeSet.stream()
+                                     .noneMatch(attribute -> "\\Noselect".equalsIgnoreCase(attribute)
+                                         || "\\NonExistent".equalsIgnoreCase(attribute));
     DiscoveredFolder descriptor =
                                 new DiscoveredFolder(fullName, imapFolder.getName(), delimiter, attributeSet, subscribed, selectable);
     walk.descriptors().add(descriptor);
-    walk.handles().put(descriptor, imapFolder);
+    walk.handles().put(descriptor, new WeakReference<>(imapFolder));
   }
 
   /**
@@ -1846,13 +1888,16 @@ public class EmailBoxService {
   }
 
   /**
-   * One walk of the folder list: the classifier's view of it, and the live handles.
+   * One walk of the folder list: the classifier's view of it, and the live handles --
+   * held WEAKLY, because this record is the value of a weak-keyed memo whose key is
+   * the very {@link Store} every {@link IMAPFolder} points back to (see
+   * {@code rediscoveries}). A handle the collector took is re-obtained by name.
    *
    * @param descriptors what the classifier reads, in listing order
    * @param handles the {@link IMAPFolder} behind each descriptor (by identity: a
    *          descriptor is one listed folder, whatever its name)
    */
-  private record FolderWalk(List<DiscoveredFolder> descriptors, Map<DiscoveredFolder, IMAPFolder> handles) {
+  private record FolderWalk(List<DiscoveredFolder> descriptors, Map<DiscoveredFolder, WeakReference<IMAPFolder>> handles) {
   }
 
   /**
@@ -1864,14 +1909,30 @@ public class EmailBoxService {
   private record Rediscovery(FolderWalk walk, FolderClassification classification) {
 
     /**
-     * The live folder playing a built-in role.
+     * The live folder playing a built-in role: the listing's own handle while it is
+     * still around, else a fresh one from the store by name (no round-trip: a folder
+     * object is created lazily, and the sync opens it itself).
      *
+     * @param store the connection the walk was made on
      * @param folderKey the {@link MailFolder} constant
      * @return the folder, or null when the mailbox has none in that role
+     * @throws MessagingException if the store cannot hand out a folder
      */
-    IMAPFolder folder(String folderKey) {
+    IMAPFolder folder(Store store, String folderKey) throws MessagingException {
       DiscoveredFolder discovered = classification.builtIn(folderKey);
-      return discovered == null ? null : walk.handles().get(discovered);
+      if (discovered == null) {
+        return null;
+      }
+      WeakReference<IMAPFolder> handle = walk.handles().get(discovered);
+      IMAPFolder live = handle == null ? null : handle.get();
+      if (live != null) {
+        return live;
+      }
+      if (StringUtils.isBlank(discovered.fullName())) {
+        return null;
+      }
+      Folder byName = store.getFolder(discovered.fullName());
+      return byName instanceof IMAPFolder imapFolder ? imapFolder : null;
     }
 
     /**
@@ -2672,6 +2733,7 @@ public class EmailBoxService {
       }
       if (store != null && store.isConnected()) {
         try {
+          rediscoveries.remove(store);
           store.close();
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing prefetch store for user {}", username, messagingException);
@@ -2939,9 +3001,10 @@ public class EmailBoxService {
       }
     }
     Map<String, Integer> folderCounts = emailBoxStorage.getFolderMessageCounts(username);
-    return new MailFolderList(buildFolderViews(username, syncState, folderCounts),
+    List<MailFolderView> views = buildFolderViews(username, syncState, folderCounts);
+    return new MailFolderList(views,
                               emailFolderService.getMaxCustomFolders(),
-                              (int) emailFolderService.getFolders(username).stream().filter(EmailFolder::isSyncEnabled).count(),
+                              (int) views.stream().filter(view -> view.isCustom() && view.isSyncEnabled()).count(),
                               emailFolderService.getWindowSize());
   }
 
@@ -3058,10 +3121,10 @@ public class EmailBoxService {
 
   /**
    * One custom folder, checked and if changed synced, on the calling thread -- the
-   * on-open refresh, and the single-folder precedent {@link #refreshSentFolder} set:
-   * under the {@code syncingUsers} guard (a folder sync and a mailbox sync must never
-   * write the same (user, folder, UID) rows at once), and if the guard is taken the
-   * cache is answered as it stands, because the background sync is doing the work.
+   * on-open refresh, and the single-folder precedent {@link #runSentFolderRefresh}
+   * set: under the {@code syncingUsers} guard (a folder sync and a mailbox sync must
+   * never write the same (user, folder, UID) rows at once), and if the guard is taken
+   * the cache is answered as it stands, because the background sync is doing the work.
    * Never touches the mailbox's sync STATUS, never broadcasts a run's completion, never
    * the unread count -- one folder is not a run, and the count is the inbox's alone.
    *
@@ -3333,8 +3396,11 @@ public class EmailBoxService {
         LOG.warn("Error when closing inbox", messagingException);
       }
       try {
-        if (store != null && store.isConnected()) {
-          store.close();
+        if (store != null) {
+          rediscoveries.remove(store);
+          if (store.isConnected()) {
+            store.close();
+          }
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing store", messagingException);
@@ -3825,8 +3891,11 @@ public class EmailBoxService {
           LOG.warn("Error when closing folder {} of user {}", folder, username, e);
         }
         try {
-          if (store != null && store.isConnected()) {
-            store.close();
+          if (store != null) {
+            rediscoveries.remove(store);
+            if (store.isConnected()) {
+              store.close();
+            }
           }
         } catch (MessagingException e) {
           LOG.warn("Error when closing store", e);
@@ -3993,8 +4062,11 @@ public class EmailBoxService {
           LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, e);
         }
         try {
-          if (store != null && store.isConnected()) {
-            store.close();
+          if (store != null) {
+            rediscoveries.remove(store);
+            if (store.isConnected()) {
+              store.close();
+            }
           }
         } catch (MessagingException e) {
           LOG.warn(STORE_CLOSE_ERROR_MESSAGE, e);
@@ -5333,8 +5405,11 @@ public class EmailBoxService {
       // rest of the refresh did.
       saveMailboxSyncState(username, syncState, originalSyncStateJson);
       try {
-        if (store != null && store.isConnected()) {
-          store.close();
+        if (store != null) {
+          rediscoveries.remove(store);
+          if (store.isConnected()) {
+            store.close();
+          }
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing the store of the post-send Sent refresh of user {}", username, messagingException);
@@ -8452,6 +8527,7 @@ public class EmailBoxService {
       }
       if (store != null && store.isConnected()) {
         try {
+          rediscoveries.remove(store);
           store.close();
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing store for user {}", username, messagingException);
@@ -9193,7 +9269,10 @@ public class EmailBoxService {
       return resolveJunkFolder(store, syncState);
     }
     if (MailFolder.ALL_MAIL.equals(folder)) {
-      return rediscoverBuiltInFolders(store, syncState).folder(MailFolder.ALL_MAIL);
+      // Through the memoised lookup, never a rediscovery: this arm is reached by
+      // reads that must not write the state, and a walk this connection already made
+      // answers it for free.
+      return findAllMailFolder(store);
     }
     if (MailFolder.isCustom(folder)) {
       // Through the registry, the way the rows were written: the key names a row, the
@@ -9231,6 +9310,9 @@ public class EmailBoxService {
         LOG.warn("Error when closing search folder for user {}", username, messagingException);
       }
     }
+    if (store != null) {
+      rediscoveries.remove(store);
+    }
     if (store != null && store.isConnected()) {
       try {
         store.close();
@@ -9256,12 +9338,12 @@ public class EmailBoxService {
   private IMAPFolder findAllMailFolder(Store store) throws MessagingException {
     Rediscovery alreadyWalked = rediscoveries.get(store);
     if (alreadyWalked != null) {
-      return alreadyWalked.folder(MailFolder.ALL_MAIL);
+      return alreadyWalked.folder(store, MailFolder.ALL_MAIL);
     }
     FolderWalk walk = walkFolders(store);
     Rediscovery rediscovery = new Rediscovery(walk, emailFolderService.classify(walk.descriptors()));
     rediscoveries.put(store, rediscovery);
-    return rediscovery.folder(MailFolder.ALL_MAIL);
+    return rediscovery.folder(store, MailFolder.ALL_MAIL);
   }
 
   /**
@@ -10471,8 +10553,11 @@ public class EmailBoxService {
         LOG.warn("Error when closing sent folder", messagingException);
       }
       try {
-        if (store != null && store.isConnected()) {
-          store.close();
+        if (store != null) {
+          rediscoveries.remove(store);
+          if (store.isConnected()) {
+            store.close();
+          }
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing store", messagingException);

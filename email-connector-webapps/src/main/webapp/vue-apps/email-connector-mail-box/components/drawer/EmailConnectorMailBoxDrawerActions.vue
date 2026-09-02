@@ -358,7 +358,8 @@ export default {
      * Whether the selection may be moved into one of the user's own folders: the same
      * rows "Mark as spam" is offered on, and only when the user has at least one
      * mirrored folder other than the one the rows are listed in -- a picker with
-     * nothing to pick is a button that lies.
+     * nothing to pick is a button that lies. Read off the root's folder list at
+     * evaluation time (see the mailbox drawer's loadEmailBox for why it lives there).
      *
      * @returns {Boolean} true when "Move to..." may be offered
      */
