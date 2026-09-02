@@ -155,3 +155,78 @@ export function setMailFolderMirror(id, enabled) {
       });
   });
 }
+
+/**
+ * Creates one of the user's own folders on the mail server -- a visible, permanent
+ * write to the account's real mailbox, done only on this explicit call. A refusal
+ * carries the server's message code as the error message
+ * ("emailConnector.folder.name.duplicate", ".nested", ".reserved", ".blank",
+ * ".tooLong" or ".createFailed"), so the screen can say why in the user's words.
+ *
+ * @param {String} name the folder name, as typed
+ * @returns {Promise<Object>} the folder as registered
+ */
+export function createMailFolder(name) {
+  return fetch(`/email-connector/rest/email-box/folders?name=${encodeURIComponent(name)}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when creating the mail folder');
+      });
+  });
+}
+
+/**
+ * Renames one of the user's own folders, on the mail server and in the registry. Only
+ * the folder's own name changes, never its parent. A refusal carries the server's
+ * message code the same way {@link createMailFolder} does.
+ *
+ * @param {Number} id the folder's registry id
+ * @param {String} name the new name, as typed
+ * @returns {Promise<Object>} the folder as it now stands
+ */
+export function renameMailFolder(id, name) {
+  return fetch(`/email-connector/rest/email-box/folders/${id}/name?name=${encodeURIComponent(name)}`, {
+    credentials: 'include',
+    method: 'PATCH'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when renaming the mail folder');
+      });
+  });
+}
+
+/**
+ * Deletes one of the user's own folders, on the mail server and in the registry --
+ * permanently, and refused by the server while the folder still holds mail
+ * ("emailConnector.folder.notEmpty").
+ *
+ * @param {Number} id the folder's registry id
+ * @returns {Promise<void>} resolved once the folder and its mirror are gone
+ */
+export function deleteMailFolder(id) {
+  return fetch(`/email-connector/rest/email-box/folders/${id}`, {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then(resp => {
+    if (resp?.ok) {
+      return;
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when deleting the mail folder');
+      });
+  });
+}

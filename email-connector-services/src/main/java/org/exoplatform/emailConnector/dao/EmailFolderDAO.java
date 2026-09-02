@@ -233,6 +233,29 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
   int windowSize);
 
   /**
+   * The in-app rename's write: the folder's own two name columns, and nothing a rename
+   * does not own. Neither {@code SYNC_ENABLED} nor any snapshot column is named here,
+   * on purpose: the row's id -- and with it the {@code CUSTOM:<id>} key every mirrored
+   * message carries -- is what makes a rename different from a delete-then-create, and
+   * that is only true if the row the opt-in and the sync job know about is the SAME row
+   * this statement touches, untouched in every other column.
+   *
+   * @param id the row id
+   * @param userId the mailbox owner
+   * @param remoteName the folder's new full name on the server
+   * @param displayName the new display name
+   * @return the rows updated: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.remoteName = :remoteName, folder.displayName = :displayName WHERE folder.id = :id AND folder.userId = :userId")
+  int renameFolder(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("remoteName")
+  String remoteName, @Param("displayName")
+  String displayName);
+
+  /**
    * Drops one registered folder, by id and owner.
    *
    * @param id the row id
