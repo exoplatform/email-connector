@@ -25,14 +25,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          position; no persistent folder rail -- a layout redesign this drawer was not
          built for), triggered at more than 5 of the user's OWN folders, built-ins
          never counted toward it since their number is fixed by the mailbox itself. -->
-    <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+    <div class="ps-2 pe-8 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
     </div>
     <div :class="{ 'overflow-y-auto': foldersScrollable }" :style="foldersScrollable ? { maxHeight: FOLDERS_MAX_HEIGHT } : null">
       <v-list-item
         v-for="folder in visibleFolders"
         :key="folder.key"
-        class="ps-2 pe-3 height-auto"
+        class="ps-2 pe-8 height-auto"
         @click="switchFolder(folder.key)">
         <v-sheet
           class="d-flex"
@@ -58,13 +58,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          leaves the view. -->
     <template v-if="categories.length">
       <v-divider class="my-1" />
-      <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+      <div class="ps-2 pe-8 pt-2 pb-1 text-sub-title text-uppercase caption">
         {{ $t('emailConnector.mailBox.list.drawer.menu.categories') }}
       </div>
       <v-list-item
         v-for="category in categories"
         :key="category.id"
-        class="ps-2 pe-3 height-auto"
+        class="ps-2 pe-8 height-auto"
         @click="openCategoryView(category.id)">
         <v-sheet
           class="d-flex"
@@ -84,12 +84,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <v-divider class="my-1" />
     <!-- Actions on the mailbox itself. -->
-    <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+    <div class="ps-2 pe-8 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.actions') }}
     </div>
     <!-- Synchronize now (progress is shown by the header spinner while it runs). -->
     <v-list-item
-      class="ps-2 pe-3 height-auto"
+      class="ps-2 pe-8 height-auto"
       :disabled="syncInProgress"
       @click="synchronize()">
       <v-sheet
@@ -108,7 +108,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-list-item>
     <!-- Select mode: multi-select rows to read/archive/delete in bulk. -->
     <v-list-item
-      class="ps-2 pe-3 height-auto"
+      class="ps-2 pe-8 height-auto"
       @click="enterSelectMode()">
       <v-sheet
         class="d-flex"
@@ -134,7 +134,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="my-auto" />
     <v-list-item
       v-if="hasWebmailAccess"
-      class="ps-2 pe-3 height-auto"
+      class="ps-2 pe-8 height-auto"
       @click="openWebmail()">
       <v-sheet
         class="d-flex"
@@ -154,20 +154,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-// The pane's height is a number of rows, not a pixel guess -- the first version was
-// 396px, read as "six built-in rows plus five custom at 36px each", and it never
-// scrolled: a mailbox showing five built-ins reaches exactly eleven rows at the sixth
-// custom folder, lands on the cap to the pixel and overflows by nothing. The height
-// has to be SMALLER than the shortest list that trips the threshold, or the threshold
-// fires and nothing happens.
+// The folder list scrolls inside its own pane once it is longer than seven rows,
+// built-ins counted with the rest: what makes the menu a wall is its total length, not
+// how many of the folders happen to be the user's own, and a rule that counted only
+// custom folders let a mailbox with six built-ins and five custom ones grow to eleven
+// rows without ever tripping.
 //
-// Nine rows is that: past five custom folders, any mailbox with four or more built-in
-// folders overflows and scrolls, and about a third of the list stays visible below the
-// fold as the affordance that says there is more. Below the threshold the pane is not
-// bounded at all, so nothing changes for a mailbox with a handful of folders.
+// One number does both jobs -- how many rows are visible, and when scrolling starts --
+// so the two cannot drift apart. An earlier version set them separately, at a height
+// that happened to equal the shortest list that tripped the threshold: it switched on
+// and nothing scrolled. Below the threshold the pane is not bounded at all.
 const FOLDER_ROW_HEIGHT_PX = 36;
 
-const FOLDERS_VISIBLE_ROWS = 9;
+const FOLDERS_VISIBLE_ROWS = 7;
 
 const FOLDERS_MAX_HEIGHT = `${FOLDER_ROW_HEIGHT_PX * FOLDERS_VISIBLE_ROWS}px`;
 
@@ -247,7 +246,7 @@ export default {
      * @returns {Boolean} true past five custom folders
      */
     foldersScrollable() {
-      return this.availableFolders.filter(folder => folder.type === 'CUSTOM').length > 5;
+      return this.availableFolders.length > FOLDERS_VISIBLE_ROWS;
     },
   },
   methods: {
