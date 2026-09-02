@@ -839,8 +839,14 @@ public class EmailBoxService {
       // actually moved: a sync cycle that changed nothing would otherwise cost an
       // eviction, a WebSocket frame and a REST re-fetch for every online user,
       // every period, against the specification's "no recurring background load
-      // for users who are not consulting their badges"
-      long unreadCountBeforeSync = emailBoxStorage.countUnreadEmails(username);
+      // for users who are not consulting their badges". Through the badge's own
+      // rule (countUnreadEmails), not the plain inbox count: for a user who narrowed
+      // their notifications the two move differently in one cycle — a \Seen pulled
+      // for a message in a category they did not opt into and one new message
+      // imported leave the plain count where it was while the badge gained one —
+      // and a snapshot of the wrong number would keep that badge stale until
+      // something else happened to announce. Everyone else still pays one count.
+      long unreadCountBeforeSync = countUnreadEmails(username);
       syncState = loadMailboxSyncState(username);
       originalSyncStateJson = JsonUtils.toJsonString(syncState);
       store = userEmailSettingService.connect(userEmailSetting);
@@ -895,7 +901,7 @@ public class EmailBoxService {
         }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
-      if (emailBoxStorage.countUnreadEmails(username) != unreadCountBeforeSync) {
+      if (countUnreadEmails(username) != unreadCountBeforeSync) {
         broadcastUnreadCountChanged(username);
       }
       // The flags just pulled from the server are the ones the Favorites drawer
@@ -3193,9 +3199,10 @@ public class EmailBoxService {
    * <p>
    * Sits behind the Application Center's badge cache, so this runs when the count
    * may have changed rather than on every page: every path that can move it
-   * announces through {@link #broadcastUnreadCountChanged} — the sync, the
-   * read/unread toggle, delete and archive, a category assigned or removed, and the
-   * notification preference itself being saved.
+   * announces through {@link #broadcastUnreadCountChanged} — the sync (whose
+   * before/after snapshot is taken through this very method), the read/unread
+   * toggle, delete and archive, a category assigned or removed (for the narrowed
+   * users it can move it for), and the notification preference itself being saved.
    *
    * @param  username the mailbox owner
    * @return          the number of unread INBOX messages the user asked to be told
@@ -3224,6 +3231,25 @@ public class EmailBoxService {
       listenerService.broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, username, null);
     } catch (Exception e) {
       LOG.warn("Error broadcasting unread emails change for user {}", username, e);
+    }
+  }
+
+  /**
+   * The funnel, for a change that only moves the count of a user who narrowed
+   * their notifications to selected categories — a category linked or unlinked.
+   * For everyone else ({@code notifyAllCategories} null or true, the majority) the
+   * badge is the plain inbox count and a category cannot move it, so announcing
+   * would cost an eviction, a frame and a re-fetch for a number that did not change
+   * — once per batch of the AI categorizer on every sync, for every online user.
+   * One settings read per call is the price of knowing, and it is the read
+   * {@link #countUnreadEmails} makes anyway.
+   *
+   * @param username the mailbox owner
+   */
+  private void broadcastUnreadCountChangedIfCategoryScoped(String username) {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting != null && Boolean.FALSE.equals(userEmailSetting.getNotifyAllCategories())) {
+      broadcastUnreadCountChanged(username);
     }
   }
 
@@ -3905,7 +3931,7 @@ public class EmailBoxService {
     // sync. Only when a link actually stuck, for the reason updateEmailReadStatus
     // gives — a no-op must not cost an eviction, a frame and a re-fetch.
     if (linked > 0) {
-      broadcastUnreadCountChanged(username);
+      broadcastUnreadCountChangedIfCategoryScoped(username);
     }
     return linked;
   }
@@ -3940,7 +3966,7 @@ public class EmailBoxService {
     // taken out of an opted-in category stops counting, and one whose last category
     // is removed starts counting again (uncategorized always counts).
     if (unlinked > 0) {
-      broadcastUnreadCountChanged(username);
+      broadcastUnreadCountChangedIfCategoryScoped(username);
     }
     return unlinked;
   }
