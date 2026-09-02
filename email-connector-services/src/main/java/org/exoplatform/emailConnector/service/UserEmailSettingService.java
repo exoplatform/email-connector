@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Properties;
 
 import javax.mail.MessagingException;
@@ -41,6 +42,7 @@ import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
 import org.exoplatform.emailConnector.event.EmailBoxCleanupEvent;
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
+import org.exoplatform.emailConnector.event.EmailNotificationPreferencesChangedEvent;
 import org.exoplatform.emailConnector.model.ContactImportState;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactSyncState;
@@ -191,6 +193,16 @@ public class UserEmailSettingService {
   /**
    * Update only the new-mail notification / default-view preferences of a user's email setting,
    * without reconnecting the mailbox. A no-op when the user has no connected mailbox.
+   * <p>
+   * The notification preference is also what the Application Center badge counts by
+   * ({@code EmailBoxService#countUnreadEmails}: the badge counts the messages that would
+   * have notified), so saving it raises {@link EmailNotificationPreferencesChangedEvent}
+   * — a Spring event rather than a call, because {@code EmailBoxService} already depends
+   * on this service and the reverse edge would be a bean cycle; the glue listener on the
+   * mail side turns it into the unread-count broadcast the badge listens to. Raised only
+   * when the notification half actually changed: the default-view toggle shares this
+   * write and does not move the count, and an unchanged preference must not cost an
+   * eviction, a frame and a re-fetch.
    *
    * @param username the user whose preferences are updated
    * @param notifyAllCategories notify for every new email (null/true) or only for the selected
@@ -207,10 +219,15 @@ public class UserEmailSettingService {
     if (StringUtils.isBlank(userEmailSetting.getEmailConnectorId())) {
       return;
     }
+    boolean notificationPreferenceChanged = !Objects.equals(userEmailSetting.getNotifyAllCategories(), notifyAllCategories)
+        || !Objects.equals(userEmailSetting.getNotifyCategories(), notifyCategories);
     userEmailSetting.setNotifyAllCategories(notifyAllCategories);
     userEmailSetting.setNotifyCategories(notifyCategories);
     userEmailSetting.setDefaultCategoryView(defaultCategoryView);
     setUserEmailSetting(userEmailSetting, username, false);
+    if (notificationPreferenceChanged) {
+      eventPublisher.publishEvent(new EmailNotificationPreferencesChangedEvent(username));
+    }
   }
 
   /**

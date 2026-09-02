@@ -103,6 +103,13 @@ public class EmailBoxStorage {
 
   private static final Log    LOG                          = ExoLogger.getLogger(EmailBoxStorage.class);
 
+  /**
+   * How many unread-row ids go into one category lookup of
+   * {@link #getUnreadInboxCategoryIds}: bounded so the {@code IN} list social builds
+   * from them stays a bounded statement whatever the size of the inbox.
+   */
+  static final int            CATEGORY_LOOKUP_SLICE = 500;
+
   @Autowired
   private EmailBoxDAO         emailBoxDao;
 
@@ -1498,19 +1505,59 @@ public class EmailBoxStorage {
   }
 
   /**
-   * How many of a mailbox's cached messages are unread — the badge.
+   * How many of a mailbox's INBOX messages are unread — the badge, before the
+   * per-category preference {@code EmailBoxService#countUnreadEmails} may apply.
    * <p>
-   * TRASH is left out, and it is the one exclusion whose absence would be noticed by
-   * a user who has never opened a Trash listing: deleting an unread mail is how
-   * people dismiss it, and a badge that kept counting deleted mail would tick back up
-   * at the next sync and stay up, with the inbox showing nothing to account for it.
-   * Deleting an unread message is a way of reading it.
+   * The INBOX alone, and the reason is what the other folders' unread flags mean
+   * here: they mirror the server's {@code \Seen} on every synced folder, and the
+   * client only marks INBOX messages read. An unread SENT copy, an archived message
+   * the user never opened, an ALL_MAIL duplicate — each one would count forever,
+   * with nothing on any screen to clear it. TRASH stays out with the rest, for the
+   * reason it was excluded first: deleting an unread mail is how people dismiss it,
+   * and a badge that kept counting deleted mail would tick back up at the next sync
+   * and stay up, with the inbox showing nothing to account for it. Deleting an
+   * unread message is a way of reading it.
    *
    * @param userId the mailbox owner
-   * @return the number of unread messages the mailbox still holds
+   * @return the number of unread messages in the mailbox's INBOX
    */
   public long countUnreadEmails(String userId) {
-    return emailBoxDao.countUnreadByUserIdExcludingFolder(userId, MailFolder.TRASH);
+    return emailBoxDao.countUnreadByUserIdAndFolder(userId, MailFolder.INBOX);
+  }
+
+  /**
+   * The category links of every unread INBOX message — the rows
+   * {@link #countUnreadEmails} counts, each with the ids of the categories it is
+   * linked to, for a badge that must leave out the categories the user did not
+   * opt into.
+   * <p>
+   * A projection, not a listing: the ids come from one query and the links from one
+   * batched lookup, and nothing here reads a body, an attachment or a sender. The
+   * full read ({@code getEmails}) resolves categories per row on top of all that,
+   * which for a badge recounted on every change would be an N+1 across a schema
+   * boundary for a number nobody is looking at yet. The lookup is asked in slices
+   * so an inbox of thousands of unread messages never becomes one {@code IN} list of
+   * thousands of ids.
+   * <p>
+   * A row with no link is present with an empty list — social leaves unlinked ids
+   * out of its answer rather than answering an empty list, and "uncategorized" is a
+   * case the caller decides on, so it must be able to see it.
+   *
+   * @param userId the mailbox owner
+   * @return the linked category ids by unread INBOX row id, never null
+   */
+  public Map<Long, List<Long>> getUnreadInboxCategoryIds(String userId) {
+    List<Long> unreadIds = emailBoxDao.findUnreadIdsByUserIdAndFolder(userId, MailFolder.INBOX);
+    Map<Long, List<Long>> categoryIdsByEmailId = new LinkedHashMap<>();
+    for (int from = 0; from < unreadIds.size(); from += CATEGORY_LOOKUP_SLICE) {
+      List<Long> slice = unreadIds.subList(from, Math.min(from + CATEGORY_LOOKUP_SLICE, unreadIds.size()));
+      Map<String, List<Long>> linked = categoryLinkService.getLinkedIds(EmailCategoryPlugin.OBJECT_TYPE,
+                                                                        slice.stream().map(String::valueOf).toList());
+      slice.forEach(id -> categoryIdsByEmailId.put(id,
+                                                   linked == null ? List.of()
+                                                                  : linked.getOrDefault(String.valueOf(id), List.of())));
+    }
+    return categoryIdsByEmailId;
   }
 
   /**
