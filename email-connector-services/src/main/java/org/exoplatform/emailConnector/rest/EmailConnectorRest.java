@@ -106,6 +106,109 @@ public class EmailConnectorRest {
     }
   }
 
+  @GetMapping("/sync-period")
+  @Secured("administrators")
+  @Operation(summary = "Gets the administration-wide mailbox sync period", method = "GET", description = "This will get the number of minutes between two automatic mailbox synchronizations")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public int getEmailBoxSyncPeriod(HttpServletRequest request) {
+    return emailConnectorService.getEmailBoxSyncPeriod();
+  }
+
+  @PutMapping("/sync-period")
+  @Secured("administrators")
+  @Operation(summary = "Updates the administration-wide mailbox sync period", method = "PUT", description = "This will update the number of minutes between two automatic mailbox synchronizations and reschedule every connected user's sync job")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateEmailBoxSyncPeriod(HttpServletRequest request,
+                                       @Parameter(description = "The sync period, in minutes", required = true)
+                                       @RequestParam("minutes")
+                                       int minutes) {
+    try {
+      emailConnectorService.saveEmailBoxSyncPeriod(minutes, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  @GetMapping("/trash-sync")
+  @Secured("administrators")
+  @Operation(summary = "Gets whether the Trash folder is synchronized", method = "GET", description = "This will get the administration-wide Trash folder sync switch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public boolean isTrashSyncEnabled(HttpServletRequest request) {
+    return emailConnectorService.isTrashSyncEnabled();
+  }
+
+  @PatchMapping("/trash-sync")
+  @Secured("administrators")
+  @Operation(summary = "Updates whether the Trash folder is synchronized", method = "PATCH", description = "This will update the administration-wide Trash folder sync switch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateTrashSyncEnabled(HttpServletRequest request,
+                                     @Parameter(description = "Whether the Trash folder should be cached", required = true)
+                                     @RequestParam("enabled")
+                                     boolean enabled) {
+    try {
+      emailConnectorService.saveTrashSyncEnabled(enabled, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
+  @GetMapping("/junk-sync")
+  @Secured("administrators")
+  @Operation(summary = "Gets whether the Junk folder is synchronized", method = "GET", description = "This will get the administration-wide Junk folder sync switch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public boolean isJunkSyncEnabled(HttpServletRequest request) {
+    return emailConnectorService.isJunkSyncEnabled();
+  }
+
+  @PatchMapping("/junk-sync")
+  @Secured("administrators")
+  @Operation(summary = "Updates whether the Junk folder is synchronized", method = "PATCH", description = "This will update the administration-wide Junk folder sync switch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateJunkSyncEnabled(HttpServletRequest request,
+                                    @Parameter(description = "Whether the Junk folder should be cached", required = true)
+                                    @RequestParam("enabled")
+                                    boolean enabled) {
+    try {
+      emailConnectorService.saveJunkSyncEnabled(enabled, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
+  @GetMapping("/drafts-server")
+  @Secured("administrators")
+  @Operation(summary = "Gets whether drafts are uploaded to the mail server", method = "GET", description = "This will get the administration-wide server-side drafts switch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public boolean isServerDraftsEnabled(HttpServletRequest request) {
+    return emailConnectorService.isServerDraftsEnabled();
+  }
+
+  @PatchMapping("/drafts-server")
+  @Secured("administrators")
+  @Operation(summary = "Updates whether drafts are uploaded to the mail server", method = "PATCH", description = "This will update the administration-wide server-side drafts switch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateServerDraftsEnabled(HttpServletRequest request,
+                                        @Parameter(description = "Whether drafts should be uploaded to the mail server", required = true)
+                                        @RequestParam("enabled")
+                                        boolean enabled) {
+    try {
+      emailConnectorService.saveServerDraftsEnabled(enabled, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
   @PostMapping()
   @Secured("administrators")
   @Operation(summary = "Creates email connector", method = "POST", description = "This will create email connector")
