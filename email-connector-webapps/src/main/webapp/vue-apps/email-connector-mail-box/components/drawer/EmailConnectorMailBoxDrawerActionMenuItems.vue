@@ -16,30 +16,40 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-list class="pa-0">
-    <!-- Folders: browse the inbox, your sent mail, or archived mail. -->
+    <!-- Folders: browse the inbox, your sent mail, or archived mail. Bounded to its
+         own scroll once the user's own folders push the section past a handful, so
+         CATEGORIES and ACTIONS below stay reachable at a fixed scroll position rather
+         than sliding further down every time one more folder is mirrored. Benjamin's
+         call: contained scrolling (no search field -- overkill at the ten-folder cap;
+         no recency reordering -- a navigation menu wants a stable, memorisable
+         position; no persistent folder rail -- a layout redesign this drawer was not
+         built for), triggered at more than 5 of the user's OWN folders, built-ins
+         never counted toward it since their number is fixed by the mailbox itself. -->
     <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
     </div>
-    <v-list-item
-      v-for="folder in visibleFolders"
-      :key="folder.key"
-      class="ps-2 pe-3 height-auto"
-      @click="switchFolder(folder.key)">
-      <v-sheet
-        class="d-flex"
-        width="28"
-        height="36">
-        <v-icon
-          class="mx-auto"
-          :class="folder.key === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
-          size="16">
-          {{ folder.icon }}
-        </v-icon>
-      </v-sheet>
-      <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
-        {{ folder.label }}
-      </span>
-    </v-list-item>
+    <div :class="{ 'overflow-y-auto': foldersScrollable }" :style="foldersScrollable ? { maxHeight: FOLDERS_MAX_HEIGHT } : null">
+      <v-list-item
+        v-for="folder in visibleFolders"
+        :key="folder.key"
+        class="ps-2 pe-3 height-auto"
+        @click="switchFolder(folder.key)">
+        <v-sheet
+          class="d-flex"
+          width="28"
+          height="36">
+          <v-icon
+            class="mx-auto"
+            :class="folder.key === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
+            size="16">
+            {{ folder.icon }}
+          </v-icon>
+        </v-sheet>
+        <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
+          {{ folder.label }}
+        </span>
+      </v-list-item>
+    </div>
     <!-- Categories: the complete list, Important included — its quick chip
          above the list is a shortcut to the same view this entry opens, so the
          two can never disagree. Each category is a VIEW like the folders above
@@ -144,6 +154,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// Roughly six built-in rows (Inbox, Sent, Archive, Drafts, Spam, Trash -- however many
+// of them this mailbox actually has) plus Benjamin's five, at the 36px row height every
+// entry here uses: enough to show a typical mailbox's full built-in set and the first
+// five custom folders without a scrollbar, ten and eleven scrolling inside their own
+// pane while CATEGORIES and ACTIONS stay put right below it.
+const FOLDERS_MAX_HEIGHT = '396px';
+
 export default {
   props: {
     // The folder currently listed, highlighted in the menu.
@@ -193,6 +210,7 @@ export default {
         JUNK: 'fa-ban',
         TRASH: 'fa-trash',
       },
+      FOLDERS_MAX_HEIGHT,
     };
   },
   computed: {
@@ -209,6 +227,17 @@ export default {
         icon: folder.type === 'CUSTOM' ? 'fa-folder' : (this.icons[folder.key] || 'fa-folder'),
         label: this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
       }));
+    },
+    /**
+     * Whether the FOLDERS section scrolls in its own bounded pane -- Benjamin's
+     * explicit threshold, more than 5 of the user's OWN folders. Built-ins are never
+     * counted: their number is fixed by what the mailbox actually has (at most six),
+     * never grows with use, and is never the reason this section gets long.
+     *
+     * @returns {Boolean} true past five custom folders
+     */
+    foldersScrollable() {
+      return this.availableFolders.filter(folder => folder.type === 'CUSTOM').length > 5;
     },
   },
   methods: {
