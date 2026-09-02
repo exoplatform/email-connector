@@ -141,8 +141,8 @@ public class UserEmailSettingServiceTest {
   /**
    * Pins the fix for the per-user sync period injection: nothing in the platform
    * rejects a client-supplied {@code emailBoxUserSyncPeriod}, and
-   * {@code EmailConnectorUtils#getEmailBoxUserSyncPeriod} prefers a stored
-   * per-user value over the administration-wide one — so a crafted
+   * the period resolver of the time preferred a stored per-user value over the
+   * administration-wide one — so a crafted
    * {@code PUT /user-email-setting} could otherwise schedule a 1-minute sync for
    * that user, undercutting whatever floor an administrator set. The field must
    * never survive into what gets persisted, whatever the caller sent.

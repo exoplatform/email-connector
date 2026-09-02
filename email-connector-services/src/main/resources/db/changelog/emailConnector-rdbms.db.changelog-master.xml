@@ -1138,5 +1138,70 @@
       <dropIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-58">
+    <comment>
+      The synchronization state of every connected mailbox: one row per user, keyed by
+      the username (EXO-89945). It replaces the per-user Quartz job the add-on used to
+      register, and it exists because of what a Quartz job cannot do here: the
+      dispatcher that took the jobs' place is a plain Spring scheduled tick, which
+      fires on every node of a cluster with no coordination of its own.
+
+      SYNC_STARTED_DATE is the claim. A node about to synchronize a mailbox writes it
+      with a conditional UPDATE (null, or older than the stale timeout, else no row is
+      touched), and only the caller whose UPDATE returns one row synchronizes; every
+      other node sees zero and moves on. CLAIMED_BY names that node, so a restarted
+      node can release its own half-done mailboxes on its first tick rather than wait
+      an hour for them to go stale. LAST_SYNC_DATE is the cadence, the START of the
+      last completed run, so a run longer than its period is due again at once, as a
+      period trigger would have had it; null is "never synchronized", which the
+      due-query orders first. LAST_ACTIVITY_DATE is when the owner last opened their
+      mailbox, the one signal the sync tiering reads; null is "unknown".
+
+      A natural key and no sequence: the trap 1.0.0-43, -47, -49 and -55 record does
+      not exist for a table that never generates an id. The index serves the ORDER BY
+      of the due-query, oldest last sync first, on a table of N rows where N is the
+      number of connected mailboxes: a scan of a small table plus a sort, which the
+      index turns into a walk. Table and index share a changeset because nothing here
+      carries a modifySql, the only thing that ever made that pairing unsafe (1.0.0-50
+      tells the story); the MySQL table options live in 1.0.0-59 as literal SQL, for
+      the checksum reason 1.0.0-53 gives. Rolled back explicitly, index then table, so
+      that reverting the add-on leaves nothing behind for the old code to trip on.
+    </comment>
+    <createTable tableName="EMAIL_SYNC_STATE">
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_SYNC_STATE"/>
+      </column>
+      <column name="SYNC_STARTED_DATE" type="TIMESTAMP"/>
+      <column name="CLAIMED_BY" type="VARCHAR(250)"/>
+      <column name="LAST_SYNC_DATE" type="TIMESTAMP"/>
+      <column name="LAST_ACTIVITY_DATE" type="TIMESTAMP"/>
+      <column name="CREATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <createIndex tableName="EMAIL_SYNC_STATE" indexName="IDX_EMAIL_SYNC_STATE_LAST_SYNC">
+      <column name="LAST_SYNC_DATE"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_SYNC_STATE" indexName="IDX_EMAIL_SYNC_STATE_LAST_SYNC"/>
+      <dropTable tableName="EMAIL_SYNC_STATE"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-59" dbms="mysql">
+    <comment>
+      The table options every table of this file gets on MySQL (InnoDB, utf8mb4, the
+      accent-insensitive 0900 collation), applied to EMAIL_SYNC_STATE after the fact
+      as literal SQL, exactly as 1.0.0-56 does for EMAIL_FOLDER and for the same
+      reason: a modifySql is checksummed through the current scope and a literal
+      statement on its text. Nothing here needs a binary collation; USER_ID compares
+      the way it does on every other table.
+
+      The rollback is explicit and empty on purpose: sql has no automatic rollback,
+      and there is nothing to undo, the options being what the server would have
+      chosen anyway and the table itself going with 1.0.0-58's rollback.
+    </comment>
+    <sql>ALTER TABLE EMAIL_SYNC_STATE ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <rollback/>
+  </changeSet>
 
 </databaseChangeLog>
