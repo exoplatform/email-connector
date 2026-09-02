@@ -132,6 +132,23 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="onDraftsServerChange" />
           </v-list-item-action>
         </v-list-item>
+        <v-list-item dense class="px-0 height-auto mt-6">
+          <v-list-item-content class="py-0">
+            <v-list-item-title>
+              {{ $t('emailConnector.admin.syncSettings.customFolders.title') }}
+            </v-list-item-title>
+            <v-list-item-subtitle class="text-wrap text-light-color">
+              {{ $t('emailConnector.admin.syncSettings.customFolders.subtitle') }}
+            </v-list-item-subtitle>
+          </v-list-item-content>
+          <v-list-item-action class="my-0">
+            <v-switch
+              :input-value="customFoldersEnabled"
+              :loading="savingCustomFolders"
+              :disabled="savingCustomFolders"
+              @change="onCustomFoldersChange" />
+          </v-list-item-action>
+        </v-list-item>
       </div>
       <confirm-dialog
         ref="cacheSizeConfirmDialog"
@@ -175,6 +192,8 @@ export default {
       savingJunk: false,
       draftsServerEnabled: true,
       savingDraftsServer: false,
+      customFoldersEnabled: true,
+      savingCustomFolders: false,
     };
   },
   created() {
@@ -230,6 +249,8 @@ export default {
         .then(enabled => this.junkSyncEnabled = enabled);
       this.$emailConnectorAdministrationService.getServerDraftsEnabled()
         .then(enabled => this.draftsServerEnabled = enabled);
+      this.$emailConnectorAdministrationService.getCustomFoldersEnabled()
+        .then(enabled => this.customFoldersEnabled = enabled);
     },
     /**
      * Opens the confirmation before applying a cache size change — every
@@ -324,6 +345,23 @@ export default {
         .then(() => this.draftsServerEnabled = enabled)
         .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
         .finally(() => this.savingDraftsServer = false);
+    },
+    /**
+     * Saves the custom-folders master switch on change. Unlike the other
+     * three switches, this one withdraws the whole feature at once (see the
+     * row's subtitle) — but nothing is deleted, so it still saves on change
+     * rather than behind a confirmation: there is no data loss to warn about,
+     * only a visibility change that reverses cleanly.
+     *
+     * @param {Boolean} enabled the new switch value
+     * @returns {void}
+     */
+    onCustomFoldersChange(enabled) {
+      this.savingCustomFolders = true;
+      this.$emailConnectorAdministrationService.updateCustomFoldersEnabled(enabled)
+        .then(() => this.customFoldersEnabled = enabled)
+        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.syncSettings.error'), 'error'))
+        .finally(() => this.savingCustomFolders = false);
     },
   },
 };

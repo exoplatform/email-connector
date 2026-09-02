@@ -191,6 +191,12 @@ public class EmailConnectorRestTest {
   }
 
   @Test
+  void customFoldersSync() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/custom-folders-sync").with(testAdminUser())).andExpect(status().isOk());
+    mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/custom-folders-sync?enabled=false").with(testAdminUser())).andExpect(status().isOk());
+  }
+
+  @Test
   void getEmailConnectorIllustration() throws Exception {
     when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(mock(EmailConnector.class));
     when(emailConnectorService.getEmailConnectorImageInputStream(anyLong())).thenReturn(mock(InputStream.class));
