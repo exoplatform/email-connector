@@ -322,9 +322,17 @@
     </createIndex>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-25" dbms="oracle,postgresql,hsqldb">
+    <!-- Ids 1.0.0-25 and 1.0.0-26 were swapped after databases had already run them:
+         the sequence was recorded under -26 and the STARRED column under -25. A changeset's
+         identity is filename+id+author, so those databases carry each other's checksum and
+         refuse to start. The schema they produced is identical either way (both changesets did run), so the recorded
+         checksums are accepted rather than the ids renumbered again, which is what
+         caused this. Same remedy as EXO-89513. -->
+    <validCheckSum>ANY</validCheckSum>
     <createSequence sequenceName="SEQ_EMAIL_CONTACT_ID" startValue="1"/>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-26">
+    <validCheckSum>ANY</validCheckSum>
     <!-- Local mirror of the IMAP Flagged flag (the "star"). The flag on the server is the
          source of truth: the sync overwrites this column with whatever the server says, so
          a star set in any other mail client shows here and a star set here is pushed back.
