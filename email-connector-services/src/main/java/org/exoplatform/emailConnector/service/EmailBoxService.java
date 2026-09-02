@@ -372,6 +372,7 @@ public class EmailBoxService {
   private static final Set<String> JUNK_FOLDER_NAMES                                          =
                                                                                               Set.of("junk",
                                                                                                      "junk e-mail",
+                                                                                                     "junk-e-mail",
                                                                                                      "junk email",
                                                                                                      "spam",
                                                                                                      "bulk mail",
@@ -3637,6 +3638,12 @@ public class EmailBoxService {
     Store store = null;
     IMAPFolder source = null;
     boolean expungeOnClose = false;
+    // Loaded once for the Junk destination and written back in the finally, exactly as
+    // applyHiddenFolderAction keeps the name its strict lookup resolved: a move is a
+    // write, not the read resolveCachedFolder's no-save rule protects, and the
+    // alternative is a LIST * per "Mark as spam" once the remembered name goes stale.
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
       store = userEmailSettingService.connect(userEmailSetting);
       source = resolveCachedImapFolder(store, sourceFolder, username);
@@ -3653,12 +3660,11 @@ public class EmailBoxService {
       // have one answer: whatever this files into is what the Junk sync reads back and
       // what every other read then hides, so a loose guess here would not be a message
       // "landing somewhere the user can see it" — it would be a message hidden from
-      // every screen, in a folder the sync never opens. The state loaded for it is not
-      // written back, on the rule resolveCachedFolder states.
+      // every screen, in a folder the sync never opens.
       Folder destination = switch (action) {
         case DELETE -> findTrashFolder(store);
         case ARCHIVE -> findArchiveFolder(store);
-        case JUNK -> resolveJunkFolder(store, loadMailboxSyncState(username));
+        case JUNK -> resolveJunkFolder(store, syncState);
       };
       if (destination == null) {
         if (action != MoveAction.DELETE) {
@@ -3747,6 +3753,7 @@ public class EmailBoxService {
       rows.values().forEach(this::recreateCachedRow);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
+      saveMailboxSyncState(username, syncState, originalSyncStateJson);
       closeFolderQuietly(source, expungeOnClose, sourceFolder, username);
       closeQuietly(null, store, username);
       // Removing mirror rows changes the unread count whenever any of them
