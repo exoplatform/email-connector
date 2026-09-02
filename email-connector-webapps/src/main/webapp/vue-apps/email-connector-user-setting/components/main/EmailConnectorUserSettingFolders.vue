@@ -20,7 +20,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        mirrored copy), so it gets a surface of its own rather than a scroll of switches
        in the middle of the other settings. The row says the one number worth knowing
        at a glance and opens the drawer the way the connector row opens its own. -->
-  <v-list-item>
+  <v-list-item v-if="enabled">
     <v-list-item-content>
       <v-list-item-title class="text-color">
         {{ $t('UserSettings.emailConnector.folders.title') }}
@@ -47,6 +47,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data: () => ({
     loaded: false,
+    // The server's master switch, hot: off, the row is not offered at all rather than
+    // shown over an empty list.
+    enabled: false,
     maxFolders: 0,
     enabledCount: 0,
   }),
@@ -69,6 +72,7 @@ export default {
     readCounter() {
       this.$emailConnectorUserSettingService.getMailFolders(false)
         .then(list => {
+          this.enabled = !!list?.customFoldersEnabled;
           this.maxFolders = list?.maxCustomFolders || 0;
           this.enabledCount = list?.enabledCustomFolders || 0;
           this.loaded = true;

@@ -1004,7 +1004,11 @@
       accent- and case-insensitive collation the second would fail the index and,
       worse, the lookup by name would answer the FIRST folder's row, which the walk
       would then keep renaming. Hence the replace below: binary collation on that
-      column, on MySQL, where the difference exists.
+      column, on MySQL, where the difference exists. utf8mb4_0900_bin rather than
+      utf8mb4_bin because the older one is PAD SPACE (two names differing by a
+      trailing space compare equal) while the 0900 family the table already relies on
+      is NO PAD; it needs MySQL 8.0.17, which the table's own collation already
+      requires in spirit (8.0).
 
       The index is in the next changeset and not here, by the rule 1.0.0-50 paid for:
       modifySql is changeset-scoped, and the MySQL table options appended below would
@@ -1044,7 +1048,7 @@
       <column name="WINDOW_SIZE" type="INT"/>
     </createTable>
     <modifySql dbms="mysql">
-      <replace replace="REMOTE_NAME VARCHAR(500)" with="REMOTE_NAME VARCHAR(500) COLLATE utf8mb4_bin"/>
+      <replace replace="REMOTE_NAME VARCHAR(500)" with="REMOTE_NAME VARCHAR(500) COLLATE utf8mb4_0900_bin"/>
       <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
     </modifySql>
   </changeSet>
