@@ -40,4 +40,10 @@ public class MailFolderList {
   private int                  enabledCustomFolders;
 
   private int                  windowSize;
+
+  // Whether the walk the caller asked for (refresh=true) actually ran to its end. The
+  // list is answered either way -- from the registry as it stands -- and this is what
+  // lets the screen tell "refreshed" from "could not reach your mailbox, here is what
+  // was registered".
+  private boolean              walked;
 }

@@ -104,6 +104,45 @@ public class MasterChangelogTest {
   }
 
   /**
+   * On MySQL, and only there, the registry's REMOTE_NAME keeps its case: generated
+   * through Liquibase's own MySQL dialect (an offline connection, no server), the
+   * CREATE TABLE of 1.0.0-52 carries a binary collation on that one column, while the
+   * table keeps the file's accent-insensitive one. An IMAP folder name is
+   * case-sensitive and a Gmail label is; under the table's collation "Projets" and
+   * "projets" would be one row, and the lookup by name would answer the wrong folder.
+   * The HSQLDB runs of this suite are case-sensitive and can never see that, which is
+   * why this is asserted on the dialect's SQL rather than on a round trip.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theRegistryNameKeepsItsCaseOnMySql() throws Exception {
+    // An offline connection keeps its "already ran" ledger in a CSV; a fresh one means
+    // every changeset is generated, which is what makes 1.0.0-52's CREATE TABLE appear.
+    java.nio.file.Path ledger = java.nio.file.Files.createTempFile("email-connector-mysql", ".csv");
+    java.nio.file.Files.delete(ledger);
+    java.io.StringWriter sql = new java.io.StringWriter();
+    try {
+      liquibase.database.Database mysql = DatabaseFactory.getInstance()
+                                                         .openDatabase("offline:mysql?version=8.0.0&changeLogFile=" + ledger,
+                                                                       null,
+                                                                       null,
+                                                                       null,
+                                                                       new ClassLoaderResourceAccessor());
+      new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), mysql).update(new liquibase.Contexts(), sql);
+    } finally {
+      java.nio.file.Files.deleteIfExists(ledger);
+    }
+    String createFolder = java.util.Arrays.stream(sql.toString().split(";"))
+                                          .filter(statement -> statement.contains("CREATE TABLE EMAIL_FOLDER"))
+                                          .findFirst()
+                                          .orElseThrow(() -> new AssertionError("no CREATE TABLE EMAIL_FOLDER in the MySQL SQL"));
+    assertTrue(createFolder.contains("REMOTE_NAME VARCHAR(500) COLLATE utf8mb4_bin"), createFolder);
+    assertTrue(createFolder.contains("COLLATE utf8mb4_0900_ai_ci"), "the table keeps the file's collation: " + createFolder);
+    assertTrue(!createFolder.contains("DISPLAY_NAME VARCHAR(255) COLLATE"), "only the identifier is binary: " + createFolder);
+  }
+
+  /**
    * Whether a table exists, asked of the JDBC metadata.
    *
    * @param connection the database
