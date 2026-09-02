@@ -215,6 +215,10 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * its id, to look the category links up by. Reading the entities instead would
    * carry every body through the mapper, and the mapper resolves categories per row
    * — the N+1 the listing already refuses to pay ({@code EmailBoxStorage#toListing}).
+   * Unpaged, and bounded all the same: the INBOX mirror never holds more rows than
+   * the configured cache window ({@code EmailConnectorService#getEmailBoxCacheSize},
+   * the sync's own trim), so the list is at most that window, and the storage
+   * slices it before asking social for the links.
    *
    * @param  userId the mailbox owner
    * @param  folder the one folder that counts, always {@code MailFolder.INBOX}
