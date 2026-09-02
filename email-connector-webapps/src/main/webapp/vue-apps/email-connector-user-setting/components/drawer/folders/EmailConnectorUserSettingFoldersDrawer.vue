@@ -93,27 +93,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-action>
         </v-list-item>
       </v-list>
-    </template>
-    <template #footer>
-      <div class="d-flex align-center">
-        <v-btn
-          :loading="refreshing"
-          class="btn"
-          @click="refresh">
-          <v-icon size="14" class="me-2">fas fa-sync</v-icon>
-          {{ $t('UserSettings.emailConnector.folders.refresh') }}
-        </v-btn>
-        <v-spacer />
-        <v-btn
-          class="btn"
-          @click="close">
-          {{ $t('UserSettings.emailConnector.folders.drawer.close') }}
-        </v-btn>
-      </div>
-    </template>
-    <!-- The one write this drawer offers with no undo built for it: the confirmation
-         names the folder, because "delete" here means gone from every client the
-         user owns, not moved to a Trash this screen could offer to restore from. -->
+      <!-- The dialogs live INSIDE the content slot, not beside it. exo-drawer
+           declares only named slots (title, titleIcons, content, footer): anything
+           placed as a direct child of the drawer lands in a default slot it does
+           not render, so it is silently dropped -- no warning, no error, the ref
+           simply never exists and the click does nothing. -->
     <exo-confirm-dialog
       ref="deleteConfirmDialog"
       :title="$t('UserSettings.emailConnector.folders.delete.confirm.title')"
@@ -156,6 +140,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-card-actions>
       </v-card>
     </v-dialog>
+    </template>
+    <template #footer>
+      <div class="d-flex align-center">
+        <v-btn
+          :loading="refreshing"
+          class="btn"
+          @click="refresh">
+          <v-icon size="14" class="me-2">fas fa-sync</v-icon>
+          {{ $t('UserSettings.emailConnector.folders.refresh') }}
+        </v-btn>
+        <v-spacer />
+        <v-btn
+          class="btn"
+          @click="close">
+          {{ $t('UserSettings.emailConnector.folders.drawer.close') }}
+        </v-btn>
+      </div>
+    </template>
+    <!-- The one write this drawer offers with no undo built for it: the confirmation
+         names the folder, because "delete" here means gone from every client the
+         user owns, not moved to a Trash this screen could offer to restore from. -->
   </exo-drawer>
 </template>
 
