@@ -3180,14 +3180,37 @@ public class EmailBoxService {
   }
 
   /**
-   * Counts the unread emails of the locally synced mirror, for the mailbox
-   * owner only.
+   * Counts the messages that would have notified the user — the badge.
+   * <p>
+   * One rule for the badge and the new-mail notification, so the two cannot drift:
+   * an unread INBOX message counts exactly when
+   * {@link #shouldNotifyForNewEmail(Email, UserEmailSetting)} would have let it
+   * notify. In the default case — no preference, or "notify me for all categories"
+   * — that is every unread INBOX message, and the answer is one SQL count with no
+   * category work at all, which is what the majority of users cost. Only a user who
+   * narrowed their notifications to selected categories pays for the projection of
+   * their unread inbox rows and their links, and even they never pay for a listing.
+   * <p>
+   * Sits behind the Application Center's badge cache, so this runs when the count
+   * may have changed rather than on every page: every path that can move it
+   * announces through {@link #broadcastUnreadCountChanged} — the sync, the
+   * read/unread toggle, delete and archive, a category assigned or removed, and the
+   * notification preference itself being saved.
    *
    * @param  username the mailbox owner
-   * @return          the number of unread emails
+   * @return          the number of unread INBOX messages the user asked to be told
+   *                  about
    */
   public long countUnreadEmails(String username) {
-    return emailBoxStorage.countUnreadEmails(username);
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || !Boolean.FALSE.equals(userEmailSetting.getNotifyAllCategories())) {
+      return emailBoxStorage.countUnreadEmails(username);
+    }
+    return emailBoxStorage.getUnreadInboxCategoryIds(username)
+                          .values()
+                          .stream()
+                          .filter(categoryIds -> shouldNotifyForCategories(categoryIds, userEmailSetting))
+                          .count();
   }
 
   /**
@@ -3807,7 +3830,7 @@ public class EmailBoxService {
       closeFolderQuietly(trash, expungeOnClose, TRASH_FOLDER_LABEL, username);
       closeQuietly(null, store, username);
       // No unread-count broadcast, and that is a statement rather than an omission:
-      // the badge already excludes TRASH (EmailBoxStorage#countUnreadEmails), so
+      // the badge counts the INBOX alone (EmailBoxStorage#countUnreadEmails), so
       // neither removing a Trash row nor putting one back changes what it counts. The
       // restored message starts counting when the next INBOX sync imports it, which
       // broadcasts on its own.
@@ -3876,6 +3899,14 @@ public class EmailBoxService {
         throw new IllegalArgumentException("emailConnector.category.notFound");
       }
     }
+    // A category is part of what the badge counts for a user who narrowed their
+    // notifications to selected ones: a message just filed under one of them starts
+    // counting, and without this the badge would show the old number until the next
+    // sync. Only when a link actually stuck, for the reason updateEmailReadStatus
+    // gives — a no-op must not cost an eviction, a frame and a re-fetch.
+    if (linked > 0) {
+      broadcastUnreadCountChanged(username);
+    }
     return linked;
   }
 
@@ -3904,6 +3935,12 @@ public class EmailBoxService {
       } catch (ObjectNotFoundException e) {
         // Idempotent: the email was not linked to this category, nothing to remove.
       }
+    }
+    // The other direction of the same rule linkEmailsToCategory states: a message
+    // taken out of an opted-in category stops counting, and one whose last category
+    // is removed starts counting again (uncategorized always counts).
+    if (unlinked > 0) {
+      broadcastUnreadCountChanged(username);
     }
     return unlinked;
   }
@@ -9295,19 +9332,38 @@ public class EmailBoxService {
    *       auto-categorization is disabled, so emails simply have no category links).</li>
    * </ul>
    *
+   * The same rule decides what the badge counts ({@link #countUnreadEmails}): a
+   * message the notification would have suppressed is a message the badge leaves
+   * out, and the two read one predicate so they cannot disagree.
+   *
    * @param email the freshly-synced inbox email; its {@code categoryIds} are the linked
    *          category ids
    * @param userEmailSetting the mailbox owner's settings (may be {@code null})
    * @return {@code true} to fire the notification, {@code false} to suppress it
    */
   boolean shouldNotifyForNewEmail(Email email, UserEmailSetting userEmailSetting) {
+    return shouldNotifyForCategories(email.getCategoryIds(), userEmailSetting);
+  }
+
+  /**
+   * The predicate behind {@link #shouldNotifyForNewEmail(Email, UserEmailSetting)},
+   * on the category ids alone — what the badge's projection has of a message, and
+   * all the rule ever reads of one. Same decision, same fallbacks; see the caller's
+   * documentation for what each branch protects.
+   *
+   * @param emailCategoryIds the ids of the categories the message is linked to, may
+   *          be null or empty (uncategorized)
+   * @param userEmailSetting the mailbox owner's settings (may be {@code null})
+   * @return {@code true} when the message notifies and counts, {@code false} when
+   *         the user's preference leaves it out
+   */
+  boolean shouldNotifyForCategories(List<Long> emailCategoryIds, UserEmailSetting userEmailSetting) {
     // Default / "notify for everything": notifyAllCategories null or true.
     if (userEmailSetting == null || !Boolean.FALSE.equals(userEmailSetting.getNotifyAllCategories())) {
       return true;
     }
     // Fallback — never silently drop when we cannot filter by category: an uncategorized
     // email (also the AI-off case) always notifies.
-    List<Long> emailCategoryIds = email.getCategoryIds();
     if (CollectionUtils.isEmpty(emailCategoryIds)) {
       return true;
     }
