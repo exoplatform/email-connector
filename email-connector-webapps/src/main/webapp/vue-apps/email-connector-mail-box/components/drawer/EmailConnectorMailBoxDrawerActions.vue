@@ -65,18 +65,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
       </v-btn>
       <v-btn
-        v-if="canMutateSelection"
-        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
-        @click="deleteEmails()"
-        icon>
-        <v-icon size="20" class="error--text">fa-trash</v-icon>
-      </v-btn>
-      <v-btn
         v-if="canMarkSelectionAsJunk"
         :title="$t('emailConnector.mailBox.list.drawer.detail.markJunk.label')"
         @click="markAsJunk()"
         icon>
         <v-icon size="20" class="icon-default-color">fa-ban</v-icon>
+      </v-btn>
+      <v-btn
+        v-if="canMutateSelection"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+        @click="deleteEmails()"
+        icon>
+        <v-icon size="20" class="error--text">fa-trash</v-icon>
       </v-btn>
       <v-btn
         v-if="canApplyJunkActions"
