@@ -137,6 +137,74 @@ public class EmailFolderService {
   /** The message code an unknown folder id or key carries -- a 400, never INBOX. */
   public static final String      UNKNOWN_FOLDER_MESSAGE             = "emailConnector.folder.unknown";
 
+  /**
+   * The longest name a user may type for a folder they create or rename to. Bound by
+   * {@code DISPLAY_NAME VARCHAR(255)} rather than {@code REMOTE_NAME VARCHAR(500)}:
+   * for a folder this add-on writes (create) or moves within its own parent (rename),
+   * the remote name IS the display name -- there is no server-supplied path to make
+   * the two diverge the way discovery's {@code StringUtils.abbreviate(255)} allows --
+   * so the tighter of the two columns is the real limit, and typing past it is refused
+   * rather than silently shortened the way a discovered name is.
+   */
+  public static final int         MAX_FOLDER_NAME_LENGTH             = 255;
+
+  /** The message code a blank or whitespace-only typed name carries. */
+  public static final String      FOLDER_NAME_BLANK_MESSAGE          = "emailConnector.folder.name.blank";
+
+  /** The message code a typed name past {@link #MAX_FOLDER_NAME_LENGTH} carries. */
+  public static final String      FOLDER_NAME_TOO_LONG_MESSAGE       = "emailConnector.folder.name.tooLong";
+
+  /**
+   * The message code a typed name carrying the server's own hierarchy delimiter
+   * carries -- creating or renaming into a NESTED folder is refused in v1 rather than
+   * supported half-way (no parent picker, no path typing): every existing custom
+   * folder, nested ones included, is still shown, opted in and moved to and from; what
+   * is refused is a user typing the separator themselves, which would either silently
+   * create a sub-folder under whatever the last segment before it names (if it
+   * exists) or be refused by the server for a segment that does not.
+   */
+  public static final String      FOLDER_NAME_NESTED_MESSAGE         = "emailConnector.folder.name.nested";
+
+  /**
+   * The message code a typed name reserved for a provider's own namespace or for one
+   * of the seven built-in roles carries. Gmail's whole special-use tree lives under
+   * {@code [Gmail]/} -- a name starting with {@code [} is refused outright, the same
+   * boundary {@link #classify} already draws by dropping {@code \Noselect} parents.
+   * A name that EQUALS one of the strict built-in name sets ({@link #DRAFTS_FOLDER_NAMES},
+   * {@link #TRASH_FOLDER_NAMES}, {@link #JUNK_FOLDER_NAMES}, {@code inbox},
+   * {@code archive}/{@code archives}/{@code archivage}) is refused too: created today,
+   * such a name would sit as a plain custom row until the next walk, and
+   * {@link #classify}'s attribute-then-name order would then hand the role to THIS
+   * folder if the mailbox has no other candidate for it -- taking it out of
+   * {@code customs()}, so {@link #reconcileDiscovered} would mark the registry row
+   * missing on a mailbox that never lost anything. The loose Sent/Archive/All-Mail
+   * {@code contains} rules are deliberately NOT enforced here (see {@link #matchesByName}):
+   * blocking every name containing "sent" would refuse "Consent forms" for a risk that
+   * is, unlike the strict sets, a pre-existing and accepted fragility of those two
+   * rules, not one this feature introduces.
+   */
+  public static final String      FOLDER_NAME_RESERVED_MESSAGE       = "emailConnector.folder.name.reserved";
+
+  /** The message code a name already registered for this user (case-sensitively) carries. */
+  public static final String      FOLDER_NAME_DUPLICATE_MESSAGE      = "emailConnector.folder.name.duplicate";
+
+  /** The message code a delete refused because the folder still holds mail carries. */
+  public static final String      FOLDER_NOT_EMPTY_MESSAGE           = "emailConnector.folder.notEmpty";
+
+  /** The message code a server-refused CREATE carries. */
+  public static final String      FOLDER_CREATE_FAILED_MESSAGE       = "emailConnector.folder.createFailed";
+
+  /** The message code a server-refused RENAME carries. */
+  public static final String      FOLDER_RENAME_FAILED_MESSAGE       = "emailConnector.folder.renameFailed";
+
+  /** The message code a server-refused DELETE carries. */
+  public static final String      FOLDER_DELETE_FAILED_MESSAGE       = "emailConnector.folder.deleteFailed";
+
+  // The reserved-namespace bracket every big provider parks its own special-use tree
+  // under (Gmail's [Gmail]/Spam, [Gmail]/Trash, ...). A folder the user types starting
+  // with it is refused before any server round-trip.
+  static final String             RESERVED_NAMESPACE_PREFIX          = "[";
+
   // The RFC 6154 SPECIAL-USE attributes, one per built-in role. The server saying which
   // folder plays a role beats any name we could guess, which is why every role is
   // assigned by attribute across the whole listing before any name is looked at.
@@ -234,6 +302,31 @@ public class EmailFolderService {
                                                          MailFolder.TRASH,
                                                          MailFolder.JUNK,
                                                          MailFolder.ALL_MAIL);
+
+  // The strict built-in names a typed folder name is refused against -- see
+  // FOLDER_NAME_RESERVED_MESSAGE for why only the STRICT sets (last-segment equality)
+  // are enforced here and not the loose Sent/Archive/All-Mail "contains" rules.
+  private static final Set<String>  RESERVED_EXACT_NAMES              =
+                                                 buildReservedExactNames();
+
+  /**
+   * The strict built-in name sets, flattened into one lowercase set, plus the three
+   * names {@link #classify} matches by full-name equality: {@code inbox} and the
+   * Archive spread ({@code archive}, {@code archives}, {@code archivage}).
+   *
+   * @return the reserved names, lowercase
+   */
+  private static Set<String> buildReservedExactNames() {
+    Set<String> names = new HashSet<>();
+    names.add("inbox");
+    names.add("archive");
+    names.add("archives");
+    names.add("archivage");
+    names.addAll(DRAFTS_FOLDER_NAMES);
+    names.addAll(TRASH_FOLDER_NAMES);
+    names.addAll(JUNK_FOLDER_NAMES);
+    return Set.copyOf(names);
+  }
 
   @Autowired
   private EmailFolderStorage      emailFolderStorage;
@@ -500,6 +593,190 @@ public class EmailFolderService {
     }
     emailFolderStorage.updateSyncEnabled(username, id, enabled, new Date());
     return getFolder(username, id);
+  }
+
+  /**
+   * The name checks that need nothing from the server: blank, too long, or reserved
+   * for a provider's own namespace or one of the built-in roles. What DOES need the
+   * server -- whether the name embeds the mailbox's actual hierarchy delimiter -- is
+   * {@link #checkNotNested}, asked separately because a rename already knows its
+   * folder's delimiter while a create must first connect to learn it; asking here
+   * would make every doomed name (blank, too long) pay for a connection it does not
+   * need.
+   *
+   * @param name the name as typed
+   * @return the name, trimmed
+   * @throws IllegalArgumentException if the name is blank, longer than
+   *           {@link #MAX_FOLDER_NAME_LENGTH}, starts with {@value
+   *           #RESERVED_NAMESPACE_PREFIX}, or equals one of the strict built-in names
+   *           ({@link #FOLDER_NAME_RESERVED_MESSAGE})
+   */
+  public String validateFolderName(String name) {
+    String trimmed = name == null ? "" : name.trim();
+    if (trimmed.isEmpty()) {
+      throw new IllegalArgumentException(FOLDER_NAME_BLANK_MESSAGE);
+    }
+    if (trimmed.length() > MAX_FOLDER_NAME_LENGTH) {
+      throw new IllegalArgumentException(FOLDER_NAME_TOO_LONG_MESSAGE);
+    }
+    if (trimmed.startsWith(RESERVED_NAMESPACE_PREFIX) || RESERVED_EXACT_NAMES.contains(trimmed.toLowerCase())) {
+      throw new IllegalArgumentException(FOLDER_NAME_RESERVED_MESSAGE);
+    }
+    return trimmed;
+  }
+
+  /**
+   * Refuses a name that embeds the mailbox's own hierarchy delimiter -- the one check
+   * {@link #validateFolderName} cannot make on its own, since the delimiter is a fact
+   * of the connected server (or, for a rename, of the folder's own registry row), not
+   * of the typed string. A blank delimiter (a flat namespace, or a folder with none
+   * recorded) admits every name: there is no separator to embed.
+   *
+   * @param name the name, already trimmed by {@link #validateFolderName}
+   * @param delimiter the mailbox's hierarchy separator, or null/blank on a flat
+   *          namespace
+   * @throws IllegalArgumentException if the name contains the delimiter
+   *           ({@link #FOLDER_NAME_NESTED_MESSAGE})
+   */
+  public void checkNotNested(String name, String delimiter) {
+    if (StringUtils.isNotBlank(delimiter) && name.contains(delimiter)) {
+      throw new IllegalArgumentException(FOLDER_NAME_NESTED_MESSAGE);
+    }
+  }
+
+  /**
+   * Refuses a name already registered for this user, case-sensitively -- the registry's
+   * own unique index is {@code (USER_ID, REMOTE_NAME)} on a case-sensitive collation
+   * (see {@code EmailFolderEntity}), because "Projets" and "projets" are two different
+   * IMAP folders. A pre-check rather than letting the index alone answer: it turns the
+   * database's constraint violation into the one message code the screen knows how to
+   * show, before any server round-trip is spent on a name that cannot be registered.
+   *
+   * @param username the mailbox owner
+   * @param remoteName the full name the create or rename would write
+   * @param excludingId a folder id to exempt (a rename checking against its own row
+   *          keeping its current name), or null
+   * @throws IllegalArgumentException if another row of this user already carries that
+   *           name ({@link #FOLDER_NAME_DUPLICATE_MESSAGE})
+   */
+  public void checkNameAvailable(String username, String remoteName, Long excludingId) {
+    EmailFolder existing = emailFolderStorage.getFolderByRemoteName(username, remoteName);
+    if (existing != null && (excludingId == null || !existing.getId().equals(excludingId))) {
+      throw new IllegalArgumentException(FOLDER_NAME_DUPLICATE_MESSAGE);
+    }
+  }
+
+  /**
+   * Registers the row for a folder this add-on just created on the server -- the
+   * explicit-act counterpart of {@link #reconcileDiscovered}'s upsert, deliberately
+   * NOT built on top of it: {@code reconcileDiscovered} marks every registered folder
+   * NOT in the batch it is handed as missing, which is correct for a WHOLE walk and
+   * would be wrong here, where the batch is exactly the one folder just made -- every
+   * other one of the user's folders would be marked missing by a create. So a create
+   * writes its own row directly, through the same {@link EmailFolderStorage#createFolder}
+   * every discovered folder is first written by (opt-in off, whatever the caller
+   * asks -- see its own javadoc), and leaves every other row untouched. The next real
+   * walk, whenever it runs, finds this folder by its remote name and upserts it like
+   * any other -- it is never registered twice, and it is never marked missing before
+   * that walk has a chance to see it.
+   *
+   * @param username the mailbox owner
+   * @param remoteName the folder's full name on the server, as created (top-level, so
+   *          this is also its display name in v1 -- see {@link #FOLDER_NAME_NESTED_MESSAGE})
+   * @param delimiter the mailbox's hierarchy separator, for path rendering later
+   * @return the registered row, opt-in off
+   */
+  public EmailFolder registerCreatedFolder(String username, String remoteName, String delimiter) {
+    EmailFolder folder = new EmailFolder();
+    folder.setUserId(username);
+    folder.setRemoteName(remoteName);
+    folder.setDisplayName(remoteName);
+    folder.setDelimiter(delimiter);
+    folder.setType(MailFolderView.TYPE_CUSTOM);
+    Date now = new Date();
+    folder.setDiscoveredDate(now);
+    folder.setLastSeenDate(now);
+    return emailFolderStorage.createFolder(folder);
+  }
+
+  /**
+   * Opts a just-created folder in, unless the cap is already reached -- the answer to
+   * "does a created folder auto-opt-in, and what happens at the cap": yes, because the
+   * user made it to use it, and a folder created then left invisible in every listing
+   * until a second, separate toggle is a worse first experience than the one
+   * {@code +} promises; but the cap is never bypassed for it, so at the cap the folder
+   * is left registered and unmirrored -- on the server, in the settings list, ready to
+   * opt in the moment a slot frees -- rather than either silently exceeding the limit
+   * or refusing a create that already succeeded on the mail server.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id of the just-created row
+   * @return true when the folder is now mirrored, false when the cap refused it
+   */
+  public boolean tryAutoEnable(String username, long id) {
+    try {
+      setSyncEnabled(username, id, true);
+      return true;
+    } catch (IllegalArgumentException capReached) {
+      return false;
+    }
+  }
+
+  /**
+   * Renames the registry row of a folder this add-on just renamed on the server --
+   * called only AFTER the server confirms the rename, and updating the SAME row rather
+   * than deleting and re-creating one: an in-app rename is known to have happened
+   * (unlike a server-side one, which discovery can only read as "old folder missing,
+   * new folder discovered" -- Design &amp; Plan assumption A-5), so the row's id, and
+   * with it the {@code CUSTOM:<id>} key every one of its mirrored {@code EMAIL_BOX}
+   * rows carries, survives the rename untouched. Every read of those rows is keyed by
+   * id, never by {@code REMOTE_NAME} (verified across this module: the only other
+   * readers of {@code REMOTE_NAME} open the live IMAP folder, never a cached row), so
+   * a mirrored message stays exactly where it was before the rename, in the same
+   * conversation, in the same search results.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @param remoteName the folder's new full name on the server
+   * @param displayName the new display name (the new last segment)
+   * @return the row as it now stands
+   */
+  public EmailFolder renameFolder(String username, long id, String remoteName, String displayName) {
+    return emailFolderStorage.renameFolder(username, id, remoteName, displayName);
+  }
+
+  /**
+   * Drops one registered folder -- the explicit-delete counterpart of
+   * {@link #deleteFolders}, which drops every row of a mailbox wipe. The mirrored rows
+   * this folder kept are NOT deleted here, for the reason {@link #reconcileDiscovered}
+   * gives: the registry cannot reach them, and the caller (which can) is expected to
+   * have cleared them first.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   */
+  public void removeFolder(String username, long id) {
+    emailFolderStorage.deleteFolder(username, id);
+  }
+
+  /**
+   * The parent prefix of a full name -- everything up to and including the last
+   * occurrence of the delimiter, or the empty string on a top-level folder or a flat
+   * namespace. What a rename adds the new last segment onto, so a rename can only ever
+   * change a folder's own name, never move it to a different parent (v1 does not offer
+   * a parent picker -- see {@link #FOLDER_NAME_NESTED_MESSAGE}).
+   *
+   * @param fullName the folder's current full name
+   * @param delimiter the mailbox's hierarchy separator, or null/blank on a flat
+   *          namespace or a top-level folder
+   * @return the prefix, possibly empty, never null
+   */
+  static String parentPrefix(String fullName, String delimiter) {
+    if (StringUtils.isBlank(fullName) || StringUtils.isBlank(delimiter)) {
+      return "";
+    }
+    int cut = fullName.lastIndexOf(delimiter);
+    return cut < 0 ? "" : fullName.substring(0, cut + delimiter.length());
   }
 
   /**

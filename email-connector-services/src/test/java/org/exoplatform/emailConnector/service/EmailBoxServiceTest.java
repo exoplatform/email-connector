@@ -3783,6 +3783,27 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A connected mailbox with nothing stubbed about its folder LISTING -- the create
+   * tests never walk the list (see {@code EmailBoxService#createCustomFolder}), so
+   * stubbing {@code listSubscribed}/{@code list} the way {@link #givenAMailboxListing}
+   * does would be dead stubbing under strict Mockito.
+   *
+   * @return the mocked default (root) folder
+   */
+  @SneakyThrows
+  private Folder givenAConnectedDefaultFolder() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    return defaultFolder;
+  }
+
+  /**
    * A mailbox whose single subscribed folder is its Trash, announced by the given
    * attributes and name.
    *
@@ -8618,9 +8639,13 @@ public class EmailBoxServiceTest {
     for (org.junit.jupiter.api.function.Executable refused : List.<org.junit.jupiter.api.function.Executable> of(
         () -> emailBoxService.setCustomFolderSync(TEST_USER, 5L, true),
         () -> emailBoxService.synchronizeCustomFolder(TEST_USER, 5L),
-        () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.INBOX, "CUSTOM:5"))) {
+        () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.INBOX, "CUSTOM:5"),
+        () -> emailBoxService.createCustomFolder(TEST_USER, "Invoices"),
+        () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "Invoices"),
+        () -> emailBoxService.deleteCustomFolder(TEST_USER, 5L))) {
       assertEquals("emailConnector.folder.disabled", assertThrows(IllegalArgumentException.class, refused).getMessage());
     }
+    verify(userEmailSettingService, never()).connect(any());
     // A folder already mirrored is still listed from the cache, without a refresh.
     emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
     verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:5");
@@ -8629,6 +8654,446 @@ public class EmailBoxServiceTest {
     MailFolderList list = emailBoxService.getFolders(TEST_USER, true);
     assertFalse(list.isCustomFoldersEnabled());
     assertFalse(list.isWalked());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Create, rename and delete a custom folder (EXO-89943)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The happy path: created on the server (top-level, under the account's own root),
+   * registered directly (never through a walk -- which would mark every OTHER custom
+   * folder of this user missing), and opted in on the spot since the cap has room.
+   */
+  @Test
+  @SneakyThrows
+  void createCustomFolderCreatesOnTheServerRegistersAndAutoOptsIn() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    Folder defaultFolder = givenAConnectedDefaultFolder();
+    when(defaultFolder.getSeparator()).thenReturn('/');
+    IMAPFolder created = mock(IMAPFolder.class);
+    when(defaultFolder.getFolder("Invoices")).thenReturn(created);
+    when(created.exists()).thenReturn(false);
+    when(created.create(Folder.HOLDS_MESSAGES)).thenReturn(true);
+    EmailFolder stored = registeredFolder(9L, "Invoices", false);
+    EmailFolder enabled = registeredFolder(9L, "Invoices", true);
+    when(emailFolderStorage.createFolder(any())).thenReturn(stored);
+    when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(stored, enabled);
+    when(emailFolderStorage.countEnabledFolders(TEST_USER)).thenReturn(0L);
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    MailFolderView view = emailBoxService.createCustomFolder(TEST_USER, "Invoices");
+
+    verify(created).create(Folder.HOLDS_MESSAGES);
+    ArgumentCaptor<EmailFolder> registered = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage).createFolder(registered.capture());
+    assertEquals("Invoices", registered.getValue().getRemoteName());
+    assertEquals("Invoices", registered.getValue().getDisplayName());
+    verify(emailFolderStorage).updateSyncEnabled(eq(TEST_USER), eq(9L), eq(true), any(Date.class));
+    assertTrue(view.isSyncEnabled());
+    // Registered directly: never through a full walk, which would have read every
+    // other registered folder of this user and marked the ones it did not just see.
+    verify(emailFolderStorage, never()).getFolders(any());
+    verify(emailFolderStorage, never()).markMissing(any(), anyLong());
+    verify(defaultFolder, never()).listSubscribed(any());
+  }
+
+  /**
+   * The checks that need nothing from the server are made before any connection is
+   * opened: a blank name, one past the 255-character bound, and one reserved either
+   * for a provider's own namespace ({@code [Gmail]/...}) or for a built-in role.
+   */
+  @Test
+  void createCustomFolderRefusesInvalidNamesBeforeAnyConnection() throws Exception {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+
+    assertEquals(EmailFolderService.FOLDER_NAME_BLANK_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "   "))
+                                                                                                                        .getMessage());
+    assertEquals(EmailFolderService.FOLDER_NAME_TOO_LONG_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.createCustomFolder(TEST_USER, "x".repeat(256))).getMessage());
+    assertEquals(EmailFolderService.FOLDER_NAME_RESERVED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.createCustomFolder(TEST_USER, "[Gmail]/Custom")).getMessage());
+    assertEquals(EmailFolderService.FOLDER_NAME_RESERVED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Trash"))
+                                                                                                                            .getMessage());
+    verify(userEmailSettingService, never()).connect(any());
+  }
+
+  /**
+   * A name embedding the mailbox's OWN hierarchy delimiter is refused -- v1 offers no
+   * parent picker, so a create is always top-level. This check needs the live
+   * separator, so it happens after connecting but before anything is created.
+   */
+  @Test
+  @SneakyThrows
+  void createCustomFolderRefusesANameEmbeddingTheMailboxsDelimiter() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    Folder defaultFolder = givenAConnectedDefaultFolder();
+    when(defaultFolder.getSeparator()).thenReturn('/');
+
+    assertEquals(EmailFolderService.FOLDER_NAME_NESTED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.createCustomFolder(TEST_USER, "Customers/Acme")).getMessage());
+    verify(defaultFolder, never()).getFolder(anyString());
+    verify(emailFolderStorage, never()).createFolder(any());
+  }
+
+  /**
+   * A name already registered for this user is refused, case-sensitively: the
+   * duplicate check is a pre-check against the registry, so the doomed CREATE never
+   * reaches the server; a name differing only by case is a different folder.
+   */
+  @Test
+  @SneakyThrows
+  void createCustomFolderRefusesADuplicateNameCaseSensitively() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    Folder defaultFolder = givenAConnectedDefaultFolder();
+    when(defaultFolder.getSeparator()).thenReturn('/');
+    when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Factures")).thenReturn(registeredFolder(5L, "Factures", true));
+
+    assertEquals(EmailFolderService.FOLDER_NAME_DUPLICATE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Factures"))
+                                                                                                                               .getMessage());
+    verify(defaultFolder, never()).getFolder(anyString());
+
+    // "factures" is a DIFFERENT name on a case-sensitive collation: not blocked by
+    // the "Factures" row above.
+    IMAPFolder created = mock(IMAPFolder.class);
+    when(defaultFolder.getFolder("factures")).thenReturn(created);
+    when(created.exists()).thenReturn(false);
+    when(created.create(Folder.HOLDS_MESSAGES)).thenReturn(true);
+    EmailFolder stored = registeredFolder(11L, "factures", false);
+    when(emailFolderStorage.createFolder(any())).thenReturn(stored);
+    when(emailFolderStorage.getFolder(TEST_USER, 11L)).thenReturn(stored);
+    when(emailFolderStorage.countEnabledFolders(TEST_USER)).thenReturn(0L);
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    assertDoesNotThrow(() -> emailBoxService.createCustomFolder(TEST_USER, "factures"));
+  }
+
+  /**
+   * At the cap, the folder is still created on the server (a create the user
+   * explicitly asked for is not refused for a registry limit that has nothing to do
+   * with the mail server), but left unmirrored: the cap is never bypassed.
+   */
+  @Test
+  @SneakyThrows
+  void createCustomFolderAtTheCapIsCreatedButLeftUnmirrored() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    Folder defaultFolder = givenAConnectedDefaultFolder();
+    when(defaultFolder.getSeparator()).thenReturn('/');
+    IMAPFolder created = mock(IMAPFolder.class);
+    when(defaultFolder.getFolder("Invoices")).thenReturn(created);
+    when(created.exists()).thenReturn(false);
+    when(created.create(Folder.HOLDS_MESSAGES)).thenReturn(true);
+    EmailFolder stored = registeredFolder(9L, "Invoices", false);
+    when(emailFolderStorage.createFolder(any())).thenReturn(stored);
+    when(emailFolderStorage.getFolder(TEST_USER, 9L)).thenReturn(stored);
+    when(emailFolderStorage.countEnabledFolders(TEST_USER)).thenReturn(10L);
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    MailFolderView view = emailBoxService.createCustomFolder(TEST_USER, "Invoices");
+
+    verify(created).create(Folder.HOLDS_MESSAGES);
+    verify(emailFolderStorage, never()).updateSyncEnabled(anyString(), anyLong(), anyBoolean(), any());
+    assertFalse(view.isSyncEnabled(), "created on the server, but the cap keeps it unmirrored");
+  }
+
+  /**
+   * The server's own refusal of the CREATE -- {@code false}, or a thrown
+   * {@code MessagingException} -- is translated to one message code, and nothing is
+   * registered for a folder the server never actually made.
+   */
+  @Test
+  @SneakyThrows
+  void createCustomFolderTranslatesAServerRefusal() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    Folder defaultFolder = givenAConnectedDefaultFolder();
+    when(defaultFolder.getSeparator()).thenReturn('/');
+    IMAPFolder created = mock(IMAPFolder.class);
+    when(defaultFolder.getFolder("Invoices")).thenReturn(created);
+    when(created.exists()).thenReturn(false);
+    when(created.create(Folder.HOLDS_MESSAGES)).thenReturn(false);
+
+    assertEquals(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Invoices"))
+                                                                                                                               .getMessage());
+    verify(emailFolderStorage, never()).createFolder(any());
+
+    when(defaultFolder.getFolder("Invoices")).thenThrow(new MessagingException("refused"));
+    assertEquals(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Invoices"))
+                                                                                                                               .getMessage());
+  }
+
+  /**
+   * A rename updates the SAME registry row -- id and all -- rather than deleting and
+   * re-creating one: {@code CUSTOM:5} keeps naming this folder's mirrored rows, so the
+   * rename never has to touch them. This is the rename trap the task calls out: cached
+   * rows are addressed by the row's id, never by its remote name.
+   */
+  @Test
+  @SneakyThrows
+  void renameCustomFolderUpdatesTheRegistryRowInPlaceAndLeavesMirroredRowsAlone() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Invoices")).thenReturn(null);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(store.getFolder("Factures")).thenReturn(remote);
+    Folder target = mock(Folder.class);
+    when(store.getFolder("Invoices")).thenReturn(target);
+    when(target.exists()).thenReturn(false);
+    when(remote.renameTo(target)).thenReturn(true);
+    when(emailFolderStorage.renameFolder(TEST_USER, 5L, "Invoices", "Invoices")).thenReturn(registeredFolder(5L, "Invoices", true));
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    MailFolderView view = emailBoxService.renameCustomFolder(TEST_USER, 5L, "Invoices");
+
+    verify(remote).renameTo(target);
+    verify(emailFolderStorage).renameFolder(TEST_USER, 5L, "Invoices", "Invoices");
+    verify(emailFolderStorage, never()).createFolder(any());
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+    verify(emailBoxStorage, never()).getEmails(eq(TEST_USER), eq("CUSTOM:5"));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(any());
+    assertEquals("Invoices", view.getDisplayName());
+  }
+
+  /**
+   * A rename changes only the folder's own last segment; its parent is untouched.
+   */
+  @Test
+  @SneakyThrows
+  void renameCustomFolderKeepsTheParentAndOnlyChangesTheLastSegment() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Customers/Acme", true));
+    when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Customers/AcmeCorp")).thenReturn(null);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme");
+    when(store.getFolder("Customers/Acme")).thenReturn(remote);
+    Folder target = mock(Folder.class);
+    when(store.getFolder("Customers/AcmeCorp")).thenReturn(target);
+    when(target.exists()).thenReturn(false);
+    when(remote.renameTo(target)).thenReturn(true);
+    when(emailFolderStorage.renameFolder(TEST_USER, 6L, "Customers/AcmeCorp", "AcmeCorp")).thenReturn(registeredFolder(6L,
+                                                                                                                       "Customers/AcmeCorp",
+                                                                                                                       true));
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    emailBoxService.renameCustomFolder(TEST_USER, 6L, "AcmeCorp");
+
+    verify(emailFolderStorage).renameFolder(TEST_USER, 6L, "Customers/AcmeCorp", "AcmeCorp");
+  }
+
+  /**
+   * Typing the folder's own current name back is a no-op: nothing is sent to the
+   * server, and the registry is not touched.
+   */
+  @Test
+  void renameCustomFolderIsANoOpWhenTheNameDoesNotChange() throws Exception {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    emailBoxService.renameCustomFolder(TEST_USER, 5L, "Factures");
+
+    verify(userEmailSettingService, never()).connect(any());
+    verify(emailFolderStorage, never()).renameFolder(anyString(), anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * A rename onto a name already used by another of this user's folders is refused,
+   * case-sensitively, before any connection is opened.
+   */
+  @Test
+  void renameCustomFolderRefusesADuplicateNameCaseSensitively() throws Exception {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Projets")).thenReturn(registeredFolder(6L, "Projets", true));
+
+    assertEquals(EmailFolderService.FOLDER_NAME_DUPLICATE_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "Projets"))
+                                                                                                                                  .getMessage());
+    verify(userEmailSettingService, never()).connect(any());
+  }
+
+  /**
+   * A rename onto a name embedding the folder's own hierarchy delimiter is refused --
+   * v1 offers no parent picker, so a rename never moves a folder to a different parent.
+   */
+  @Test
+  void renameCustomFolderRefusesANameEmbeddingTheDelimiter() throws Exception {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+
+    assertEquals(EmailFolderService.FOLDER_NAME_NESTED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "New/Name"))
+                                                                                                                                   .getMessage());
+    verify(userEmailSettingService, never()).connect(any());
+  }
+
+  /**
+   * The server's own refusal of the RENAME is translated to one message code, and the
+   * registry row is left exactly as it was.
+   */
+  @Test
+  @SneakyThrows
+  void renameCustomFolderTranslatesAServerRefusal() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(store.getFolder("Factures")).thenReturn(remote);
+    Folder target = mock(Folder.class);
+    when(store.getFolder("Invoices")).thenReturn(target);
+    when(target.exists()).thenReturn(false);
+    when(remote.renameTo(target)).thenReturn(false);
+
+    assertEquals(EmailFolderService.FOLDER_RENAME_FAILED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "Invoices"))
+                                                                                                                                   .getMessage());
+    verify(emailFolderStorage, never()).renameFolder(anyString(), anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * The sharp edge: a folder the live server still lists any messages in is refused
+   * whole, nothing sent to the server, nothing cleared locally -- the user is told to
+   * empty it first.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderRefusesANonEmptyFolder() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(store.getFolder("Factures")).thenReturn(remote);
+    when(remote.getMessageCount()).thenReturn(3);
+
+    assertEquals(EmailFolderService.FOLDER_NOT_EMPTY_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteCustomFolder(TEST_USER, 5L)).getMessage());
+    verify(remote, never()).delete(anyBoolean());
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(any());
+  }
+
+  /**
+   * The happy path: an empty folder is deleted on the server, its mirrored rows and
+   * its registry row go with it.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderDeletesAnEmptyFolderAndItsMirror() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(store.getFolder("Factures")).thenReturn(remote);
+    when(remote.getMessageCount()).thenReturn(0);
+    when(remote.delete(false)).thenReturn(true);
+    Email mirrored = email(TEST_USER);
+    mirrored.setId(77L);
+    mirrored.setFolder("CUSTOM:5");
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:5")).thenReturn(List.of(mirrored));
+
+    emailBoxService.deleteCustomFolder(TEST_USER, 5L);
+
+    verify(remote).delete(false);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(77L));
+    verify(emailFolderStorage).deleteFolder(TEST_USER, 5L);
+  }
+
+  /**
+   * The server's own refusal of the DELETE is translated to one message code, and the
+   * registry row is left exactly as it was -- an orphaned registry row (pointing at a
+   * folder the server refused to remove) would be worse than the refusal itself.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderTranslatesAServerRefusal() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(store.getFolder("Factures")).thenReturn(remote);
+    when(remote.getMessageCount()).thenReturn(0);
+    when(remote.delete(false)).thenReturn(false);
+
+    assertEquals(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.deleteCustomFolder(TEST_USER, 5L)).getMessage());
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(any());
+  }
+
+  /**
+   * A folder already gone from the server (deleted from another client since the last
+   * walk) is treated as already deleted: only the local mirror and registry row are
+   * cleared, nothing is sent to a server that no longer has anything to delete.
+   */
+  @Test
+  @SneakyThrows
+  void deleteCustomFolderAlreadyGoneFromServerStillClearsTheLocalMirror() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder remote = mock(IMAPFolder.class);
+    when(store.getFolder("Factures")).thenReturn(remote);
+    when(remote.exists()).thenReturn(false);
+
+    emailBoxService.deleteCustomFolder(TEST_USER, 5L);
+
+    verify(remote, never()).delete(anyBoolean());
+    verify(emailFolderStorage).deleteFolder(TEST_USER, 5L);
   }
 
   /**
