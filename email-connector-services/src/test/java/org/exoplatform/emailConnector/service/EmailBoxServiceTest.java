@@ -29,7 +29,6 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -8060,6 +8059,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void openingAStaleCustomFolderRefreshesItFirstAndAFreshOneIsNot() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8128,6 +8128,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void optingOutDeletesTheMirroredRows() throws Exception {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8154,6 +8155,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void aMoveIsRefusedForAnUnknownTargetTheSourceItselfOrAHiddenSource() throws Exception {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8180,6 +8182,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aMoveFilesIntoTheRegistrysFolderAndReadsItsSourceThroughIt() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8259,6 +8262,7 @@ public class EmailBoxServiceTest {
   @SneakyThrows
   @SuppressWarnings("unchecked")
   void openingAStaleFolderWhileASyncRunsAnswersTheCache() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8379,6 +8383,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void refreshRefusesAnUnmirroredFolderAndMoveRefusesTheCompletionStore() throws Exception {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8459,6 +8464,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aFailingOnOpenRefreshIsNotRetriedOnEveryPoll() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8485,6 +8491,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void aMoveIntoAnUnmirroredFolderIsRefused() throws Exception {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8493,6 +8500,77 @@ public class EmailBoxServiceTest {
                  assertThrows(IllegalArgumentException.class,
                               () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.INBOX, "CUSTOM:6")).getMessage());
     verify(userEmailSettingService, never()).connect(any());
+  }
+
+  /**
+   * The walk's save MERGES into the state as it stands, not over it: a sync that saved
+   * a fresh INBOX snapshot between the walk's load and its save keeps that snapshot,
+   * and the walk's names land beside it. A whole-blob save from the walk's own copy
+   * would put the old snapshot back, silently, once in a while.
+   */
+  @Test
+  @SneakyThrows
+  void theWalksSaveKeepsWhatASyncSavedMeanwhile() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    givenAMailboxListing(junk);
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+    java.util.concurrent.atomic.AtomicReference<String> stored = new java.util.concurrent.atomic.AtomicReference<>(null);
+    doAnswer(invocation -> stored.get() == null ? null : SettingValue.create(stored.get())).when(settingService)
+                                                                                         .get(any(Context.class),
+                                                                                              any(Scope.class),
+                                                                                              eq("emailBoxSyncState"));
+    // Between the walk's load and its save, a sync commits a state of its own.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    Store store = userEmailSettingService.connect(userEmailSetting);
+    reset(userEmailSettingService);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(userEmailSettingService.connect(userEmailSetting)).thenAnswer(invocation -> {
+      MailboxSyncState synced = new MailboxSyncState();
+      synced.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(1L, 2L, 3L, 4L, 100));
+      stored.set(JsonUtils.toJsonString(synced));
+      return store;
+    });
+
+    emailBoxService.getFolders(TEST_USER, true);
+
+    ArgumentCaptor<SettingValue> saved = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), saved.capture());
+    MailboxSyncState state = JsonUtils.fromJsonString(saved.getValue().getValue().toString(), MailboxSyncState.class);
+    assertEquals("[Gmail]/Spam", state.getJunkFolderName(), "the walk's finding is kept");
+    assertNotNull(state.getSnapshot(MailFolder.INBOX), "and so is the snapshot the sync saved meanwhile");
+    assertEquals(1L, state.getSnapshot(MailFolder.INBOX).getUidValidity());
+  }
+
+  /**
+   * The master switch, off: the request-driven entry points refuse with their own
+   * message code and open no connection, the on-open refresh serves the cache, and the
+   * list says the feature is off so the screen can hide its row rather than blame the
+   * mailbox.
+   */
+  @Test
+  void theMasterSwitchGatesEveryRequestDrivenPath() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    for (org.junit.jupiter.api.function.Executable refused : List.<org.junit.jupiter.api.function.Executable> of(
+        () -> emailBoxService.setCustomFolderSync(TEST_USER, 5L, true),
+        () -> emailBoxService.synchronizeCustomFolder(TEST_USER, 5L),
+        () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.INBOX, "CUSTOM:5"))) {
+      assertEquals("emailConnector.folder.disabled", assertThrows(IllegalArgumentException.class, refused).getMessage());
+    }
+    // A folder already mirrored is still listed from the cache, without a refresh.
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:5");
+    verify(userEmailSettingService, never()).connect(any());
+    verify(emailFolderStorage, never()).updateSyncEnabled(anyString(), anyLong(), anyBoolean(), any());
+    MailFolderList list = emailBoxService.getFolders(TEST_USER, true);
+    assertFalse(list.isCustomFoldersEnabled());
+    assertFalse(list.isWalked());
   }
 
   /**

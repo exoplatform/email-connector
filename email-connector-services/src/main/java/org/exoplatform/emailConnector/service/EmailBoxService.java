@@ -1964,7 +1964,8 @@ public class EmailBoxService {
      * @return true when the server listed it
      */
     boolean lists(String fullName) {
-      return fullName != null && walk.descriptors().stream().anyMatch(folder -> fullName.equals(folder.fullName()));
+      return fullName != null
+          && walk.descriptors().stream().anyMatch(folder -> folder.selectable() && fullName.equals(folder.fullName()));
     }
   }
 
@@ -3034,7 +3035,8 @@ public class EmailBoxService {
                               emailFolderService.getMaxCustomFolders(),
                               (int) views.stream().filter(view -> view.isCustom() && view.isSyncEnabled()).count(),
                               emailFolderService.getWindowSize(),
-                              walked);
+                              walked,
+                              emailFolderService.isCustomFoldersEnabled());
   }
 
   /**
@@ -3076,6 +3078,7 @@ public class EmailBoxService {
    */
   public MailFolderView setCustomFolderSync(String username, long id, boolean enabled) throws IllegalAccessException {
     checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
     EmailFolder customFolder = emailFolderService.setSyncEnabled(username, id, enabled);
     if (!enabled) {
       deleteUserEmails(username, customFolder.getKey());
@@ -3096,6 +3099,7 @@ public class EmailBoxService {
    */
   public void synchronizeCustomFolder(String username, long id) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
     EmailFolder customFolder = emailFolderService.getFolder(username, id);
     if (!customFolder.isSyncEnabled() || customFolder.isMissing()) {
       throw new IllegalArgumentException("emailConnector.folder.notMirrored");
@@ -3127,6 +3131,7 @@ public class EmailBoxService {
                           String folder,
                           String targetFolder) throws IllegalAccessException {
     checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
     EmailFolder target = emailFolderService.getFolderByKey(username, targetFolder);
     if (target.isMissing()) {
       throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
@@ -3142,6 +3147,21 @@ public class EmailBoxService {
       throw new IllegalArgumentException("emailConnector.folder.sameAsSource");
     }
     return applyMoveAction(mailRemoteIds, username, sourceFolder, MoveAction.MOVE, target.getKey());
+  }
+
+  /**
+   * The master switch, as the request-driven entry points see it. The routine sync and
+   * the listing already read it; without this the switch an administrator flips to
+   * shed IMAP load would keep paying for every opt-in, on-demand refresh and move --
+   * and for the on-open refresh of every drawer left open on a custom folder.
+   *
+   * @throws IllegalArgumentException if custom folders are switched off
+   *           ({@code emailConnector.folder.disabled})
+   */
+  private void checkCustomFoldersEnabled() {
+    if (!emailFolderService.isCustomFoldersEnabled()) {
+      throw new IllegalArgumentException("emailConnector.folder.disabled");
+    }
   }
 
   /**
@@ -3172,7 +3192,9 @@ public class EmailBoxService {
    * @param customFolder the registered folder about to be listed
    */
   private void refreshCustomFolderIfStale(String username, UserEmailSetting userEmailSetting, EmailFolder customFolder) {
-    if (emailFolderService.isStale(customFolder,
+    // Switched off, the cache is answered as it stands: the switch exists to shed IMAP
+    // load, and a drawer polling a stale folder every two seconds is exactly that load.
+    if (emailFolderService.isCustomFoldersEnabled() && emailFolderService.isStale(customFolder,
                                    EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting),
                                    System.currentTimeMillis())) {
       refreshCustomFolder(username, userEmailSetting, customFolder);
