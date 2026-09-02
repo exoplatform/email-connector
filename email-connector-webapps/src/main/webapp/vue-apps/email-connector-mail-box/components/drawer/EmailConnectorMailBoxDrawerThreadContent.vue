@@ -153,6 +153,14 @@ export default {
     openedKey() {
       return this.email ? this.msgKey(this.email) : null;
     },
+    // The folder the reader was opened from -- the opened message's own. Sent along
+    // with every conversation read (EXO-89942): opened from the Trash or the Junk
+    // folder, the server includes the conversation's copies in that folder, which every
+    // other read hides; a conversation deleted whole would otherwise read back as the
+    // one message that was clicked.
+    openedFrom() {
+      return this.email?.folder || 'INBOX';
+    },
     // The message ids of this conversation, matching Phase 2's grouping key so the
     // reader and the collapsed list row agree on what a thread is.
     threadMailRemoteIds() {
@@ -398,7 +406,7 @@ export default {
       const threadId = this.resolveThreadId();
       this.loadingThread = true;
       const cached = threadId
-        ? this.$emailConnectorMailBoxService.getThreadByThreadId(threadId).catch(() => null)
+        ? this.$emailConnectorMailBoxService.getThreadByThreadId(threadId, this.openedFrom).catch(() => null)
         : Promise.resolve(null);
       cached
         .then(fetched => {
@@ -435,7 +443,7 @@ export default {
       // What the user had opened is theirs, not ours to close: a draft being autosaved
       // must not collapse the message they are reading it against.
       const wasExpanded = this.expandedIds.slice();
-      this.$emailConnectorMailBoxService.getThreadByThreadId(threadId)
+      this.$emailConnectorMailBoxService.getThreadByThreadId(threadId, this.openedFrom)
         .then(fetched => {
           if (!fetched?.length) {
             // An answer with nothing in it is not this conversation being emptied — the
@@ -461,7 +469,7 @@ export default {
         return;
       }
       this.loadingOlder = true;
-      this.$emailConnectorMailBoxService.completeThreadByThreadId(threadId)
+      this.$emailConnectorMailBoxService.completeThreadByThreadId(threadId, this.openedFrom)
         .then(completed => {
           // Only re-render if completion actually recovered more messages.
           if (completed && completed.length > this.messages.length) {
