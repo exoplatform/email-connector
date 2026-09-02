@@ -56,18 +56,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-archive</v-icon>
       </v-btn>
       <v-btn
-        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
-        color="error"
-        @click="deleteEmail()"
-        icon>
-        <v-icon size="20">fa-trash</v-icon>
-      </v-btn>
-      <v-btn
         v-if="canMarkAsJunk"
         :title="$t('emailConnector.mailBox.list.drawer.detail.markJunk.label')"
         @click="markAsJunk()"
         icon>
         <v-icon size="20" class="icon-default-color">fa-ban</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+        color="error"
+        @click="deleteEmail()"
+        icon>
+        <v-icon size="20">fa-trash</v-icon>
       </v-btn>
     </template>
     <!-- What a Spam message offers instead: back to the inbox, or into the Trash. -->

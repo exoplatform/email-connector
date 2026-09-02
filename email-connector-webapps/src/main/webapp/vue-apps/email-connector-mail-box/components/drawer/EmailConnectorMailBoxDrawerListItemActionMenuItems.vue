@@ -110,27 +110,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.archive.label') }}
       </span>
     </v-list-item>
-    <v-list-item
-      v-if="!restricted && canMove"
-      class="ps-2 pe-3 height-auto"
-      @click.stop="deleteEmail">
-      <v-sheet
-        class="d-flex"
-        width="28"
-        height="36">
-        <v-icon
-          class="error--text mx-auto"
-          size="16">
-          fa-trash
-        </v-icon>
-      </v-sheet>
-      <span>
-        {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}
-      </span>
-    </v-list-item>
-    <!-- "Mark as spam", offered on the same rows as delete and archive. Not gated on
-         `restricted`: the swipe does not offer it, so the mobile long-press drawer is
-         the only place a phone user can reach it from. -->
+    <!-- "Mark as spam", offered on the same rows as delete and archive, and placed
+         before Delete: reporting a message as spam is the gentler of the two and the
+         one a user reaches for first. Not gated on `restricted`: the swipe does not
+         offer it, so the mobile long-press drawer is the only place a phone user can
+         reach it from. -->
     <v-list-item
       v-if="canMove"
       class="ps-2 pe-3 height-auto"
@@ -147,6 +131,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-sheet>
       <span>
         {{ $t('emailConnector.mailBox.list.drawer.detail.markJunk.label') }}
+      </span>
+    </v-list-item>
+    <v-list-item
+      v-if="!restricted && canMove"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="deleteEmail">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="error--text mx-auto"
+          size="16">
+          fa-trash
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}
       </span>
     </v-list-item>
     <!-- The Spam folder's own two actions, where the ordinary ones above are withheld:
