@@ -40,11 +40,20 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         ref="nameForm"
         class="pa-4"
         @submit.prevent="save">
+        <!-- Label above the field, not floating inside it, and an outlined field:
+             the shape every other form in this webapp uses (see the contact form
+             drawer). A bare :label rides the input's own underline until the field
+             has content, which reads as struck-through text rather than a label. -->
+        <div class="text-sub-title mb-1">
+          {{ $t('UserSettings.emailConnector.folders.name.label') }}
+        </div>
         <v-text-field
           v-model="name"
+          class="pt-0"
           autofocus
+          outlined
+          dense
           :maxlength="maxNameLength"
-          :label="$t('UserSettings.emailConnector.folders.name.label')"
           :error-messages="nameError"
           @input="nameError = ''"
           @keydown.enter="save" />
