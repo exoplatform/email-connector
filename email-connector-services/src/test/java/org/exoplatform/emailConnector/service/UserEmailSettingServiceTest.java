@@ -33,6 +33,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
@@ -269,6 +270,41 @@ public class UserEmailSettingServiceTest {
     userEmailSettingService.updateEmailPreferences(TEST_USER, Boolean.TRUE, List.of(1L, 2L, 3L), null);
 
     verify(eventPublisher, never()).publishEvent(any(EmailNotificationPreferencesChangedEvent.class));
+  }
+
+  /**
+   * A first save of "notify me for all" over a setting that never stored the switch
+   * is not a change: the badge reads null and true as the same "all", and the
+   * detector reads them the same way.
+   */
+  @Test
+  void aFirstSaveOfNotifyAllLeavesTheBadgeAlone() {
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+    storedSetting("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\"}");
+
+    userEmailSettingService.updateEmailPreferences(TEST_USER, Boolean.TRUE, List.of(), null);
+
+    verify(eventPublisher, never()).publishEvent(any(EmailNotificationPreferencesChangedEvent.class));
+  }
+
+  /**
+   * A null id inside the posted selection — reachable by any direct caller of the
+   * endpoint, if not by the client — is ignored, not a failed save: the rule that
+   * reads the selection has always tolerated one. The real change beside it still
+   * tells the badge.
+   */
+  @Test
+  void aNullIdInTheSelectionIsIgnoredNotRefused() {
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+    storedSetting("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"notifyAllCategories\":false,\"notifyCategories\":[1]}");
+
+    userEmailSettingService.updateEmailPreferences(TEST_USER, Boolean.FALSE, Arrays.asList(2L, null), null);
+
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                               any(SettingValue.class));
+    verify(eventPublisher).publishEvent(any(EmailNotificationPreferencesChangedEvent.class));
   }
 
   /**
