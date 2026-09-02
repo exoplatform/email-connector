@@ -3269,6 +3269,47 @@ public class EmailBoxServiceTest {
     verify(inboxMessage, never()).setFlag(any(Flags.Flag.class), anyBoolean());
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    // The Junk name the strict lookup just resolved is kept, as the restore path keeps
+    // it: the alternative is a LIST * per "Mark as spam".
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq("emailBoxSyncState"),
+                               argThat(value -> value.getValue().toString().contains("[Gmail]/Spam")));
+  }
+
+  /**
+   * A remembered Junk name that no longer names a folder — renamed on the server, a
+   * Maildir++ migration, Gmail relabelled — is not trusted: the stale handle is never
+   * opened, discovery runs again, and the state is rewritten with the folder actually
+   * found. This is the branch that decides where "Mark as spam" files a message the
+   * user will never see again, which is why a stale name must not be believed.
+   */
+  @Test
+  @SneakyThrows
+  void aRenamedJunkFolderIsRediscoveredRatherThanTrusted() {
+    MailboxSyncState state = new MailboxSyncState();
+    state.setJunkFolderName("Old/Spam");
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class),
+                                                                     any(Scope.class),
+                                                                     eq("emailBoxSyncState"));
+    IMAPFolder stale = mock(IMAPFolder.class);
+    when(stale.exists()).thenReturn(false);
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    lenient().when(junk.getMessageCount()).thenReturn(2);
+    Folder defaultFolder = givenAMailboxListing(junk);
+    when(trashStore().getFolder("Old/Spam")).thenReturn(stale);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(defaultFolder, atLeast(1)).listSubscribed("*");
+    verify(stale, never()).open(anyInt());
+    verify(junk).open(Folder.READ_ONLY);
+    ArgumentCaptor<SettingValue> saved = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), saved.capture());
+    assertEquals("[Gmail]/Spam",
+                 JsonUtils.fromJsonString(saved.getValue().getValue().toString(), MailboxSyncState.class).getJunkFolderName(),
+                 "the name remembered is the folder found, not the one that went away");
   }
 
   /**
