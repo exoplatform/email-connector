@@ -342,9 +342,14 @@ export default {
     canToggleFavorite() {
       return (this.email.folder || 'INBOX') === 'INBOX';
     },
-    // Whether this row sits in a folder the interface may only read (Trash), which is
-    // what takes the swipe's delete/archive away from it. Off the ROW's own folder,
-    // like canToggleFavorite above, and the same rule the row's context menu reads.
+    /**
+     * Whether this row sits in a folder the interface may only read (Trash, Spam),
+     * which is what takes the swipe's delete/archive away from it. Off the ROW's own
+     * folder, like canToggleFavorite above, and the same rule the row's context menu
+     * reads.
+     *
+     * @returns {Boolean} true when the swipe must offer nothing
+     */
     readOnly() {
       return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
