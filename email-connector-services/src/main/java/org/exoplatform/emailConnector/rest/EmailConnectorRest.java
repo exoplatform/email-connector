@@ -39,7 +39,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
+import org.exoplatform.emailConnector.service.EmailSyncService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -55,6 +57,9 @@ public class EmailConnectorRest {
 
   @Autowired
   private EmailConnectorService emailConnectorService;
+
+  @Autowired
+  private EmailSyncService      emailSyncService;
 
   @PatchMapping("/feature/activation")
   @Secured("administrators")
@@ -132,6 +137,62 @@ public class EmailConnectorRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+  }
+
+  /**
+   * The administration-wide size of the mailbox sync executor.
+   *
+   * @param request the HTTP request
+   * @return how many mailboxes each node synchronizes at once
+   */
+  @GetMapping("/sync-threads")
+  @Secured("administrators")
+  @Operation(summary = "Gets the mailbox sync executor size", method = "GET", description = "This will get the number of mailboxes each server node synchronizes at once")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public int getEmailSyncThreads(HttpServletRequest request) {
+    return emailConnectorService.getEmailSyncThreads();
+  }
+
+  /**
+   * Updates the administration-wide size of the mailbox sync executor; the
+   * dispatcher resizes its pool at its next tick.
+   *
+   * @param request the HTTP request
+   * @param threads the executor size, in threads
+   */
+  @PutMapping("/sync-threads")
+  @Secured("administrators")
+  @Operation(summary = "Updates the mailbox sync executor size", method = "PUT", description = "This will update the number of mailboxes each server node synchronizes at once, applied at the next dispatch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateEmailSyncThreads(HttpServletRequest request,
+                                     @Parameter(description = "The executor size, in threads", required = true)
+                                     @RequestParam("threads")
+                                     int threads) {
+    try {
+      emailConnectorService.saveEmailSyncThreads(threads, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * A snapshot of the mailbox sync dispatcher, for the drawer's status line.
+   *
+   * @param request the HTTP request
+   * @return what this node runs, what the cluster holds, and the backlog
+   */
+  @GetMapping("/sync-status")
+  @Secured("administrators")
+  @Operation(summary = "Gets the mailbox sync dispatcher status", method = "GET", description = "This will get how many mailboxes are being synchronized, waiting, and due")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public EmailSyncExecutorStatus getEmailSyncStatus(HttpServletRequest request) {
+    return emailSyncService.getStatus();
   }
 
   @GetMapping("/trash-sync")
