@@ -27,6 +27,9 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -39,8 +42,10 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
+import liquibase.ChecksumVersion;
 import liquibase.Contexts;
 import liquibase.Liquibase;
+import liquibase.changelog.ChangeSet;
 import liquibase.database.Database;
 import liquibase.database.DatabaseFactory;
 import liquibase.database.jvm.JdbcConnection;
@@ -143,12 +148,87 @@ public class MasterChangelogTest {
     }
     // The statement itself, not a split on semicolons: the changeset's comment above it
     // carries semicolons of its own.
-    Matcher createFolder = Pattern.compile("CREATE TABLE EMAIL_FOLDER \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(sql.toString());
+    String generated = sql.toString();
+    Matcher createFolder = Pattern.compile("CREATE TABLE EMAIL_FOLDER \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(generated);
     assertTrue(createFolder.find(), "no CREATE TABLE EMAIL_FOLDER in the MySQL SQL");
-    String statement = createFolder.group();
-    assertTrue(statement.contains("REMOTE_NAME VARCHAR(500) COLLATE utf8mb4_0900_bin NOT NULL"), statement);
-    assertTrue(statement.contains("COLLATE utf8mb4_0900_ai_ci"), "the table keeps the file's collation: " + statement);
-    assertTrue(!statement.contains("DISPLAY_NAME VARCHAR(255) COLLATE"), "only the identifier is binary: " + statement);
+    assertTrue(!createFolder.group().contains("COLLATE"), "the CREATE carries no modifySql of its own: " + createFolder.group());
+    assertTrue(generated.contains("ALTER TABLE EMAIL_FOLDER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"),
+               "the table options of 1.0.0-55");
+    assertTrue(generated.contains("ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"),
+               "the binary collation on the identifier, and on it only");
+  }
+
+  // The changesets whose checksum already depends on where it is computed: every one
+  // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
+  // -48); 1.0.0-1, -2 and -27 are not, and have survived every restart so far only
+  // because every evaluation of a running platform computed them the same way. They
+  // are listed, not fixed: a validCheckSum for an id that already ran everywhere is a
+  // decision about every deployment's recorded value, not this branch's. Nothing may
+  // be ADDED to this list.
+  // The changesets this branch adds. They are the ones a second evaluation computes
+  // ahead of the update in the pin below, and nothing on this list may ever drift.
+  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-52", "1.0.0-53", "1.0.0-54", "1.0.0-55");
+
+  private static final Set<String> KNOWN_SCOPE_DEPENDENT_CHECKSUMS =
+                                                                   Set.of("1.0.0-1", "1.0.0-2", "1.0.0-5", "1.0.0-27", "1.0.0-46", "1.0.0-48");
+
+  /**
+   * A changeset's checksum must not depend on where it is computed. The shape of the
+   * failure this pins: the platform started this add-on's Spring context twice in one
+   * boot; the first applied 1.0.0-52 and recorded the checksum it computed while
+   * executing it, the second computed the same changeset outside that execution,
+   * got another number, and refused the whole changelog, taking the portal down.
+   * Liquibase serialises a changeset's modifySql visitors through a filter that reads
+   * the checksum version off the current Scope, and a ChangeSet keeps the first value
+   * it computed, so any modifySql changeset has two checksums: the one recorded by
+   * the update that ran it and the one anything else computes.
+   * <p>
+   * So: apply the changelog, then compute every changeset's checksum from a fresh
+   * parse OUTSIDE any update, and compare with what the update recorded; every
+   * difference must be one of the pre-existing, listed ones. Then run the update
+   * again on the same connection with those checksums already computed (which is
+   * what a second context does) and require it to validate. A single-pass apply
+   * cannot see any of this, which is why the rig saw it first.
+   *
+   * @throws Exception when the changelog cannot be applied or read back
+   */
+  @Test
+  void aChecksumIsTheSameWhereverItIsComputed() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:twice" + System.nanoTime(), "sa", "")) {
+      Database database = DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection));
+      new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database).update("");
+      Map<String, String> recorded = new TreeMap<>();
+      try (ResultSet rows = connection.createStatement().executeQuery("SELECT ID, MD5SUM FROM DATABASECHANGELOG")) {
+        while (rows.next()) {
+          recorded.put(rows.getString(1), rows.getString(2));
+        }
+      }
+      Liquibase second = new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database);
+      Map<String, String> drifting = new TreeMap<>();
+      for (ChangeSet changeSet : second.getDatabaseChangeLog().getChangeSets()) {
+        String outside = changeSet.generateCheckSum(ChecksumVersion.latest()).toString();
+        String stored = recorded.get(changeSet.getId());
+        if (stored != null && !stored.equals(outside)) {
+          drifting.put(changeSet.getId(), stored + " recorded, " + outside + " computed outside the update");
+        }
+      }
+      drifting.keySet().removeAll(KNOWN_SCOPE_DEPENDENT_CHECKSUMS);
+      assertTrue(drifting.isEmpty(),
+                 () -> "these changesets have a checksum that depends on where it is computed; a second context, or the next restart,"
+                     + " refuses the whole changelog: " + drifting);
+      // The second evaluation, as the rig ran it: the changesets this branch adds have
+      // their checksum computed before the update runs (a fresh parse, so the values
+      // above are not carried over), then the update validates them against what the
+      // first evaluation recorded. The pre-existing changesets are left to the update
+      // itself, the way every real evaluation so far has computed them.
+      Liquibase third = new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database);
+      for (ChangeSet changeSet : third.getDatabaseChangeLog().getChangeSets()) {
+        if (BRANCH_CHANGESETS.contains(changeSet.getId())) {
+          changeSet.generateCheckSum(ChecksumVersion.latest());
+        }
+      }
+      assertDoesNotThrow(() -> third.update(""), "the second evaluation, with the checksums already computed, must validate");
+    }
   }
 
   /**
