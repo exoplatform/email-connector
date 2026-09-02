@@ -25,9 +25,11 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -7949,12 +7951,15 @@ public class EmailBoxServiceTest {
     System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
     IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
     lenient().when(junk.getMessageCount()).thenReturn(2);
-    givenAMailboxListing(junk);
+    // The registered folder is in the listing, as the daily walk would find it: a
+    // registered name the walk does not list is a folder the server no longer has.
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(remote.getMessageCount()).thenReturn(120);
+    givenAMailboxListing(junk, remote);
     EmailFolder factures = registeredFolder(1L, "Factures", true);
     when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(factures));
     when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(factures);
-    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
-    when(remote.getMessageCount()).thenReturn(120);
+    when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Factures")).thenReturn(factures);
     Store store = userEmailSettingService.connect(userEmailSetting());
     when(store.getFolder("Factures")).thenReturn(remote);
 
@@ -8224,13 +8229,14 @@ public class EmailBoxServiceTest {
   @SneakyThrows
   void aFolderOptedOutDuringItsSyncLosesWhatTheSyncWrote() {
     System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
-    givenAMailboxListing();
-    EmailFolder picked = registeredFolder(1L, "Factures", true);
-    when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(picked));
-    // By the time the sync re-reads it, the user has switched it off.
-    when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", false));
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(remote.getMessageCount()).thenReturn(3);
+    givenAMailboxListing(remote);
+    EmailFolder picked = registeredFolder(1L, "Factures", true);
+    when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(picked));
+    when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Factures")).thenReturn(picked);
+    // By the time the sync re-reads it, the user has switched it off.
+    when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", false));
     when(userEmailSettingService.connect(userEmailSetting()).getFolder("Factures")).thenReturn(remote);
     Email written = email(TEST_USER);
     written.setId(77L);
@@ -8414,8 +8420,79 @@ public class EmailBoxServiceTest {
     MailboxSyncState state = JsonUtils.fromJsonString(saved.getValue().getValue().toString(), MailboxSyncState.class);
     assertEquals("[Gmail]/Spam", state.getJunkFolderName());
     assertNotNull(state.getFoldersDiscoveredAt());
+    assertTrue(list.isWalked(), "the answer says the walk ran");
     assertEquals(List.of(MailFolder.INBOX, MailFolder.JUNK), list.getFolders().stream().map(MailFolderView::getKey).toList(),
                  "the Junk the walk found is offered, before anything was cached from it");
+  }
+
+  /**
+   * A requested walk that cannot reach the mailbox still answers the registered list,
+   * and SAYS the walk did not run: "refreshed" over a mailbox that could not be reached
+   * would send the user looking for a folder that was never asked about. Nothing is
+   * saved either -- there is nothing new to keep.
+   */
+  @Test
+  @SneakyThrows
+  void aRequestedWalkThatCannotReachTheMailboxSaysSo() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new IllegalStateException("refused"));
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+    when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(registeredFolder(5L, "Factures", true)));
+
+    MailFolderList list = emailBoxService.getFolders(TEST_USER, true);
+
+    assertFalse(list.isWalked());
+    assertEquals(List.of(MailFolder.INBOX, "CUSTOM:5"), list.getFolders().stream().map(MailFolderView::getKey).toList());
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), any());
+  }
+
+  /**
+   * An on-open refresh that fails is not retried on the next poll: the listing polls
+   * every two seconds while the drawer watches the sync, and a folder left stale by a
+   * failing connection would cost a connect attempt per poll against a server that is
+   * already refusing them. A failed check is stamped as a check, so the next open
+   * within the period answers the cache without connecting.
+   */
+  @Test
+  @SneakyThrows
+  void aFailingOnOpenRefreshIsNotRetriedOnEveryPoll() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    EmailFolder stale = registeredFolder(5L, "Factures", true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(stale);
+    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new IllegalStateException("too many connections"));
+    // The stamp the failure writes is what the second open reads back.
+    doAnswer(invocation -> {
+      stale.setLastSyncDate(new Date());
+      return null;
+    }).when(emailFolderStorage).updateSyncMemory(eq(TEST_USER), eq(5L), isNull(), any(Date.class));
+
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+
+    verify(userEmailSettingService, times(1)).connect(userEmailSetting);
+    verify(emailFolderStorage, times(1)).updateSyncMemory(eq(TEST_USER), eq(5L), isNull(), any(Date.class));
+    verify(emailBoxStorage, times(2)).getEmails(TEST_USER, "CUSTOM:5");
+  }
+
+  /**
+   * A move into a folder the user does not mirror is refused before anything is
+   * touched: the message would leave every screen and come back nowhere.
+   */
+  @Test
+  void aMoveIntoAnUnmirroredFolderIsRefused() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", false));
+    assertEquals("emailConnector.folder.notMirrored",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.INBOX, "CUSTOM:6")).getMessage());
+    verify(userEmailSettingService, never()).connect(any());
   }
 
   /**

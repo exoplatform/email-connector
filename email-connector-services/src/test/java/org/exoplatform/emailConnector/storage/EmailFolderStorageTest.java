@@ -51,6 +51,12 @@ import org.exoplatform.emailConnector.model.MailFolderView;
  * changelog rather than on a generated schema is also what applies changesets
  * 1.0.0-52 to 1.0.0-54 for real: a column the entity maps and the changeset forgot
  * fails here, not on an acceptance server.
+ * <p>
+ * Dialect caveat: HSQLDB compares names case-sensitively, so nothing here can see the
+ * MySQL collation question (a case-insensitive unique index over a case-sensitive
+ * IMAP name). That one is pinned on the dialect's generated SQL in
+ * {@code MasterChangelogTest#theRegistryNameKeepsItsCaseOnMySql}; index usage on a
+ * real MySQL still needs a real MySQL run.
  */
 @DataJpaTest(showSql = false)
 @EnableAutoConfiguration
