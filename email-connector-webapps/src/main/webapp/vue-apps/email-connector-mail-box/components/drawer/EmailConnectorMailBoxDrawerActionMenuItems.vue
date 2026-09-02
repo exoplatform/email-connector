@@ -124,12 +124,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.menu.selectSeveral') }}
       </span>
     </v-list-item>
-    <!-- The AI entry is contributed by another addon and renders its own markup as a
-         bare span, outside any v-list-item, so it inherits none of the row padding the
-         entries around it get from Vuetify. Without the same horizontal padding here it
-         starts left of every other row and the column breaks. What sits INSIDE it --
-         the gap between its icon and its label -- belongs to the contributing addon,
-         not to this menu. -->
+    <!-- The AI entry is contributed by the enterprise AI addon, which renders a complete
+         v-list-item of its own. Its alignment with the rows around it is therefore that
+         addon's to set, not this menu's: padding applied here would sit OUTSIDE its row
+         and shrink its hover box instead of moving its content. Leave the wrapper
+         layout-neutral. -->
     <extension-registry-components
       ref="emailListToolbarExtension"
       :params="{ hasWebmailAccess: true }"
@@ -137,7 +136,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       type="email-list-toolbar"
       parent-element="span"
       element="span"
-      class="my-auto px-4 d-flex align-center" />
+      class="my-auto" />
     <v-list-item
       v-if="hasWebmailAccess"
       class="height-auto"
