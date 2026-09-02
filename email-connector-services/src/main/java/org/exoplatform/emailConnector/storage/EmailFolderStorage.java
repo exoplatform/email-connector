@@ -198,6 +198,24 @@ public class EmailFolderStorage {
   }
 
   /**
+   * The in-app rename's write: the row's own name columns replaced, everything else --
+   * the opt-in, the sync memory -- left exactly as it was. One statement naming only
+   * the two columns a rename owns, for the same reason every other writer here does:
+   * so it can never put back what the opt-in switch or the sync job wrote since this
+   * request read the row.
+   *
+   * @param userId the mailbox owner
+   * @param id the registry id
+   * @param remoteName the folder's new full name on the server
+   * @param displayName the new display name
+   * @return the row as it now stands
+   */
+  public EmailFolder renameFolder(String userId, long id, String remoteName, String displayName) {
+    emailFolderDAO.renameFolder(id, userId, remoteName, displayName);
+    return getFolder(userId, id);
+  }
+
+  /**
    * Drops one registered folder.
    *
    * @param userId the mailbox owner

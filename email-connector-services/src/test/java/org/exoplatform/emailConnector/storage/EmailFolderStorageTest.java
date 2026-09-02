@@ -182,6 +182,32 @@ public class EmailFolderStorageTest {
   }
 
   /**
+   * A rename replaces the row's own two name columns and only those -- the opt-in and
+   * the sync memory a rename never touches survive it untouched -- and a rename
+   * addressed to another user's row does nothing (EXO-89943).
+   */
+  @Test
+  void renameReplacesOnlyTheRowsOwnNameColumnsAndOnlyThisUsersRow() {
+    EmailFolder created = emailFolderStorage.createFolder(newFolder("frank", "Factures", "Factures"));
+    emailFolderStorage.updateSyncEnabled("frank", created.getId(), true, new Date(1_000L));
+    emailFolderStorage.updateSyncMemory("frank", created.getId(), new FolderSyncSnapshot(1L, 2L, 3L, 4L, 50), new Date(2_000L));
+
+    EmailFolder renamed = emailFolderStorage.renameFolder("frank", created.getId(), "Invoices", "Invoices");
+
+    assertEquals(created.getId(), renamed.getId(), "the SAME row -- its CUSTOM:<id> key is unchanged");
+    assertEquals("Invoices", renamed.getRemoteName());
+    assertEquals("Invoices", renamed.getDisplayName());
+    assertTrue(renamed.isSyncEnabled(), "the opt-in a rename never touches survives it");
+    assertEquals(new FolderSyncSnapshot(1L, 2L, 3L, 4L, 50), renamed.getSnapshot(), "so does the sync memory");
+    assertEquals(1_000L, renamed.getEnabledDate().getTime());
+    assertEquals(2_000L, renamed.getLastSyncDate().getTime());
+
+    emailFolderStorage.renameFolder("mallory", created.getId(), "Stolen", "Stolen");
+    EmailFolder untouched = emailFolderStorage.getFolder("frank", created.getId());
+    assertEquals("Invoices", untouched.getRemoteName(), "another user's rename is a no-op");
+  }
+
+  /**
    * A registry DTO ready to be created.
    *
    * @param userId the owner

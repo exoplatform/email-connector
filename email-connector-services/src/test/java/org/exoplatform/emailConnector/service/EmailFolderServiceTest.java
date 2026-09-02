@@ -16,9 +16,11 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -50,6 +52,7 @@ import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 
 /**
@@ -392,6 +395,191 @@ class EmailFolderServiceTest {
                                 Set.of(attributes),
                                 subscribed,
                                 true);
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Name validation (EXO-89943)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A valid name is trimmed and handed back; nothing is refused for it.
+   */
+  @Test
+  void aValidNameIsTrimmedAndAccepted() {
+    assertEquals("Invoices", emailFolderService.validateFolderName("  Invoices  "));
+  }
+
+  /**
+   * Blank, empty and whitespace-only names are all refused with the same code.
+   */
+  @Test
+  void blankAndWhitespaceOnlyNamesAreRefused() {
+    for (String blank : List.of("", "   ", "\t\n ")) {
+      assertEquals(EmailFolderService.FOLDER_NAME_BLANK_MESSAGE,
+                   assertThrows(IllegalArgumentException.class, () -> emailFolderService.validateFolderName(blank)).getMessage());
+    }
+    assertEquals(EmailFolderService.FOLDER_NAME_BLANK_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailFolderService.validateFolderName(null)).getMessage());
+  }
+
+  /**
+   * A name past {@link EmailFolderService#MAX_FOLDER_NAME_LENGTH} is refused; the
+   * bound itself is accepted, and a name only too long once its surrounding
+   * whitespace is trimmed is accepted too (the check runs on the trimmed name).
+   */
+  @Test
+  void aNamePastTheLengthBoundIsRefused() {
+    String atTheBound = "x".repeat(EmailFolderService.MAX_FOLDER_NAME_LENGTH);
+    assertEquals(atTheBound, emailFolderService.validateFolderName(atTheBound));
+    String oneOver = "x".repeat(EmailFolderService.MAX_FOLDER_NAME_LENGTH + 1);
+    assertEquals(EmailFolderService.FOLDER_NAME_TOO_LONG_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailFolderService.validateFolderName(oneOver)).getMessage());
+    assertEquals(atTheBound, emailFolderService.validateFolderName("  " + atTheBound + "  "));
+  }
+
+  /**
+   * A name starting with a provider's reserved namespace bracket ({@code [Gmail]/...})
+   * is refused, whatever comes after the bracket.
+   */
+  @Test
+  void aNameStartingWithTheReservedNamespaceBracketIsRefused() {
+    for (String reserved : List.of("[Gmail]", "[Gmail]/Custom", "[Work]")) {
+      assertEquals(EmailFolderService.FOLDER_NAME_RESERVED_MESSAGE,
+                   assertThrows(IllegalArgumentException.class, () -> emailFolderService.validateFolderName(reserved))
+                                                                                                                      .getMessage());
+    }
+  }
+
+  /**
+   * A name equal, case-insensitively, to one of the STRICT built-in name sets is
+   * refused: created today, it would sit as a plain custom row and could be handed
+   * the built-in role at the next walk (see {@link EmailFolderService#FOLDER_NAME_RESERVED_MESSAGE}).
+   * The loose Sent/Archive/All-Mail rules are deliberately NOT enforced -- a name
+   * merely containing "sent" is accepted.
+   */
+  @Test
+  void aNameEqualToAStrictBuiltInNameIsRefusedButALooseOneIsNot() {
+    for (String reserved : List.of("inbox", "INBOX", "Archive", "archives", "Trash", "trash", "Deleted Items",
+                                   "Drafts", "Brouillons", "Spam", "Junk E-mail", "Courrier indésirable")) {
+      assertEquals(EmailFolderService.FOLDER_NAME_RESERVED_MESSAGE,
+                   assertThrows(IllegalArgumentException.class, () -> emailFolderService.validateFolderName(reserved))
+                                                                                                                      .getMessage(),
+                   reserved);
+    }
+    // "Consent forms" contains "sent"; the loose Sent rule is a pre-existing,
+    // accepted fragility of DISCOVERY -- not one this create/rename feature adds.
+    assertEquals("Consent forms", emailFolderService.validateFolderName("Consent forms"));
+  }
+
+  /**
+   * The delimiter check is a separate call: a name embedding the mailbox's own
+   * separator is refused, a blank/null delimiter (a flat namespace) admits every
+   * name.
+   */
+  @Test
+  void checkNotNestedRefusesANameEmbeddingTheDelimiterOnly() {
+    IllegalArgumentException nested = assertThrows(IllegalArgumentException.class,
+                                                   () -> emailFolderService.checkNotNested("Customers/Acme", "/"));
+    assertEquals(EmailFolderService.FOLDER_NAME_NESTED_MESSAGE, nested.getMessage());
+    assertDoesNotThrow(() -> emailFolderService.checkNotNested("Customers/Acme", null));
+    assertDoesNotThrow(() -> emailFolderService.checkNotNested("Customers/Acme", ""));
+    assertDoesNotThrow(() -> emailFolderService.checkNotNested("Customers.Acme", "/"), "a different separator is not embedded");
+  }
+
+  /**
+   * The parent prefix a rename adds the new segment onto: everything up to and
+   * including the last delimiter, empty on a top-level folder or a flat namespace.
+   */
+  @Test
+  void parentPrefixIsEverythingUpToTheLastDelimiter() {
+    assertEquals("Customers/", EmailFolderService.parentPrefix("Customers/Acme", "/"));
+    assertEquals("", EmailFolderService.parentPrefix("Invoices", "/"), "top-level: no delimiter found");
+    assertEquals("", EmailFolderService.parentPrefix("Invoices", null), "flat namespace");
+    assertEquals("A/B/", EmailFolderService.parentPrefix("A/B/C", "/"), "only the LAST delimiter counts");
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Duplicate check, create/rename/delete (EXO-89943)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A name already registered for this user is refused; a name differing only by case
+   * is a DIFFERENT name (the registry's own case-sensitive collation); excluding the
+   * row's own id admits a rename that keeps its own name.
+   */
+  @Test
+  void checkNameAvailableIsCaseSensitiveAndExcludesTheRowsOwnId() {
+    when(emailFolderStorage.getFolderByRemoteName(USER, "Factures")).thenReturn(registered(5L, "Factures", true, false));
+    assertThrows(IllegalArgumentException.class, () -> emailFolderService.checkNameAvailable(USER, "Factures", null));
+    assertThrows(IllegalArgumentException.class, () -> emailFolderService.checkNameAvailable(USER, "Factures", 6L));
+    assertDoesNotThrow(() -> emailFolderService.checkNameAvailable(USER, "Factures", 5L), "excluded: it is its own row");
+
+    when(emailFolderStorage.getFolderByRemoteName(USER, "factures")).thenReturn(null);
+    assertDoesNotThrow(() -> emailFolderService.checkNameAvailable(USER, "factures", null), "different case, different name");
+  }
+
+  /**
+   * A create registers the row directly through the storage, opt-in off whatever the
+   * caller passes -- {@link EmailFolderStorage#createFolder} owns that invariant, and
+   * a create relies on it exactly as discovery does.
+   */
+  @Test
+  void registerCreatedFolderWritesTheRowThroughStorage() {
+    EmailFolder stored = registered(9L, "Invoices", false, false);
+    when(emailFolderStorage.createFolder(any())).thenReturn(stored);
+
+    EmailFolder result = emailFolderService.registerCreatedFolder(USER, "Invoices", "/");
+
+    ArgumentCaptor<EmailFolder> captor = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage).createFolder(captor.capture());
+    assertEquals(USER, captor.getValue().getUserId());
+    assertEquals("Invoices", captor.getValue().getRemoteName());
+    assertEquals("Invoices", captor.getValue().getDisplayName());
+    assertEquals("/", captor.getValue().getDelimiter());
+    assertEquals(MailFolderView.TYPE_CUSTOM, captor.getValue().getType());
+    assertSame(stored, result);
+  }
+
+  /**
+   * Auto-enable succeeds when the cap has room, and leaves the folder disabled --
+   * without throwing -- when it does not.
+   */
+  @Test
+  void tryAutoEnableSucceedsWithRoomAndFailsQuietlyAtTheCap() {
+    when(emailFolderStorage.getFolder(USER, 9L)).thenReturn(registered(9L, "Invoices", false, false));
+    when(emailFolderStorage.countEnabledFolders(USER)).thenReturn(0L);
+    assertTrue(emailFolderService.tryAutoEnable(USER, 9L));
+    verify(emailFolderStorage).updateSyncEnabled(eq(USER), eq(9L), eq(true), any(Date.class));
+
+    when(emailFolderStorage.getFolder(USER, 10L)).thenReturn(registered(10L, "Projets", false, false));
+    when(emailFolderStorage.countEnabledFolders(USER)).thenReturn(10L);
+    assertFalse(emailFolderService.tryAutoEnable(USER, 10L));
+    verify(emailFolderStorage, never()).updateSyncEnabled(eq(USER), eq(10L), anyBoolean(), any());
+  }
+
+  /**
+   * A rename delegates straight to the storage's own targeted write -- the same
+   * two-column UPDATE {@link EmailFolderDAOTest} pins against a real database.
+   */
+  @Test
+  void renameFolderDelegatesToStorage() {
+    EmailFolder renamed = registered(5L, "Invoices", true, false);
+    when(emailFolderStorage.renameFolder(USER, 5L, "Invoices", "Invoices")).thenReturn(renamed);
+
+    EmailFolder result = emailFolderService.renameFolder(USER, 5L, "Invoices", "Invoices");
+
+    assertSame(renamed, result);
+  }
+
+  /**
+   * A delete delegates straight to the storage; the mirrored rows are the caller's to
+   * clear first, exactly as {@link #aWalkRegistersRefreshesGracesThenDeletes} already
+   * documents for the discovery-side deletion.
+   */
+  @Test
+  void removeFolderDelegatesToStorage() {
+    emailFolderService.removeFolder(USER, 5L);
+    verify(emailFolderStorage).deleteFolder(USER, 5L);
   }
 
   /**
