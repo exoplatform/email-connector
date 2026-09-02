@@ -148,14 +148,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.archive.label') }}
       </v-btn>
       <v-btn
-        v-if="canMutateSelection"
-        @click="deleteEmails()"
-        outlined
-        class="btn error font-weight-bold">
-        <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
-        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
-      </v-btn>
-      <v-btn
         v-if="canMarkSelectionAsJunk"
         @click="markAsJunk()"
         outlined
@@ -167,6 +159,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           fa-ban
         </v-icon>
         {{ $t('emailConnector.mailBox.list.drawer.detail.markJunk.label') }}
+      </v-btn>
+      <v-btn
+        v-if="canMutateSelection"
+        @click="deleteEmails()"
+        outlined
+        class="btn error font-weight-bold">
+        <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
+        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
       </v-btn>
       <v-btn
         v-if="canApplyJunkActions"
