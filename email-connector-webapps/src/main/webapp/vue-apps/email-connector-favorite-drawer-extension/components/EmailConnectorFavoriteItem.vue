@@ -36,6 +36,15 @@
         <date-format class="flex-grow-0 flex-shrink-0" :value="receivedDate" />
       </v-list-item-subtitle>
     </v-list-item-content>
+    <v-list-item-action>
+      <favorite-button
+        :id="id"
+        :favorite="isFavorite"
+        type="email"
+        type-label="email"
+        @removed="removed"
+        @remove-error="removeError" />
+    </v-list-item-action>
   </v-list-item>
 </template>
 <script>
@@ -56,6 +65,10 @@ export default {
   },
   data: () => ({
     email: null,
+    // A row of the favorites drawer is a favorite by construction: the drawer
+    // listed it from the favorites store, so the button starts lit without a
+    // second read to ask what the drawer already knows.
+    isFavorite: true,
   }),
   computed: {
     iconWidth() {
@@ -99,6 +112,12 @@ export default {
   },
   methods: {
     open(event) {
+      // Vuetify re-emits an Enter pressed anywhere inside the row as the row's own
+      // click, so a keyboard user unfavoriting from the star would also open the
+      // mail; the star's mouse clicks never reach here, it stops them itself.
+      if (event?.target?.closest?.('.v-list-item__action')) {
+        return;
+      }
       if (event?.which === 1 || event?.which === 2) {
         this.clickCallback?.('email', this.id);
       }
@@ -108,6 +127,54 @@ export default {
         document.dispatchEvent(new CustomEvent('open-email-box-mail', {
           detail: {mailRemoteId: this.email?.mailRemoteId},
         })));
+    },
+    /**
+     * The star has removed the favorite from the platform's store: drop the row,
+     * then clear the flag the favorite was mirroring.
+     *
+     * The favorite of a mail is only a mirror of the mail server's own \Flagged
+     * flag, recomputed from it at every sync — so a removal that stopped at the
+     * favorites store would be undone within minutes, the row quietly back in the
+     * drawer. The flag is therefore cleared too, through the endpoint the mailbox
+     * star uses, and that endpoint ends by reconciling the favorites itself: a
+     * flag the server refused to clear puts the favorite back, and the drawer is
+     * refreshed to say so rather than pretend.
+     *
+     * @returns {void}
+     */
+    removed() {
+      this.isFavorite = false;
+      this.$root.$emit('refresh-favorite-list');
+      fetch('/email-connector/rest/email-box/starred?starred=false', {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([this.email.mailRemoteId]),
+      }).then(response => {
+        if (!response?.ok) {
+          throw new Error('Favorited email cannot be unstarred');
+        }
+        return response.json();
+      }).then(result => {
+        if (result?.failedUpdates) {
+          throw new Error('The mail server refused to unstar the email');
+        }
+        this.displayAlert(this.$t('Favorite.tooltip.SuccessfullyDeletedFavorite'));
+      }).catch(() => {
+        this.removeError();
+        this.$root.$emit('refresh-favorite-list');
+      });
+    },
+    removeError() {
+      this.displayAlert(this.$t('Favorite.tooltip.ErrorDeletingFavorite', {0: this.$t('UITopBarFavoritesPortlet.email.label')}), 'error');
+    },
+    displayAlert(message, type) {
+      document.dispatchEvent(new CustomEvent('notification-alert', {detail: {
+        message,
+        type: type || 'success',
+      }}));
     },
   },
 };
