@@ -141,20 +141,33 @@ export default {
           this.maxFolders = list?.maxCustomFolders || 0;
           this.enabledCount = list?.enabledCustomFolders || 0;
           this.windowSize = list?.windowSize || 0;
+          return list;
         })
-        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.error'), 'error'))
+        .catch(() => {
+          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.error'), 'error');
+          return null;
+        })
         .finally(() => this.loading = false);
     },
     /**
      * Walks the mailbox's folder list now -- for the folder the user just created
-     * elsewhere and does not want to wait a day for.
+     * elsewhere and does not want to wait a day for. The answer says whether the walk
+     * actually ran: the list comes back either way, from the registry as it stands,
+     * and "refreshed" over a mailbox that could not be reached would send the user
+     * looking for a folder that was never asked about.
      *
      * @returns {void}
      */
     refresh() {
       this.refreshing = true;
       this.load(true)
-        .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.refreshed'), 'success'))
+        .then(list => {
+          if (list?.walked) {
+            this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.refreshed'), 'success');
+          } else if (list) {
+            this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.walkFailed'), 'error');
+          }
+        })
         .finally(() => this.refreshing = false);
     },
     /**
