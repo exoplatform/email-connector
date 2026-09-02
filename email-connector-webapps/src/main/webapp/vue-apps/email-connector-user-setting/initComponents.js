@@ -17,6 +17,7 @@
 import EmailConnectorUserSettingApp from './components/EmailConnectorUserSettingApp.vue';
 import EmailConnectorUserSettingBody from './components/main/EmailConnectorUserSettingBody.vue';
 import EmailConnectorUserSettingFolders from './components/main/EmailConnectorUserSettingFolders.vue';
+import EmailConnectorUserSettingFoldersDrawer from './components/drawer/folders/EmailConnectorUserSettingFoldersDrawer.vue';
 import EmailConnectorUserSettingConnectorsDrawer from './components/drawer/connectors/EmailConnectorUserSettingConnectorsDrawer.vue';
 import EmailConnectorUserSettingConnectorsDrawerList from './components/drawer/connectors/EmailConnectorUserSettingConnectorsDrawerList.vue';
 import EmailConnectorUserSettingConnectorsDrawerListItem from './components/drawer/connectors/EmailConnectorUserSettingConnectorsDrawerListItem.vue';
@@ -29,6 +30,7 @@ const components = {
   'email-connector-user-setting-app': EmailConnectorUserSettingApp,
   'email-connector-user-setting-body': EmailConnectorUserSettingBody,
   'email-connector-user-setting-folders': EmailConnectorUserSettingFolders,
+  'email-connector-user-setting-folders-drawer': EmailConnectorUserSettingFoldersDrawer,
   'email-connector-user-setting-connectors-drawer': EmailConnectorUserSettingConnectorsDrawer,
   'email-connector-user-setting-connectors-drawer-list': EmailConnectorUserSettingConnectorsDrawerList,
   'email-connector-user-setting-connectors-drawer-list-item': EmailConnectorUserSettingConnectorsDrawerListItem,
