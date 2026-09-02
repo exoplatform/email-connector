@@ -97,6 +97,14 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * The user's folder list, built-in and custom in one shape, optionally after a walk
+   * of the mailbox's folder list.
+   *
+   * @param request the caller
+   * @param refresh whether to walk the mailbox first
+   * @return the list, with the cap and the window, and whether the walk ran
+   */
   @GetMapping("/folders")
   @Secured("users")
   @Operation(summary = "Lists the user's mail folders", method = "GET",
@@ -114,6 +122,14 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Mirrors or stops mirroring one custom folder; opting out deletes the mirrored copy.
+   *
+   * @param request the caller
+   * @param id the folder's registry id
+   * @param sync whether the folder is mirrored
+   * @return the folder as it now stands
+   */
   @PatchMapping("/folders/{id}")
   @Secured("users")
   @Operation(summary = "Mirrors or stops mirroring one custom folder", method = "PATCH",
@@ -137,6 +153,13 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Refreshes one mirrored custom folder on this request.
+   *
+   * @param request the caller
+   * @param id the folder's registry id
+   * @return 200 when the check ran (or yielded to a running sync)
+   */
   @PostMapping("/folders/{id}/synchronization")
   @Secured("users")
   @Operation(summary = "Refreshes one custom folder now", method = "POST",
@@ -158,10 +181,19 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Moves messages into one of the user's mirrored custom folders.
+   *
+   * @param request the caller
+   * @param mailRemoteIds the IMAP UIDs, within the source folder
+   * @param folder the source folder; INBOX when omitted
+   * @param target the destination's {@code CUSTOM:<id>} key
+   * @return how many could not be moved, as {@code failedMoves}
+   */
   @PostMapping("/move")
   @Secured("users")
   @Operation(summary = "Moves emails into one of the user's own folders", method = "POST",
-             description = "Moves the given emails (IMAP UIDs numbered within the source folder) into the custom folder named by target. Answers 400 emailConnector.folder.unknown for a target that is not one of the caller's mirrored folders, 400 emailConnector.folder.sameAsSource when target is the source. Returns how many could not be moved")
+             description = "Moves the given emails (IMAP UIDs numbered within the source folder) into the custom folder named by target. Answers 400 emailConnector.folder.unknown for a target that is not one of the caller's folders, 400 emailConnector.folder.notMirrored for one they do not mirror, 400 emailConnector.folder.sameAsSource when target is the source. Returns how many could not be moved")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
