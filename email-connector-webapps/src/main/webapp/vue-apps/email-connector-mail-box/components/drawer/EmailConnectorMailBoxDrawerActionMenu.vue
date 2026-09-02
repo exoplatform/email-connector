@@ -16,22 +16,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-list-item-action class="ma-0">
-    <!-- min-width="240": the entries used to be fixed labels ("Inbox", "Drafts") and
-         shrinking to them was fine, but the folder names are the user's own now, so the
-         menu's width followed whatever they happened to call things and felt pinched. A
-         floor stops that; longer names still widen it past it.
-         Deliberately WITHOUT the no-min-width class every other menu in this webapp
-         carries: `.no-min-width { min-width: 0 !important; }` (platform-ui helpers.less)
-         beats an inline min-width style with !important regardless of the prop, which is
-         exactly why min-width="240" alone had no effect the first time. Vuetify's own
-         unforced default here (VMenu#calculatedMinWidth, no minWidth prop) falls back to
-         the ACTIVATOR's width -- this activator is a bare icon button, tens of pixels
-         wide -- so relying on the platform default instead of the prop would still leave
-         the menu pinched; the prop is load-bearing, not decorative. -->
+    <!-- The menu keeps no-min-width and sizes to its widest entry. A fixed floor was
+         tried and is wrong in both directions: it pads out a menu of short built-in
+         labels, and it is still too narrow for a long folder name. What was missing was
+         breathing room rather than width -- the entries sat tight against the right
+         edge, which is what read as cramped -- so the rows carry it as padding. -->
     <v-menu
       :nudge-top="-1"
-      min-width="240"
-      content-class="border-radius z-index-modal overflow-hidden"
+      content-class="no-min-width border-radius z-index-modal overflow-hidden"
       close-on-content-click
       offset-y
       left
