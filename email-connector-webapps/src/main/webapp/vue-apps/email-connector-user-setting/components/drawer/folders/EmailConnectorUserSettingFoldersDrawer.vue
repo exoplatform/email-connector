@@ -30,7 +30,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- The one explicit act this add-on ever writes to the mail server on its own
            behalf: the user asked for exactly this folder, by name, on this screen --
            see EmailBoxService#createCustomFolder for the distinction from a folder
-           created as a side effect. -->
+           created as a side effect. Opens the second-level name drawer -- see
+           EmailConnectorUserSettingFolderNameDrawer -- never a popup. -->
       <v-btn
         :title="$t('UserSettings.emailConnector.folders.create')"
         icon
@@ -93,53 +94,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-action>
         </v-list-item>
       </v-list>
-      <!-- The dialogs live INSIDE the content slot, not beside it. exo-drawer
+      <!-- The confirm dialog lives INSIDE the content slot, not beside it. exo-drawer
            declares only named slots (title, titleIcons, content, footer): anything
            placed as a direct child of the drawer lands in a default slot it does
            not render, so it is silently dropped -- no warning, no error, the ref
            simply never exists and the click does nothing. -->
-    <exo-confirm-dialog
-      ref="deleteConfirmDialog"
-      :title="$t('UserSettings.emailConnector.folders.delete.confirm.title')"
-      :message="deleteConfirmMessage"
-      :ok-label="$t('UserSettings.emailConnector.folders.delete')"
-      :cancel-label="$t('UserSettings.emailConnector.folders.cancel')"
-      @ok="doDelete" />
-    <!-- Create and rename share one small prompt: a name, validated by the server the
-         same way (blank, too long, nesting the mailbox's own separator, a provider's
-         reserved namespace, a name already used), and one button that runs whichever
-         action is open. Standard Vuetify form pieces, nothing bespoke. -->
-    <v-dialog v-model="nameDialog" max-width="480" @keydown.esc="closeNameDialog">
-      <v-card v-if="nameDialog">
-        <v-card-title>{{ nameDialogTitle }}</v-card-title>
-        <v-card-text>
-          <v-form ref="nameForm" @submit.prevent="submitNameDialog">
-            <v-text-field
-              v-model="nameInput"
-              autofocus
-              :maxlength="maxFolderNameLength"
-              :label="$t('UserSettings.emailConnector.folders.name.label')"
-              :error-messages="nameError"
-              @input="nameError = ''"
-              @keydown.enter="submitNameDialog" />
-          </v-form>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn text @click="closeNameDialog">
-            {{ $t('UserSettings.emailConnector.folders.cancel') }}
-          </v-btn>
-          <v-btn
-            color="primary"
-            text
-            :loading="nameSaving"
-            :disabled="!nameInput || !nameInput.trim()"
-            @click="submitNameDialog">
-            {{ nameDialogAction }}
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+      <!-- The one write this drawer offers with no undo built for it: the confirmation
+           names the folder, because "delete" here means gone from every client the
+           user owns, not moved to a Trash this screen could offer to restore from.
+           A confirmation, not a form -- this one stays a dialog; Create and Rename
+           are the second-level drawer (see #titleIcons and openRename below). -->
+      <exo-confirm-dialog
+        ref="deleteConfirmDialog"
+        :title="$t('UserSettings.emailConnector.folders.delete.confirm.title')"
+        :message="deleteConfirmMessage"
+        :ok-label="$t('UserSettings.emailConnector.folders.delete')"
+        :cancel-label="$t('UserSettings.emailConnector.folders.cancel')"
+        @ok="doDelete" />
     </template>
     <template #footer>
       <div class="d-flex align-center">
@@ -158,30 +129,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </div>
     </template>
-    <!-- The one write this drawer offers with no undo built for it: the confirmation
-         names the folder, because "delete" here means gone from every client the
-         user owns, not moved to a Trash this screen could offer to restore from. -->
   </exo-drawer>
 </template>
 
 <script>
-// The registry's own bound (EmailFolderService#MAX_FOLDER_NAME_LENGTH), mirrored
-// here so a name too long is stopped at the keyboard rather than only after a round
-// trip -- the field's own maxlength enforces it, this is the constant the two share.
-const MAX_FOLDER_NAME_LENGTH = 255;
-
-// The server's message codes this dialog knows how to say in the user's own words;
-// anything else falls back to the generic "could not save" sentence.
-const NAME_ERROR_KEYS = {
-  'emailConnector.folder.name.blank': 'UserSettings.emailConnector.folders.name.error.blank',
-  'emailConnector.folder.name.tooLong': 'UserSettings.emailConnector.folders.name.error.tooLong',
-  'emailConnector.folder.name.nested': 'UserSettings.emailConnector.folders.name.error.nested',
-  'emailConnector.folder.name.reserved': 'UserSettings.emailConnector.folders.name.error.reserved',
-  'emailConnector.folder.name.duplicate': 'UserSettings.emailConnector.folders.name.error.duplicate',
-  'emailConnector.folder.createFailed': 'UserSettings.emailConnector.folders.create.error',
-  'emailConnector.folder.renameFailed': 'UserSettings.emailConnector.folders.rename.error',
-};
-
 export default {
   data: () => ({
     drawer: false,
@@ -192,15 +143,6 @@ export default {
     loading: false,
     refreshing: false,
     savingId: null,
-    maxFolderNameLength: MAX_FOLDER_NAME_LENGTH,
-    // The one prompt both Create and Rename open: which action is live, and (for a
-    // rename) which folder it targets -- null means Create.
-    nameDialog: false,
-    nameAction: null,
-    nameTarget: null,
-    nameInput: '',
-    nameError: '',
-    nameSaving: false,
     // The folder a delete confirmation is pending on.
     deleteTarget: null,
   }),
@@ -214,24 +156,6 @@ export default {
       return this.folders.filter(folder => folder.type === 'CUSTOM');
     },
     /**
-     * The name prompt's title: Create when no folder is targeted, Rename when one is.
-     *
-     * @returns {String} the localized title
-     */
-    nameDialogTitle() {
-      return this.nameAction === 'rename' ? this.$t('UserSettings.emailConnector.folders.rename.title')
-        : this.$t('UserSettings.emailConnector.folders.create.title');
-    },
-    /**
-     * The name prompt's submit button label, matching the title.
-     *
-     * @returns {String} the localized label
-     */
-    nameDialogAction() {
-      return this.nameAction === 'rename' ? this.$t('UserSettings.emailConnector.folders.rename')
-        : this.$t('UserSettings.emailConnector.folders.create');
-    },
-    /**
      * The delete confirmation's message, naming the folder about to be destroyed --
      * the last point at which the user can still say no.
      *
@@ -243,9 +167,13 @@ export default {
   },
   created() {
     this.$root.$on('open-email-folders-drawer', this.open);
+    // The second-level name drawer (create/rename) saved something: reload while
+    // this drawer stays open behind it -- it was never closed to make room for it.
+    this.$root.$on('email-folders-list-changed', this.onFoldersListChanged);
   },
   beforeDestroy() {
     this.$root.$off('open-email-folders-drawer', this.open);
+    this.$root.$off('email-folders-list-changed', this.onFoldersListChanged);
   },
   methods: {
     /**
@@ -279,6 +207,18 @@ export default {
           return null;
         })
         .finally(() => this.loading = false);
+    },
+    /**
+     * Reloads the list once the name drawer created or renamed a folder -- only
+     * while this drawer is the one open (the name drawer is reached from nowhere
+     * else), so a reload while closed is not worth paying for.
+     *
+     * @returns {void}
+     */
+    onFoldersListChanged() {
+      if (this.drawer) {
+        this.load(false);
+      }
     },
     /**
      * Walks the mailbox's folder list now -- for the folder the user just created
@@ -327,74 +267,23 @@ export default {
         });
     },
     /**
-     * Opens the prompt on Create -- an empty name, over the folder the user is about
-     * to make on their own mail server.
+     * Opens the second-level name drawer on Create -- see
+     * EmailConnectorUserSettingFolderNameDrawer. This drawer stays open behind it.
      *
      * @returns {void}
      */
     openCreate() {
-      this.nameAction = 'create';
-      this.nameTarget = null;
-      this.nameInput = '';
-      this.nameError = '';
-      this.nameDialog = true;
+      this.$root.$emit('open-email-folder-name-drawer', { mode: 'create' });
     },
     /**
-     * Opens the prompt on Rename, pre-filled with the folder's current name.
+     * Opens the second-level name drawer on Rename, pre-filled with the folder's
+     * current name. This drawer stays open behind it.
      *
      * @param {Object} folder the folder to rename
      * @returns {void}
      */
     openRename(folder) {
-      this.nameAction = 'rename';
-      this.nameTarget = folder;
-      this.nameInput = folder?.displayName || '';
-      this.nameError = '';
-      this.nameDialog = true;
-    },
-    /**
-     * Closes the prompt without saving.
-     *
-     * @returns {void}
-     */
-    closeNameDialog() {
-      this.nameDialog = false;
-      this.nameTarget = null;
-    },
-    /**
-     * Runs whichever action the prompt is open on. The server's own message code
-     * comes back as the field's error when the name itself is the problem (blank, too
-     * long, nesting, reserved, a duplicate); a create or rename that failed on the
-     * server for another reason gets the toast the rest of this screen uses.
-     *
-     * @returns {void}
-     */
-    submitNameDialog() {
-      const name = (this.nameInput || '').trim();
-      if (!name) {
-        return;
-      }
-      this.nameSaving = true;
-      const action = this.nameAction === 'rename'
-        ? this.$emailConnectorUserSettingService.renameMailFolder(this.nameTarget.id, name)
-        : this.$emailConnectorUserSettingService.createMailFolder(name);
-      action
-        .then(() => {
-          this.closeNameDialog();
-          this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success');
-          this.load(false);
-        })
-        .catch(error => {
-          const key = NAME_ERROR_KEYS[error?.message];
-          if (key && key.indexOf('.name.error.') >= 0) {
-            // The name itself is the problem: said right at the field, not as a toast
-            // that has already scrolled away by the time the user looks back at it.
-            this.nameError = this.$t(key, { 0: this.maxFolderNameLength });
-          } else {
-            this.$root.$emit('alert-message', this.$t(key || 'UserSettings.emailConnector.folders.error'), 'error');
-          }
-        })
-        .finally(() => this.nameSaving = false);
+      this.$root.$emit('open-email-folder-name-drawer', { mode: 'rename', folder });
     },
     /**
      * Asks for the confirmation a delete needs -- the folder is named in it, and
