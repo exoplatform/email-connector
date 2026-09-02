@@ -269,11 +269,20 @@ public class EmailBoxServiceTest {
    * Switches the custom folders off for every test in this class, so the daily folder
    * walk the routine sync runs when they are on does not put a {@code LIST *} into
    * tests written to prove the remembered names avoid one. The tests that are ABOUT
-   * custom folders turn them back on explicitly.
+   * custom folders turn them back on explicitly. {@code lenient()}, like the other
+   * class-wide defaults below: most tests never read this stub. Since the
+   * administration settings drawer shipped, the master switch lives behind
+   * {@link EmailConnectorService}, a mock in this class, so this stubs the mock
+   * directly rather than the {@code System.setProperty} this class used before
+   * that switch moved to {@code SettingService} — {@code EmailFolderService} is
+   * the REAL bean here (it is in {@code @SpringBootTest}'s classes, not a
+   * {@code @MockBean}), and its {@code isCustomFoldersEnabled()} now delegates to
+   * the mocked {@code EmailConnectorService} rather than reading the JVM property
+   * itself.
    */
   @BeforeEach
   void disableCustomFolders() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "false");
+    lenient().when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(false);
   }
 
   /**
@@ -283,7 +292,6 @@ public class EmailBoxServiceTest {
   @AfterEach
   void restoreThePostSendSentRefresh() {
     System.clearProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY);
-    System.clearProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY);
   }
 
   /**
@@ -8049,7 +8057,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void customFoldersAreSyncedAfterJunkUnderTheirKeyAndRecordedOnTheirRow() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
     lenient().when(junk.getMessageCount()).thenReturn(2);
     // The registered folder is in the listing, as the daily walk would find it: a
@@ -8082,7 +8090,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aPickedFolderTheServerLostIsMarkedMissing() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     givenAMailboxListing();
     when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(registeredFolder(3L, "Gone", true)));
     IMAPFolder remote = mock(IMAPFolder.class);
@@ -8104,7 +8112,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void theDueWalkRegistersTheUsersFoldersAndPurgesTheOnesTwiceMissing() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     IMAPFolder parent = aHiddenFolder(new String[] { "\\Noselect", "\\HasChildren" }, "[Gmail]");
     IMAPFolder factures = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     lenient().when(factures.getName()).thenReturn("Factures");
@@ -8161,7 +8169,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void openingAStaleCustomFolderRefreshesItFirstAndAFreshOneIsNot() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8194,7 +8202,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void theFolderListShowsWhatTheMailboxHasNotWhatTheCacheHolds() throws Exception {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8230,7 +8238,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void optingOutDeletesTheMirroredRows() throws Exception {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8257,7 +8265,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void aMoveIsRefusedForAnUnknownTargetTheSourceItselfOrAHiddenSource() throws Exception {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8284,7 +8292,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aMoveFilesIntoTheRegistrysFolderAndReadsItsSourceThroughIt() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8333,7 +8341,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aFolderOptedOutDuringItsSyncLosesWhatTheSyncWrote() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(remote.getMessageCount()).thenReturn(3);
     givenAMailboxListing(remote);
@@ -8364,7 +8372,7 @@ public class EmailBoxServiceTest {
   @SneakyThrows
   @SuppressWarnings("unchecked")
   void openingAStaleFolderWhileASyncRunsAnswersTheCache() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8485,7 +8493,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void refreshRefusesAnUnmirroredFolderAndMoveRefusesTheCompletionStore() throws Exception {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8509,7 +8517,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void refreshingTheFolderListWalksNowAndKeepsWhatItFound() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     IMAPFolder factures = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     lenient().when(factures.getName()).thenReturn("Factures");
     IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
@@ -8541,7 +8549,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aRequestedWalkThatCannotReachTheMailboxSaysSo() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8566,7 +8574,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aFailingOnOpenRefreshIsNotRetriedOnEveryPoll() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8593,7 +8601,7 @@ public class EmailBoxServiceTest {
    */
   @Test
   void aMoveIntoAnUnmirroredFolderIsRefused() throws Exception {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
@@ -8613,7 +8621,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void theWalksSaveKeepsWhatASyncSavedMeanwhile() {
-    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
     givenAMailboxListing(junk);
     when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());

@@ -67,6 +67,9 @@ class EmailFolderServiceTest {
   @Mock
   private EmailFolderStorage  emailFolderStorage;
 
+  @Mock
+  private EmailConnectorService emailConnectorService;
+
   @InjectMocks
   private EmailFolderService  emailFolderService;
 
@@ -79,6 +82,23 @@ class EmailFolderServiceTest {
     System.clearProperty(EmailFolderService.CUSTOM_FOLDERS_PER_CYCLE_PROPERTY);
     System.clearProperty(EmailFolderService.CUSTOM_FOLDERS_STALE_MINUTES_PROPERTY);
     System.clearProperty(EmailFolderService.CUSTOM_FOLDERS_DISCOVERY_HOURS_PROPERTY);
+  }
+
+  // ---------------------------------------------------------------------------------
+  // The master switch
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Since the administration settings drawer shipped, the master switch is no longer
+   * a bare System property read here: it delegates to
+   * {@code EmailConnectorService#isCustomFoldersEnabled()}, which is the one that
+   * knows about the SettingService-backed value and falls back to the property
+   * itself.
+   */
+  @Test
+  void isCustomFoldersEnabledDelegatesToEmailConnectorService() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(false);
+    assertFalse(emailFolderService.isCustomFoldersEnabled());
   }
 
   // ---------------------------------------------------------------------------------
