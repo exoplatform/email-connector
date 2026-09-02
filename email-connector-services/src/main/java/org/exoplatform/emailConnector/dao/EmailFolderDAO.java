@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.dao;
 
+import java.util.Date;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -27,9 +28,18 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.emailConnector.entity.EmailFolderEntity;
 
 /**
- * The custom-folder registry. Every read is scoped to a user: a folder id sent by a
- * client is only ever resolved together with the caller's own user id, so a number
- * guessed or remembered from another account addresses nothing.
+ * The custom-folder registry. Every read AND every write is scoped to a user: a folder
+ * id sent by a client is only ever resolved together with the caller's own user id, so
+ * a number guessed or remembered from another account addresses nothing.
+ * <p>
+ * The writes are explicit UPDATE statements, one per writer, each naming the columns
+ * that writer owns. The row has three writers (discovery, the user's opt-in, the sync
+ * job's checkpoint), and a read-modify-save would put back whatever the other two
+ * committed since the read -- a hazard {@code DynamicUpdate} on the entity only
+ * narrows to "since the load", which is not nothing when the load can come from a
+ * persistence context that outlives the call. A statement that names its columns
+ * cannot touch the others, whatever context is around. {@code clearAutomatically}
+ * so a read after the write sees the row, not a cached instance of it.
  */
 public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
 
@@ -98,6 +108,142 @@ public interface EmailFolderDAO extends JpaRepository<EmailFolderEntity, Long> {
    */
   @Query("SELECT COUNT(folder) FROM EmailFolderEntity folder WHERE folder.userId = :userId AND folder.syncEnabled = true")
   long countEnabledByUserId(@Param("userId")
+  String userId);
+
+  /**
+   * Discovery's write for a folder the walk saw again: what the server now says about
+   * it, un-missed, and the sighting stamped. One statement naming its columns and no
+   * others, which is what makes the row safe for its two other writers: the settings
+   * screen's opt-in and the sync job's checkpoint are never read here, so they can
+   * never be put back stale.
+   *
+   * @param id the row id
+   * @param userId the mailbox owner
+   * @param displayName the last path segment as the server now spells it
+   * @param delimiter the hierarchy separator as the server now reports it
+   * @param seenDate the sighting time
+   * @return the rows updated: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.displayName = :displayName, folder.delimiter = :delimiter, folder.missing = false, folder.lastSeenDate = :seenDate WHERE folder.id = :id AND folder.userId = :userId")
+  int markSeen(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("displayName")
+  String displayName, @Param("delimiter")
+  String delimiter, @Param("seenDate")
+  Date seenDate);
+
+  /**
+   * Discovery's write for a folder the walk (or a sync) could not find: the missing
+   * mark and nothing else, so the grace rule of the next walk applies.
+   *
+   * @param id the row id
+   * @param userId the mailbox owner
+   * @return the rows updated: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.missing = true WHERE folder.id = :id AND folder.userId = :userId")
+  int markMissing(@Param("id")
+  long id, @Param("userId")
+  String userId);
+
+  /**
+   * The user's opt-in. Stamps the opt-in date and forgets any check date, so the
+   * folder is first in the next rotation; touches no snapshot column.
+   *
+   * @param id the row id
+   * @param userId the mailbox owner
+   * @param when the opt-in time
+   * @return the rows updated: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.syncEnabled = true, folder.enabledDate = :enabledDate, folder.lastSyncDate = null WHERE folder.id = :id AND folder.userId = :userId")
+  int enableSync(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("enabledDate")
+  Date when);
+
+  /**
+   * The user's opt-out. Clears the opt-in AND the folder's whole sync memory in one
+   * statement: the caller is deleting the mirrored rows, and a snapshot surviving them
+   * would let a later opt-in skip "unchanged" over an empty cache -- the folder would
+   * come up blank and stay blank until new mail happened to arrive.
+   *
+   * @param id the row id
+   * @param userId the mailbox owner
+   * @return the rows updated: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.syncEnabled = false, folder.enabledDate = null, folder.lastSyncDate = null, folder.uidValidity = null, folder.uidNext = null, folder.messageCount = null, folder.highestModSeq = null, folder.windowSize = null WHERE folder.id = :id AND folder.userId = :userId")
+  int disableSync(@Param("id")
+  long id, @Param("userId")
+  String userId);
+
+  /**
+   * The sync job's write when the folder was checked and found unchanged: the check
+   * date alone, so the folder rotates to the back of the queue and keeps the snapshot
+   * it had. Only while the folder is still opted in: an opt-out that landed during the
+   * check must not be un-done by a stamp written after it.
+   *
+   * @param id the row id
+   * @param userId the mailbox owner
+   * @param when the check time
+   * @return the rows updated: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.lastSyncDate = :when WHERE folder.id = :id AND folder.userId = :userId AND folder.syncEnabled = true")
+  int recordCheck(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("when")
+  Date when);
+
+  /**
+   * The sync job's write when the folder was fully synced: the check date and the five
+   * signals of the snapshot the sync captured at its SELECT. Only while the folder is
+   * still opted in, for the reason {@link #recordCheck} gives and one more: a snapshot
+   * re-planted on a folder whose rows the opt-out just deleted would let the next
+   * opt-in skip "unchanged" over an empty cache.
+   *
+   * @param id the row id
+   * @param userId the mailbox owner
+   * @param when the check time
+   * @param uidValidity the folder's UIDVALIDITY
+   * @param uidNext the folder's UIDNEXT
+   * @param messageCount the message count the window listing used
+   * @param highestModSeq the folder's HIGHESTMODSEQ, negative without CONDSTORE
+   * @param windowSize the window the sync listed
+   * @return the rows updated: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailFolderEntity folder SET folder.lastSyncDate = :when, folder.uidValidity = :uidValidity, folder.uidNext = :uidNext, folder.messageCount = :messageCount, folder.highestModSeq = :highestModSeq, folder.windowSize = :windowSize WHERE folder.id = :id AND folder.userId = :userId AND folder.syncEnabled = true")
+  int recordSnapshot(@Param("id")
+  long id, @Param("userId")
+  String userId, @Param("when")
+  Date when, @Param("uidValidity")
+  long uidValidity, @Param("uidNext")
+  long uidNext, @Param("messageCount")
+  long messageCount, @Param("highestModSeq")
+  long highestModSeq, @Param("windowSize")
+  int windowSize);
+
+  /**
+   * Drops one registered folder, by id and owner.
+   *
+   * @param id the row id
+   * @param userId the mailbox owner
+   * @return the rows deleted: one, or zero when no such row belongs to that user
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("DELETE FROM EmailFolderEntity folder WHERE folder.id = :id AND folder.userId = :userId")
+  int deleteByIdAndUserId(@Param("id")
+  long id, @Param("userId")
   String userId);
 
   /**
