@@ -303,6 +303,69 @@ public class EmailConnectorServiceTest {
   }
 
   @Test
+  void customFoldersEnabledDefaultsToTrueWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.CUSTOM_FOLDERS_ENABLED_KEY)).thenReturn(null);
+    assertEquals(true, emailConnectorService.isCustomFoldersEnabled());
+  }
+
+  @Test
+  void customFoldersEnabledReturnsStoredValue() {
+    doReturn(SettingValue.create("false")).when(settingService)
+                                          .get(Context.GLOBAL,
+                                               EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                               EmailConnectorService.CUSTOM_FOLDERS_ENABLED_KEY);
+    assertEquals(false, emailConnectorService.isCustomFoldersEnabled());
+  }
+
+  /**
+   * The switch's whole contract: an administrator's stored value must win over the
+   * JVM property, in both directions -- otherwise the drawer would be a control an
+   * operator's {@code exo.properties} could silently overrule.
+   */
+  @Test
+  void theStoredValueOverridesTheJvmPropertyInBothDirections() {
+    System.setProperty("email.connector.customFolders.enabled", "true");
+    try {
+      doReturn(SettingValue.create("false")).when(settingService)
+                                            .get(Context.GLOBAL,
+                                                 EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                                 EmailConnectorService.CUSTOM_FOLDERS_ENABLED_KEY);
+      assertEquals(false, emailConnectorService.isCustomFoldersEnabled(),
+                   "a stored 'false' must be refused even though the JVM property says true");
+    } finally {
+      System.clearProperty("email.connector.customFolders.enabled");
+    }
+
+    System.setProperty("email.connector.customFolders.enabled", "false");
+    try {
+      doReturn(SettingValue.create("true")).when(settingService)
+                                           .get(Context.GLOBAL,
+                                                EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                                EmailConnectorService.CUSTOM_FOLDERS_ENABLED_KEY);
+      assertEquals(true, emailConnectorService.isCustomFoldersEnabled(),
+                   "a stored 'true' must be honored even though the JVM property says false");
+    } finally {
+      System.clearProperty("email.connector.customFolders.enabled");
+    }
+  }
+
+  @Test
+  @SneakyThrows
+  void saveCustomFoldersEnabled() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveCustomFoldersEnabled(false, TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    emailConnectorService.saveCustomFoldersEnabled(false, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.CUSTOM_FOLDERS_ENABLED_KEY),
+                               any(SettingValue.class));
+  }
+
+  @Test
   void getEmailConnectors() {
     Locale frLocale = mock(Locale.class);
     List<EmailConnector> list = List.of(mock(EmailConnector.class));
