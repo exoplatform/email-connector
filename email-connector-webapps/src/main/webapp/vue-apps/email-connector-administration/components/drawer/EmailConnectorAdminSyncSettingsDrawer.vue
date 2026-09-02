@@ -58,7 +58,7 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="confirmCacheSizeChange" />
           </v-list-item-action>
         </v-list-item>
-        <v-list-item dense class="px-0">
+        <v-list-item dense class="px-0 mt-6">
           <v-list-item-content class="py-0">
             <v-list-item-title>
               {{ $t('emailConnector.admin.syncSettings.period.title') }}
@@ -81,7 +81,7 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="confirmSyncPeriodChange" />
           </v-list-item-action>
         </v-list-item>
-        <v-list-item dense class="px-0 height-auto">
+        <v-list-item dense class="px-0 height-auto mt-6">
           <v-list-item-content class="py-0">
             <v-list-item-title>
               {{ $t('emailConnector.admin.syncSettings.trash.title') }}
@@ -98,7 +98,7 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="onTrashSyncChange" />
           </v-list-item-action>
         </v-list-item>
-        <v-list-item dense class="px-0 height-auto">
+        <v-list-item dense class="px-0 height-auto mt-6">
           <v-list-item-content class="py-0">
             <v-list-item-title>
               {{ $t('emailConnector.admin.syncSettings.junk.title') }}
@@ -115,7 +115,7 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="onJunkSyncChange" />
           </v-list-item-action>
         </v-list-item>
-        <v-list-item dense class="px-0 height-auto">
+        <v-list-item dense class="px-0 height-auto mt-6">
           <v-list-item-content class="py-0">
             <v-list-item-title>
               {{ $t('emailConnector.admin.syncSettings.draftsServer.title') }}
