@@ -578,7 +578,7 @@ public class EmailBoxStorageTest {
    */
   @Test
   void getThreadSummariesReadsTheCountAndTheDraftOutOfOneRow() {
-    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-with-draft", 3L, 1L },
+    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-with-draft", 3L, 1L },
                                                                          new Object[] { "thread-without-draft", 2L, 0L }));
 
     var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
@@ -598,7 +598,7 @@ public class EmailBoxStorageTest {
    */
   @Test
   void getThreadSummariesTreatsAnAbsentDraftColumnAsNoDraft() {
-    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 1L, null }));
+    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 1L, null }));
 
     var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
 
@@ -622,8 +622,8 @@ public class EmailBoxStorageTest {
    */
   @Test
   void getThreadSummariesNamesTheOtherPeopleInADraftsConversation() {
-    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 3L, 1L }));
-    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
+    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 3L, 1L }));
+    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
         "Benjamin,owner@example.org", date(1) }, new Object[] { "thread-1", "Gianni,gianni@example.org", date(3) },
                                                                                               new Object[] { "thread-1",
                                                                                                   "Véronika,veronika@example.org",
@@ -647,8 +647,8 @@ public class EmailBoxStorageTest {
    */
   @Test
   void getThreadSummariesNamesNobodyOnAConversationTheOwnerIsAloneIn() {
-    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 1L, 1L }));
-    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
+    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 1L, 1L }));
+    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
         "Benjamin,owner@example.org", date(1) }));
 
     var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
@@ -668,8 +668,8 @@ public class EmailBoxStorageTest {
    */
   @Test
   void getThreadSummariesNamesTheSamePersonOnce() {
-    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 3L, 1L }));
-    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
+    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 3L, 1L }));
+    when(emailBoxDAO.findDraftThreadParticipantsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-1",
         ",veronika@example.org", date(1) }, new Object[] { "thread-1", "Véronika,veronika@example.org", date(2) }));
 
     var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
@@ -685,7 +685,7 @@ public class EmailBoxStorageTest {
    */
   @Test
   void getThreadSummariesLeavesAnOrdinaryConversationUnnamed() {
-    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.TRASH)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 2L, 0L }));
+    when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-1", 2L, 0L }));
 
     var summaries = emailBoxStorage.getThreadSummaries("root", OWNER_ADDRESS);
 

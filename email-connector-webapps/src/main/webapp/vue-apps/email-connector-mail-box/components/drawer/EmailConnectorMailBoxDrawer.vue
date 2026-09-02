@@ -269,6 +269,8 @@ export default {
       // each list stays readable — they are filtered out of the listing all the same.
       restoredEmailIds: [],
       purgedEmailIds: [],
+      junkedEmailIds: [],
+      unjunkedEmailIds: [],
       currentFolder: 'INBOX',
       // The favorite view: list only the messages carrying the mail server's
       // \Flagged flag, in the listed folder. Toggled from the chip row.
@@ -420,6 +422,31 @@ export default {
     };
     this.$root.$on('restore-email', this.onRestoreEmail);
     this.$root.$on('purge-email', this.onPurgeEmail);
+    // The two Junk actions, wired the same way. "Mark as spam" leaves from any
+    // writable folder, "Not spam" from the Spam listing; a Delete out of Spam is the
+    // ordinary delete-email above, addressed to the row's own folder.
+    this.onJunkEmail = (emails) => {
+      this.markAsJunk(emails);
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return;
+      }
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
+      }
+    };
+    this.onNotJunkEmail = (emails) => {
+      this.restoreFromJunk(emails);
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return;
+      }
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
+      }
+    };
+    this.$root.$on('junk-email', this.onJunkEmail);
+    this.$root.$on('not-junk-email', this.onNotJunkEmail);
     // A draft was saved to (or discarded from) the Drafts folder. The list is a
     // mirror of the local cache and the composer has just changed it, so it has to
     // be re-read — this is the only writer outside the sync.
@@ -499,6 +526,8 @@ export default {
     this.$root.$off('archive-email', this.onArchiveEmail);
     this.$root.$off('restore-email', this.onRestoreEmail);
     this.$root.$off('purge-email', this.onPurgeEmail);
+    this.$root.$off('junk-email', this.onJunkEmail);
+    this.$root.$off('not-junk-email', this.onNotJunkEmail);
     this.$root.$off('email-categories-updated', this.onCategoriesUpdated);
     this.$root.$off('switch-folder', this.onSwitchFolder);
     this.$root.$off('open-category-view', this.openCategoryView);
@@ -510,7 +539,7 @@ export default {
     hasEmails() {
       return this.emails?.length > 0;
     },
-    // INBOX plus any of SENT/ARCHIVE/DRAFTS/TRASH that actually hold mail, for the ⋮ folder switch.
+    // INBOX plus any of SENT/ARCHIVE/DRAFTS/JUNK/TRASH that actually hold mail, for the ⋮ folder switch.
     /**
      * The folders offered in the 3-dots menu: the inbox always, the others only
      * once they hold something.
@@ -520,15 +549,15 @@ export default {
      * one and the other has to change with it, or this offers a folder the backend
      * refuses (or hides one it would happily serve).
      *
-     * Trash is count-gated like the rest, which is what keeps it off the menu of a
-     * mailbox that has no Trash folder at all, or an empty one — the entry appears
-     * only once the sync has actually cached something to look at.
+     * Trash and Spam are count-gated like the rest, which is what keeps them off the
+     * menu of a mailbox that has no such folder at all, or an empty one — the entry
+     * appears only once the sync has actually cached something to look at.
      *
      * @returns {Array} the folder ids to offer
      */
     availableFolders() {
       const counts = this.emailBox?.folderCounts || {};
-      return ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
+      return ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'JUNK', 'TRASH'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
     },
     syncBlocked() {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';
@@ -544,6 +573,8 @@ export default {
           title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.drafts')}`;
         } else if (this.currentFolder === 'TRASH') {
           title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.trash')}`;
+        } else if (this.currentFolder === 'JUNK') {
+          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.junk')}`;
         }
         // The favorite view reads as one more folder-like narrowing of the list.
         if (this.favoriteOnly) {
@@ -641,6 +672,8 @@ export default {
       emails = emails.filter(e => !this.archivedEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.restoredEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.purgedEmailIds.includes(e.mailRemoteId));
+      emails = emails.filter(e => !this.junkedEmailIds.includes(e.mailRemoteId));
+      emails = emails.filter(e => !this.unjunkedEmailIds.includes(e.mailRemoteId));
       // The filters combine: each one narrows what the others left, so
       // "unread favorites in this category" is just everything toggled on. A
       // category VIEW is single selection (categoryViewId), so at most one
@@ -1068,6 +1101,8 @@ export default {
       this.archivedEmailIds = [];
       this.restoredEmailIds = [];
       this.purgedEmailIds = [];
+      this.junkedEmailIds = [];
+      this.unjunkedEmailIds = [];
     },
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
@@ -1387,7 +1422,46 @@ export default {
         .catch(() => this.alertOnActionFailures(emailIdsToPurge.length, 'purge'));
     },
     /**
-     * The error alert every one of the four mail actions raises, and the place the
+     * Moves messages to the Spam folder — "Mark as spam" — one request per folder
+     * they are listed in, exactly as delete and archive are sent.
+     *
+     * Optimistic like them: the rows leave the listing at once and an alert says how
+     * many did not make it. The message shows up in the Spam listing at the next
+     * synchronization, not at once (the backend does not chase its new UID).
+     *
+     * @param {Array<Number>} emailIdsToJunk the IMAP UIDs to report as spam
+     * @returns {void}
+     */
+    markAsJunk(emailIdsToJunk = []) {
+      // Group BEFORE hiding the rows — same reason as deleteEmails above.
+      const groups = this.byOwnFolder(emailIdsToJunk);
+      this.junkedEmailIds.push(...emailIdsToJunk);
+      groups.forEach(([folder, ids]) =>
+        this.$emailConnectorMailBoxService.markAsJunk(ids, folder)
+          .then(junkResult => this.alertOnActionFailures(junkResult.failedJunkMoves ?? 0, 'junk'))
+          .catch(() => this.alertOnActionFailures(ids.length, 'junk')));
+    },
+    /**
+     * Puts quarantined messages back into the inbox — "Not spam".
+     *
+     * Optimistic like the Trash restore, with the same honest limit: the rescued
+     * message reappears in the inbox at the next synchronization, so nothing is added
+     * to a listing here.
+     *
+     * @param {Array} emailIdsToRestore the IMAP UIDs, within the Spam folder
+     * @returns {void}
+     */
+    restoreFromJunk(emailIdsToRestore = []) {
+      if (!emailIdsToRestore.length) {
+        return;
+      }
+      this.unjunkedEmailIds.push(...emailIdsToRestore);
+      this.$emailConnectorMailBoxService.restoreFromJunk(emailIdsToRestore)
+        .then(restoreResult => this.alertOnActionFailures(restoreResult.failedJunkRestores ?? 0, 'notJunk'))
+        .catch(() => this.alertOnActionFailures(emailIdsToRestore.length, 'notJunk'));
+    },
+    /**
+     * The error alert every one of the six mail actions raises, and the place the
      * partial-failure story is told: a selection can fail halfway, the earlier messages
      * having already moved, so the count is what is shown rather than "it failed".
      *
@@ -1402,8 +1476,8 @@ export default {
      * would be this drawer guessing at what the server decided.
      *
      * @param {Number} failures how many messages the action could not be applied to
-     * @param {String} action 'delete', 'archive', 'restore' or 'purge', which picks the
-     *        message
+     * @param {String} action 'delete', 'archive', 'restore', 'purge', 'junk' or
+     *        'notJunk', which picks the message
      * @returns {void}
      */
     alertOnActionFailures(failures, action) {

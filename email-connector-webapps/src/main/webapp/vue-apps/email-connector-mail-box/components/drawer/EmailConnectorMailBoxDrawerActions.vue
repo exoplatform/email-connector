@@ -72,6 +72,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="error--text">fa-trash</v-icon>
       </v-btn>
       <v-btn
+        v-if="canMarkSelectionAsJunk"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.markJunk.label')"
+        @click="markAsJunk()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-ban</v-icon>
+      </v-btn>
+      <v-btn
+        v-if="canApplyJunkActions"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.notJunk.label')"
+        @click="restoreFromJunk()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-check-circle</v-icon>
+      </v-btn>
+      <v-btn
+        v-if="canApplyJunkActions"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+        @click="deleteEmails()"
+        icon>
+        <v-icon size="20" class="error--text">fa-trash</v-icon>
+      </v-btn>
+      <v-btn
         v-if="canApplyTrashActions"
         :title="$t('emailConnector.mailBox.list.drawer.detail.restore.label')"
         @click="restoreEmails()"
@@ -128,6 +149,40 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-btn>
       <v-btn
         v-if="canMutateSelection"
+        @click="deleteEmails()"
+        outlined
+        class="btn error font-weight-bold">
+        <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
+        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
+      </v-btn>
+      <v-btn
+        v-if="canMarkSelectionAsJunk"
+        @click="markAsJunk()"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-ban
+        </v-icon>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.markJunk.label') }}
+      </v-btn>
+      <v-btn
+        v-if="canApplyJunkActions"
+        @click="restoreFromJunk()"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-check-circle
+        </v-icon>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.notJunk.label') }}
+      </v-btn>
+      <v-btn
+        v-if="canApplyJunkActions"
         @click="deleteEmails()"
         outlined
         class="btn error font-weight-bold">
@@ -254,6 +309,31 @@ export default {
         && this.selectedEmails.every(emailId =>
           this.$emailConnectorMailBoxService.hasTrashActions(this.emailsMap[emailId]?.folder));
     },
+    /**
+     * Whether the selection may be marked as not spam, or deleted out of the Spam
+     * folder — the same every-row rule as canApplyTrashActions, for the other hidden
+     * folder, and for the same reason: a Junk restore is answered against the Junk
+     * folder, where a non-Junk row's UID names some other message.
+     *
+     * @returns {Boolean} true when "Not spam" / delete may be offered
+     */
+    canApplyJunkActions() {
+      return this.hasSelectedEmails
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.hasJunkActions(this.emailsMap[emailId]?.folder));
+    },
+    /**
+     * Whether the selection may be reported as spam: every selected row must be one
+     * "Mark as spam" is offered on (a writable folder's, and not a draft), so the
+     * request is never sent for a row the server would refuse and count as failed.
+     *
+     * @returns {Boolean} true when "Mark as spam" may be offered
+     */
+    canMarkSelectionAsJunk() {
+      return this.hasSelectedEmails
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.canMarkAsJunk(this.emailsMap[emailId]?.folder));
+    },
   },
   created() {
     this.$root.$on('open-webmail', this.openWebmail);
@@ -283,6 +363,23 @@ export default {
     },
     archiveEmails() {
       this.$root.$emit('archive-email', this.selectedEmails);
+    },
+    /**
+     * Reports the whole selection as spam. No confirmation — undone from the Spam
+     * listing with "Not spam".
+     *
+     * @returns {void}
+     */
+    markAsJunk() {
+      this.$root.$emit('junk-email', this.selectedEmails);
+    },
+    /**
+     * Puts the whole selection back into the inbox out of the Spam folder.
+     *
+     * @returns {void}
+     */
+    restoreFromJunk() {
+      this.$root.$emit('not-junk-email', this.selectedEmails);
     },
     /**
      * Puts the whole selection back into the inbox. No confirmation — a restore is

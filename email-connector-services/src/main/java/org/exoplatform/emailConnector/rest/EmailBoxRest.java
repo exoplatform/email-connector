@@ -73,14 +73,14 @@ public class EmailBoxRest {
 
   @GetMapping()
   @Secured("users")
-  @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE for the in-app folder switch), optionally restricted to the starred ones")
+  @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE / DRAFTS / TRASH / JUNK for the in-app folder switch), optionally restricted to the starred ones")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public EmailBox getEmailBox(HttpServletRequest request,
-                              @Parameter(description = "Folder to list: INBOX, SENT or ARCHIVE")
+                              @Parameter(description = "Folder to list: INBOX, SENT, ARCHIVE, DRAFTS, TRASH or JUNK")
                               @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                               String folder,
                               @Parameter(description = "When true, only the starred emails (IMAP \\Flagged) are returned")
@@ -492,7 +492,7 @@ public class EmailBoxRest {
                                           @Parameter(description = "Email remote ids", required = true)
                                           @RequestBody
                                           List<Long> mailRemoteIds,
-                                          @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, ALL_MAIL); INBOX when omitted")
+                                          @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, ALL_MAIL, JUNK); INBOX when omitted")
                                           @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                                           String folder) {
 
@@ -614,6 +614,91 @@ public class EmailBoxRest {
       int failedPurges = emailBoxService.purgeEmail(mailRemoteIds, request.getRemoteUser());
       Map<String, Integer> response = new HashMap<>();
       response.put("failedPurges", failedPurges);
+      return response;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Moves messages to the Junk folder — "Mark as spam".
+   * <p>
+   * A POST rather than a DELETE beside {@code /archive}: nothing is removed from the
+   * mailbox, the message is filed where the user's other clients and (on the
+   * providers that learn from it) the filter will see the report. Its own endpoint
+   * rather than a target parameter on the delete, for the reason the Trash restore
+   * gives: opposite fates for the same rows must not be one typo apart.
+   * <p>
+   * Status mapping follows this controller, not the org contract: an
+   * {@code IllegalAccessException} ("no connected mailbox") is answered 401 here as it
+   * is by every sibling endpoint, so that one controller keeps one contract for the
+   * clients that read it. Moving the whole file to 403 is a change of its own.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to report as spam
+   * @param folder the folder those UIDs are numbered in; INBOX when omitted. The
+   *          caller must send the ROW's own folder, as for the delete
+   * @return {@code failedJunkMoves}: how many could not be marked as spam
+   */
+  @PostMapping("/junk")
+  @Secured("users")
+  @Operation(summary = "Marks emails as spam", method = "POST", description = "Moves the given messages, out of the folder they are listed in, to the Junk folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder. Refused, and counted as failed, from Trash, Drafts and Junk itself, and when the mailbox has no Junk folder.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public Map<String, Integer> markAsJunk(HttpServletRequest request,
+                                         @Parameter(description = "Email remote ids", required = true)
+                                         @RequestBody
+                                         List<Long> mailRemoteIds,
+                                         @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, ALL_MAIL); INBOX when omitted")
+                                         @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                         String folder) {
+    try {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      int failedJunkMoves = emailBoxService.markAsJunk(mailRemoteIds, request.getRemoteUser(), folder);
+      Map<String, Integer> response = new HashMap<>();
+      response.put("failedJunkMoves", failedJunkMoves);
+      return response;
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Puts quarantined messages back into the inbox — "Not spam".
+   * <p>
+   * The mirror of {@code /trash/restore} for the Junk folder, and its own endpoint for
+   * the same reason: the UIDs it takes are numbered within the Junk folder, and a
+   * restore addressed to the wrong hidden folder would act on whatever message holds
+   * that number there.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteIds the IMAP UIDs, within the Junk folder, to put back
+   * @return {@code failedJunkRestores}: how many could not be restored
+   */
+  @PostMapping("/junk/restore")
+  @Secured("users")
+  @Operation(summary = "Marks quarantined emails as not spam", method = "POST", description = "Moves the given messages out of the Junk folder and back into the inbox")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public Map<String, Integer> restoreFromJunk(HttpServletRequest request,
+                                              @Parameter(description = "Email remote ids", required = true)
+                                              @RequestBody
+                                              List<Long> mailRemoteIds) {
+    try {
+      if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      int failedJunkRestores = emailBoxService.restoreFromJunk(mailRemoteIds, request.getRemoteUser());
+      Map<String, Integer> response = new HashMap<>();
+      response.put("failedJunkRestores", failedJunkRestores);
       return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);

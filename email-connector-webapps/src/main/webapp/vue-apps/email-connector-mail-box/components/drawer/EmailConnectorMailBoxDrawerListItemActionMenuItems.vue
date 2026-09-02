@@ -128,6 +128,66 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}
       </span>
     </v-list-item>
+    <!-- "Mark as spam", offered on the same rows as delete and archive. Not gated on
+         `restricted`: the swipe does not offer it, so the mobile long-press drawer is
+         the only place a phone user can reach it from. -->
+    <v-list-item
+      v-if="canMove"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="markAsJunk">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="mx-auto"
+          size="16">
+          fa-ban
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.markJunk.label') }}
+      </span>
+    </v-list-item>
+    <!-- The Spam folder's own two actions, where the ordinary ones above are withheld:
+         "Not spam" back to the inbox, and a Delete that files into the Trash exactly
+         as the ordinary delete does (the backend allows that one move out of Junk). -->
+    <v-list-item
+      v-if="junkActions"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="restoreFromJunk">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="mx-auto"
+          size="16">
+          fa-check-circle
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.notJunk.label') }}
+      </span>
+    </v-list-item>
+    <v-list-item
+      v-if="junkActions"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="deleteEmail">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="error--text mx-auto"
+          size="16">
+          fa-trash
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}
+      </span>
+    </v-list-item>
     <!-- The Trash's own two actions, where the ordinary ones above are withheld. Not
          gated on `restricted`: the swipe offers neither of them, so there is nothing
          here for the mobile long-press drawer to be repeating. -->
@@ -219,6 +279,11 @@ export default {
     trashActions() {
       return this.$emailConnectorMailBoxService.hasTrashActions(this.email.folder);
     },
+    // Whether this row is one the Spam actions apply to — the same pairing rule as
+    // trashActions, for the other hidden folder.
+    junkActions() {
+      return this.$emailConnectorMailBoxService.hasJunkActions(this.email.folder);
+    },
     // Whether delete and archive may be offered on this row at all. On top of readOnly:
     // both address a message by its IMAP uid, and an unsent draft has none to address --
     // discarding a draft is its own action, in the composer, where the user can see what
@@ -248,6 +313,26 @@ export default {
     archiveEmail() {
       this.$emit('close');
       this.$root.$emit('archive-email', this.threadIds);
+    },
+    /**
+     * Reports the row (or the whole thread it stands for) as spam. No confirmation:
+     * the move is undone from the Spam listing with "Not spam".
+     *
+     * @returns {void}
+     */
+    markAsJunk() {
+      this.$emit('close');
+      this.$root.$emit('junk-email', this.threadIds);
+    },
+    /**
+     * Puts the row (or the whole thread it stands for) back into the inbox out of the
+     * Spam folder. No confirmation, for the same reason as restoreEmail below.
+     *
+     * @returns {void}
+     */
+    restoreFromJunk() {
+      this.$emit('close');
+      this.$root.$emit('not-junk-email', this.threadIds);
     },
     /**
      * Puts the row (or the whole thread it stands for) back into the inbox. No

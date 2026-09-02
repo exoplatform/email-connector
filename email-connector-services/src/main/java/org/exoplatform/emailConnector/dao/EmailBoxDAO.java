@@ -40,7 +40,7 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * screen and to the user who thought they had disconnected.
    * <p>
    * Anything that SHOWS mail must use
-   * {@link #findByUserIdExcludingFolderWithAttachments} instead. The two exist
+   * {@link #findByUserIdExcludingFoldersWithAttachments} instead. The two exist
    * separately for exactly that reason: one question is "what belongs to this user"
    * and the other is "what may this user be shown", and they stopped having the same
    * answer the day Trash started being cached.
@@ -54,9 +54,9 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String userId);
 
   /**
-   * The same read as {@link #findByUserIdWithAttachments} minus one folder, always
-   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH} — the whole
-   * mailbox as it may be SHOWN.
+   * The same read as {@link #findByUserIdWithAttachments} minus the hidden folders,
+   * always {@link org.exoplatform.emailConnector.model.MailFolder#HIDDEN_FOLDERS}
+   * (Trash and Junk) — the whole mailbox as it may be SHOWN.
    * <p>
    * This is what the cached search reads. A search that offers back the mail the
    * user threw away is the same defect as a conversation redisplaying it, only
@@ -71,13 +71,14 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * column.
    *
    * @param userId the mailbox owner
-   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @param excludedFolders the folders to leave out, always
+   *          {@code MailFolder.HIDDEN_FOLDERS}
    * @return the user's showable cached messages with their attachments, newest first
    */
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder <> :excludedFolder ORDER BY email.receivedDate DESC")
-  List<EmailBoxEntity> findByUserIdExcludingFolderWithAttachments(@Param("userId")
-  String userId, @Param("excludedFolder")
-  String excludedFolder);
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder NOT IN :excludedFolders ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findByUserIdExcludingFoldersWithAttachments(@Param("userId")
+  String userId, @Param("excludedFolders")
+  List<String> excludedFolders);
 
   @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByUserIdAndFolderWithAttachments(@Param("userId")
@@ -93,13 +94,14 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * search, so it runs for every user on searches that have nothing to do with mail.
    *
    * @param userId the mailbox owner
-   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @param excludedFolders the folders to leave out, always
+   *          {@code MailFolder.HIDDEN_FOLDERS}
    * @return the showable cached messages, newest first, attachments not fetched
    */
-  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder <> :excludedFolder ORDER BY email.receivedDate DESC")
+  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder NOT IN :excludedFolders ORDER BY email.receivedDate DESC")
   List<EmailBoxEntity> findByUserIdForSearch(@Param("userId")
-  String userId, @Param("excludedFolder")
-  String excludedFolder);
+  String userId, @Param("excludedFolders")
+  List<String> excludedFolders);
 
   /**
    * The starred subset of a folder, for the list's starred filter. A dedicated query
@@ -121,36 +123,41 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * Every cached message of one conversation, across every folder, oldest first —
    * the read model behind the conversation reader.
    * <p>
-   * Every folder EXCEPT the excluded one, which is always
-   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH}. Reading a
-   * conversation is the read a deleted message must never come back through: the
-   * user deleted it out of this very conversation, and a reader with no folder
-   * predicate would put it straight back in the moment Trash starts being cached.
-   * The other browsable folders stay in, which is the whole point of a cross-folder
-   * reader — a sent reply and a previously-archived message belong in the
-   * conversation they are part of.
+   * Every folder EXCEPT the hidden ones, which are always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#HIDDEN_FOLDERS}: Trash
+   * and Junk. Reading a conversation is the read a deleted message must never come
+   * back through — the user deleted it out of this very conversation, and a reader
+   * with no folder predicate would put it straight back in the moment Trash starts
+   * being cached. A quarantined message is the same leak with worse content: a
+   * phishing reply to a real thread, rendered inside that thread as though it
+   * belonged there. The other browsable folders stay in, which is the whole point of
+   * a cross-folder reader — a sent reply and a previously-archived message belong in
+   * the conversation they are part of.
    * <p>
-   * The exclusion is a bound parameter rather than a {@code 'TRASH'} literal so the
-   * folder's name lives in exactly one place ({@code MailFolder}), the way every
-   * other folder-scoped query in this interface takes its folder from the caller.
-   * It is not a choice offered to the caller: the storage layer passes the constant,
-   * and there is no read of a conversation that should be given a different answer.
+   * The exclusion is a bound list rather than {@code 'TRASH'} / {@code 'JUNK'}
+   * literals so the excluded set lives in exactly one place ({@code MailFolder}), the
+   * way every other folder-scoped query in this interface takes its folder from the
+   * caller. It is not a choice offered to the caller: the storage layer passes the
+   * constant, and there is no read of a conversation that should be given a
+   * different answer. A list from the start, even when it held one folder, so the
+   * second hidden folder was one constant and no query — and a third will be too.
    * <p>
    * {@code FOLDER} is {@code NOT NULL} in the schema (changeset 1.0.0-20, default
-   * {@code INBOX}), so the plain inequality cannot silently drop a row the way it
-   * would on a nullable column — where {@code folder <> 'TRASH'} is UNKNOWN, not
-   * true, for every null.
+   * {@code INBOX}), so {@code NOT IN} cannot silently drop a row the way it would on
+   * a nullable column — where {@code folder NOT IN (...)} is UNKNOWN, not true, for
+   * every null.
    *
    * @param userId the mailbox owner
    * @param threadId the conversation id
-   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @param excludedFolders the folders to leave out, always
+   *          {@code MailFolder.HIDDEN_FOLDERS}
    * @return the conversation's messages with their attachments, oldest first
    */
-  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.threadId = :threadId AND email.folder <> :excludedFolder ORDER BY email.receivedDate ASC")
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.threadId = :threadId AND email.folder NOT IN :excludedFolders ORDER BY email.receivedDate ASC")
   List<EmailBoxEntity> findByUserIdAndThreadIdWithAttachments(@Param("userId")
   String userId, @Param("threadId")
-  String threadId, @Param("excludedFolder")
-  String excludedFolder);
+  String threadId, @Param("excludedFolders")
+  List<String> excludedFolders);
 
   @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId = :mailRemoteId ORDER BY email.receivedDate DESC")
   EmailBoxEntity findByMailRemoteIdAndUserIdAndFolder(@Param("mailRemoteId")
@@ -558,9 +565,9 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * The draft column is a count rather than a boolean because JPQL has no boolean
    * aggregate; the caller reads it as "more than none".
    * <p>
-   * One folder is left out of the aggregate, always
-   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH}, and it is left
-   * out of BOTH columns because it has to be: a conversation whose fourth message
+   * The hidden folders are left out of the aggregate, always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#HIDDEN_FOLDERS}, and they
+   * are left out of BOTH columns because they have to be: a conversation whose fourth message
    * the user deleted holds three, and the number beside the participants is the one
    * place that would keep insisting on four with nothing on screen to account for
    * it. The draft column follows the same rule for a sharper reason — a draft the
@@ -570,14 +577,15 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * parameter.
    *
    * @param userId the mailbox owner
-   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @param excludedFolders the folders to leave out, always
+   *          {@code MailFolder.HIDDEN_FOLDERS}
    * @return rows of {@code [threadId, messageCount, draftCount]}, one per
    *         conversation
    */
-  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.folder <> :excludedFolder GROUP BY email.threadId")
+  @Query("SELECT email.threadId, COUNT(DISTINCT COALESCE(email.mailHeaderId, email.draftLocalId)), SUM(CASE WHEN email.draftLocalId IS NULL THEN 0 ELSE 1 END) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.threadId IS NOT NULL AND email.folder NOT IN :excludedFolders GROUP BY email.threadId")
   List<Object[]> summarizeThreadsByUserId(@Param("userId")
-  String userId, @Param("excludedFolder")
-  String excludedFolder);
+  String userId, @Param("excludedFolders")
+  List<String> excludedFolders);
 
   /**
    * Who wrote the messages of each conversation that carries an unsent draft, with
@@ -614,9 +622,9 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * own participant names between two polls is a flicker, and an ungrouped result
    * set has no order to rely on.
    *
-   * One folder is left out, always
-   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH}, and out of BOTH
-   * halves of the query. On the participant side, because somebody whose only
+   * The hidden folders are left out, always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#HIDDEN_FOLDERS}, and out
+   * of BOTH halves of the query. On the participant side, because somebody whose only
    * message in the conversation the user deleted is no longer somebody the
    * conversation shows — the names have to match the messages the reader will
    * actually render. On the subquery side, because a DISCARDED draft is a TRASH row
@@ -628,14 +636,15 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * parameter.
    *
    * @param userId the mailbox owner
-   * @param excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
+   * @param excludedFolders the folders to leave out, always
+   *          {@code MailFolder.HIDDEN_FOLDERS}
    * @return rows of {@code [threadId, storedSender, firstSeenDate]}, one per
    *         (conversation, sender) pair of every conversation carrying a draft
    */
-  @Query("SELECT participant.threadId, participant.sender, MIN(participant.receivedDate) FROM EmailBoxEntity participant WHERE participant.userId = :userId AND participant.threadId IS NOT NULL AND participant.draftLocalId IS NULL AND participant.folder <> :excludedFolder AND participant.threadId IN (SELECT draft.threadId FROM EmailBoxEntity draft WHERE draft.userId = :userId AND draft.draftLocalId IS NOT NULL AND draft.threadId IS NOT NULL AND draft.folder <> :excludedFolder) GROUP BY participant.threadId, participant.sender")
+  @Query("SELECT participant.threadId, participant.sender, MIN(participant.receivedDate) FROM EmailBoxEntity participant WHERE participant.userId = :userId AND participant.threadId IS NOT NULL AND participant.draftLocalId IS NULL AND participant.folder NOT IN :excludedFolders AND participant.threadId IN (SELECT draft.threadId FROM EmailBoxEntity draft WHERE draft.userId = :userId AND draft.draftLocalId IS NOT NULL AND draft.threadId IS NOT NULL AND draft.folder NOT IN :excludedFolders) GROUP BY participant.threadId, participant.sender")
   List<Object[]> findDraftThreadParticipantsByUserId(@Param("userId")
-  String userId, @Param("excludedFolder")
-  String excludedFolder);
+  String userId, @Param("excludedFolders")
+  List<String> excludedFolders);
 
   /**
    * Per-folder message counts, so the list's folder switch only offers folders that
