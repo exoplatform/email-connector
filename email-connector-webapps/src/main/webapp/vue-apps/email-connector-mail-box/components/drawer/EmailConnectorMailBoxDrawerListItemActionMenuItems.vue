@@ -270,9 +270,16 @@ export default {
     },
   },
   computed: {
-    // All message ids the action applies to: the whole thread, or the lone email.
+    /**
+     * All message ids the action applies to: the whole thread as listed in this row's
+     * own folder, or the lone email. The single definition shared with the reader's
+     * header toolbar (EmailConnectorMailBoxDrawerListItemDetailActions) — see
+     * $emailConnectorMailBoxService.threadIdsInFolder (EXO-89942).
+     *
+     * @returns {Array<Number>} the IMAP UIDs the action applies to
+     */
     threadIds() {
-      return this.thread ? this.thread.mailRemoteIds : [this.email.mailRemoteId];
+      return this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread);
     },
     // A thread reads as read only when none of its messages is unread.
     threadRead() {
