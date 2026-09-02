@@ -1392,7 +1392,12 @@ public class EmailBoxService {
       try {
         syncCustomFolder(store, customFolder, username, userEmailSetting);
       } catch (Exception e) {
+        // A failed check is a check: stamped, so the folder rotates to the back and
+        // the next cycle's budget goes to the others rather than to the one folder
+        // that keeps failing. Its snapshot is untouched, so when it works again it
+        // takes the full path if it must.
         LOG.warn("Could not sync folder '{}' of user {}", customFolder.getRemoteName(), username, e);
+        emailFolderService.recordSync(username, customFolder.getId(), null);
       }
     }
   }
@@ -1413,7 +1418,13 @@ public class EmailBoxService {
                                 String username,
                                 UserEmailSetting userEmailSetting) throws MessagingException, IllegalAccessException {
     Folder remote = store.getFolder(customFolder.getRemoteName());
-    if (!(remote instanceof IMAPFolder) || !remote.exists()) {
+    // Whether the folder is still there: answered by the walk when this connection
+    // made one (the daily walk, or the first sync), else by one LIST probe -- the
+    // third round-trip of an unchanged folder, paid so a folder deleted on the server
+    // is marked missing rather than thrown at, picked first and thrown at again.
+    Rediscovery walked = rediscoveries.get(store);
+    boolean present = walked != null ? walked.lists(customFolder.getRemoteName()) : remote.exists();
+    if (!(remote instanceof IMAPFolder) || !present) {
       LOG.info("Folder '{}' of user {} is no longer on the server; marking it missing", customFolder.getRemoteName(), username);
       emailFolderService.markMissing(username, customFolder.getId());
       return;
@@ -1944,6 +1955,16 @@ public class EmailBoxService {
     String name(String folderKey) {
       DiscoveredFolder discovered = classification.builtIn(folderKey);
       return discovered == null ? null : discovered.fullName();
+    }
+
+    /**
+     * Whether the walk listed a folder of that full name at all -- role or not.
+     *
+     * @param fullName the IMAP full name
+     * @return true when the server listed it
+     */
+    boolean lists(String fullName) {
+      return fullName != null && walk.descriptors().stream().anyMatch(folder -> fullName.equals(folder.fullName()));
     }
   }
 
@@ -2984,21 +3005,26 @@ public class EmailBoxService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_FOLDERS_MESSAGE, username));
     }
     MailboxSyncState syncState = loadMailboxSyncState(username);
+    boolean walked = false;
     if (refresh && emailFolderService.isCustomFoldersEnabled()) {
       // A write, and saved as one: the user asked for this walk, and its result -- the
       // registry rows and the remembered names -- is worth keeping whatever the rest
       // of the request does. The syncingUsers guard is not taken: a walk reads the
       // folder LIST and writes registry rows, and neither races a sync's (user, folder,
-      // UID) rows.
-      String originalSyncStateJson = JsonUtils.toJsonString(syncState);
+      // UID) rows. What it CAN race is the sync's save of the JSON state, so the walk's
+      // findings are merged into the state as it stands at save time rather than
+      // written over it (see saveDiscoveredFolderNames).
       Store store = null;
       try {
         store = userEmailSettingService.connect(userEmailSetting);
         walkAndReconcileFolders(store, username, syncState);
+        walked = true;
       } catch (Exception e) {
         LOG.warn("Could not walk the folder list of user {} on request; answering what is registered", username, e);
       } finally {
-        saveMailboxSyncState(username, syncState, originalSyncStateJson);
+        if (walked) {
+          saveDiscoveredFolderNames(username, syncState);
+        }
         closeQuietly(null, store, username);
       }
     }
@@ -3007,7 +3033,31 @@ public class EmailBoxService {
     return new MailFolderList(views,
                               emailFolderService.getMaxCustomFolders(),
                               (int) views.stream().filter(view -> view.isCustom() && view.isSyncEnabled()).count(),
-                              emailFolderService.getWindowSize());
+                              emailFolderService.getWindowSize(),
+                              walked);
+  }
+
+  /**
+   * Keeps what a walk found -- the five remembered names and the walk's stamp -- in
+   * the sync state AS IT STANDS NOW, not in the copy the walk started from. A sync may
+   * have saved fresh snapshots in the meantime, and a whole-blob save from this
+   * request's copy would put the old ones back; so the state is re-read at save time
+   * and only the walk's own fields are written into it. The window between the
+   * re-read and the save is the same one {@code applyMoveAction} lives with.
+   *
+   * @param username the mailbox owner
+   * @param walked the state the walk wrote its findings into
+   */
+  private void saveDiscoveredFolderNames(String username, MailboxSyncState walked) {
+    MailboxSyncState current = loadMailboxSyncState(username);
+    String originalJson = JsonUtils.toJsonString(current);
+    current.setSentFolderName(walked.getSentFolderName());
+    current.setArchiveFolderName(walked.getArchiveFolderName());
+    current.setDraftsFolderName(walked.getDraftsFolderName());
+    current.setTrashFolderName(walked.getTrashFolderName());
+    current.setJunkFolderName(walked.getJunkFolderName());
+    current.setFoldersDiscoveredAt(walked.getFoldersDiscoveredAt());
+    saveMailboxSyncState(username, current, originalJson);
   }
 
   /**
@@ -3068,7 +3118,9 @@ public class EmailBoxService {
    * @return how many of them could NOT be moved
    * @throws IllegalAccessException if the user may not act on their mailbox
    * @throws IllegalArgumentException if the target is not one of this user's custom
-   *           folders, or is the source
+   *           folders ({@code emailConnector.folder.unknown}), is not mirrored
+   *           ({@code emailConnector.folder.notMirrored}), or is the source
+   *           ({@code emailConnector.folder.sameAsSource})
    */
   public int moveToFolder(List<Long> mailRemoteIds,
                           String username,
@@ -3078,6 +3130,12 @@ public class EmailBoxService {
     EmailFolder target = emailFolderService.getFolderByKey(username, targetFolder);
     if (target.isMissing()) {
       throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    }
+    if (!target.isSyncEnabled()) {
+      // A folder the user does not mirror is one they never see here: a message moved
+      // into it would leave every screen and come back nowhere. The picker offers the
+      // mirrored ones only, and the server says the same thing.
+      throw new IllegalArgumentException("emailConnector.folder.notMirrored");
     }
     String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
     if (sourceFolder.equals(target.getKey())) {
@@ -3146,10 +3204,16 @@ public class EmailBoxService {
       store = userEmailSettingService.connect(userEmailSetting);
       syncCustomFolder(store, customFolder, username, userEmailSetting);
     } catch (Exception e) {
+      // Stamped as a check even though it failed: the listing asks for a refresh on
+      // every poll of the drawer, two seconds apart for as long as the category watch
+      // runs, and a folder left stale by a failing connection would pay a connect
+      // attempt per poll against a server that is already refusing them. One attempt
+      // per period, then; the routine sync retries on its own schedule.
       LOG.warn("Could not refresh folder '{}' of user {}; answering the cache as it stands",
                customFolder.getRemoteName(),
                username,
                e);
+      emailFolderService.recordSync(username, customFolder.getId(), null);
     } finally {
       syncingUsers.remove(username);
       closeQuietly(null, store, username);
