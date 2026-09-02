@@ -26,6 +26,13 @@ import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
+/**
+ * Glue: when a user connects or rebinds their mailbox ({@link EmailBoxSyncEvent}),
+ * the mailbox is registered with the sync dispatcher so its first download runs
+ * at the next tick. No business logic here; the registration itself lives in
+ * {@link EmailBoxService#registerMailboxForSync(String)}. It used to register a
+ * per-user Quartz job in the same place.
+ */
 @Component
 public class EmailBoxSyncListener {
 
@@ -34,12 +41,19 @@ public class EmailBoxSyncListener {
   @Autowired
   private EmailBoxService  emailBoxService;
 
+  /**
+   * Registers the connected mailbox with the dispatcher, after the settings
+   * write that announced it is committed. A failure is logged and swallowed: the
+   * dispatcher's boot reconciliation registers any mailbox this missed.
+   *
+   * @param event the connect marker, carrying the mailbox owner
+   */
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void handleEmailBoxSync(EmailBoxSyncEvent event) {
     try {
-      emailBoxService.scheduleEmailBoxUserSyncJob(event.getUsername());
+      emailBoxService.registerMailboxForSync(event.getUsername());
     } catch (Exception e) {
-      LOG.warn("Error scheduling email box sync for user {}", event.getUsername(), e);
+      LOG.warn("Error registering the mailbox of user {} for synchronization", event.getUsername(), e);
     }
   }
 }

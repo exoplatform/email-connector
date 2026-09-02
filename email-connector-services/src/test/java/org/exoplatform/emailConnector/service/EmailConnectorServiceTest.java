@@ -238,6 +238,44 @@ public class EmailConnectorServiceTest {
   }
 
   @Test
+  void getEmailSyncThreadsReturnsDefaultWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.EMAIL_SYNC_THREADS_KEY)).thenReturn(null);
+    assertEquals(10, emailConnectorService.getEmailSyncThreads());
+  }
+
+  @Test
+  void getEmailSyncThreadsReturnsStoredValue() {
+    doReturn(SettingValue.create("24")).when(settingService)
+                                       .get(Context.GLOBAL,
+                                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                            EmailConnectorService.EMAIL_SYNC_THREADS_KEY);
+    assertEquals(24, emailConnectorService.getEmailSyncThreads());
+  }
+
+  /**
+   * The executor size is an administrator's to set, within the bounds a mail
+   * server and a connection pool can take: zero threads would stop every mailbox
+   * and sixty-five would be a connection problem before a throughput one.
+   */
+  @Test
+  @SneakyThrows
+  void saveEmailSyncThreads() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveEmailSyncThreads(16, TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailSyncThreads(0, TEST_USER));
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailSyncThreads(65, TEST_USER));
+    emailConnectorService.saveEmailSyncThreads(16, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.EMAIL_SYNC_THREADS_KEY),
+                               any(SettingValue.class));
+  }
+
+  @Test
   void trashSyncEnabledDefaultsToTrueWhenUnset() {
     when(settingService.get(Context.GLOBAL,
                             EmailConnectorService.EMAIL_CONNECTOR_SCOPE,

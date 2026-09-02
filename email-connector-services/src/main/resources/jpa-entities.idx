@@ -7,3 +7,4 @@ org.exoplatform.emailConnector.entity.EmailOrphanFileEntity
 org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity
 org.exoplatform.emailConnector.utils.SemicolonListConverter
 org.exoplatform.emailConnector.entity.EmailFolderEntity
+org.exoplatform.emailConnector.entity.EmailSyncStateEntity

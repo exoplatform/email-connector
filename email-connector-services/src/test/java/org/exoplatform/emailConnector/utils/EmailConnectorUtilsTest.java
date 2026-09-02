@@ -36,7 +36,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.emailConnector.model.EmailContent;
-import org.exoplatform.emailConnector.model.UserEmailSetting;
 
 import lombok.SneakyThrows;
 
@@ -240,17 +239,6 @@ public class EmailConnectorUtilsTest {
     MimeBodyPart part = new MimeBodyPart();
     part.setText(body, "UTF-8", subtype);
     return part;
-  }
-
-  @Test
-  public void getEmailBoxUserSyncPeriod() throws Exception {
-    UserEmailSetting userEmailSetting = mock(UserEmailSetting.class);
-    when(userEmailSetting.getEmailBoxUserSyncPeriod()).thenReturn(null);
-    int emailBoxUserSyncPeriod = EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting);
-    assertEquals(10, emailBoxUserSyncPeriod);
-    when(userEmailSetting.getEmailBoxUserSyncPeriod()).thenReturn(20);
-    emailBoxUserSyncPeriod = EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting);
-    assertEquals(20, emailBoxUserSyncPeriod);
   }
 
 }

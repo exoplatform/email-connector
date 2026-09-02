@@ -136,6 +136,35 @@ public class MasterChangelogTest {
   }
 
   /**
+   * The sync-state table's changesets (1.0.0-58 and 1.0.0-59) apply, roll back and
+   * apply again, to a tag placed immediately before 1.0.0-58 for the reason the test
+   * above gives. The rollback is what a revert of the add-on relies on: the old code
+   * ignores the table, but a table left behind would fail the next install's CREATE.
+   * What is checked after the rollback is that the table is gone AND that the
+   * registry before it still stands -- a rollback that went one changeset too far
+   * would be the opposite of what it means to prove.
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theSyncStateChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback58" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-58"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-sync-state");
+      assertFalse(tableExists(connection, "EMAIL_SYNC_STATE"), "sanity: the table does not exist before 1.0.0-58");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_SYNC_STATE"), "1.0.0-58 creates EMAIL_SYNC_STATE");
+      assertTrue(indexExists(connection, "EMAIL_SYNC_STATE", "IDX_EMAIL_SYNC_STATE_LAST_SYNC"), "and its index");
+      liquibase.rollback("before-sync-state", "");
+      assertFalse(tableExists(connection, "EMAIL_SYNC_STATE"), "rolling back to before the sync state drops EMAIL_SYNC_STATE");
+      assertTrue(tableExists(connection, "EMAIL_FOLDER"), "and nothing before it");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_SYNC_STATE"), "the changesets apply again after their rollback");
+    }
+  }
+
+  /**
    * On MySQL, and only there, the registry's REMOTE_NAME keeps its case: generated
    * through Liquibase's own MySQL dialect (an offline connection, no server), the
    * CREATE TABLE of 1.0.0-53 carries a binary collation on that one column, while the
@@ -175,7 +204,19 @@ public class MasterChangelogTest {
                "the table options of 1.0.0-56");
     assertTrue(generated.contains("ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"),
                "the binary collation on the identifier, and on it only");
+    // The sync-state table takes the same options through the same device, 1.0.0-59.
+    Matcher createSyncState = Pattern.compile("CREATE TABLE EMAIL_SYNC_STATE \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(generated);
+    assertTrue(createSyncState.find(), "no CREATE TABLE EMAIL_SYNC_STATE in the MySQL SQL");
+    assertTrue(!createSyncState.group().contains("COLLATE"), "the CREATE carries no modifySql of its own: " + createSyncState.group());
+    assertTrue(generated.contains("ALTER TABLE EMAIL_SYNC_STATE ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"),
+               "the table options of 1.0.0-59");
   }
+
+  // The changesets this add-on's branches added since the checksum pin below exists
+  // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
+  // -59). They are the ones a second evaluation computes ahead of the update in the
+  // pin, and nothing on this list may ever drift.
+  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56", "1.0.0-58", "1.0.0-59");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
@@ -184,10 +225,6 @@ public class MasterChangelogTest {
   // are listed, not fixed: a validCheckSum for an id that already ran everywhere is a
   // decision about every deployment's recorded value, not this branch's. Nothing may
   // be ADDED to this list.
-  // The changesets this branch adds. They are the ones a second evaluation computes
-  // ahead of the update in the pin below, and nothing on this list may ever drift.
-  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56");
-
   private static final Set<String> KNOWN_SCOPE_DEPENDENT_CHECKSUMS =
                                                                    Set.of("1.0.0-1", "1.0.0-2", "1.0.0-5", "1.0.0-27", "1.0.0-46", "1.0.0-48");
 
@@ -556,9 +593,22 @@ public class MasterChangelogTest {
    * @throws SQLException when the driver metadata cannot be read
    */
   private boolean indexExists(Connection connection) throws SQLException {
-    try (ResultSet indexes = connection.getMetaData().getIndexInfo(null, null, "EMAIL_BOX", false, false)) {
+    return indexExists(connection, "EMAIL_BOX", "IDX_EMAIL_BOX_USER_FOLDER_DATE");
+  }
+
+  /**
+   * Whether an index exists on a table, read from the JDBC driver's own metadata.
+   *
+   * @param connection the JDBC connection to inspect
+   * @param tableName the table, as created
+   * @param indexName the index, as created
+   * @return true when the index exists
+   * @throws SQLException when the driver metadata cannot be read
+   */
+  private boolean indexExists(Connection connection, String tableName, String indexName) throws SQLException {
+    try (ResultSet indexes = connection.getMetaData().getIndexInfo(null, null, tableName, false, false)) {
       while (indexes.next()) {
-        if ("IDX_EMAIL_BOX_USER_FOLDER_DATE".equalsIgnoreCase(indexes.getString("INDEX_NAME"))) {
+        if (indexName.equalsIgnoreCase(indexes.getString("INDEX_NAME"))) {
           return true;
         }
       }
