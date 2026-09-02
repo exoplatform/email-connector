@@ -72,6 +72,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-ban</v-icon>
       </v-btn>
       <v-btn
+        v-if="canMoveSelection"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.moveTo.label')"
+        @click="moveEmails()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-folder-open</v-icon>
+      </v-btn>
+      <v-btn
         v-if="canMutateSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
         @click="deleteEmails()"
@@ -161,6 +168,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.markJunk.label') }}
       </v-btn>
       <v-btn
+        v-if="canMoveSelection"
+        @click="moveEmails()"
+        outlined
+        class="btn btn-primary font-weight-bold">
+        <v-icon
+          size="16"
+          class="pe-3"
+          color="primary">
+          fa-folder-open
+        </v-icon>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.moveTo.label') }}
+      </v-btn>
+      <v-btn
         v-if="canMutateSelection"
         @click="deleteEmails()"
         outlined
@@ -242,10 +262,10 @@ export default {
       type: String,
       default: 'INBOX',
     },
-    // Folders that have mail, so the ⋮ switch hides empty ones.
+    // The folders to offer in the ⋮ switch, as the server listed them.
     availableFolders: {
       type: Array,
-      default: () => ['INBOX'],
+      default: () => [{ key: 'INBOX', type: 'BUILT_IN' }],
     },
     // The categories offered as views in the ⋮ menu (the add-on's full set,
     // Important included — its chip is a shortcut to the same view).
@@ -334,6 +354,27 @@ export default {
         && this.selectedEmails.every(emailId =>
           this.$emailConnectorMailBoxService.canMarkAsJunk(this.emailsMap[emailId]?.folder));
     },
+    /**
+     * Whether the selection may be moved into one of the user's own folders: the same
+     * rows "Mark as spam" is offered on, and only when the user has at least one
+     * mirrored folder other than the one the rows are listed in -- a picker with
+     * nothing to pick is a button that lies.
+     *
+     * @returns {Boolean} true when "Move to..." may be offered
+     */
+    canMoveSelection() {
+      return this.canMarkSelectionAsJunk
+        && this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.selectionFolder).length > 0;
+    },
+    /**
+     * The folder the selected rows are listed in -- a listing holds one folder's rows,
+     * so the first row's folder is every row's.
+     *
+     * @returns {String} the folder key, INBOX when unknown
+     */
+    selectionFolder() {
+      return this.emailsMap[this.selectedEmails[0]]?.folder || 'INBOX';
+    },
   },
   created() {
     this.$root.$on('open-webmail', this.openWebmail);
@@ -372,6 +413,15 @@ export default {
      */
     markAsJunk() {
       this.$root.$emit('junk-email', this.selectedEmails);
+    },
+    /**
+     * Opens the folder picker for the whole selection; the move itself is sent once
+     * a folder is chosen there.
+     *
+     * @returns {void}
+     */
+    moveEmails() {
+      this.$root.$emit('open-move-to-folder-drawer', this.selectedEmails, this.selectionFolder);
     },
     /**
      * Puts the whole selection back into the inbox out of the Spam folder.

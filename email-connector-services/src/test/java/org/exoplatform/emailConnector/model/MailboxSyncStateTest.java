@@ -52,7 +52,8 @@ class MailboxSyncStateTest {
                                                   "Trash",
                                                   snapshot(5),
                                                   "[Gmail]/Spam",
-                                                  snapshot(6));
+                                                  snapshot(6),
+                                                  1_700_000_000_000L);
 
     MailboxSyncState back = JsonUtils.fromJsonString(JsonUtils.toJsonString(state), MailboxSyncState.class);
 
@@ -67,6 +68,7 @@ class MailboxSyncStateTest {
     assertEquals(5L, back.getSnapshot(MailFolder.TRASH).getUidValidity());
     assertEquals("[Gmail]/Spam", back.getJunkFolderName(), "the Junk name is the tenth positional argument, after every older field");
     assertEquals(6L, back.getSnapshot(MailFolder.JUNK).getUidValidity(), "and its snapshot the eleventh");
+    assertEquals(1_700_000_000_000L, back.getFoldersDiscoveredAt(), "the folder-walk stamp is the twelfth, after everything");
   }
 
   /**

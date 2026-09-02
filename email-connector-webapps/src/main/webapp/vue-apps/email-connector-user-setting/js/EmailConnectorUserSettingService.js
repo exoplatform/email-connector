@@ -109,3 +109,49 @@ export function downloadContactsBackupThenStartFresh() {
     window.URL.revokeObjectURL(url);
   });
 }
+
+/**
+ * The user's mail folders: the built-ins their mailbox has and every folder of their
+ * own, each with its mirror opt-in, plus the cap and the window the settings screen
+ * states beside them. With `refresh`, the mailbox's folder list is walked first.
+ *
+ * @param {Boolean} refresh whether to walk the mailbox before answering
+ * @returns {Promise<Object>} {folders, maxCustomFolders, enabledCustomFolders, windowSize}
+ */
+export function getMailFolders(refresh) {
+  return fetch(`/email-connector/rest/email-box/folders${refresh ? '?refresh=true' : ''}`, {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then(resp => {
+    if (!resp?.ok) {
+      throw new Error('Error when getting the mail folders');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Mirrors, or stops mirroring, one of the user's own folders. A refusal carries the
+ * server's message code as the error message ("emailConnector.folder.tooMany" at the
+ * cap), so the screen can say why in the user's words.
+ *
+ * @param {Number} id the folder's registry id
+ * @param {Boolean} enabled whether it is mirrored
+ * @returns {Promise<Object>} the folder as it now stands
+ */
+export function setMailFolderMirror(id, enabled) {
+  return fetch(`/email-connector/rest/email-box/folders/${id}?sync=${enabled}`, {
+    credentials: 'include',
+    method: 'PATCH'
+  }).then(resp => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return resp.json()
+      .catch(() => ({}))
+      .then(body => {
+        throw new Error(body?.message || 'Error when updating the mail folder');
+      });
+  });
+}
