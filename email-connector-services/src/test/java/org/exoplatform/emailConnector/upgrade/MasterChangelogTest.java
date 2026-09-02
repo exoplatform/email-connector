@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.upgrade;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
@@ -24,9 +26,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -44,6 +50,7 @@ import org.w3c.dom.NodeList;
 
 import liquibase.ChecksumVersion;
 import liquibase.Contexts;
+import liquibase.LabelExpression;
 import liquibase.Liquibase;
 import liquibase.changelog.ChangeSet;
 import liquibase.database.Database;
@@ -357,6 +364,216 @@ public class MasterChangelogTest {
                    + "never match. Removing validCheckSum stops the platform booting against any database "
                    + "that ran the earlier changelog. Unprotected changesets: "
                    + unprotected);
+  }
+
+  /**
+   * The id 1.0.0-24 has held two different changesets over time (see its own comment and
+   * 1.0.0-57's, EXO-89940): before 14 August it was the ORIGINAL_SENDER {@code addColumn},
+   * today it is {@code createIndex IDX_EMAIL_BOX_USER_FOLDER_DATE}. Liquibase decides whether
+   * to re-run 1.0.0-57 purely from what the database recorded under 24 — never from what the
+   * changelog carries today — so the only test that can see the defect is one that first
+   * recreates that older recorded history, then lets the real changelog run over it.
+   * <p>
+   * On such a database, the index was never created by 1.0.0-24 (Liquibase ticked the id off
+   * without ever running today's content), so 1.0.0-57's precondition finds it missing and
+   * must create it.
+   *
+   * @throws Exception when the changelog cannot be read, parsed or applied
+   */
+  @Test
+  void indexIsCreatedWhenTwentyFourWasRecordedAsTheOldAddColumn() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:changelog24old" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+
+      // Apply exactly the changesets a database that stopped right before 1.0.0-24 would
+      // already carry - counted dynamically because the changelog's own dbms filtering
+      // (oracle/postgresql/hsqldb/mysql-only changesets) decides which of them actually run
+      // on HSQLDB, same as Liquibase's own CountChangeSetFilter does internally.
+      liquibase.update(applicableChangeSetsBefore("1.0.0-24"), new Contexts(), new LabelExpression());
+      assertFalse(indexExists(connection), "sanity: the index must not exist before 1.0.0-24 has run at all");
+
+      // Record 1.0.0-24 exactly as a pre-14-August database would have: its id ticked off,
+      // carrying the old addColumn content, the index never created.
+      recordChangeSetAsAlreadyRan(connection, "1.0.0-24",
+                                   "addColumn tableName=EMAIL_BOX (ORIGINAL_SENDER) -- simulated pre-14-Aug history");
+      assertFalse(indexExists(connection), "the simulated old history must still be missing the index");
+
+      liquibase.update("");
+
+      assertTrue(indexExists(connection),
+                 "1.0.0-57 must create IDX_EMAIL_BOX_USER_FOLDER_DATE when 1.0.0-24 was recorded "
+                     + "under its pre-14-Aug addColumn content");
+      assertEquals("EXECUTED", execType(connection, "1.0.0-57"),
+                   "1.0.0-57 must actually run (not merely mark itself ran) when the index is missing");
+    }
+  }
+
+  /**
+   * The mirror case of {@link #indexIsCreatedWhenTwentyFourWasRecordedAsTheOldAddColumn()}: a
+   * database that recorded 1.0.0-24 carrying today's content (a fresh install, or one that
+   * upgraded after 14 August) already has the index. 1.0.0-57 must not try to create it again
+   * — it must mark itself ran and leave the schema alone.
+   *
+   * @throws Exception when the changelog cannot be read, parsed or applied
+   */
+  @Test
+  void changesetMarksRanWhenTwentyFourAlreadyCreatedTheIndex() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:changelog24new" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+
+      liquibase.update("");
+
+      assertTrue(indexExists(connection), "sanity: a fresh install must already carry the index via 1.0.0-24");
+      assertEquals("MARK_RAN", execType(connection, "1.0.0-57"),
+                   "1.0.0-57 must mark itself ran, not re-create the index 1.0.0-24 already created");
+    }
+  }
+
+  /**
+   * A fresh {@link Liquibase} instance bound to the add-on's changelog and the given
+   * connection.
+   *
+   * @param connection the JDBC connection to apply the changelog against
+   * @return a ready-to-use {@link Liquibase} instance
+   * @throws Exception when the database implementation cannot be resolved
+   */
+  private Liquibase newLiquibase(Connection connection) throws Exception {
+    return new Liquibase(CHANGELOG,
+                          new ClassLoaderResourceAccessor(),
+                          DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection)));
+  }
+
+  /**
+   * How many of the changelog's changesets, in document order and dbms-filtered for hsqldb,
+   * appear strictly before the given id.
+   * <p>
+   * Mirrors Liquibase's own {@code DbmsChangeSetFilter}: a changeset with no {@code dbms}
+   * attribute applies to every database, one that has it applies only when the attribute's
+   * comma-separated list contains {@code hsqldb}. Passing the result to
+   * {@link Liquibase#update(int, Contexts, LabelExpression)} therefore applies exactly the
+   * changesets a real HSQLDB database would already have run by the time it reached
+   * {@code beforeId} — the same count Liquibase's internal {@code CountChangeSetFilter} would
+   * stop at.
+   *
+   * @param beforeId the id to stop counting at (not itself counted)
+   * @return the number of hsqldb-applicable changesets preceding {@code beforeId}
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  private int applicableChangeSetsBefore(String beforeId) throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    int count = 0;
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder()
+                                   .parse(changelog)
+                                   .getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        Element changeSet = (Element) changeSets.item(i);
+        if (beforeId.equals(changeSet.getAttribute("id"))) {
+          break;
+        }
+        if (appliesToHsqldb(changeSet)) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Whether a changeset's {@code dbms} attribute (absent, or containing {@code hsqldb}) lets
+   * it run on HSQLDB.
+   *
+   * @param changeSet the changeset element to inspect
+   * @return true when the changeset applies to hsqldb
+   */
+  private boolean appliesToHsqldb(Element changeSet) {
+    String dbms = changeSet.getAttribute("dbms");
+    if (dbms == null || dbms.isBlank()) {
+      return true;
+    }
+    for (String candidate : dbms.split(",")) {
+      if ("hsqldb".equals(candidate.trim().toLowerCase(Locale.ROOT))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Inserts a DATABASECHANGELOG row directly over JDBC, bypassing Liquibase entirely, to
+   * simulate a database that already recorded the given changeset id under different
+   * (unspecified) content — exactly what an id reused across a changelog rewrite leaves
+   * behind. The checksum recorded is deliberately arbitrary: 1.0.0-24 declares
+   * {@code validCheckSum ANY}, so Liquibase must accept it regardless, same as it does on a
+   * real database carrying the pre-14-Aug history.
+   *
+   * @param connection the JDBC connection whose DATABASECHANGELOG table to write into
+   * @param id the changeset id to record as already run
+   * @param description a human-readable note of what the simulated history actually ran
+   * @throws SQLException when the insert fails
+   */
+  private void recordChangeSetAsAlreadyRan(Connection connection, String id, String description) throws SQLException {
+    int nextOrder;
+    try (Statement statement = connection.createStatement();
+         ResultSet result = statement.executeQuery("SELECT MAX(ORDEREXECUTED) FROM DATABASECHANGELOG")) {
+      result.next();
+      nextOrder = result.getInt(1) + 1;
+    }
+    try (PreparedStatement insert = connection.prepareStatement(
+        "INSERT INTO DATABASECHANGELOG "
+            + "(ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED, EXECTYPE, MD5SUM, DESCRIPTION, COMMENTS, LIQUIBASE, DEPLOYMENT_ID) "
+            + "VALUES (?, 'email-connector', ?, CURRENT_TIMESTAMP, ?, 'EXECUTED', '9:simulated', ?, ?, '4.31.1', '9999999999')")) {
+      insert.setString(1, id);
+      insert.setString(2, CHANGELOG);
+      insert.setInt(3, nextOrder);
+      insert.setString(4, description);
+      insert.setString(5, "Recorded directly by " + getClass().getSimpleName()
+          + " to simulate a database that ran an earlier changelog (EXO-89940).");
+      insert.executeUpdate();
+    }
+  }
+
+  /**
+   * Whether {@code IDX_EMAIL_BOX_USER_FOLDER_DATE} exists on EMAIL_BOX, read from the JDBC
+   * driver's own metadata rather than an HSQLDB-specific system table, so it holds regardless
+   * of the HSQLDB version running the test.
+   *
+   * @param connection the JDBC connection to inspect
+   * @return true when the index exists
+   * @throws SQLException when the driver metadata cannot be read
+   */
+  private boolean indexExists(Connection connection) throws SQLException {
+    try (ResultSet indexes = connection.getMetaData().getIndexInfo(null, null, "EMAIL_BOX", false, false)) {
+      while (indexes.next()) {
+        if ("IDX_EMAIL_BOX_USER_FOLDER_DATE".equalsIgnoreCase(indexes.getString("INDEX_NAME"))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The {@code EXECTYPE} DATABASECHANGELOG recorded for a changeset id (e.g. {@code EXECUTED}
+   * or {@code MARK_RAN}), asserting there is exactly one such row.
+   *
+   * @param connection the JDBC connection to query
+   * @param id the changeset id to look up
+   * @return the recorded EXECTYPE
+   * @throws SQLException when the query fails or the id has no (or more than one) row
+   */
+  private String execType(Connection connection, String id) throws SQLException {
+    try (PreparedStatement select = connection.prepareStatement(
+        "SELECT EXECTYPE FROM DATABASECHANGELOG WHERE ID = ? AND AUTHOR = 'email-connector'")) {
+      select.setString(1, id);
+      try (ResultSet result = select.executeQuery()) {
+        assertTrue(result.next(), () -> "no DATABASECHANGELOG row recorded for id " + id);
+        String execType = result.getString("EXECTYPE");
+        assertFalse(result.next(), () -> "more than one DATABASECHANGELOG row recorded for id " + id);
+        return execType;
+      }
+    }
   }
 
   /**
