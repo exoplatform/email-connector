@@ -997,22 +997,20 @@
       3000 of the 3072 bytes InnoDB allows a key, and an IMAP path of five hundred
       characters is not a folder anyone made by hand.
 
-      REMOTE_NAME is also the one column here that must NOT take the table's
-      utf8mb4_0900_ai_ci collation: an IMAP folder name is case-sensitive (RFC 3501
-      makes only INBOX an exception) and so is a Gmail label, so "Projets" and
-      "projets" are two folders the unique index must keep apart. Under the
-      accent- and case-insensitive collation the second would fail the index and,
-      worse, the lookup by name would answer the FIRST folder's row, which the walk
-      would then keep renaming. Hence the replace below: binary collation on that
-      column, on MySQL, where the difference exists. utf8mb4_0900_bin rather than
-      utf8mb4_bin because the older one is PAD SPACE (two names differing by a
-      trailing space compare equal) while the 0900 family the table already relies on
-      is NO PAD; it needs MySQL 8.0.17, which the table's own collation already
-      requires in spirit (8.0).
-
-      The index is in the next changeset and not here, by the rule 1.0.0-50 paid for:
-      modifySql is changeset-scoped, and the MySQL table options appended below would
-      land on a CREATE INDEX too.
+      This table carries NO modifySql, unlike every table before it, and that is a
+      decision and not an omission. Liquibase computes a changeset's checksum from
+      its changes AND from its modifySql visitors, and a visitor is serialised
+      through a filter that reads the checksum version off the CURRENT SCOPE, so the
+      value depends on where it is computed: inside the update that executes the
+      changeset it is one number, computed by anything that touched the parsed
+      changelog earlier or elsewhere (a second Spring context on the same JVM) it is
+      another, and the first computed value is the one a changeset remembers. That
+      is how this very changeset, with a replace and an append on it, was recorded
+      by one context and refused by the next in a single boot. Every earlier
+      changeset that carries a modifySql has the same exposure; 1.0.0-5, -46 and -48
+      hide it behind validCheckSum ANY. So the MySQL table options and the collation
+      this table needs live in 1.0.0-55, as literal SQL on a MySQL-only changeset,
+      which is checksummed on its text and nothing else.
     </comment>
     <createTable tableName="EMAIL_FOLDER">
       <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
@@ -1047,10 +1045,6 @@
       <column name="HIGHEST_MODSEQ" type="BIGINT"/>
       <column name="WINDOW_SIZE" type="INT"/>
     </createTable>
-    <modifySql dbms="mysql">
-      <replace replace="REMOTE_NAME VARCHAR(500)" with="REMOTE_NAME VARCHAR(500) COLLATE utf8mb4_0900_bin"/>
-      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
-    </modifySql>
   </changeSet>
   <changeSet author="email-connector" id="1.0.0-53">
     <comment>
@@ -1073,6 +1067,33 @@
       and 1.0.0-49.
     </comment>
     <createSequence sequenceName="SEQ_EMAIL_FOLDER_ID" startValue="1"/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-55" dbms="mysql">
+    <comment>
+      What 1.0.0-52 would have said through a modifySql, said as SQL instead, for the
+      reason 1.0.0-52's comment gives: literal SQL is checksummed on its text.
+
+      First the table options every table of this file gets on MySQL (InnoDB,
+      utf8mb4, the accent-insensitive 0900 collation), applied after the fact.
+      Then the one column that must NOT take that collation. REMOTE_NAME is an IMAP
+      folder name, and an IMAP folder name is case-sensitive (RFC 3501 makes only
+      INBOX an exception), as a Gmail label is: "Projets" and "projets" are two
+      folders the unique index of 1.0.0-53 must keep apart. Under the accent- and
+      case-insensitive collation the second would fail the index and, worse, the
+      lookup by name would answer the FIRST folder's row, which the discovery walk
+      would then keep renaming. utf8mb4_0900_bin rather than utf8mb4_bin because the
+      older one is PAD SPACE (two names differing by a trailing space compare equal)
+      while the 0900 family the table relies on is NO PAD; it needs MySQL 8.0.17.
+
+      Rolled back explicitly, because sql has no automatic rollback: the column goes
+      back to the table's collation. The table options are not undone, they are what
+      the server would have chosen anyway.
+    </comment>
+    <sql>ALTER TABLE EMAIL_FOLDER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <sql>ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
+    <rollback>
+      <sql>ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) NOT NULL</sql>
+    </rollback>
   </changeSet>
 
 </databaseChangeLog>
