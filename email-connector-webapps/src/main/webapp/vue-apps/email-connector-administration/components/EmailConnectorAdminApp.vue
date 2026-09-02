@@ -22,7 +22,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-admin-header
       :email-feature-active="emailFeatureActive"
       @emailFeature-active="emailFeatureActive = $event" />
-    <email-connector-admin-cache-size v-if="emailFeatureActive" />
+    <email-connector-admin-sync-settings v-if="emailFeatureActive" />
     <template v-if="emailFeatureActive">
       <div class="text-title mt-8 mb-3">
         {{ $t('emailConnector.admin.connectors.title') }}
@@ -39,6 +39,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-admin-list :connectors="connectors" />
     </template>
     <email-connector-admin-drawer />
+    <email-connector-admin-sync-settings-drawer />
   </v-app>
 </template>
 

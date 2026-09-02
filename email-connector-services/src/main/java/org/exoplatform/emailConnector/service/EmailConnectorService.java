@@ -34,6 +34,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.emailConnector.event.EmailBoxSyncPeriodChangedEvent;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
@@ -63,9 +64,31 @@ public class EmailConnectorService {
 
   public static final String        EMAIL_BOX_CACHE_SIZE_KEY                     = "emailBoxCacheSize";
 
+  /** Administration-wide sync period key, in the same {@link #EMAIL_CONNECTOR_SCOPE}. */
+  public static final String        EMAIL_BOX_SYNC_PERIOD_KEY                    = "emailBoxSyncPeriod";
+
+  /** Administration-wide Trash-folder sync kill switch key. */
+  public static final String        TRASH_SYNC_ENABLED_KEY                       = "trashSyncEnabled";
+
+  /** Administration-wide Junk-folder sync kill switch key. */
+  public static final String        JUNK_SYNC_ENABLED_KEY                        = "junkSyncEnabled";
+
+  /** Administration-wide server-side drafts kill switch key. */
+  public static final String        DRAFTS_SERVER_ENABLED_KEY                    = "draftsServerEnabled";
+
   private static final int          MIN_EMAIL_BOX_CACHE_SIZE                     = 1;
 
   private static final int          MAX_EMAIL_BOX_CACHE_SIZE                     = 5000;
+
+  /**
+   * The floor of the administration-wide sync period: below this, N connected
+   * users would log in to the mail server N/5 times a minute, which is already
+   * the busiest a shared 25-thread Quartz pool should be pushed to (see the
+   * capacity analysis this control was designed against).
+   */
+  private static final int          MIN_EMAIL_BOX_SYNC_PERIOD                    = 5;
+
+  private static final int          MAX_EMAIL_BOX_SYNC_PERIOD                    = 1440;
 
   private static final String       EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
 
@@ -81,6 +104,11 @@ public class EmailConnectorService {
                                                                                 "User %s is not allowed to update the email box cache size";
 
   private static final String       CACHE_SIZE_OUT_OF_RANGE_MESSAGE              = "emailConnector.admin.cacheSize.outOfRange";
+
+  private static final String       SYNC_PERIOD_OUT_OF_RANGE_MESSAGE             = "emailConnector.admin.syncSettings.period.outOfRange";
+
+  private static final String       USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE   =
+                                                                                 "User %s is not allowed to update the email sync settings";
 
   private static final String       EMAIL_CONNECTOR_NOT_FOUND_MESSAGE            = "Email connector with id %s doesn't exist";
 
@@ -174,6 +202,142 @@ public class EmailConnectorService {
       throw new IllegalArgumentException(CACHE_SIZE_OUT_OF_RANGE_MESSAGE);
     }
     settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_CACHE_SIZE_KEY, SettingValue.create(String.valueOf(cacheSize)));
+  }
+
+  /**
+   * Get the administration-wide mailbox sync period, in minutes: how often each
+   * connected mailbox's Quartz job is scheduled to run. Read only when a user's
+   * job is (registered or re-registered) — at connect time and at startup — not
+   * on every sync, so a change here only reaches an already-connected mailbox
+   * once its job is rescheduled (see {@link #saveEmailBoxSyncPeriod}). When no
+   * value is stored, falls back to the {@code email.connector.sync.user.minute.period}
+   * JVM property (default 10), the same default the platform has always shipped.
+   *
+   * @return the configured sync period, in minutes
+   */
+  public int getEmailBoxSyncPeriod() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_SYNC_PERIOD_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      try {
+        return Integer.parseInt(settingValue.getValue().toString());
+      } catch (NumberFormatException e) {
+        LOG.warn("Invalid stored email sync period '{}', falling back to the default", settingValue.getValue());
+      }
+    }
+    return Integer.parseInt(System.getProperty("email.connector.sync.user.minute.period", "10"));
+  }
+
+  /**
+   * Save the administration-wide mailbox sync period and reschedule every
+   * connected user's sync job, so the change actually takes effect rather than
+   * only reaching users who reconnect or the next platform restart.
+   * Administrators only.
+   *
+   * @param minutes the sync period, in minutes, between {@value #MIN_EMAIL_BOX_SYNC_PERIOD}
+   *          and {@value #MAX_EMAIL_BOX_SYNC_PERIOD}
+   * @param username user updating the sync period
+   * @throws IllegalAccessException if the user is not allowed to update the sync
+   *           period
+   */
+  public void saveEmailBoxSyncPeriod(int minutes, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    if (minutes < MIN_EMAIL_BOX_SYNC_PERIOD || minutes > MAX_EMAIL_BOX_SYNC_PERIOD) {
+      throw new IllegalArgumentException(SYNC_PERIOD_OUT_OF_RANGE_MESSAGE);
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_SYNC_PERIOD_KEY, SettingValue.create(String.valueOf(minutes)));
+    eventPublisher.publishEvent(new EmailBoxSyncPeriodChangedEvent());
+  }
+
+  /**
+   * Whether the Trash folder's synchronization is switched on, administration-wide.
+   * Read on every sync rather than cached, so an administrator can withdraw it
+   * without a restart. Falls back to the
+   * {@code email.connector.trash.sync.enabled} JVM property (default {@code true})
+   * when no value is stored.
+   *
+   * @return true when the Trash folder may be cached
+   */
+  public boolean isTrashSyncEnabled() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, TRASH_SYNC_ENABLED_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      return Boolean.parseBoolean(settingValue.getValue().toString());
+    }
+    return Boolean.parseBoolean(System.getProperty("email.connector.trash.sync.enabled", "true"));
+  }
+
+  /**
+   * Save the administration-wide Trash-folder sync switch. Administrators only.
+   *
+   * @param enabled whether the Trash folder should be cached
+   * @param username user updating the switch
+   * @throws IllegalAccessException if the user is not allowed to update it
+   */
+  public void saveTrashSyncEnabled(boolean enabled, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, TRASH_SYNC_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
+  }
+
+  /**
+   * Whether the Junk folder's synchronization is switched on, administration-wide —
+   * see {@link #isTrashSyncEnabled()} for the shape. Falls back to the
+   * {@code email.connector.junk.sync.enabled} JVM property (default {@code true}).
+   *
+   * @return true when the Junk folder may be cached
+   */
+  public boolean isJunkSyncEnabled() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, JUNK_SYNC_ENABLED_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      return Boolean.parseBoolean(settingValue.getValue().toString());
+    }
+    return Boolean.parseBoolean(System.getProperty("email.connector.junk.sync.enabled", "true"));
+  }
+
+  /**
+   * Save the administration-wide Junk-folder sync switch. Administrators only.
+   *
+   * @param enabled whether the Junk folder should be cached
+   * @param username user updating the switch
+   * @throws IllegalAccessException if the user is not allowed to update it
+   */
+  public void saveJunkSyncEnabled(boolean enabled, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, JUNK_SYNC_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
+  }
+
+  /**
+   * Whether the server-side half of drafts is switched on, administration-wide —
+   * see {@link #isTrashSyncEnabled()} for the shape. Falls back to the
+   * {@code email.connector.drafts.server.enabled} JVM property (default
+   * {@code true}).
+   *
+   * @return true when drafts may be uploaded to the mail server
+   */
+  public boolean isServerDraftsEnabled() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, DRAFTS_SERVER_ENABLED_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      return Boolean.parseBoolean(settingValue.getValue().toString());
+    }
+    return Boolean.parseBoolean(System.getProperty("email.connector.drafts.server.enabled", "true"));
+  }
+
+  /**
+   * Save the administration-wide server-side drafts switch. Administrators only.
+   *
+   * @param enabled whether drafts should be uploaded to the mail server
+   * @param username user updating the switch
+   * @throws IllegalAccessException if the user is not allowed to update it
+   */
+  public void saveServerDraftsEnabled(boolean enabled, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, DRAFTS_SERVER_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
   }
 
   /**
