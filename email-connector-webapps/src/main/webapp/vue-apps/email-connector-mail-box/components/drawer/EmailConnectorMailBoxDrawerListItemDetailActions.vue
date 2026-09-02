@@ -62,6 +62,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         icon>
         <v-icon size="20">fa-trash</v-icon>
       </v-btn>
+      <v-btn
+        v-if="canMarkAsJunk"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.markJunk.label')"
+        @click="markAsJunk()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-ban</v-icon>
+      </v-btn>
+    </template>
+    <!-- What a Spam message offers instead: back to the inbox, or into the Trash. -->
+    <template v-if="junkActions">
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.notJunk.label')"
+        @click="restoreFromJunk()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-check-circle</v-icon>
+      </v-btn>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
+        color="error"
+        @click="deleteEmail()"
+        icon>
+        <v-icon size="20">fa-trash</v-icon>
+      </v-btn>
     </template>
     <!-- What a Trash message offers instead. -->
     <template v-if="trashActions">
@@ -141,6 +164,24 @@ export default {
     trashActions() {
       return this.$emailConnectorMailBoxService.hasTrashActions(this.email?.folder);
     },
+    /**
+     * Whether the opened message is a quarantined one, in which case this toolbar
+     * offers "Not spam" and a delete into the Trash in place of the three above.
+     *
+     * @returns {Boolean} true when the Spam actions belong here
+     */
+    junkActions() {
+      return this.$emailConnectorMailBoxService.hasJunkActions(this.email?.folder);
+    },
+    /**
+     * Whether "Mark as spam" may be offered on the opened message: the same rows the
+     * delete and archive are offered on, minus a draft, which is not mail to report.
+     *
+     * @returns {Boolean} true when the button belongs here
+     */
+    canMarkAsJunk() {
+      return this.$emailConnectorMailBoxService.canMarkAsJunk(this.email?.folder);
+    },
   },
   methods: {
     updateEmailReadStatus() {
@@ -153,6 +194,26 @@ export default {
     },
     archiveEmail() {
       this.$root.$emit('archive-email', [this.email.mailRemoteId]);
+      this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Reports the opened message as spam and closes the reader — it is leaving the
+     * listing it was opened from.
+     *
+     * @returns {void}
+     */
+    markAsJunk() {
+      this.$root.$emit('junk-email', [this.email.mailRemoteId]);
+      this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Puts the opened message back into the inbox out of the Spam folder and closes
+     * the reader, as restoreEmail does out of the Trash.
+     *
+     * @returns {void}
+     */
+    restoreFromJunk() {
+      this.$root.$emit('not-junk-email', [this.email.mailRemoteId]);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
