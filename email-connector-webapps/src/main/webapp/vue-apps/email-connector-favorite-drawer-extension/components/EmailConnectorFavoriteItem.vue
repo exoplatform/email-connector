@@ -111,6 +111,13 @@ export default {
       });
   },
   methods: {
+    /**
+     * Opens the mail in the mailbox's own reader, and records the favorite as
+     * accessed when a real click (not a keyboard Enter) brought the user there.
+     *
+     * @param {Event} event the row's click or keydown
+     * @returns {void}
+     */
     open(event) {
       // Vuetify re-emits an Enter pressed anywhere inside the row as the row's own
       // click, so a keyboard user unfavoriting from the star would also open the
@@ -136,15 +143,16 @@ export default {
      * flag, recomputed from it at every sync — so a removal that stopped at the
      * favorites store would be undone within minutes, the row quietly back in the
      * drawer. The flag is therefore cleared too, through the endpoint the mailbox
-     * star uses, and that endpoint ends by reconciling the favorites itself: a
-     * flag the server refused to clear puts the favorite back, and the drawer is
-     * refreshed to say so rather than pretend.
+     * star uses. When the server refuses the message, that endpoint reverts the
+     * row and reconciles the favorites itself; when it cannot reach the server at
+     * all it answers before reconciling — so the favorite is put back from here
+     * in both cases (a no-op in the first) and the drawer re-read to show it.
      *
      * @returns {void}
      */
     removed() {
       this.isFavorite = false;
-      this.$root.$emit('refresh-favorite-list');
+      this.$root.$emit('favorite-removed', 'email', this.id);
       fetch('/email-connector/rest/email-box/starred?starred=false', {
         method: 'PATCH',
         credentials: 'include',
@@ -161,15 +169,39 @@ export default {
         if (result?.failedUpdates) {
           throw new Error('The mail server refused to unstar the email');
         }
+        // A mailbox drawer already open holds its own copy of the flag and hears
+        // only its own root; the document is the one bus the two apps share.
+        document.dispatchEvent(new CustomEvent('email-favorite-status-changed', {
+          detail: {
+            mailRemoteIds: [this.email.mailRemoteId],
+            favorite: false,
+          },
+        }));
         this.displayAlert(this.$t('Favorite.tooltip.SuccessfullyDeletedFavorite'));
-      }).catch(() => {
-        this.removeError();
-        this.$root.$emit('refresh-favorite-list');
-      });
+      }).catch(() => this.$favoriteService.addFavorite('email', this.id)
+        .catch(() => null)
+        .finally(() => {
+          this.isFavorite = true;
+          this.removeError();
+          this.$root.$emit('refresh-favorite-list');
+        }));
     },
+    /**
+     * Tells the user the favorite could not be removed.
+     *
+     * @returns {void}
+     */
     removeError() {
       this.displayAlert(this.$t('Favorite.tooltip.ErrorDeletingFavorite', {0: this.$t('UITopBarFavoritesPortlet.email.label')}), 'error');
     },
+    /**
+     * Shows a platform toast: the alert component lives in another Vue root, so
+     * it is reached through the document rather than this app's root.
+     *
+     * @param {string} message the text to show
+     * @param {string} type 'success' (default) or 'error'
+     * @returns {void}
+     */
     displayAlert(message, type) {
       document.dispatchEvent(new CustomEvent('notification-alert', {detail: {
         message,
