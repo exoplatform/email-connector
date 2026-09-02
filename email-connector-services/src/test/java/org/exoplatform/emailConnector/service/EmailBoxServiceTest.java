@@ -286,6 +286,23 @@ public class EmailBoxServiceTest {
     System.clearProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY);
   }
 
+  /**
+   * The Trash/Junk/drafts kill switches and the sync period now live behind
+   * {@link EmailConnectorService}, a mock in this class — so, without a class-wide
+   * default, every test touching those folders or the period would silently see
+   * "off"/zero instead of the shipped default. {@code lenient()} because most
+   * tests never read one of these. The kill-switch tests below override the
+   * relevant stub to {@code false} instead of the {@code System.setProperty} this
+   * class used before those switches moved to {@code SettingService}.
+   */
+  @BeforeEach
+  void defaultTheAdministrationWideSyncSettingsOn() {
+    lenient().when(emailConnectorService.isTrashSyncEnabled()).thenReturn(true);
+    lenient().when(emailConnectorService.isJunkSyncEnabled()).thenReturn(true);
+    lenient().when(emailConnectorService.isServerDraftsEnabled()).thenReturn(true);
+    lenient().when(emailConnectorService.getEmailBoxSyncPeriod()).thenReturn(10);
+  }
+
   @Test
   @SneakyThrows
   void synchronize() {
@@ -416,6 +433,51 @@ public class EmailBoxServiceTest {
     emailBoxService.scheduleEmailBoxUserSyncJob(TEST_USER);
     verify(jobSchedulerService).removeJob(any(JobInfo.class));
     verify(jobSchedulerService).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
+  }
+
+  /**
+   * The admin drawer's whole point: without a reschedule, a saved period would
+   * only reach a user on their next reconnect or the next platform restart — this
+   * is what makes the save actually take effect on already-connected mailboxes.
+   */
+  @Test
+  void rescheduleAllSyncJobsRegistersEveryConnectedUser() throws Exception {
+    Context otherUser = Context.USER.id("otherUser");
+    when(settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                 Scope.APPLICATION.getName(),
+                                                                 EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                 EmailConnectorService.USER_EMAIL_SETTING_KEY,
+                                                                 0,
+                                                                 Integer.MAX_VALUE)).thenReturn(List.of(Context.USER.id(TEST_USER),
+                                                                                                        otherUser));
+    when(userEmailSettingService.getUserEmailSetting(anyString())).thenReturn(userEmailSetting());
+
+    emailBoxService.rescheduleAllSyncJobs();
+
+    verify(jobSchedulerService, times(2)).removeJob(any(JobInfo.class));
+    verify(jobSchedulerService, times(2)).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
+  }
+
+  /**
+   * One user's mailbox failing to reschedule (a bad stored setting, say) must not
+   * stop every other connected user's job from being re-registered.
+   */
+  @Test
+  void rescheduleAllSyncJobsSkipsAFailingUserWithoutStoppingTheRest() throws Exception {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                 Scope.APPLICATION.getName(),
+                                                                 EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                 EmailConnectorService.USER_EMAIL_SETTING_KEY,
+                                                                 0,
+                                                                 Integer.MAX_VALUE)).thenReturn(List.of(Context.USER.id("brokenUser"),
+                                                                                                        Context.USER.id(TEST_USER)));
+    when(userEmailSettingService.getUserEmailSetting("brokenUser")).thenThrow(new RuntimeException("stored setting is unreadable"));
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+
+    emailBoxService.rescheduleAllSyncJobs();
+
+    verify(jobSchedulerService, times(1)).removeJob(any(JobInfo.class));
+    verify(jobSchedulerService, times(1)).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
   }
 
   @Test
@@ -3104,21 +3166,17 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void theKillSwitchStopsTheTrashSyncAndNothingElse() {
-    System.setProperty(EmailBoxService.TRASH_SYNC_ENABLED_PROPERTY, "false");
-    try {
-      IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
-      lenient().when(trash.getMessageCount()).thenReturn(4);
+    when(emailConnectorService.isTrashSyncEnabled()).thenReturn(false);
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    lenient().when(trash.getMessageCount()).thenReturn(4);
 
-      emailBoxService.synchronize(TEST_USER);
+    emailBoxService.synchronize(TEST_USER);
 
-      verify(trash, never()).open(Folder.READ_ONLY);
-      verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.TRASH);
-      // The sync itself is untouched by the switch: it is one folder pass that is
-      // withdrawn, not the run.
-      assertEquals(SyncStatus.SUCCESS, userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailSyncStatus());
-    } finally {
-      System.clearProperty(EmailBoxService.TRASH_SYNC_ENABLED_PROPERTY);
-    }
+    verify(trash, never()).open(Folder.READ_ONLY);
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.TRASH);
+    // The sync itself is untouched by the switch: it is one folder pass that is
+    // withdrawn, not the run.
+    assertEquals(SyncStatus.SUCCESS, userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailSyncStatus());
   }
 
   // ---------------------------------------------------------------------------------
@@ -3248,23 +3306,19 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void theKillSwitchStopsTheJunkSyncAndNothingElse() {
-    System.setProperty(EmailBoxService.JUNK_SYNC_ENABLED_PROPERTY, "false");
-    try {
-      IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
-      lenient().when(junk.getMessageCount()).thenReturn(4);
-      IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
-      lenient().when(trash.getMessageCount()).thenReturn(4);
-      givenAMailboxListing(junk, trash);
+    when(emailConnectorService.isJunkSyncEnabled()).thenReturn(false);
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    lenient().when(junk.getMessageCount()).thenReturn(4);
+    IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    lenient().when(trash.getMessageCount()).thenReturn(4);
+    givenAMailboxListing(junk, trash);
 
-      emailBoxService.synchronize(TEST_USER);
+    emailBoxService.synchronize(TEST_USER);
 
-      verify(junk, never()).open(Folder.READ_ONLY);
-      verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.JUNK);
-      verify(trash).open(Folder.READ_ONLY);
-      assertEquals(SyncStatus.SUCCESS, userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailSyncStatus());
-    } finally {
-      System.clearProperty(EmailBoxService.JUNK_SYNC_ENABLED_PROPERTY);
-    }
+    verify(junk, never()).open(Folder.READ_ONLY);
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.JUNK);
+    verify(trash).open(Folder.READ_ONLY);
+    assertEquals(SyncStatus.SUCCESS, userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailSyncStatus());
   }
 
   /**
@@ -5711,16 +5765,12 @@ public class EmailBoxServiceTest {
   void theServerSideKillSwitchStopsTheUploadWithoutStoppingDrafts() throws Exception {
     givenAUsableMailbox();
     when(emailBoxStorage.saveDraft(any(Email.class))).thenAnswer(invocation -> invocation.getArgument(0));
-    System.setProperty(EmailBoxService.DRAFTS_SERVER_ENABLED_PROPERTY, "false");
-    try {
-      Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, true);
-      // saved, listable, resumable -- just not uploaded
-      assertEquals(MailFolder.DRAFTS, saved.getFolder());
-      assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
-      verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
-    } finally {
-      System.clearProperty(EmailBoxService.DRAFTS_SERVER_ENABLED_PROPERTY);
-    }
+    when(emailConnectorService.isServerDraftsEnabled()).thenReturn(false);
+    Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, true);
+    // saved, listable, resumable -- just not uploaded
+    assertEquals(MailFolder.DRAFTS, saved.getFolder());
+    assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
   }
 
   @Test
