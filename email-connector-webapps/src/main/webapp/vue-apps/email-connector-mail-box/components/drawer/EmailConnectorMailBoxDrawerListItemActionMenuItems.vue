@@ -264,31 +264,48 @@ export default {
     canFavorite() {
       return (this.email.folder || 'INBOX') === 'INBOX';
     },
-    // Whether this row sits in a folder the interface may only read (Trash), in which
-    // case every action that writes to the mail server stays off the menu. Read off
-    // the ROW's own folder rather than off the listed one, the same way canFavorite
-    // above already is: the row is the thing being acted on, and it is also what the
-    // mobile long-press drawer and the search results hand over.
+    /**
+     * Whether this row sits in a folder the interface may only read (Trash, Spam), in
+     * which case every action that writes to the mail server stays off the menu. Read
+     * off the ROW's own folder rather than off the listed one, the same way canFavorite
+     * above already is: the row is the thing being acted on, and it is also what the
+     * mobile long-press drawer and the search results hand over.
+     *
+     * @returns {Boolean} true when no mutating action may be offered
+     */
     readOnly() {
       return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
-    // Whether this row is one the Trash actions apply to. Off the ROW's folder for the
-    // same reason readOnly above is, and asked of the same service so the two answers
-    // are made in one place: a folder that offers restore must be one where the
-    // ordinary actions are withheld, and nothing here can drift out of that pairing.
+    /**
+     * Whether this row is one the Trash actions apply to. Off the ROW's folder for the
+     * same reason readOnly above is, and asked of the same service so the two answers
+     * are made in one place: a folder that offers restore must be one where the
+     * ordinary actions are withheld, and nothing here can drift out of that pairing.
+     *
+     * @returns {Boolean} true when restore / delete permanently belong on this row
+     */
     trashActions() {
       return this.$emailConnectorMailBoxService.hasTrashActions(this.email.folder);
     },
-    // Whether this row is one the Spam actions apply to — the same pairing rule as
-    // trashActions, for the other hidden folder.
+    /**
+     * Whether this row is one the Spam actions apply to — the same pairing rule as
+     * trashActions, for the other hidden folder.
+     *
+     * @returns {Boolean} true when "Not spam" / delete belong on this row
+     */
     junkActions() {
       return this.$emailConnectorMailBoxService.hasJunkActions(this.email.folder);
     },
-    // Whether delete and archive may be offered on this row at all. On top of readOnly:
-    // both address a message by its IMAP uid, and an unsent draft has none to address --
-    // discarding a draft is its own action, in the composer, where the user can see what
-    // they are throwing away. Exactly what the swipe has always refused (moveEnd in
-    // EmailConnectorMailBoxDrawerListItem), asked here so the menu and the swipe agree.
+    /**
+     * Whether delete, archive and mark-as-spam may be offered on this row at all. On
+     * top of readOnly: all three address a message by its IMAP uid, and an unsent draft
+     * has none to address -- discarding a draft is its own action, in the composer,
+     * where the user can see what they are throwing away. Exactly what the swipe has
+     * always refused (moveEnd in EmailConnectorMailBoxDrawerListItem), asked here so the
+     * menu and the swipe agree.
+     *
+     * @returns {Boolean} true when the folder-changing actions belong on this row
+     */
     canMove() {
       return !this.readOnly && (this.email.folder || 'INBOX') !== 'DRAFTS';
     },
