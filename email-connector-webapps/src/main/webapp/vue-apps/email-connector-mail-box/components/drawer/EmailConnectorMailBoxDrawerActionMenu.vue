@@ -56,9 +56,10 @@ export default {
       type: String,
       default: 'INBOX',
     },
+    // The folders to offer, as the server listed them.
     availableFolders: {
       type: Array,
-      default: () => ['INBOX'],
+      default: () => [{ key: 'INBOX', type: 'BUILT_IN' }],
     },
     // The categories offered as views (the add-on's full set, Important included).
     categories: {

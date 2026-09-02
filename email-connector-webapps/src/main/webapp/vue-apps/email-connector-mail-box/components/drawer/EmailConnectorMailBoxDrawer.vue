@@ -121,6 +121,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :indeterminate="indeterminate"
           expanded
           @update:selected-emails="selectedEmails = $event" />
+        <div
+          v-if="customFolderWindow"
+          class="caption text-sub-title text-center py-2">
+          {{ $t('emailConnector.mailBox.list.drawer.folder.custom.window', { 0: customFolderWindow }) }}
+        </div>
       </template>
     </template>
     <template v-if="emailBoxDrawer && !loading" #content>
@@ -188,6 +193,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :sync-in-progress="syncInProgress"
             :webmail-url="webmailUrl"
             @update:selected-emails="selectedEmails = $event" />
+          <!-- A custom folder is a recent-activity mirror, not a copy, and the list says
+               so rather than letting an older message look lost. -->
+          <div
+            v-if="customFolderWindow && !expanded"
+            class="caption text-sub-title text-center py-2">
+            {{ $t('emailConnector.mailBox.list.drawer.folder.custom.window', { 0: customFolderWindow }) }}
+          </div>
         </template>
         <email-connector-mail-box-drawer-no-email v-else />
       </template>
@@ -271,6 +283,7 @@ export default {
       purgedEmailIds: [],
       junkedEmailIds: [],
       unjunkedEmailIds: [],
+      movedEmailIds: [],
       currentFolder: 'INBOX',
       // The favorite view: list only the messages carrying the mail server's
       // \Flagged flag, in the listed folder. Toggled from the chip row.
@@ -447,6 +460,20 @@ export default {
     };
     this.$root.$on('junk-email', this.onJunkEmail);
     this.$root.$on('not-junk-email', this.onNotJunkEmail);
+    // "Move to..." into one of the user's own folders, wired the same way as archive:
+    // the rows leave the listing at once, the reader stops showing what is no longer
+    // there, and a running selection ends. The target comes from the picker drawer.
+    this.onMoveEmail = (emails, target) => {
+      this.moveEmails(emails, target);
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return;
+      }
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
+      }
+    };
+    this.$root.$on('move-email', this.onMoveEmail);
     // A draft was saved to (or discarded from) the Drafts folder. The list is a
     // mirror of the local cache and the composer has just changed it, so it has to
     // be re-read — this is the only writer outside the sync.
@@ -528,6 +555,7 @@ export default {
     this.$root.$off('purge-email', this.onPurgeEmail);
     this.$root.$off('junk-email', this.onJunkEmail);
     this.$root.$off('not-junk-email', this.onNotJunkEmail);
+    this.$root.$off('move-email', this.onMoveEmail);
     this.$root.$off('email-categories-updated', this.onCategoriesUpdated);
     this.$root.$off('switch-folder', this.onSwitchFolder);
     this.$root.$off('open-category-view', this.openCategoryView);
@@ -539,25 +567,45 @@ export default {
     hasEmails() {
       return this.emails?.length > 0;
     },
-    // INBOX plus any of SENT/ARCHIVE/DRAFTS/JUNK/TRASH that actually hold mail, for the ⋮ folder switch.
     /**
-     * The folders offered in the 3-dots menu: the inbox always, the others only
-     * once they hold something.
+     * The folders as the server lists them: the built-ins this mailbox HAS -- discovered,
+     * whether or not they currently hold cached mail, so a Spam folder is offered the way
+     * Gmail offers it rather than appearing only once something was filtered -- plus every
+     * custom folder with its opt-in. Data, not a hard-coded array: the server's
+     * MailFolder.isBrowsable is the one spelling of what may be listed, and this is its
+     * answer, so the menu can never offer a folder the backend refuses.
      *
-     * This list and the browsable-folder check in EmailBoxService#getEmailBox are
-     * the same list expressed twice, with no shared constant between them — change
-     * one and the other has to change with it, or this offers a folder the backend
-     * refuses (or hides one it would happily serve).
+     * @returns {Array} the folder descriptors ({key, type, displayName, path, syncEnabled, missing, count})
+     */
+    folders() {
+      return this.emailBox?.folders || [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }];
+    },
+    /**
+     * The folders offered in the 3-dots menu: every built-in the server listed, and the
+     * custom folders the user opted in that the mailbox still has.
      *
-     * Trash and Spam are count-gated like the rest, which is what keeps them off the
-     * menu of a mailbox that has no such folder at all, or an empty one — the entry
-     * appears only once the sync has actually cached something to look at.
-     *
-     * @returns {Array} the folder ids to offer
+     * @returns {Array} the folder descriptors to offer
      */
     availableFolders() {
-      const counts = this.emailBox?.folderCounts || {};
-      return ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'JUNK', 'TRASH'].filter(folder => folder === 'INBOX' || counts[folder] > 0);
+      return this.folders.filter(folder => folder.type !== 'CUSTOM' || (folder.syncEnabled && !folder.missing));
+    },
+    /**
+     * The listed folder's descriptor, for its name and its window.
+     *
+     * @returns {Object} the descriptor, or a bare built-in one when the list has not loaded
+     */
+    currentFolderView() {
+      return this.folders.find(folder => folder.key === this.currentFolder)
+        || { key: this.currentFolder, type: this.currentFolder.startsWith('CUSTOM:') ? 'CUSTOM' : 'BUILT_IN' };
+    },
+    /**
+     * The mirror window of the listed folder when it is one of the user's own, for the
+     * "showing the N most recent" line under the list; nothing for a built-in.
+     *
+     * @returns {Number} the window, or 0
+     */
+    customFolderWindow() {
+      return this.currentFolderView.type === 'CUSTOM' && this.currentFolderView.windowSize || 0;
     },
     syncBlocked() {
       return this.emailBox?.emailSyncStatus === 'BLOCKED';
@@ -565,16 +613,10 @@ export default {
     title() {
       if (!this.selectMode) {
         let title = this.$t('emailConnector.mailBox.list.drawer.title');
-        if (this.currentFolder === 'SENT') {
-          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.sent')}`;
-        } else if (this.currentFolder === 'ARCHIVE') {
-          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.archive')}`;
-        } else if (this.currentFolder === 'DRAFTS') {
-          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.drafts')}`;
-        } else if (this.currentFolder === 'TRASH') {
-          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.trash')}`;
-        } else if (this.currentFolder === 'JUNK') {
-          title = `${title} · ${this.$t('emailConnector.mailBox.list.drawer.folder.junk')}`;
+        // Any folder but the inbox names itself in the title, built-in or the user's
+        // own, through the one labelling function: a custom name is shown as written.
+        if (this.currentFolder !== 'INBOX') {
+          title = `${title} · ${this.$emailConnectorMailBoxService.folderLabel(this.currentFolderView, this.$t.bind(this))}`;
         }
         // The favorite view reads as one more folder-like narrowing of the list.
         if (this.favoriteOnly) {
@@ -674,6 +716,7 @@ export default {
       emails = emails.filter(e => !this.purgedEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.junkedEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.unjunkedEmailIds.includes(e.mailRemoteId));
+      emails = emails.filter(e => !this.movedEmailIds.includes(e.mailRemoteId));
       // The filters combine: each one narrows what the others left, so
       // "unread favorites in this category" is just everything toggled on. A
       // category VIEW is single selection (categoryViewId), so at most one
@@ -1103,6 +1146,7 @@ export default {
       this.purgedEmailIds = [];
       this.junkedEmailIds = [];
       this.unjunkedEmailIds = [];
+      this.movedEmailIds = [];
     },
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
@@ -1507,9 +1551,33 @@ export default {
           .then(archiveResult => this.alertOnActionFailures(archiveResult.failedArchives ?? 0, 'archive'))
           .catch(() => this.alertOnActionFailures(ids.length, 'archive')));
     },
+    /**
+     * Moves messages into one of the user's own folders, one request per folder they
+     * are listed in. Optimistic like archive: the rows leave at once, and the folder
+     * they land in lists them at its next check.
+     *
+     * @param {Array<Number>} emailIdsToMove the IMAP UIDs to move
+     * @param {String} target the destination's key (CUSTOM:<id>)
+     * @returns {void}
+     */
+    moveEmails(emailIdsToMove = [], target) {
+      if (!target) {
+        return;
+      }
+      // Group BEFORE hiding the rows — same reason as deleteEmails above.
+      const groups = this.byOwnFolder(emailIdsToMove);
+      this.movedEmailIds.push(...emailIdsToMove);
+      groups.forEach(([folder, ids]) =>
+        this.$emailConnectorMailBoxService.moveEmails(ids, folder, target)
+          .then(moveResult => this.alertOnActionFailures(moveResult.failedMoves ?? 0, 'move'))
+          .catch(() => this.alertOnActionFailures(ids.length, 'move')));
+    },
     async loadEmailBox() {
       const wasSyncing = this.syncInProgress;
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
+      // The folder list, kept on the root for the menus and the move-to picker: they
+      // are created on click, deep under this drawer, and read it at that moment.
+      this.$root.mailFolders = this.folders;
       // `emails` is a computed off `emailBox`, so it follows the line above on its own.
       // Assigning to it did nothing except log "computed property was assigned to but it
       // has no setter" on every load, and once per poll while a watch was running.

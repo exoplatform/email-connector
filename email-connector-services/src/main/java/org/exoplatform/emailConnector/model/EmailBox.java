@@ -43,7 +43,12 @@ public class EmailBox {
   // carries one folder's rows.
   private Map<String, ThreadSummary> threadSummaries;
 
-  // Message count per folder, so the list's folder switch only offers folders with
-  // mail (e.g. no empty Archive tab on Gmail).
+  // Message count per folder, keyed by folder discriminator -- a custom folder's under
+  // its CUSTOM:<id> key, which the client maps through the folder list below.
   private Map<String, Integer>       folderCounts;
+
+  // The folders the interface may offer, built-in and custom in one shape, so the
+  // drawer needs one call: which built-ins this mailbox has, and every custom folder
+  // with its opt-in. See EmailBoxService#getFolders for what "has" means.
+  private List<MailFolderView>       folders;
 }

@@ -133,6 +133,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.detail.markJunk.label') }}
       </span>
     </v-list-item>
+    <!-- "Move to...", where "Mark as spam" is: the user's own mirrored folders, offered
+         only when they have one to move into. Not gated on `restricted` either: the
+         swipe does not offer it. -->
+    <v-list-item
+      v-if="canMove && hasMoveTargets"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="moveToFolder">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="mx-auto"
+          size="16">
+          fa-folder-open
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.moveTo.label') }}
+      </span>
+    </v-list-item>
     <v-list-item
       v-if="!restricted && canMove"
       class="ps-2 pe-3 height-auto"
@@ -311,6 +332,16 @@ export default {
     canMove() {
       return !this.readOnly && (this.email.folder || 'INBOX') !== 'DRAFTS';
     },
+    /**
+     * Whether the user has a mirrored folder of their own to move this row into,
+     * other than the one it is listed in. Read off the root at render time: the menu
+     * is created on click, and the mailbox drawer keeps the server's folder list there.
+     *
+     * @returns {Boolean} true when "Move to..." has somewhere to go
+     */
+    hasMoveTargets() {
+      return this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.email.folder).length > 0;
+    },
   },
   methods: {
     selectEmail() {
@@ -342,6 +373,15 @@ export default {
     markAsJunk() {
       this.$emit('close');
       this.$root.$emit('junk-email', this.threadIds);
+    },
+    /**
+     * Opens the folder picker for the row (or the whole thread it stands for).
+     *
+     * @returns {void}
+     */
+    moveToFolder() {
+      this.$emit('close');
+      this.$root.$emit('open-move-to-folder-drawer', this.threadIds, this.email.folder || 'INBOX');
     },
     /**
      * Puts the row (or the whole thread it stands for) back into the inbox out of the
