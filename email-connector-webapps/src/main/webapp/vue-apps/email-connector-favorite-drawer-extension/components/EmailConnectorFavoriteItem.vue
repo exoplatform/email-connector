@@ -146,10 +146,10 @@ export default {
      * star uses — called directly, as the read above is: the mailbox service that
      * wraps it lives in the mailbox bundle, which this extension deliberately
      * does not load on every page. When the server refuses the message, that
-     * endpoint reverts the row and reconciles the favorites itself; when it
-     * cannot reach the server at all it answers before reconciling — so the
-     * favorite is put back from here in both cases (a no-op in the first) and
-     * the drawer re-read to show it.
+     * endpoint reverts the row and reconciles the favorites itself — the drawer
+     * is only re-read to show what it decided; when it cannot reach the server
+     * at all it answers before reconciling, and then the favorite is put back
+     * from here first, or the row would stay gone with its flag still set.
      *
      * The drop below destroys this row before the server answers, and a
      * destroyed component has no translator any more: what the toasts will say
@@ -160,6 +160,10 @@ export default {
     removed() {
       const removedMessage = this.$t('Favorite.tooltip.SuccessfullyDeletedFavorite');
       const errorMessage = this.$t('Favorite.tooltip.ErrorDeletingFavorite', {0: this.$t('UITopBarFavoritesPortlet.email.label')});
+      const showRowBack = () => {
+        this.displayAlert(errorMessage, 'error');
+        this.$root.$emit('refresh-favorite-list');
+      };
       this.isFavorite = false;
       this.$root.$emit('favorite-removed', 'email', this.id);
       fetch('/email-connector/rest/email-box/starred?starred=false', {
@@ -176,7 +180,8 @@ export default {
         return response.json();
       }).then(result => {
         if (result?.failedUpdates) {
-          throw new Error('The mail server refused to unstar the email');
+          showRowBack();
+          return;
         }
         // A mailbox drawer already open holds its own copy of the flag and hears
         // only its own root; the document is the one bus the two apps share.
@@ -189,10 +194,7 @@ export default {
         this.displayAlert(removedMessage);
       }).catch(() => this.$favoriteService.addFavorite('email', this.id)
         .catch(() => null)
-        .finally(() => {
-          this.displayAlert(errorMessage, 'error');
-          this.$root.$emit('refresh-favorite-list');
-        }));
+        .finally(showRowBack));
     },
     /**
      * Tells the user the favorite could not be removed — the button's own
