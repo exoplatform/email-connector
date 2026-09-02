@@ -151,6 +151,157 @@ export function updateEmailBoxSyncPeriod(minutes) {
   });
 }
 
+/**
+ * The administration-wide sync period of the inactive mailboxes, in minutes.
+ *
+ * @returns {Promise<Number>} the period, never below the active one (the server
+ *   clamps it on read)
+ */
+export function getEmailBoxInactiveSyncPeriod() {
+  return fetch('/email-connector/rest/connectors/inactive-sync-period', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the inactive mailbox sync period');
+    }
+  });
+}
+
+/**
+ * Saves the administration-wide sync period of the inactive mailboxes.
+ *
+ * @param {Number} minutes the period, in minutes (at least the active period,
+ *   at most 1440 — the server answers 400 otherwise)
+ * @returns {Promise<void>} rejected when the server refuses the value
+ */
+export function saveEmailBoxInactiveSyncPeriod(minutes) {
+  return fetch(`/email-connector/rest/connectors/inactive-sync-period?minutes=${minutes}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the inactive mailbox sync period');
+    }
+  });
+}
+
+/**
+ * The administration-wide activity threshold: how many days without opening
+ * the mailbox make its owner inactive.
+ *
+ * @returns {Promise<Number>} the threshold, in days
+ */
+export function getEmailBoxActivityThresholdDays() {
+  return fetch('/email-connector/rest/connectors/activity-threshold', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the mailbox activity threshold');
+    }
+  });
+}
+
+/**
+ * Saves the administration-wide activity threshold.
+ *
+ * @param {Number} days the threshold, in days (1 to 365 — the server answers
+ *   400 otherwise)
+ * @returns {Promise<void>} rejected when the server refuses the value
+ */
+export function saveEmailBoxActivityThresholdDays(days) {
+  return fetch(`/email-connector/rest/connectors/activity-threshold?days=${days}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the mailbox activity threshold');
+    }
+  });
+}
+
+/**
+ * The size of the mailbox sync executor: how many mailboxes each server node
+ * synchronizes at once.
+ *
+ * @returns {Promise<Number>} the executor size, in threads
+ */
+export function getEmailSyncThreads() {
+  return fetch('/email-connector/rest/connectors/sync-threads', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the mailbox sync threads');
+    }
+  });
+}
+
+/**
+ * Saves the size of the mailbox sync executor.
+ *
+ * @param {Number} threads the executor size (1 to 64 — the server answers 400
+ *   otherwise)
+ * @returns {Promise<void>} rejected when the server refuses the value
+ */
+export function saveEmailSyncThreads(threads) {
+  return fetch(`/email-connector/rest/connectors/sync-threads?threads=${threads}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the mailbox sync threads');
+    }
+  });
+}
+
+/**
+ * A snapshot of the mailbox sync dispatcher, for the drawer's status line.
+ *
+ * @returns {Promise<Object>} {node, running, queued, threads, claimed,
+ *   dueBacklog, oldestDueMinutes, connectedMailboxes}
+ */
+export function getEmailSyncStatus() {
+  return fetch('/email-connector/rest/connectors/sync-status', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the mailbox sync status');
+    }
+  });
+}
+
 export function getTrashSyncEnabled() {
   return fetch('/email-connector/rest/connectors/trash-sync', {
     headers: {
