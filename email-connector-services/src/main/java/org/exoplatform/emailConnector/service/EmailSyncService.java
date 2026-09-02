@@ -66,9 +66,12 @@ import jakarta.annotation.PreDestroy;
  * each tick, never captured, so an administrator changing a value in the drawer
  * sees the next tick behave differently, not the next restart.
  * <p>
- * Task 1 of the sync-scheduling work wires the two-tier due-query with one tier:
- * everyone is active (an activity threshold at the epoch) and both periods are the
- * administration-wide one. The tiering task only changes those three parameters.
+ * Two tiers, decided inside the due-query on three administered values read at
+ * each tick: a mailbox whose owner opened it (or asked for a sync) within the
+ * activity threshold is due after the active period, any other after the inactive
+ * one. The activity signal is a column the drawer's listing stamps
+ * ({@code EmailBoxService.touchActivity}), never an in-JVM cache, so every node
+ * reads the same tier.
  */
 @Service
 public class EmailSyncService {
@@ -139,8 +142,11 @@ public class EmailSyncService {
       return 0;
     }
     Date staleBefore = EmailConnectorUtils.getSyncClaimStaleBefore(now);
-    Date activeDueBefore = activeDueBefore(now);
-    List<String> due = emailSyncStateStorage.findDue(activeSince(), activeDueBefore, activeDueBefore, staleBefore, free);
+    List<String> due = emailSyncStateStorage.findDue(activeSince(now),
+                                                     activeDueBefore(now),
+                                                     inactiveDueBefore(now),
+                                                     staleBefore,
+                                                     free);
     int dispatched = 0;
     for (String userId : due) {
       try {
@@ -195,18 +201,21 @@ public class EmailSyncService {
   }
 
   /**
-   * A snapshot for the administration drawer's status line.
+   * A snapshot for the administration drawer's status line. The backlog is
+   * counted with the very thresholds the next tick will select on, so the line
+   * never shows a backlog the dispatcher would not see.
    *
    * @return the dispatcher's state on this node and across the cluster
    */
   public EmailSyncExecutorStatus getStatus() {
     Date now = new Date();
     Date staleBefore = EmailConnectorUtils.getSyncClaimStaleBefore(now);
+    Date activeSince = activeSince(now);
     Date activeDueBefore = activeDueBefore(now);
-    Date activeSince = activeSince();
-    long dueBacklog = emailSyncStateStorage.countDue(activeSince, activeDueBefore, activeDueBefore, staleBefore);
+    Date inactiveDueBefore = inactiveDueBefore(now);
+    long dueBacklog = emailSyncStateStorage.countDue(activeSince, activeDueBefore, inactiveDueBefore, staleBefore);
     Date oldestDue = dueBacklog == 0 ? null
-                                     : emailSyncStateStorage.findOldestDue(activeSince, activeDueBefore, activeDueBefore, staleBefore);
+                                     : emailSyncStateStorage.findOldestDue(activeSince, activeDueBefore, inactiveDueBefore, staleBefore);
     long oldestDueMinutes = oldestDue == null ? 0 : Math.max(0, (now.getTime() - oldestDue.getTime()) / 60000L);
     return new EmailSyncExecutorStatus(EmailConnectorUtils.getSyncNodeName(),
                                        executor.getActiveCount(),
@@ -334,7 +343,7 @@ public class EmailSyncService {
 
   /**
    * The instant before which an active mailbox's last sync makes it due: now minus
-   * the administered period, read at each call.
+   * the administered active period, read at each call.
    *
    * @param now the reference instant
    * @return the threshold
@@ -344,13 +353,25 @@ public class EmailSyncService {
   }
 
   /**
-   * The instant at or after which an activity stamp makes a mailbox's owner active.
-   * The epoch, for now: everyone is active until the tiering task sets a threshold.
+   * The instant before which an inactive mailbox's last sync makes it due: now
+   * minus the administered inactive period, read at each call.
    *
+   * @param now the reference instant
+   * @return the threshold
+   */
+  private Date inactiveDueBefore(Date now) {
+    return new Date(now.getTime() - emailConnectorService.getEmailBoxInactiveSyncPeriod() * 60000L);
+  }
+
+  /**
+   * The instant at or after which an activity stamp makes a mailbox's owner
+   * active: now minus the administered threshold in days, read at each call.
+   *
+   * @param now the reference instant
    * @return the activity threshold
    */
-  private Date activeSince() {
-    return new Date(0);
+  private Date activeSince(Date now) {
+    return new Date(now.getTime() - emailConnectorService.getEmailBoxActivityThresholdDays() * 86_400_000L);
   }
 
   /**

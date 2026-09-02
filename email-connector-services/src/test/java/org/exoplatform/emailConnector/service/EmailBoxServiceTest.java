@@ -481,6 +481,68 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * Opening the mailbox is the activity signal the sync tiers stand on, and it is
+   * written after the ACL check and the folder check: a refused request stamps
+   * nothing, or anyone could keep somebody else's mailbox on the fast cadence by
+   * asking for it, and a request for a folder that is not a listing is not an
+   * opening either. The throttle handed to the statement is ten minutes back.
+   * Mutation-verified: with the stamp moved above the ACL check, the first
+   * {@code never()} fails.
+   */
+  @Test
+  @SneakyThrows
+  void getEmailBoxStampsActivityAfterTheAclCheck() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX));
+    verify(emailSyncStateStorage, never()).touchActivity(anyString(), any(Date.class), any(Date.class));
+
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    assertThrows(IllegalArgumentException.class, () -> emailBoxService.getEmailBox(TEST_USER, MailFolder.ALL_MAIL));
+    verify(emailSyncStateStorage, never()).touchActivity(anyString(), any(Date.class), any(Date.class));
+
+    Date before = new Date();
+    emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX);
+    verify(emailSyncStateStorage).touchActivity(eq(TEST_USER),
+                                                any(Date.class),
+                                                argThat(throttleBefore -> Math.abs(before.getTime() - 10 * 60_000L
+                                                    - throttleBefore.getTime()) < 5_000L));
+  }
+
+  /**
+   * A stamp that throws does not fail the listing: the cost of a lost stamp is one
+   * mailbox on the slower cadence until its next open, the cost of a failed
+   * listing is a user who cannot read their mail. Mutation-verified: with the
+   * try/catch around the stamp removed, this fails.
+   */
+  @Test
+  void aFailingActivityStampDoesNotFailTheListing() {
+    givenAUsableMailbox();
+    when(emailSyncStateStorage.touchActivity(anyString(), any(Date.class), any(Date.class))).thenThrow(new RuntimeException("the database is away"));
+    assertDoesNotThrow(() -> emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX));
+    verify(emailBoxStorage).getEmails(TEST_USER, MailFolder.INBOX);
+  }
+
+  /**
+   * Asking for a sync is a person at their mailbox too, so it stamps activity --
+   * after the same ACL check: a refused request stamps nothing.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizeStampsActivityAfterTheAclCheck() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
+    verify(emailSyncStateStorage, never()).touchActivity(anyString(), any(Date.class), any(Date.class));
+
+    mockEmptySync();
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailSyncStateStorage).touchActivity(eq(TEST_USER), any(Date.class), any(Date.class));
+  }
+
+  /**
    * A mailbox somebody else holds the claim on (another node's dispatcher, say) is
    * not synchronized twice: the request returns quietly, as the in-JVM guard has
    * always answered, and nothing is released that this thread did not take.

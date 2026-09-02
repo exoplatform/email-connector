@@ -21,9 +21,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -272,6 +274,143 @@ public class EmailConnectorServiceTest {
                                eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
                                eq(EmailConnectorService.EMAIL_SYNC_THREADS_KEY),
                                any(SettingValue.class));
+  }
+
+  @Test
+  void getEmailBoxInactiveSyncPeriodReturnsDefaultWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY)).thenReturn(null);
+    assertEquals(60, emailConnectorService.getEmailBoxInactiveSyncPeriod());
+  }
+
+  @Test
+  void getEmailBoxInactiveSyncPeriodReturnsStoredValue() {
+    doReturn(SettingValue.create("180")).when(settingService)
+                                        .get(Context.GLOBAL,
+                                             EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                             EmailConnectorService.EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY);
+    assertEquals(180, emailConnectorService.getEmailBoxInactiveSyncPeriod());
+  }
+
+  /**
+   * The read side floors the inactive period at the active one: an instance
+   * upgraded with a stored active period above the inactive default has never
+   * had a saver enforce the invariant, and the dispatcher selects on what this
+   * getter answers. Mutation-verified: with the clamp removed, this fails.
+   */
+  @Test
+  void getEmailBoxInactiveSyncPeriodNeverAnswersBelowTheActivePeriod() {
+    doReturn(SettingValue.create("60")).when(settingService)
+                                       .get(Context.GLOBAL,
+                                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                            EmailConnectorService.EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY);
+    doReturn(SettingValue.create("120")).when(settingService)
+                                        .get(Context.GLOBAL,
+                                             EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                             EmailConnectorService.EMAIL_BOX_SYNC_PERIOD_KEY);
+    assertEquals(120, emailConnectorService.getEmailBoxInactiveSyncPeriod());
+  }
+
+  /**
+   * The inactive period's floor is the active period as it stands when saving --
+   * thirty here, not the five-minute constant the active period has -- because an
+   * inactive mailbox checked more often than an active one is a contradiction;
+   * its ceiling is the active period's day.
+   */
+  @Test
+  @SneakyThrows
+  void saveEmailBoxInactiveSyncPeriod() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveEmailBoxInactiveSyncPeriod(60, TEST_USER));
+    grantAdministration();
+    doReturn(SettingValue.create("30")).when(settingService)
+                                       .get(Context.GLOBAL,
+                                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                            EmailConnectorService.EMAIL_BOX_SYNC_PERIOD_KEY);
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxInactiveSyncPeriod(29, TEST_USER));
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxInactiveSyncPeriod(1441, TEST_USER));
+    emailConnectorService.saveEmailBoxInactiveSyncPeriod(30, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY),
+                               argThat((SettingValue<?> value) -> "30".equals(value.getValue())));
+  }
+
+  /**
+   * Saving an active period above the inactive one raises the inactive one to
+   * match, since the inactive tier can never be checked more often than the active
+   * one; lowering the active period leaves the inactive one alone.
+   * Mutation-verified: with the raise removed from {@code saveEmailBoxSyncPeriod},
+   * the second verify fails.
+   */
+  @Test
+  @SneakyThrows
+  void savingAnActivePeriodAboveTheInactiveOneRaisesTheInactiveOne() {
+    grantAdministration();
+    doReturn(SettingValue.create("60")).when(settingService)
+                                       .get(Context.GLOBAL,
+                                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                            EmailConnectorService.EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY);
+
+    emailConnectorService.saveEmailBoxSyncPeriod(30, TEST_USER);
+    verify(settingService, never()).set(eq(Context.GLOBAL),
+                                        eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                                        eq(EmailConnectorService.EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY),
+                                        any(SettingValue.class));
+
+    emailConnectorService.saveEmailBoxSyncPeriod(120, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.EMAIL_BOX_SYNC_PERIOD_KEY),
+                               argThat((SettingValue<?> value) -> "120".equals(value.getValue())));
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY),
+                               argThat((SettingValue<?> value) -> "120".equals(value.getValue())));
+  }
+
+  @Test
+  void getEmailBoxActivityThresholdDaysReturnsDefaultWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS_KEY)).thenReturn(null);
+    assertEquals(14, emailConnectorService.getEmailBoxActivityThresholdDays());
+  }
+
+  @Test
+  void getEmailBoxActivityThresholdDaysReturnsStoredValue() {
+    doReturn(SettingValue.create("30")).when(settingService)
+                                       .get(Context.GLOBAL,
+                                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                            EmailConnectorService.EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS_KEY);
+    assertEquals(30, emailConnectorService.getEmailBoxActivityThresholdDays());
+  }
+
+  /**
+   * The activity threshold is an administrator's to set, from a day to a year.
+   */
+  @Test
+  @SneakyThrows
+  void saveEmailBoxActivityThresholdDays() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveEmailBoxActivityThresholdDays(30, TEST_USER));
+    grantAdministration();
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxActivityThresholdDays(0, TEST_USER));
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxActivityThresholdDays(366, TEST_USER));
+    emailConnectorService.saveEmailBoxActivityThresholdDays(30, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS_KEY),
+                               argThat((SettingValue<?> value) -> "30".equals(value.getValue())));
+  }
+
+  /**
+   * Makes the test user an administrator, which is what every save above asks of
+   * the ACL before it looks at the value.
+   */
+  private void grantAdministration() {
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
   }
 
   @Test
