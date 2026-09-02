@@ -6790,6 +6790,99 @@ public class EmailBoxServiceTest {
     verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
   }
 
+  /**
+   * The default badge — no preference, "notify for all" left unset, or set — is
+   * one SQL count and no category work whatsoever. This is what the majority of
+   * users cost on every recount, and the projection must never be read for them.
+   */
+  @Test
+  void theBadgeIsOneCountForAUserNotifiedForEverything() {
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(4L);
+
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(null);
+    assertEquals(4L, emailBoxService.countUnreadEmails(TEST_USER), "no setting at all: everything unread in the inbox");
+
+    UserEmailSetting unset = userEmailSetting();
+    unset.setNotifyAllCategories(null);
+    unset.setNotifyCategories(List.of(1L));
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(unset);
+    assertEquals(4L, emailBoxService.countUnreadEmails(TEST_USER), "null resolves to notify-for-all, the default");
+
+    UserEmailSetting all = userEmailSetting();
+    all.setNotifyAllCategories(Boolean.TRUE);
+    all.setNotifyCategories(List.of(1L));
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(all);
+    assertEquals(4L, emailBoxService.countUnreadEmails(TEST_USER), "notify-for-all wins over any selection");
+
+    verify(emailBoxStorage, never()).getUnreadInboxCategoryIds(anyString());
+  }
+
+  /**
+   * The badge counts what would have notified: for a user who narrowed their
+   * notifications to selected categories, an unread inbox message counts when one
+   * of its categories is opted into, or when it has none at all (uncategorized
+   * always notifies — the AI-off case included), and not otherwise. The plain count
+   * is never asked for: it would answer with the rows the rule leaves out.
+   */
+  @Test
+  void theBadgeLeavesOutTheCategoriesTheUserDidNotOptInto() {
+    UserEmailSetting selected = userEmailSetting();
+    selected.setNotifyAllCategories(Boolean.FALSE);
+    selected.setNotifyCategories(List.of(1L, 2L));
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(selected);
+    when(emailBoxStorage.getUnreadInboxCategoryIds(TEST_USER)).thenReturn(Map.of(10L, List.of(2L, 5L),
+                                                                                 11L, List.of(5L),
+                                                                                 12L, List.of(),
+                                                                                 13L, List.of(1L)));
+
+    assertEquals(3L, emailBoxService.countUnreadEmails(TEST_USER), "the opted-in ones and the uncategorized one; not the one filed elsewhere");
+    verify(emailBoxStorage, never()).countUnreadEmails(anyString());
+  }
+
+  /**
+   * Filing a message under a category is a count change for a user whose badge
+   * counts by category, and the badge learns of it through the same funnel as a
+   * read. A call that linked nothing — the message was already there, or was not
+   * the user's — announces nothing, for the same reason a no-op read does not.
+   */
+  @Test
+  @SneakyThrows
+  void linkingACategoryBroadcastsTheUnreadCountChangeOnlyWhenALinkStuck() {
+    when(categoryService.getCategory(5L)).thenReturn(new Category());
+    emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+
+    mockOwnedEmail();
+    emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+
+    doThrow(ObjectAlreadyExistsException.class).when(categoryLinkService)
+                                               .link(anyLong(), any(CategoryObject.class), anyString());
+    emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
+    verify(listenerService, times(1)).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
+  /**
+   * The other direction: taking a message out of a category can start or stop it
+   * counting, and the badge learns of it the same way. Nothing unlinked, nothing
+   * announced.
+   */
+  @Test
+  @SneakyThrows
+  void unlinkingACategoryBroadcastsTheUnreadCountChangeOnlyWhenALinkWent() {
+    emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+
+    mockOwnedEmail();
+    emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+
+    doThrow(ObjectNotFoundException.class).when(categoryLinkService)
+                                          .unlink(anyLong(), any(CategoryObject.class), anyString());
+    emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
+    verify(listenerService, times(1)).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
   /** A synchronisation that reaches its success path with no message to import. */
   @SneakyThrows
   private void mockEmptySync() {
