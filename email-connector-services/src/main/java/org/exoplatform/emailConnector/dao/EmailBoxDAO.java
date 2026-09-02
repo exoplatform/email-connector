@@ -173,27 +173,57 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<Long> ids);
 
   /**
-   * Counts the unread emails of the locally synced mirror, minus one folder — always
-   * {@link org.exoplatform.emailConnector.model.MailFolder#TRASH}. Never reaches the
-   * IMAP server: the badge reflects what the platform already knows.
+   * Counts the unread emails of ONE folder of the locally synced mirror — always
+   * {@link org.exoplatform.emailConnector.model.MailFolder#INBOX}, the badge. Never
+   * reaches the IMAP server: the badge reflects what the platform already knows.
    * <p>
-   * The exclusion is the badge's half of the rule the reader and the search already
-   * follow, and it is the one a user meets without ever opening a Trash listing:
-   * deleting an unread mail is how most people dismiss one, the message keeps its
-   * unread flag on the way to the server's Trash, and a total count would take it
-   * back the moment that folder is cached — a badge insisting on unread mail that
-   * nothing on screen accounts for, permanently. See
-   * {@link #findByUserIdAndThreadIdWithAttachments} for why the exclusion is a
-   * parameter and why a plain inequality is safe on this column.
+   * An equality, not a list of exclusions, because the folders that must not count
+   * are every folder but one. The {@code read} column mirrors the server's
+   * {@code \Seen} flag on every synced folder, and only the INBOX has a screen that
+   * clears it: a SENT copy the server appended without {@code \Seen}, an archived
+   * message the user never opened, an ALL_MAIL row (a duplicate of another folder's
+   * message by construction), a server-side draft — none of them can be marked read
+   * from here, so each one counts forever, with nothing on screen to account for it.
+   * The badge landed INBOX-scoped for exactly this reason (EXO-88554), a squashed
+   * re-land widened it back to "every folder", and the Trash work then narrowed it
+   * only to {@code <> TRASH} because no test ever put an unread SENT row in front
+   * of the count. {@code EmailBoxBadgeScopeStorageTest} does now.
+   * <p>
+   * TRASH stays out as a consequence rather than as a rule of its own, and the
+   * reason it was excluded first still holds: deleting an unread mail is how most
+   * people dismiss one, the message keeps its unread flag on the way to the server's
+   * Trash, and a count that reached that folder would take it back the moment it is
+   * cached. The folder is a bound parameter, not a literal, for the reason
+   * {@link #findByUserIdAndThreadIdWithAttachments} gives: its name lives in
+   * {@code MailFolder} alone, and the storage layer passes the constant.
    *
    * @param  userId the mailbox owner
-   * @param  excludedFolder the folder to leave out, always {@code MailFolder.TRASH}
-   * @return        the number of unread emails the mailbox still shows
+   * @param  folder the one folder that counts, always {@code MailFolder.INBOX}
+   * @return        the number of unread emails in that folder
    */
-  @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder <> :excludedFolder AND (email.read IS NULL OR email.read = FALSE)")
-  long countUnreadByUserIdExcludingFolder(@Param("userId")
-  String userId, @Param("excludedFolder")
-  String excludedFolder);
+  @Query("SELECT COUNT(email) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read = FALSE)")
+  long countUnreadByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
+   * The ids of the unread rows of one folder — the same rows
+   * {@link #countUnreadByUserIdAndFolder} counts, as ids rather than as a number,
+   * for the badge of a user who narrowed their notifications to selected categories.
+   * <p>
+   * A projection on purpose: the only thing the category filter needs from a row is
+   * its id, to look the category links up by. Reading the entities instead would
+   * carry every body through the mapper, and the mapper resolves categories per row
+   * — the N+1 the listing already refuses to pay ({@code EmailBoxStorage#toListing}).
+   *
+   * @param  userId the mailbox owner
+   * @param  folder the one folder that counts, always {@code MailFolder.INBOX}
+   * @return        the ids of that folder's unread rows, never null
+   */
+  @Query("SELECT email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND (email.read IS NULL OR email.read = FALSE)")
+  List<Long> findUnreadIdsByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
 
   @Transactional
   @Modifying

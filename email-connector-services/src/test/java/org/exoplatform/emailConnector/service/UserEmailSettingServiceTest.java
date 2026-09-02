@@ -58,6 +58,7 @@ import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
+import org.exoplatform.emailConnector.event.EmailNotificationPreferencesChangedEvent;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
 import org.exoplatform.emailConnector.model.ContactPublishQueueEntry;
 import org.exoplatform.emailConnector.model.EmailConnector;
@@ -197,6 +198,62 @@ public class UserEmailSettingServiceTest {
     // The binding itself is untouched, so nothing lets go of any contacts.
     assertTrue(written.getValue().getValue().toString().contains("\"carddavEnabled\":true"));
     verify(eventPublisher, never()).publishEvent(any(ContactBookReleaseEvent.class));
+  }
+
+  /**
+   * The badge counts by the notification preference, so saving it has to reach
+   * the badge — through an event, since this service cannot call the mail
+   * service without closing a bean cycle. The stored preference is "all"; the
+   * user narrows it to two categories, and the badge is told.
+   */
+  @Test
+  void savingTheNotificationPreferenceTellsTheBadge() {
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+    storedSetting("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\"}");
+
+    userEmailSettingService.updateEmailPreferences(TEST_USER, Boolean.FALSE, List.of(1L, 2L), null);
+
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                               any(SettingValue.class));
+    verify(eventPublisher).publishEvent(any(EmailNotificationPreferencesChangedEvent.class));
+  }
+
+  /**
+   * The default-view toggle shares the same write and does not move the count. A
+   * save that changed only that — the notification half exactly as stored — is
+   * written, and announces nothing: an unchanged preference must not cost the
+   * badge an eviction, a frame and a re-fetch.
+   */
+  @Test
+  void savingOnlyTheDefaultViewLeavesTheBadgeAlone() {
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+    storedSetting("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"notifyAllCategories\":false,\"notifyCategories\":[1,2]}");
+
+    userEmailSettingService.updateEmailPreferences(TEST_USER, Boolean.FALSE, List.of(1L, 2L), 5L);
+
+    verify(settingService).set(any(Context.class),
+                               any(Scope.class),
+                               eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY),
+                               any(SettingValue.class));
+    verify(eventPublisher, never()).publishEvent(any(EmailNotificationPreferencesChangedEvent.class));
+  }
+
+  /**
+   * A stored settings document for the test user, with the connector it names
+   * resolving, so the read comes back as a connected mailbox.
+   *
+   * @param json the stored document
+   */
+  @SneakyThrows
+  private void storedSetting(String json) {
+    SettingValue storedSetting = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+                       .thenReturn(storedSetting);
+    when(storedSetting.getValue()).thenReturn(json);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
   }
 
   /**

@@ -38,7 +38,10 @@ import io.meeds.appcenter.service.ApplicationBadgePluginRegistry;
 import jakarta.annotation.PostConstruct;
 
 /**
- * Reports the user's unread emails on the E-mail application tile.
+ * Reports the user's unread emails on the E-mail application tile — the
+ * messages that would have notified them, which is the rule
+ * {@link EmailBoxService#countUnreadEmails} holds: the unread INBOX, narrowed to
+ * the user's opted-in categories when they narrowed their notifications.
  * <p>
  * Counts from the <strong>locally synced mirror</strong> only, never from IMAP:
  * the badge sits on the topbar of every page, so it must stay a local read. The
