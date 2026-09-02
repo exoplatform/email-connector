@@ -1203,8 +1203,11 @@ export default {
     // the revert broadcast below, which exists precisely because the server refused.
     applyEmailsFavoriteStatus(favorite, emailIds = [], acknowledged = false) {
       const ids = new Set(emailIds);
+      // INBOX rows only, like the two copies below: the in-app star never fires
+      // while another folder is listed, but the Favorites drawer's does, and a
+      // Sent row happening to share the UID is another message.
       (this.emailBox?.emails || []).forEach(email => {
-        if (ids.has(email.mailRemoteId)) {
+        if ((email.folder || this.currentFolder) === 'INBOX' && ids.has(email.mailRemoteId)) {
           this.$set(email, 'starred', favorite);
         }
       });
