@@ -63,6 +63,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-ban</v-icon>
       </v-btn>
       <v-btn
+        v-if="canMoveTo"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.moveTo.label')"
+        @click="moveToFolder()"
+        icon>
+        <v-icon size="20" class="icon-default-color">fa-folder-open</v-icon>
+      </v-btn>
+      <v-btn
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
         color="error"
         @click="deleteEmail()"
@@ -182,6 +189,16 @@ export default {
     canMarkAsJunk() {
       return this.$emailConnectorMailBoxService.canMarkAsJunk(this.email?.folder);
     },
+    /**
+     * Whether "Move to..." may be offered on the opened message: the rows "Mark as
+     * spam" is offered on, when the user has a mirrored folder to move it into.
+     *
+     * @returns {Boolean} true when the button belongs here
+     */
+    canMoveTo() {
+      return this.canMarkAsJunk
+        && this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.email?.folder).length > 0;
+    },
   },
   methods: {
     updateEmailReadStatus() {
@@ -195,6 +212,15 @@ export default {
     archiveEmail() {
       this.$root.$emit('archive-email', [this.email.mailRemoteId]);
       this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Opens the folder picker for the opened message. The reader stays open until a
+     * folder is chosen: the move, not the intent, is what takes the message away.
+     *
+     * @returns {void}
+     */
+    moveToFolder() {
+      this.$root.$emit('open-move-to-folder-drawer', [this.email.mailRemoteId], this.email.folder || 'INBOX');
     },
     /**
      * Reports the opened message as spam and closes the reader — it is leaving the

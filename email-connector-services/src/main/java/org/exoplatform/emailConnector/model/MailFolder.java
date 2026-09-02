@@ -97,4 +97,114 @@ public final class MailFolder {
    * can never be UNKNOWN for a row and silently drop it.
    */
   public static final List<String> HIDDEN_FOLDERS = List.of(TRASH, JUNK);
+
+  // The prefix of a CUSTOM folder's key -- a folder the user made in their own mailbox
+  // ("Factures", "Customers/Acme", a Gmail label), mirrored here on their say-so.
+  // The key written to EMAIL_BOX.FOLDER for such a folder is "CUSTOM:" + the id of its
+  // EMAIL_FOLDER registry row, never the folder's remote name: the name would not fit
+  // the VARCHAR(50) the column is, would orphan every row the day the folder is
+  // renamed on the server, would drag the hierarchy delimiter, modified-UTF-7 and a
+  // case question into a key, and a user folder literally named "SENT" would collide
+  // with the constant above. The id has none of those problems, and the registry row
+  // it points at is where the remote name, the display name and the per-folder sync
+  // memory live.
+  //
+  // Custom folders are in the ARCHIVE behaviour class -- browsable AND resurfaced --
+  // and that is the whole reason they are cheap: filing a message in "Factures" is
+  // organisation, not disposal, so the message keeps its place in its conversation and
+  // in search, and the exclusions written for TRASH and JUNK are not touched. Getting
+  // the class wrong here is the exact mirror of getting it wrong for Junk: a custom
+  // folder treated as hidden makes filing into deleting, and the more organised the
+  // user, the more of their own mail the platform hides from them.
+  public static final String CUSTOM_KEY_PREFIX = "CUSTOM:";
+
+  // The built-in folders a user may open as a list. ALL_MAIL is deliberately absent: it
+  // is an on-demand completion store, never a listing. A custom folder is browsable by
+  // construction (see isBrowsable), so this list is only the built-in half of it.
+  public static final List<String> BROWSABLE_BUILT_INS = List.of(INBOX, SENT, ARCHIVE, DRAFTS, TRASH, JUNK);
+
+  /**
+   * The {@code EMAIL_BOX.FOLDER} key of a custom folder, from its registry id.
+   *
+   * @param id the {@code EMAIL_FOLDER} row id
+   * @return the key, e.g. {@code CUSTOM:42}
+   */
+  public static String customKey(long id) {
+    return CUSTOM_KEY_PREFIX + id;
+  }
+
+  /**
+   * Whether a folder key addresses a custom folder -- one of the user's own, through
+   * the registry -- rather than one of the constants above.
+   *
+   * @param key the folder discriminator, possibly null
+   * @return true for a {@code CUSTOM:<id>} key
+   */
+  public static boolean isCustom(String key) {
+    return key != null && key.startsWith(CUSTOM_KEY_PREFIX) && key.length() > CUSTOM_KEY_PREFIX.length();
+  }
+
+  /**
+   * The registry id a custom folder key carries.
+   * <p>
+   * Refuses anything that is not a well-formed custom key, with the message code the
+   * REST layer answers 400 with: a client sending a key this schema never wrote is
+   * asking for a folder that does not exist, and answering INBOX instead -- the fallback
+   * every {@code String folder} parameter has for a BLANK value -- would silently read
+   * the wrong mailbox.
+   *
+   * @param key the folder discriminator
+   * @return the {@code EMAIL_FOLDER} row id
+   * @throws IllegalArgumentException if the key is not a custom folder key
+   */
+  public static long customId(String key) {
+    if (!isCustom(key)) {
+      throw new IllegalArgumentException("emailConnector.folder.unknown");
+    }
+    try {
+      return Long.parseLong(key.substring(CUSTOM_KEY_PREFIX.length()));
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("emailConnector.folder.unknown");
+    }
+  }
+
+  /**
+   * Whether a folder key is one of the seven constants above -- a folder this add-on
+   * discovers by SPECIAL-USE attribute or well-known name, as opposed to one the user
+   * made.
+   *
+   * @param key the folder discriminator, possibly null
+   * @return true for INBOX, SENT, ARCHIVE, ALL_MAIL, DRAFTS, TRASH and JUNK
+   */
+  public static boolean isBuiltIn(String key) {
+    return INBOX.equals(key) || SENT.equals(key) || ARCHIVE.equals(key) || ALL_MAIL.equals(key) || DRAFTS.equals(key)
+        || TRASH.equals(key) || JUNK.equals(key);
+  }
+
+  /**
+   * Whether a folder key may be opened as a list: the browsable built-ins, or any
+   * custom folder -- whose EXISTENCE for this user is a separate question the registry
+   * answers, not a question of the key's shape. This is the one spelling of "the folders
+   * a user can browse"; the client's folder menu is fed from it rather than from a
+   * list of its own, so the two cannot disagree.
+   *
+   * @param key the folder discriminator, possibly null
+   * @return true when a folder-scoped listing may be served for that key
+   */
+  public static boolean isBrowsable(String key) {
+    return key != null && (BROWSABLE_BUILT_INS.contains(key) || isCustom(key));
+  }
+
+  /**
+   * Whether rows of a folder are read back into the rest of the product -- the
+   * conversation reader, the summaries, the search -- or served ONLY by a folder-scoped
+   * listing. The complement of {@link #HIDDEN_FOLDERS}, named so a caller asks the
+   * question in the terms the TRASH comment above states it.
+   *
+   * @param key the folder discriminator, possibly null
+   * @return false for TRASH and JUNK, true for everything else
+   */
+  public static boolean isResurfaced(String key) {
+    return key == null || !HIDDEN_FOLDERS.contains(key);
+  }
 }

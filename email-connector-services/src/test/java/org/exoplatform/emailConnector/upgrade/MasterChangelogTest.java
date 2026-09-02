@@ -75,6 +75,49 @@ public class MasterChangelogTest {
   }
 
   /**
+   * The custom-folder registry's three changesets (1.0.0-52 to 1.0.0-54) apply, roll
+   * back, and apply again. Rolled back with the platform's own Liquibase rather than
+   * by hand, because the org rule this pins is that a changeset's rollback is proven
+   * before it ships -- an {@code update} or a {@code dropIndex} has no automatic
+   * rollback and an empty {@code rollback} element silences a whole changeset's, and
+   * neither mistake is visible in an apply-only run. The re-apply afterwards is what
+   * shows the rollback left nothing behind (a surviving sequence or index would fail
+   * the second CREATE).
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theFolderRegistryChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = new Liquibase(CHANGELOG,
+                                          new ClassLoaderResourceAccessor(),
+                                          DatabaseFactory.getInstance()
+                                                         .findCorrectDatabaseImplementation(new JdbcConnection(connection)));
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_FOLDER"), "1.0.0-52 creates EMAIL_FOLDER");
+      liquibase.rollback(3, "");
+      assertTrue(!tableExists(connection, "EMAIL_FOLDER"), "rolling back the last three changesets drops EMAIL_FOLDER");
+      assertTrue(tableExists(connection, "EMAIL_THREAD_AI_SUMMARY"), "and nothing before them");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_FOLDER"), "the changesets apply again after their rollback");
+    }
+  }
+
+  /**
+   * Whether a table exists, asked of the JDBC metadata.
+   *
+   * @param connection the database
+   * @param tableName the table, as created
+   * @return true when the table is there
+   * @throws Exception when the metadata cannot be read
+   */
+  private boolean tableExists(Connection connection, String tableName) throws Exception {
+    try (java.sql.ResultSet tables = connection.getMetaData().getTables(null, null, tableName, null)) {
+      return tables.next();
+    }
+  }
+
+  /**
    * Refuses a changeset that carries both a {@code createIndex} and a {@code modifySql}.
    * <p>
    * This is the one defect the test above cannot see. {@code modifySql} is scoped to
