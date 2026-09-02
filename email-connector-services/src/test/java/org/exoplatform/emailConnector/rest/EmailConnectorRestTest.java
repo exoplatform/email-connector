@@ -21,6 +21,7 @@ package org.exoplatform.emailConnector.rest;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -28,6 +29,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -203,6 +205,68 @@ public class EmailConnectorRestTest {
   @Test
   void updateEmailSyncThreadsIsForAdministratorsOnly() throws Exception {
     mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/sync-threads?threads=16").with(testSimpleUser())).andExpect(status().isForbidden());
+  }
+
+  @Test
+  void getEmailBoxInactiveSyncPeriod() throws Exception {
+    when(emailConnectorService.getEmailBoxInactiveSyncPeriod()).thenReturn(60);
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/inactive-sync-period").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(content().string("60"));
+  }
+
+  @Test
+  void getEmailBoxInactiveSyncPeriodIsForAdministratorsOnly() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/inactive-sync-period").with(testSimpleUser())).andExpect(status().isForbidden());
+  }
+
+  @Test
+  void updateEmailBoxInactiveSyncPeriod() throws Exception {
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/inactive-sync-period?minutes=180").with(testAdminUser())).andExpect(status().isOk());
+    verify(emailConnectorService).saveEmailBoxInactiveSyncPeriod(180, ADMIN_USER);
+  }
+
+  @Test
+  void updateEmailBoxInactiveSyncPeriodRefusesAValueBelowTheActivePeriod() throws Exception {
+    doThrow(new IllegalArgumentException("emailConnector.admin.inactiveSyncPeriod.outOfRange")).when(emailConnectorService)
+                                                                                                .saveEmailBoxInactiveSyncPeriod(5, ADMIN_USER);
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/inactive-sync-period?minutes=5").with(testAdminUser())).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void updateEmailBoxInactiveSyncPeriodIsForAdministratorsOnly() throws Exception {
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/inactive-sync-period?minutes=180").with(testSimpleUser())).andExpect(status().isForbidden());
+  }
+
+  @Test
+  void getEmailBoxActivityThresholdDays() throws Exception {
+    when(emailConnectorService.getEmailBoxActivityThresholdDays()).thenReturn(14);
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/activity-threshold").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(content().string("14"));
+  }
+
+  @Test
+  void getEmailBoxActivityThresholdDaysIsForAdministratorsOnly() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/activity-threshold").with(testSimpleUser())).andExpect(status().isForbidden());
+  }
+
+  @Test
+  void updateEmailBoxActivityThresholdDays() throws Exception {
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/activity-threshold?days=30").with(testAdminUser())).andExpect(status().isOk());
+    verify(emailConnectorService).saveEmailBoxActivityThresholdDays(30, ADMIN_USER);
+  }
+
+  @Test
+  void updateEmailBoxActivityThresholdDaysRefusesAnOutOfRangeValue() throws Exception {
+    doThrow(new IllegalArgumentException("emailConnector.admin.activityThreshold.outOfRange")).when(emailConnectorService)
+                                                                                               .saveEmailBoxActivityThresholdDays(0, ADMIN_USER);
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/activity-threshold?days=0").with(testAdminUser())).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void updateEmailBoxActivityThresholdDaysIsForAdministratorsOnly() throws Exception {
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/activity-threshold?days=30").with(testSimpleUser())).andExpect(status().isForbidden());
   }
 
   @Test

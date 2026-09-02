@@ -825,6 +825,10 @@ public class EmailBoxService {
     if (!canSynchronize(userEmailSetting, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
     }
+    // Asking for a sync is a person at their mailbox: stamped whether or not the
+    // claim below is won, since a mailbox somebody else is syncing this second is
+    // still one its owner is waiting on.
+    touchActivity(username);
     Date startedAt = new Date();
     if (!claimForRequest(username, startedAt)) {
       LOG.info("A synchronization is already running for user {} (claimed elsewhere); skipping this one", username);
@@ -3039,6 +3043,10 @@ public class EmailBoxService {
     if (!MailFolder.isBrowsable(folder)) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
+    // Past the two checks, this is a person opening their mailbox: the activity
+    // signal the sync tiers are decided on. Never before the ACL check, which is
+    // what keeps a refused request from promoting somebody else's mailbox.
+    touchActivity(username);
     if (MailFolder.isCustom(folder)) {
       // A custom key is browsable by shape; whether THIS user has that folder is the
       // registry's answer, and a key it does not know is a 400 -- never a listing of
@@ -9759,6 +9767,30 @@ public class EmailBoxService {
     return StringUtils.containsIgnoreCase(listPost, "mailto:");
   }
 
+  /**
+   * The activity stamp the sync tiers are decided on: the mailbox's owner opened
+   * it, or asked for a sync, just now. Written through a throttled UPDATE (see
+   * {@link EmailConnectorUtils#getSyncActivityThrottleBefore}) so that a drawer
+   * left open costs one no-op statement per refresh rather than a write, and
+   * throttled in SQL rather than in a map so the answer is the same on every node.
+   * <p>
+   * Failure-isolated on purpose: a listing must never fail because a stamp did,
+   * and the cost of a lost stamp is one mailbox synchronized at the slower cadence
+   * until the next open. A user with no state row yet (connected before the
+   * dispatcher's first tick after the upgrade) is a zero-row UPDATE, not a row
+   * created from a read: the row is the dispatcher's and the connect listener's to
+   * make.
+   *
+   * @param username the mailbox owner
+   */
+  private void touchActivity(String username) {
+    try {
+      Date now = new Date();
+      emailSyncStateStorage.touchActivity(username, now, EmailConnectorUtils.getSyncActivityThrottleBefore(now));
+    } catch (RuntimeException e) {
+      LOG.debug("Could not stamp the mailbox activity of user {}; their sync tier stands on the previous stamp", username, e);
+    }
+  }
 
   /**
    * Whether a mailbox may be synchronized at all: bound to a connector its owner may
