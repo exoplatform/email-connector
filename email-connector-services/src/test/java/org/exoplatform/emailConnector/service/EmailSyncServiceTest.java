@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -41,6 +42,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
@@ -119,6 +121,8 @@ public class EmailSyncServiceTest {
     ReflectionTestUtils.setField(emailSyncService, "recovered", true);
     lenient().when(emailConnectorService.getEmailSyncThreads()).thenReturn(4);
     lenient().when(emailConnectorService.getEmailBoxSyncPeriod()).thenReturn(10);
+    lenient().when(emailConnectorService.getEmailBoxInactiveSyncPeriod()).thenReturn(60);
+    lenient().when(emailConnectorService.getEmailBoxActivityThresholdDays()).thenReturn(14);
   }
 
   /**
@@ -163,27 +167,64 @@ public class EmailSyncServiceTest {
   }
 
   /**
-   * The bounds are read at each tick: the period the due-query is computed from is
-   * the administered one, and a change is seen at the very next tick.
+   * The three values the tiers stand on -- the active period, the inactive period
+   * and the activity threshold -- are read at each tick, never captured: an
+   * administrator changing one in the drawer sees the very next tick select on
+   * it. Each threshold is checked against an instant taken just before the ticks,
+   * to the second, with the values changed between the two.
    */
   @Test
-  void thePeriodIsReadAtEachTick() {
+  void theTierSettingsAreReadAtEachTick() {
     when(emailConnectorService.getEmailBoxSyncPeriod()).thenReturn(10, 30);
-    Date beforeFirst = new Date();
+    when(emailConnectorService.getEmailBoxInactiveSyncPeriod()).thenReturn(60, 180);
+    when(emailConnectorService.getEmailBoxActivityThresholdDays()).thenReturn(14, 7);
+    ArgumentCaptor<Date> activeSince = ArgumentCaptor.forClass(Date.class);
+    ArgumentCaptor<Date> activeDueBefore = ArgumentCaptor.forClass(Date.class);
+    ArgumentCaptor<Date> inactiveDueBefore = ArgumentCaptor.forClass(Date.class);
+    Date before = new Date();
+
     emailSyncService.dispatchDueSyncs();
     emailSyncService.dispatchDueSyncs();
 
-    verify(emailSyncStateStorage, times(2)).findDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class), eq(4));
-    verify(emailSyncStateStorage).findDue(eq(new Date(0)),
-                                          org.mockito.ArgumentMatchers.argThat(due -> withinMinutesBefore(due, beforeFirst, 10)),
-                                          any(Date.class),
-                                          any(Date.class),
-                                          eq(4));
-    verify(emailSyncStateStorage).findDue(eq(new Date(0)),
-                                          org.mockito.ArgumentMatchers.argThat(due -> withinMinutesBefore(due, beforeFirst, 30)),
-                                          any(Date.class),
-                                          any(Date.class),
-                                          eq(4));
+    verify(emailSyncStateStorage, times(2)).findDue(activeSince.capture(),
+                                                    activeDueBefore.capture(),
+                                                    inactiveDueBefore.capture(),
+                                                    any(Date.class),
+                                                    eq(4));
+    assertTrue(withinMinutesBefore(activeSince.getAllValues().get(0), before, 14 * 24 * 60), "first tick: 14 days");
+    assertTrue(withinMinutesBefore(activeDueBefore.getAllValues().get(0), before, 10), "first tick: active 10 min");
+    assertTrue(withinMinutesBefore(inactiveDueBefore.getAllValues().get(0), before, 60), "first tick: inactive 60 min");
+    assertTrue(withinMinutesBefore(activeSince.getAllValues().get(1), before, 7 * 24 * 60), "second tick: 7 days");
+    assertTrue(withinMinutesBefore(activeDueBefore.getAllValues().get(1), before, 30), "second tick: active 30 min");
+    assertTrue(withinMinutesBefore(inactiveDueBefore.getAllValues().get(1), before, 180), "second tick: inactive 180 min");
+  }
+
+  /**
+   * The status line counts its backlog on the thresholds the next tick will select
+   * on, so it never shows a backlog the dispatcher would not see: the same three
+   * settings, the same arithmetic, on the count and on the oldest-due read alike.
+   */
+  @Test
+  void theStatusSnapshotSelectsOnTheTierSettings() {
+    when(emailConnectorService.getEmailBoxSyncPeriod()).thenReturn(15);
+    when(emailConnectorService.getEmailBoxInactiveSyncPeriod()).thenReturn(240);
+    when(emailConnectorService.getEmailBoxActivityThresholdDays()).thenReturn(30);
+    when(emailSyncStateStorage.countDue(any(Date.class), any(Date.class), any(Date.class), any(Date.class))).thenReturn(1L);
+    ArgumentCaptor<Date> activeSince = ArgumentCaptor.forClass(Date.class);
+    ArgumentCaptor<Date> activeDueBefore = ArgumentCaptor.forClass(Date.class);
+    ArgumentCaptor<Date> inactiveDueBefore = ArgumentCaptor.forClass(Date.class);
+    Date before = new Date();
+
+    emailSyncService.getStatus();
+
+    verify(emailSyncStateStorage).countDue(activeSince.capture(), activeDueBefore.capture(), inactiveDueBefore.capture(), any(Date.class));
+    assertTrue(withinMinutesBefore(activeSince.getValue(), before, 30 * 24 * 60));
+    assertTrue(withinMinutesBefore(activeDueBefore.getValue(), before, 15));
+    assertTrue(withinMinutesBefore(inactiveDueBefore.getValue(), before, 240));
+    verify(emailSyncStateStorage).findOldestDue(eq(activeSince.getValue()),
+                                                eq(activeDueBefore.getValue()),
+                                                eq(inactiveDueBefore.getValue()),
+                                                any(Date.class));
   }
 
   /**

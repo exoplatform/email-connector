@@ -99,6 +99,17 @@ public class EmailConnectorUtils {
 
   private static final int     DEFAULT_SYNC_CLAIM_STALE_MINUTES = 60;
 
+  /**
+   * The JVM property setting how many minutes a mailbox's activity stamp stands
+   * before the next opening of the mailbox writes a new one. The stamp decides the
+   * sync tier to the day, so a stamp a few minutes old says everything a fresh
+   * one would; the throttle turns the listing's write into a no-op UPDATE for
+   * everyone who keeps the drawer open. Not administrable on purpose.
+   */
+  public static final String   SYNC_ACTIVITY_THROTTLE_MINUTES_PROPERTY = "email.connector.sync.activity.throttle.minutes";
+
+  private static final int     DEFAULT_SYNC_ACTIVITY_THROTTLE_MINUTES = 10;
+
   // Resolved once: the hostname lookup behind it can take seconds on a machine
   // with no reverse DNS, and the answer does not change while the JVM runs.
   private static volatile String syncNodeName;
@@ -351,6 +362,22 @@ public class EmailConnectorUtils {
   public static Date getSyncClaimStaleBefore(Date now) {
     int minutes = Integer.parseInt(System.getProperty(SYNC_CLAIM_STALE_MINUTES_PROPERTY,
                                                       String.valueOf(DEFAULT_SYNC_CLAIM_STALE_MINUTES)));
+    return new Date(now.getTime() - minutes * 60000L);
+  }
+
+  /**
+   * The instant before which a mailbox's activity stamp is old enough to be
+   * rewritten: {@code now} minus the {@value #SYNC_ACTIVITY_THROTTLE_MINUTES_PROPERTY}
+   * property (default {@value #DEFAULT_SYNC_ACTIVITY_THROTTLE_MINUTES} minutes).
+   * The throttle is applied in the UPDATE's WHERE clause, so it holds across
+   * nodes.
+   *
+   * @param now the reference instant
+   * @return the throttle threshold
+   */
+  public static Date getSyncActivityThrottleBefore(Date now) {
+    int minutes = Integer.parseInt(System.getProperty(SYNC_ACTIVITY_THROTTLE_MINUTES_PROPERTY,
+                                                      String.valueOf(DEFAULT_SYNC_ACTIVITY_THROTTLE_MINUTES)));
     return new Date(now.getTime() - minutes * 60000L);
   }
 
