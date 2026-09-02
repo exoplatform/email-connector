@@ -997,6 +997,15 @@
       3000 of the 3072 bytes InnoDB allows a key, and an IMAP path of five hundred
       characters is not a folder anyone made by hand.
 
+      REMOTE_NAME is also the one column here that must NOT take the table's
+      utf8mb4_0900_ai_ci collation: an IMAP folder name is case-sensitive (RFC 3501
+      makes only INBOX an exception) and so is a Gmail label, so "Projets" and
+      "projets" are two folders the unique index must keep apart. Under the
+      accent- and case-insensitive collation the second would fail the index and,
+      worse, the lookup by name would answer the FIRST folder's row, which the walk
+      would then keep renaming. Hence the replace below: binary collation on that
+      column, on MySQL, where the difference exists.
+
       The index is in the next changeset and not here, by the rule 1.0.0-50 paid for:
       modifySql is changeset-scoped, and the MySQL table options appended below would
       land on a CREATE INDEX too.
@@ -1035,6 +1044,7 @@
       <column name="WINDOW_SIZE" type="INT"/>
     </createTable>
     <modifySql dbms="mysql">
+      <replace replace="REMOTE_NAME VARCHAR(500)" with="REMOTE_NAME VARCHAR(500) COLLATE utf8mb4_bin"/>
       <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
     </modifySql>
   </changeSet>
