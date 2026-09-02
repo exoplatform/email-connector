@@ -2750,9 +2750,11 @@ public class EmailBoxService {
           LOG.warn("Error when closing prefetch folder {} for user {}", folderFullName, username, messagingException);
         }
       }
+      if (store != null) {
+        rediscoveries.remove(store);
+      }
       if (store != null && store.isConnected()) {
         try {
-          rediscoveries.remove(store);
           store.close();
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing prefetch store for user {}", username, messagingException);
@@ -8557,9 +8559,11 @@ public class EmailBoxService {
           LOG.warn("Error when closing All Mail folder for user {}", username, messagingException);
         }
       }
+      if (store != null) {
+        rediscoveries.remove(store);
+      }
       if (store != null && store.isConnected()) {
         try {
-          rediscoveries.remove(store);
           store.close();
         } catch (MessagingException messagingException) {
           LOG.warn("Error when closing store for user {}", username, messagingException);
