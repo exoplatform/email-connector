@@ -88,7 +88,7 @@ public class MasterChangelogTest {
   }
 
   /**
-   * The custom-folder registry's three changesets (1.0.0-52 to 1.0.0-54) apply, roll
+   * The custom-folder registry's three changesets (1.0.0-53 to 1.0.0-55) apply, roll
    * back, and apply again. Rolled back with the platform's own Liquibase rather than
    * by hand, because the org rule this pins is that a changeset's rollback is proven
    * before it ships -- an {@code update} or a {@code dropIndex} has no automatic
@@ -107,7 +107,7 @@ public class MasterChangelogTest {
                                           DatabaseFactory.getInstance()
                                                          .findCorrectDatabaseImplementation(new JdbcConnection(connection)));
       liquibase.update("");
-      assertTrue(tableExists(connection, "EMAIL_FOLDER"), "1.0.0-52 creates EMAIL_FOLDER");
+      assertTrue(tableExists(connection, "EMAIL_FOLDER"), "1.0.0-53 creates EMAIL_FOLDER");
       liquibase.rollback(3, "");
       assertTrue(!tableExists(connection, "EMAIL_FOLDER"), "rolling back the last three changesets drops EMAIL_FOLDER");
       assertTrue(tableExists(connection, "EMAIL_THREAD_AI_SUMMARY"), "and nothing before them");
@@ -119,7 +119,7 @@ public class MasterChangelogTest {
   /**
    * On MySQL, and only there, the registry's REMOTE_NAME keeps its case: generated
    * through Liquibase's own MySQL dialect (an offline connection, no server), the
-   * CREATE TABLE of 1.0.0-52 carries a binary collation on that one column, while the
+   * CREATE TABLE of 1.0.0-53 carries a binary collation on that one column, while the
    * table keeps the file's accent-insensitive one. An IMAP folder name is
    * case-sensitive and a Gmail label is; under the table's collation "Projets" and
    * "projets" would be one row, and the lookup by name would answer the wrong folder.
@@ -131,7 +131,7 @@ public class MasterChangelogTest {
   @Test
   void theRegistryNameKeepsItsCaseOnMySql() throws Exception {
     // An offline connection keeps its "already ran" ledger in a CSV; a fresh one means
-    // every changeset is generated, which is what makes 1.0.0-52's CREATE TABLE appear.
+    // every changeset is generated, which is what makes 1.0.0-53's CREATE TABLE appear.
     Path ledger = Files.createTempFile("email-connector-mysql", ".csv");
     Files.delete(ledger);
     StringWriter sql = new StringWriter();
@@ -153,7 +153,7 @@ public class MasterChangelogTest {
     assertTrue(createFolder.find(), "no CREATE TABLE EMAIL_FOLDER in the MySQL SQL");
     assertTrue(!createFolder.group().contains("COLLATE"), "the CREATE carries no modifySql of its own: " + createFolder.group());
     assertTrue(generated.contains("ALTER TABLE EMAIL_FOLDER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"),
-               "the table options of 1.0.0-55");
+               "the table options of 1.0.0-56");
     assertTrue(generated.contains("ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"),
                "the binary collation on the identifier, and on it only");
   }
@@ -167,7 +167,7 @@ public class MasterChangelogTest {
   // be ADDED to this list.
   // The changesets this branch adds. They are the ones a second evaluation computes
   // ahead of the update in the pin below, and nothing on this list may ever drift.
-  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-52", "1.0.0-53", "1.0.0-54", "1.0.0-55");
+  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56");
 
   private static final Set<String> KNOWN_SCOPE_DEPENDENT_CHECKSUMS =
                                                                    Set.of("1.0.0-1", "1.0.0-2", "1.0.0-5", "1.0.0-27", "1.0.0-46", "1.0.0-48");
@@ -175,7 +175,7 @@ public class MasterChangelogTest {
   /**
    * A changeset's checksum must not depend on where it is computed. The shape of the
    * failure this pins: the platform started this add-on's Spring context twice in one
-   * boot; the first applied 1.0.0-52 and recorded the checksum it computed while
+   * boot; the first applied the registry table and recorded the checksum it computed while
    * executing it, the second computed the same changeset outside that execution,
    * got another number, and refused the whole changelog, taking the portal down.
    * Liquibase serialises a changeset's modifySql visitors through a filter that reads
@@ -228,6 +228,31 @@ public class MasterChangelogTest {
         }
       }
       assertDoesNotThrow(() -> third.update(""), "the second evaluation, with the checksums already computed, must validate");
+    }
+  }
+
+  /**
+   * 1.0.0-52 is burned and must never be reused: the index that is 1.0.0-24 today
+   * carried that id on feature/ai-contribution between 20 and 23 August 2026, and the
+   * databases that ran the branch then hold a 1.0.0-52 row for it. A changeset's
+   * identity is filename plus id plus author, so a new 1.0.0-52 collides with that row
+   * on every one of them -- which is how the registry's first deploy took the rig
+   * down. Renumbering was right THIS time because the new changesets had run nowhere;
+   * it is never right for an id that has.
+   *
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  @Test
+  void theBurnedIdIsNeverReused() throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder().parse(changelog).getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        assertTrue(!"1.0.0-52".equals(((Element) changeSets.item(i)).getAttribute("id")),
+                   "1.0.0-52 was recorded on every database that ran feature/ai-contribution between 20 and 23 August 2026"
+                       + " (as the index now at 1.0.0-24); a changeset under that id collides with all of them");
+      }
     }
   }
 

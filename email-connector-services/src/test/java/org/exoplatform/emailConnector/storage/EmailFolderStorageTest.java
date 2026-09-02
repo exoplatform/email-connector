@@ -49,7 +49,7 @@ import org.exoplatform.emailConnector.model.MailFolderView;
  * every storage call commits a transaction of its own the way it does in production
  * -- which is the shape the targeted writes were designed for. Running on the
  * changelog rather than on a generated schema is also what applies changesets
- * 1.0.0-52 to 1.0.0-54 for real: a column the entity maps and the changeset forgot
+ * 1.0.0-53 to 1.0.0-55 for real: a column the entity maps and the changeset forgot
  * fails here, not on an acceptance server.
  * <p>
  * Dialect caveat: HSQLDB compares names case-sensitively, so nothing here can see the
@@ -140,7 +140,7 @@ public class EmailFolderStorageTest {
   }
 
   /**
-   * The index of 1.0.0-53, on the shipped changelog: a second row for the same
+   * The index of 1.0.0-54, on the shipped changelog: a second row for the same
    * (USER_ID, REMOTE_NAME) is refused by the database. This is the guarantee the
    * discovery upsert stands on, and a generated schema (the DAO test's) cannot vouch
    * for what the changeset actually created.
