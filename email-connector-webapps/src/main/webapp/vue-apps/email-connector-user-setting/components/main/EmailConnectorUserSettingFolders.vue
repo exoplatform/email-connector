@@ -40,7 +40,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
       </v-btn>
     </v-list-item-action>
-    <email-connector-user-setting-folders-drawer />
   </v-list-item>
 </template>
 
