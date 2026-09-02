@@ -44,6 +44,11 @@
       <artifactId>mcp-server-tools</artifactId>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>org.exoplatform.commons-exo</groupId>
+      <artifactId>exo.core.component.connector.credentials</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
   <build>
     <plugins>

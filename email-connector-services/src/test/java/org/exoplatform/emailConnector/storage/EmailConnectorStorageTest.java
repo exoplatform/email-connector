@@ -206,6 +206,6 @@ public class EmailConnectorStorageTest {
                               true,
                               false,
                               null,
-                              "", null);
+                              "", null, null);
   }
 }

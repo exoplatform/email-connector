@@ -970,4 +970,18 @@
     </createIndex>
   </changeSet>
 
+  <changeSet author="email-connector" id="1.0.0-52">
+    <comment>
+      Which ConnectorCredentialsProvider this connector uses ("personal",
+      "bluemind-sudo"...) - the admin-facing counterpart of the shared
+      credentials contract (commons-exo). Defaulted to "personal" so every
+      connector created before this field existed keeps working exactly as
+      it does today, with no administrator action required.
+    </comment>
+    <addColumn tableName="EMAIL_CONNECTOR">
+      <column name="AUTH_PROVIDER_NAME" type="NVARCHAR(100)" defaultValue="personal">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
 </databaseChangeLog>
