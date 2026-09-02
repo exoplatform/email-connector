@@ -28,6 +28,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.io.InputStream;
@@ -58,7 +59,9 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
+import org.exoplatform.emailConnector.service.EmailSyncService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
@@ -95,6 +98,9 @@ public class EmailConnectorRestTest {
 
   @MockitoBean
   private EmailConnectorService emailConnectorService;
+
+  @MockBean
+  private EmailSyncService      emailSyncService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -170,6 +176,48 @@ public class EmailConnectorRestTest {
                                                                                                  .saveEmailBoxSyncPeriod(1, ADMIN_USER);
     ResultActions response = mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/sync-period?minutes=1").with(testAdminUser()));
     response.andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void getEmailSyncThreads() throws Exception {
+    when(emailConnectorService.getEmailSyncThreads()).thenReturn(10);
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/sync-threads").with(testAdminUser())).andExpect(status().isOk());
+  }
+
+  @Test
+  void getEmailSyncThreadsIsForAdministratorsOnly() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/sync-threads").with(testSimpleUser())).andExpect(status().isForbidden());
+  }
+
+  @Test
+  void updateEmailSyncThreads() throws Exception {
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/sync-threads?threads=16").with(testAdminUser())).andExpect(status().isOk());
+  }
+
+  @Test
+  void updateEmailSyncThreadsRefusesAnOutOfRangeValue() throws Exception {
+    doThrow(new IllegalArgumentException("emailConnector.admin.syncThreads.outOfRange")).when(emailConnectorService)
+                                                                                        .saveEmailSyncThreads(65, ADMIN_USER);
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/sync-threads?threads=65").with(testAdminUser())).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void updateEmailSyncThreadsIsForAdministratorsOnly() throws Exception {
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/sync-threads?threads=16").with(testSimpleUser())).andExpect(status().isForbidden());
+  }
+
+  @Test
+  void getEmailSyncStatus() throws Exception {
+    when(emailSyncService.getStatus()).thenReturn(new EmailSyncExecutorStatus("node-1", 3, 0, 10, 3, 0, 0, 1040));
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/sync-status").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.running").value(3))
+           .andExpect(jsonPath("$.connectedMailboxes").value(1040));
+  }
+
+  @Test
+  void getEmailSyncStatusIsForAdministratorsOnly() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/sync-status").with(testSimpleUser())).andExpect(status().isForbidden());
   }
 
   @Test
