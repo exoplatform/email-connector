@@ -6843,7 +6843,10 @@ public class EmailBoxServiceTest {
    * Filing a message under a category is a count change for a user whose badge
    * counts by category, and the badge learns of it through the same funnel as a
    * read. A call that linked nothing — the message was already there, or was not
-   * the user's — announces nothing, for the same reason a no-op read does not.
+   * the user's — announces nothing, for the same reason a no-op read does not; and
+   * neither does a link for a user notified for everything, whose badge is the
+   * plain count that no category can move: the AI categorizer links in batches on
+   * every sync, and each would otherwise evict, push and re-fetch for nothing.
    */
   @Test
   @SneakyThrows
@@ -6853,6 +6856,11 @@ public class EmailBoxServiceTest {
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
 
     mockOwnedEmail();
+    // Notified for everything (no preference stored at all): a link cannot move the badge.
+    emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(narrowedTo(List.of(5L)));
     emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
     verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
 
@@ -6875,12 +6883,78 @@ public class EmailBoxServiceTest {
 
     mockOwnedEmail();
     emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(narrowedTo(List.of(5L)));
+    emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
     verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
 
     doThrow(ObjectNotFoundException.class).when(categoryLinkService)
                                           .unlink(anyLong(), any(CategoryObject.class), anyString());
     emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
     verify(listenerService, times(1)).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
+  /**
+   * The sync's before/after snapshot is the badge's own rule, not the plain inbox
+   * count. For a user who narrowed their notifications, one cycle can leave the
+   * plain count exactly where it was — a \\Seen pulled for a message they did not
+   * opt into, one new message imported — while the badge gained one; a snapshot of
+   * the plain number would stay silent and the badge would stay stale.
+   */
+  @Test
+  void syncBroadcastsWhenTheNarrowedBadgeMovedThoughThePlainCountDidNot() throws Exception {
+    mockEmptySync();
+    narrow(userEmailSettingService.getUserEmailSetting(TEST_USER), List.of(1L));
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L);
+    when(emailBoxStorage.getUnreadInboxCategoryIds(TEST_USER)).thenReturn(Map.of(10L, List.of(5L)),
+                                                                          Map.of(10L, List.of(5L), 11L, List.of()));
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(listenerService).broadcast(EmailConnectorUtils.UNREAD_EMAILS_CHANGED, TEST_USER, null);
+  }
+
+  /**
+   * And the mirror image: the plain count moved (a message in a category the user
+   * did not opt into arrived) while the badge did not — nothing to announce, or the
+   * narrowed user's badge would be evicted on every cycle for a number that never
+   * changes.
+   */
+  @Test
+  void syncStaysSilentWhenOnlyTheRowsTheNarrowedBadgeLeavesOutMoved() throws Exception {
+    mockEmptySync();
+    narrow(userEmailSettingService.getUserEmailSetting(TEST_USER), List.of(1L));
+    when(emailBoxStorage.countUnreadEmails(TEST_USER)).thenReturn(3L, 5L);
+    when(emailBoxStorage.getUnreadInboxCategoryIds(TEST_USER)).thenReturn(Map.of(10L, List.of(1L)));
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
+  }
+
+  /**
+   * Narrows a stored setting to selected categories, in place — the same instance
+   * the sync's other stubs were made with.
+   *
+   * @param setting the setting to narrow
+   * @param categoryIds the opted-in category ids
+   */
+  private void narrow(UserEmailSetting setting, List<Long> categoryIds) {
+    setting.setNotifyAllCategories(Boolean.FALSE);
+    setting.setNotifyCategories(categoryIds);
+  }
+
+  /**
+   * A user notified for the selected categories only.
+   *
+   * @param categoryIds the opted-in category ids
+   * @return the narrowed setting
+   */
+  private UserEmailSetting narrowedTo(List<Long> categoryIds) {
+    UserEmailSetting setting = userEmailSetting();
+    narrow(setting, categoryIds);
+    return setting;
   }
 
   /** A synchronisation that reaches its success path with no message to import. */
