@@ -21,6 +21,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import javax.mail.MessagingException;
 import javax.mail.Session;
@@ -222,7 +223,10 @@ public class UserEmailSettingService {
     if (StringUtils.isBlank(userEmailSetting.getEmailConnectorId())) {
       return;
     }
-    boolean notificationPreferenceChanged = !Objects.equals(userEmailSetting.getNotifyAllCategories(), notifyAllCategories)
+    // The switch is read the way the badge reads it — null and true are the same
+    // "all" — so a first save of "all" over an unset switch is not a change either.
+    boolean notificationPreferenceChanged =
+                                          Boolean.FALSE.equals(userEmailSetting.getNotifyAllCategories()) != Boolean.FALSE.equals(notifyAllCategories)
         || (Boolean.FALSE.equals(notifyAllCategories)
             && !sameCategories(userEmailSetting.getNotifyCategories(), notifyCategories));
     userEmailSetting.setNotifyAllCategories(notifyAllCategories);
@@ -238,16 +242,29 @@ public class UserEmailSettingService {
    * Whether two opted-in category selections mean the same thing to the badge and
    * the notification: the same ids, in any order, with an absent list and an empty
    * one being the same "none". The client posts a list, the store keeps one, and
-   * neither is guaranteed to spell an unchanged selection the same way twice.
+   * neither is guaranteed to spell an unchanged selection the same way twice. A
+   * null id inside either list is ignored rather than refused: the predicate that
+   * reads the selection ({@code EmailBoxService#shouldNotifyForCategories}) has
+   * always tolerated one, and a change detector must not fail a save the rule
+   * would have accepted.
    *
    * @param stored the ids as stored, may be null
    * @param posted the ids as posted, may be null
    * @return true when the two select the same categories
    */
   private boolean sameCategories(List<Long> stored, List<Long> posted) {
-    Set<Long> storedIds = stored == null ? Set.of() : Set.copyOf(stored);
-    Set<Long> postedIds = posted == null ? Set.of() : Set.copyOf(posted);
-    return storedIds.equals(postedIds);
+    return categoryIdSet(stored).equals(categoryIdSet(posted));
+  }
+
+  /**
+   * The ids of a selection as a set, null list and null ids left out.
+   *
+   * @param categoryIds the ids, may be null or hold nulls
+   * @return the non-null ids, never null
+   */
+  private Set<Long> categoryIdSet(List<Long> categoryIds) {
+    return categoryIds == null ? Set.of()
+                               : categoryIds.stream().filter(Objects::nonNull).collect(Collectors.toSet());
   }
 
   /**
