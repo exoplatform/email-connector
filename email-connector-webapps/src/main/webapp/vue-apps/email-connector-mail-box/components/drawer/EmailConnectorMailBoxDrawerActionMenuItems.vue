@@ -22,22 +22,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </div>
     <v-list-item
       v-for="folder in visibleFolders"
-      :key="folder.id"
+      :key="folder.key"
       class="ps-2 pe-3 height-auto"
-      @click="switchFolder(folder.id)">
+      @click="switchFolder(folder.key)">
       <v-sheet
         class="d-flex"
         width="28"
         height="36">
         <v-icon
           class="mx-auto"
-          :class="folder.id === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
+          :class="folder.key === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
           size="16">
           {{ folder.icon }}
         </v-icon>
       </v-sheet>
-      <span :class="{ 'primary--text font-weight-bold': folder.id === currentFolder && !categoryViewId }">
-        {{ $t(folder.label) }}
+      <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
+        {{ folder.label }}
       </span>
     </v-list-item>
     <!-- Categories: the complete list, Important included — its quick chip
@@ -155,10 +155,11 @@ export default {
       type: Boolean,
       default: false,
     },
-    // Folders that actually hold mail (INBOX plus any of SENT/ARCHIVE/DRAFTS/JUNK/TRASH with messages).
+    // The folders to offer, as the server listed them ({key, type, displayName, ...}):
+    // the built-ins this mailbox has, and the user's own mirrored ones.
     availableFolders: {
       type: Array,
-      default: () => ['INBOX'],
+      default: () => [{ key: 'INBOX', type: 'BUILT_IN' }],
     },
     // The categories offered as views ({id, name, icon}) — the add-on's full
     // set, Important included (its chip above the list is a shortcut to the
@@ -180,29 +181,34 @@ export default {
   },
   data() {
     return {
-      folders: [
-        { id: 'INBOX', label: 'emailConnector.mailBox.list.drawer.folder.inbox', icon: 'fa-inbox' },
-        { id: 'SENT', label: 'emailConnector.mailBox.list.drawer.folder.sent', icon: 'fa-paper-plane' },
-        { id: 'ARCHIVE', label: 'emailConnector.mailBox.list.drawer.folder.archive', icon: 'fa-archive' },
-        { id: 'DRAFTS', label: 'emailConnector.mailBox.list.drawer.folder.drafts', icon: 'fa-file-alt' },
-        // The two hidden folders last, Spam before Trash the way every mail client
-        // orders them, and each offered only once the mailbox has such a folder holding
-        // something (see availableFolders). What they open is a listing on which the
-        // ordinary mail actions are withheld in favour of their own — see
-        // isReadOnlyFolder, hasJunkActions and hasTrashActions in the mailbox service.
-        { id: 'JUNK', label: 'emailConnector.mailBox.list.drawer.folder.junk', icon: 'fa-ban' },
-        { id: 'TRASH', label: 'emailConnector.mailBox.list.drawer.folder.trash', icon: 'fa-trash' },
-      ],
+      // The icon of each built-in; a folder of the user's own gets the plain folder.
+      // The ORDER of the list is the server's: inbox, Sent, Archive, Drafts, then the
+      // two hidden folders (Spam before Trash the way every mail client orders them),
+      // then the user's own -- see EmailBoxService#buildFolderViews.
+      icons: {
+        INBOX: 'fa-inbox',
+        SENT: 'fa-paper-plane',
+        ARCHIVE: 'fa-archive',
+        DRAFTS: 'fa-file-alt',
+        JUNK: 'fa-ban',
+        TRASH: 'fa-trash',
+      },
     };
   },
   computed: {
     /**
-     * Only offer folders that have mail; the inbox is always listed.
+     * The folders to display, each with its icon and its label. The label comes from
+     * the one labelling function: a built-in through the bundle, a custom folder as
+     * the user wrote it -- never through $t.
      *
      * @returns {Array} the folder descriptors to display
      */
     visibleFolders() {
-      return this.folders.filter(folder => folder.id === 'INBOX' || this.availableFolders.includes(folder.id));
+      return this.availableFolders.map(folder => ({
+        key: folder.key,
+        icon: folder.type === 'CUSTOM' ? 'fa-folder' : (this.icons[folder.key] || 'fa-folder'),
+        label: this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
+      }));
     },
   },
   methods: {
@@ -211,7 +217,7 @@ export default {
      * listed: inside a category view, re-picking the current folder is the way
      * back to its plain view.
      *
-     * @param {String} folder the folder id (INBOX / SENT / ARCHIVE / DRAFTS / JUNK / TRASH)
+     * @param {String} folder the folder key (a built-in, or CUSTOM:<id>)
      * @returns {void}
      */
     switchFolder(folder) {

@@ -678,4 +678,93 @@ public class EmailBoxRestTest {
   private String asJsonString(final Object obj) {
     return OBJECT_MAPPER.writeValueAsString(obj);
   }
+
+  /**
+   * The folder list is one GET, refresh included: the walk the user asks for reaches
+   * the service as the flag, and the default is no walk.
+   */
+  @Test
+  void getFolders() throws Exception {
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/folders").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).getFolders(SIMPLE_USER, false);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/folders").param("refresh", "true").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).getFolders(SIMPLE_USER, true);
+  }
+
+  /**
+   * The opt-in is a PATCH on the folder's id, and the cap's refusal reaches the client
+   * as a 400 carrying the message code the screen shows.
+   */
+  @Test
+  void setFolderSync() throws Exception {
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/5").param("sync", "true").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailBoxService).setCustomFolderSync(SIMPLE_USER, 5L, true);
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/5").param("sync", "false").with(testSimpleUser()))
+           .andExpect(status().isOk());
+    verify(emailBoxService).setCustomFolderSync(SIMPLE_USER, 5L, false);
+    doThrow(new IllegalArgumentException("emailConnector.folder.tooMany")).when(emailBoxService)
+                                                                          .setCustomFolderSync(SIMPLE_USER, 6L, true);
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/6").param("sync", "true").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.folder.tooMany"));
+    mockMvc.perform(patch(EMAIL_BOX_PATH + "/folders/5").with(testSimpleUser())).andExpect(status().isBadRequest());
+  }
+
+  /**
+   * The on-demand refresh of one folder is its own POST, and a folder that is not
+   * mirrored is a 400 rather than a silent no-op.
+   */
+  @Test
+  void synchronizeFolder() throws Exception {
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders/5/synchronization").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).synchronizeCustomFolder(SIMPLE_USER, 5L);
+    doThrow(new IllegalArgumentException("emailConnector.folder.notMirrored")).when(emailBoxService)
+                                                                              .synchronizeCustomFolder(SIMPLE_USER, 7L);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/folders/7/synchronization").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * "Move to..." is folder-addressed exactly as the delete is, names its target, and
+   * reaches its own service method -- never the archive, never the delete.
+   */
+  @Test
+  void moveEmails() throws Exception {
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move").param("target", "CUSTOM:5").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move").param("target", "CUSTOM:5")
+                                                  .with(testSimpleUser())
+                                                  .content(asJsonString(new ArrayList<Long>()))
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+    List<Long> emailIds = List.of(123L, 456L);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move").param("target", "CUSTOM:5")
+                                                  .with(testSimpleUser())
+                                                  .content(asJsonString(emailIds))
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).moveToFolder(emailIds, SIMPLE_USER, MailFolder.INBOX, "CUSTOM:5");
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move").param("target", "CUSTOM:5")
+                                                  .param("folder", MailFolder.SENT)
+                                                  .with(testSimpleUser())
+                                                  .content(asJsonString(emailIds))
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).moveToFolder(emailIds, SIMPLE_USER, MailFolder.SENT, "CUSTOM:5");
+    verify(emailBoxService, never()).archiveEmail(anyList(), anyString(), anyString());
+    verify(emailBoxService, never()).deleteEmail(anyList(), anyString(), anyString());
+    doThrow(new IllegalArgumentException("emailConnector.folder.unknown")).when(emailBoxService)
+                                                                          .moveToFolder(emailIds, SIMPLE_USER, MailFolder.INBOX, "CUSTOM:99");
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move").param("target", "CUSTOM:99")
+                                                  .with(testSimpleUser())
+                                                  .content(asJsonString(emailIds))
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.folder.unknown"));
+  }
 }
