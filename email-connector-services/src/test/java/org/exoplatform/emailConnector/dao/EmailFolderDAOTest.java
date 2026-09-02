@@ -249,6 +249,55 @@ public class EmailFolderDAOTest {
   }
 
   /**
+   * The in-app rename's write: its own two columns, scoped to the owner -- addressed
+   * to another user's row it updates nothing, and it never touches the opt-in or the
+   * sync memory (a full-row test is {@code EmailFolderStorageTest}'s; this one pins
+   * the statement itself against the real engine).
+   */
+  @Test
+  void renameUpdatesOnlyItsOwnColumnsAndOnlyTheOwnersRow() {
+    Long id = persist(USERNAME, "Factures", "Factures", true, false, new Date(1_000L));
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(0, emailFolderDAO.renameFolder(id, OTHER, "Stolen", "Stolen"));
+    assertEquals(1, emailFolderDAO.renameFolder(id, USERNAME, "Invoices", "Invoices"));
+    entityManager.clear();
+
+    EmailFolderEntity renamed = emailFolderDAO.findById(id).orElseThrow();
+    assertEquals("Invoices", renamed.getRemoteName());
+    assertEquals("Invoices", renamed.getDisplayName());
+    assertTrue(renamed.isSyncEnabled(), "a rename never touches the opt-in");
+  }
+
+  /**
+   * The rename's own pin on the SQL: only REMOTE_NAME and DISPLAY_NAME are set, never
+   * SYNC_ENABLED nor any snapshot column -- the same {@code DynamicUpdate} guarantee
+   * {@link #changingOneColumnUpdatesThatColumnOnly} pins for a single-field write,
+   * checked here for the rename's OWN two-column statement.
+   */
+  @Test
+  void renamesOwnUpdateNamesOnlyItsTwoColumns() {
+    Long id = persist(USERNAME, "Factures", "Factures", true, false, new Date(1_000L));
+    entityManager.flush();
+    entityManager.clear();
+    SqlRecorder.STATEMENTS.clear();
+
+    emailFolderDAO.renameFolder(id, USERNAME, "Invoices", "Invoices");
+
+    String update = SqlRecorder.STATEMENTS.stream()
+                                          .filter(sql -> sql.toLowerCase().startsWith("update"))
+                                          .reduce((first, second) -> second)
+                                          .orElseThrow(() -> new AssertionError("no UPDATE was emitted"));
+    String setClause = update.toLowerCase().substring(update.toLowerCase().indexOf(" set ") + 5,
+                                                      update.toLowerCase().indexOf(" where "));
+    assertTrue(setClause.contains("remote_name"), update);
+    assertTrue(setClause.contains("display_name"), update);
+    assertFalse(setClause.contains("sync_enabled"), "a rename must never touch the opt-in: " + update);
+    assertEquals(2, setClause.split(",").length, "exactly the two name columns: " + update);
+  }
+
+  /**
    * The two-writer pin: changing one column of a managed row flushes an UPDATE of
    * that column and that column only. Without {@code DynamicUpdate} the statement
    * sets every column, and the settings screen's read-modify-save would put back the

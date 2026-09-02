@@ -3186,6 +3186,201 @@ public class EmailBoxService {
   }
 
   /**
+   * Creates one of the user's own folders on the mail server -- the explicit act
+   * {@code +} in the folders drawer stands for, and the one this add-on never takes on
+   * its own behalf (contrast {@link #resolveDraftsFolder}'s refusal to create a Drafts
+   * folder as a SIDE EFFECT of a compose window: what makes a write to a store the
+   * user shares with every other client of theirs acceptable here is that the user
+   * asked for exactly this, by name, on this screen).
+   * <p>
+   * Created flat, directly under the account's own root ({@code store.getDefaultFolder()}):
+   * v1 offers no parent picker, so every folder this add-on creates is top-level, and
+   * a name embedding the mailbox's own hierarchy delimiter is refused rather than
+   * silently nested or silently flattened (see
+   * {@link EmailFolderService#FOLDER_NAME_NESTED_MESSAGE}). The row is registered
+   * directly ({@link EmailFolderService#registerCreatedFolder}, never through
+   * {@link #walkAndReconcileFolders}, which would mark every OTHER custom folder of
+   * this user missing) and, cap allowing, opted in on the spot
+   * ({@link EmailFolderService#tryAutoEnable}) -- the folder is usable, as a listing
+   * and as a "Move to..." target, the moment this call returns.
+   *
+   * @param username the mailbox owner
+   * @param name the folder name as typed
+   * @return the folder as registered -- {@code syncEnabled} false only when the cap
+   *         was already reached
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the name is blank, too long, reserved, nests
+   *           (embeds the delimiter), or is already used by another of this user's
+   *           folders ({@link EmailFolderService#FOLDER_NAME_DUPLICATE_MESSAGE}), or the
+   *           server refused the {@code CREATE}
+   *           ({@link EmailFolderService#FOLDER_CREATE_FAILED_MESSAGE})
+   */
+  public MailFolderView createCustomFolder(String username, String name) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    String trimmedName = emailFolderService.validateFolderName(name);
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      Folder defaultFolder = store.getDefaultFolder();
+      String delimiter = defaultNamespaceDelimiter(defaultFolder);
+      emailFolderService.checkNotNested(trimmedName, delimiter);
+      emailFolderService.checkNameAvailable(username, trimmedName, null);
+      Folder toCreate = defaultFolder.getFolder(trimmedName);
+      if (toCreate.exists()) {
+        // A folder the server already has under that name, that our registry does not
+        // know about yet (created from another client since the last walk, say). The
+        // duplicate message is the truthful one; CREATE would only repeat the server's
+        // own refusal in a shape this code cannot translate as cleanly.
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_NAME_DUPLICATE_MESSAGE);
+      }
+      if (!toCreate.create(Folder.HOLDS_MESSAGES) || !(toCreate instanceof IMAPFolder)) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE);
+      }
+      EmailFolder registered = emailFolderService.registerCreatedFolder(username, trimmedName, delimiter);
+      boolean enabled = emailFolderService.tryAutoEnable(username, registered.getId());
+      EmailFolder finalFolder = enabled ? emailFolderService.getFolder(username, registered.getId()) : registered;
+      return customFolderView(finalFolder, emailBoxStorage.getFolderMessageCounts(username));
+    } catch (MessagingException e) {
+      LOG.warn("Could not create folder '{}' for user {}", trimmedName, username, e);
+      throw new IllegalArgumentException(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE);
+    } finally {
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * The mailbox's own hierarchy delimiter, the way {@link #describe} reads it off a
+   * listed folder -- here read directly off the default (root) folder, before anything
+   * has been created under it, which is the earliest point a create can learn it.
+   *
+   * @param defaultFolder the account's root folder
+   * @return the delimiter, or null on a flat namespace
+   * @throws MessagingException if the server cannot be asked
+   */
+  private static String defaultNamespaceDelimiter(Folder defaultFolder) throws MessagingException {
+    char separator = defaultFolder.getSeparator();
+    return separator == 0 || separator == Character.MAX_VALUE ? null : String.valueOf(separator);
+  }
+
+  /**
+   * Renames one of the user's own folders, on the server and in the registry.
+   * <p>
+   * Only the folder's OWN name changes -- the new name replaces the last segment of
+   * its full path, its parent untouched (v1 offers no parent picker; see
+   * {@link EmailFolderService#FOLDER_NAME_NESTED_MESSAGE}). The registry row is
+   * updated IN PLACE, after the server confirms the rename, never deleted and
+   * re-created: see {@link EmailFolderService#renameFolder} for why that is what keeps
+   * every mirrored row -- addressed by the row's id, never by its remote name (verified
+   * across this module) -- exactly where it was.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @param newName the new name, as typed
+   * @return the folder as it now stands
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the folder is unknown to this user, the new
+   *           name is blank, too long, reserved, nests, or collides with another of
+   *           this user's folders, or the server refused the {@code RENAME}
+   *           ({@link EmailFolderService#FOLDER_RENAME_FAILED_MESSAGE})
+   */
+  public MailFolderView renameCustomFolder(String username, long id, String newName) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    String trimmedName = emailFolderService.validateFolderName(newName);
+    emailFolderService.checkNotNested(trimmedName, customFolder.getDelimiter());
+    String newRemoteName = EmailFolderService.parentPrefix(customFolder.getRemoteName(), customFolder.getDelimiter()) + trimmedName;
+    if (newRemoteName.equals(customFolder.getRemoteName())) {
+      // The name typed back is the name it already has: nothing to change, nothing to
+      // risk on the server for it.
+      return customFolderView(customFolder, emailBoxStorage.getFolderMessageCounts(username));
+    }
+    emailFolderService.checkNameAvailable(username, newRemoteName, id);
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      Folder remote = store.getFolder(customFolder.getRemoteName());
+      if (!(remote instanceof IMAPFolder imapFolder) || !remote.exists()) {
+        throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+      }
+      if (imapFolder.isOpen()) {
+        imapFolder.close(false);
+      }
+      Folder target = store.getFolder(newRemoteName);
+      if (target.exists()) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_NAME_DUPLICATE_MESSAGE);
+      }
+      if (!imapFolder.renameTo(target)) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_RENAME_FAILED_MESSAGE);
+      }
+    } catch (MessagingException e) {
+      LOG.warn("Could not rename folder '{}' of user {} to '{}'", customFolder.getRemoteName(), username, newRemoteName, e);
+      throw new IllegalArgumentException(EmailFolderService.FOLDER_RENAME_FAILED_MESSAGE);
+    } finally {
+      closeQuietly(null, store, username);
+    }
+    EmailFolder renamed = emailFolderService.renameFolder(username, id, newRemoteName, trimmedName);
+    return customFolderView(renamed, emailBoxStorage.getFolderMessageCounts(username));
+  }
+
+  /**
+   * Deletes one of the user's own folders, on the server and in the registry --
+   * irreversible, and refused outright while the folder still holds mail.
+   * <p>
+   * <b>The sharp edge.</b> A folder deleted here is deleted everywhere the user reads
+   * their mailbox from, permanently. So: a folder the live server still lists any
+   * messages in is refused whole ({@link EmailFolderService#FOLDER_NOT_EMPTY_MESSAGE}) --
+   * the user is told to empty it first, this add-on never cascades a delete into the
+   * messages it would destroy. Only once the server itself says the folder is empty is
+   * the {@code DELETE} issued, non-recursively: a folder that turns out to still have
+   * sub-folders of its own is left to the server's own refusal
+   * ({@link EmailFolderService#FOLDER_DELETE_FAILED_MESSAGE}) rather than this code
+   * choosing whether to take them with it. A folder already gone from the server (the
+   * user deleted it from another client since the last walk) is treated as already
+   * deleted: only the local mirror and registry row are cleared, nothing is sent to a
+   * server that no longer has anything to delete.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the folder is unknown to this user, still
+   *           holds mail on the server, or the server refused the {@code DELETE}
+   */
+  public void deleteCustomFolder(String username, long id) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      Folder remote = store.getFolder(customFolder.getRemoteName());
+      if (remote instanceof IMAPFolder imapFolder && remote.exists()) {
+        if (imapFolder.getMessageCount() != 0) {
+          throw new IllegalArgumentException(EmailFolderService.FOLDER_NOT_EMPTY_MESSAGE);
+        }
+        if (imapFolder.isOpen()) {
+          imapFolder.close(false);
+        }
+        if (!imapFolder.delete(false)) {
+          throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+        }
+      } else {
+        LOG.info("Folder '{}' of user {} is already gone from the server; clearing its local mirror",
+                 customFolder.getRemoteName(),
+                 username);
+      }
+    } catch (MessagingException e) {
+      LOG.warn("Could not delete folder '{}' of user {}", customFolder.getRemoteName(), username, e);
+      throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+    } finally {
+      closeQuietly(null, store, username);
+    }
+    deleteUserEmails(username, customFolder.getKey());
+    emailFolderService.removeFolder(username, id);
+  }
+
+  /**
    * The master switch, as the request-driven entry points see it. The routine sync and
    * the listing already read it; without this the switch an administrator flips to
    * shed IMAP load would keep paying for every opt-in, on-demand refresh and move --
