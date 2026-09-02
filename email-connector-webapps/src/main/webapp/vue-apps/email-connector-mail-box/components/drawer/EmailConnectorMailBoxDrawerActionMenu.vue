@@ -16,8 +16,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-list-item-action class="ma-0">
+    <!-- min-width, against the no-min-width class the menu carries: the entries used
+         to be fixed labels ("Inbox", "Drafts") and shrinking to them was fine, but the
+         folder names are the user's own now, so the menu's width followed whatever they
+         happened to call things and felt pinched. A floor stops that; longer names still
+         widen it. -->
     <v-menu
       :nudge-top="-1"
+      min-width="240"
       content-class="no-min-width border-radius z-index-modal overflow-hidden"
       close-on-content-click
       offset-y
