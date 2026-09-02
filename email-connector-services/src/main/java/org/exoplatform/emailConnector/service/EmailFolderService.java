@@ -404,12 +404,7 @@ public class EmailFolderService {
           folder.setLastSeenDate(now);
           emailFolderStorage.createFolder(folder);
         } else {
-          emailFolderStorage.updateDiscovery(username,
-                                             existing.getId(),
-                                             displayNameOf(discovered),
-                                             discovered.delimiter(),
-                                             false,
-                                             now);
+          emailFolderStorage.markSeen(username, existing.getId(), displayNameOf(discovered), discovered.delimiter(), now);
         }
       } catch (Exception e) {
         // One folder's row failing (a name the database collates onto another's, say)
@@ -426,7 +421,7 @@ public class EmailFolderService {
         emailFolderStorage.deleteFolder(username, registered.getId());
         purged.add(registered);
       } else {
-        emailFolderStorage.updateDiscovery(username, registered.getId(), null, null, true, null);
+        emailFolderStorage.markMissing(username, registered.getId());
       }
     }
     return purged;
@@ -538,7 +533,7 @@ public class EmailFolderService {
    * @param id the registry id
    */
   public void markMissing(String username, long id) {
-    emailFolderStorage.updateDiscovery(username, id, null, null, true, null);
+    emailFolderStorage.markMissing(username, id);
   }
 
   /**

@@ -15,164 +15,66 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <div>
-    <v-list-item class="height-auto">
-      <v-list-item-content>
-        <v-list-item-title class="text-color">
-          {{ $t('UserSettings.emailConnector.folders.title') }}
-        </v-list-item-title>
-        <v-list-item-subtitle>
-          {{ $t('UserSettings.emailConnector.folders.description') }}
-        </v-list-item-subtitle>
-        <!-- The two numbers that bound the feature, said where the switches are: how
-             many folders may be mirrored (live, so the user sees the slot they are
-             about to use) and how deep each mirror goes. Both come from the server,
-             because both are tunable per deployment. -->
-        <v-list-item-subtitle class="caption text-sub-title text-wrap mt-1">
-          {{ $t('UserSettings.emailConnector.folders.cap', { 0: enabledCount, 1: maxFolders }) }}
-          · {{ $t('UserSettings.emailConnector.folders.windowHint', { 0: windowSize }) }}
-        </v-list-item-subtitle>
-      </v-list-item-content>
-      <v-list-item-action class="d-flex flex-row align-center">
-        <v-btn
-          :loading="refreshing"
-          :title="$t('UserSettings.emailConnector.folders.refresh')"
-          icon
-          @click="refresh">
-          <v-icon size="18">
-            fas fa-sync
-          </v-icon>
-        </v-btn>
-      </v-list-item-action>
-    </v-list-item>
-    <v-list-item v-if="!loading && !customFolders.length">
-      <v-list-item-content class="ps-4">
-        <v-list-item-subtitle>
-          {{ $t('UserSettings.emailConnector.folders.none') }}
-        </v-list-item-subtitle>
-      </v-list-item-content>
-    </v-list-item>
-    <!-- One row per folder the user made, indented under the setting like the
-         notification categories under theirs. The name is shown as the user wrote it
-         and the path under it when the folder is nested; a folder the last walk did
-         not find says so and cannot be switched on, but keeps its row until the walk
-         after confirms it is gone. -->
-    <v-list-item
-      v-for="folder in customFolders"
-      :key="folder.key"
-      class="height-auto">
-      <v-list-item-content class="ps-4 py-2">
-        <v-list-item-title :class="{ 'text-sub-title': folder.missing }">
-          {{ folder.displayName }}
-        </v-list-item-title>
-        <v-list-item-subtitle v-if="pathOf(folder) !== folder.displayName">
-          {{ pathOf(folder) }}
-        </v-list-item-subtitle>
-        <v-list-item-subtitle v-if="folder.missing" class="error--text">
-          {{ $t('UserSettings.emailConnector.folders.missing') }}
-        </v-list-item-subtitle>
-      </v-list-item-content>
-      <v-list-item-action>
-        <v-switch
-          :input-value="folder.syncEnabled"
-          :loading="savingId === folder.id"
-          :disabled="folder.missing || savingId !== null"
-          @change="toggle(folder, $event)" />
-      </v-list-item-action>
-    </v-list-item>
-  </div>
+  <!-- One row, and a drawer behind it: the list of a mailbox's folders is unbounded
+       and each switch in it is an action with consequences (opting out deletes the
+       mirrored copy), so it gets a surface of its own rather than a scroll of switches
+       in the middle of the other settings. The row says the one number worth knowing
+       at a glance and opens the drawer the way the connector row opens its own. -->
+  <v-list-item>
+    <v-list-item-content>
+      <v-list-item-title class="text-color">
+        {{ $t('UserSettings.emailConnector.folders.title') }}
+      </v-list-item-title>
+      <v-list-item-subtitle>
+        {{ $t('UserSettings.emailConnector.folders.description') }}
+      </v-list-item-subtitle>
+      <v-list-item-subtitle v-if="loaded" class="caption text-sub-title mt-1">
+        {{ $t('UserSettings.emailConnector.folders.cap', { 0: enabledCount, 1: maxFolders }) }}
+      </v-list-item-subtitle>
+    </v-list-item-content>
+    <v-list-item-action>
+      <v-btn
+        icon
+        :title="$t('UserSettings.emailConnector.folders.edit.tooltip')"
+        @click="$root.$emit('open-email-folders-drawer')">
+        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+      </v-btn>
+    </v-list-item-action>
+    <email-connector-user-setting-folders-drawer />
+  </v-list-item>
 </template>
 
 <script>
 export default {
   data: () => ({
-    folders: [],
+    loaded: false,
     maxFolders: 0,
     enabledCount: 0,
-    windowSize: 0,
-    loading: true,
-    refreshing: false,
-    savingId: null,
   }),
-  computed: {
-    /**
-     * The user's own folders, as registered -- the built-ins are not theirs to switch.
-     *
-     * @returns {Array} the custom folder descriptors
-     */
-    customFolders() {
-      return this.folders.filter(folder => folder.type === 'CUSTOM');
-    },
-  },
   created() {
-    this.load(false);
+    this.readCounter();
+    // The drawer's switches are what this row summarises, so its close re-reads it.
+    this.$root.$on('email-folders-updated', this.readCounter);
+  },
+  beforeDestroy() {
+    this.$root.$off('email-folders-updated', this.readCounter);
   },
   methods: {
     /**
-     * Reads the folder list, walking the mailbox first when asked.
+     * Reads the one number the row shows. Failing is silent, like the address-book
+     * status: an unreadable counter is not worth an error banner over the whole
+     * settings screen.
      *
-     * @param {Boolean} refresh whether to walk the mailbox before answering
-     * @returns {Promise} resolved once the list is on screen
+     * @returns {void}
      */
-    load(refresh) {
-      this.loading = true;
-      return this.$emailConnectorUserSettingService.getMailFolders(refresh)
+    readCounter() {
+      this.$emailConnectorUserSettingService.getMailFolders(false)
         .then(list => {
-          this.folders = list?.folders || [];
           this.maxFolders = list?.maxCustomFolders || 0;
           this.enabledCount = list?.enabledCustomFolders || 0;
-          this.windowSize = list?.windowSize || 0;
+          this.loaded = true;
         })
-        .catch(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.error'), 'error'))
-        .finally(() => this.loading = false);
-    },
-    /**
-     * Walks the mailbox's folder list now -- for the folder the user just created
-     * elsewhere and does not want to wait a day for.
-     *
-     * @returns {void}
-     */
-    refresh() {
-      this.refreshing = true;
-      this.load(true)
-        .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.refreshed'), 'success'))
-        .finally(() => this.refreshing = false);
-    },
-    /**
-     * Flips one folder's mirror. The cap's refusal is the one error worth its own
-     * words; anything else is the generic one. The list is re-read after a save so the
-     * counter and the switch state are the server's, not a guess.
-     *
-     * @param {Object} folder the folder
-     * @param {Boolean} enabled the new opt-in
-     * @returns {void}
-     */
-    toggle(folder, enabled) {
-      this.savingId = folder.id;
-      this.$emailConnectorUserSettingService.setMailFolderMirror(folder.id, !!enabled)
-        .then(() => this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.preferences.saved'), 'success'))
-        .catch(error => {
-          const message = error?.message === 'emailConnector.folder.tooMany'
-            ? this.$t('UserSettings.emailConnector.folders.tooMany', { 0: this.maxFolders })
-            : this.$t('UserSettings.emailConnector.folders.error');
-          this.$root.$emit('alert-message', message, 'error');
-        })
-        .finally(() => {
-          this.savingId = null;
-          this.load(false);
-        });
-    },
-    /**
-     * A folder's readable path: the hierarchy separator replaced by a spaced slash.
-     *
-     * @param {Object} folder the folder
-     * @returns {String} the path
-     */
-    pathOf(folder) {
-      if (!folder?.path) {
-        return folder?.displayName || '';
-      }
-      return folder.delimiter ? folder.path.split(folder.delimiter).join(' / ') : folder.path;
+        .catch(() => null);
     },
   },
 };

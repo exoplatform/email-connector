@@ -113,6 +113,27 @@ public class EmailFolderStorageTest {
   }
 
   /**
+   * The sync job's writes are guarded by the opt-in at the statement level: a
+   * checkpoint or a snapshot written after an opt-out changes nothing, so a sync that
+   * was in flight when the user switched the folder off cannot re-plant the memory the
+   * opt-out cleared.
+   */
+  @Test
+  void aSyncWriteAfterAnOptOutChangesNothing() {
+    EmailFolder created = emailFolderStorage.createFolder(newFolder("erin", "Racing", "Racing"));
+    emailFolderStorage.updateSyncEnabled("erin", created.getId(), true, new Date(1_000L));
+    emailFolderStorage.updateSyncEnabled("erin", created.getId(), false, new Date(2_000L));
+
+    emailFolderStorage.updateSyncMemory("erin", created.getId(), new FolderSyncSnapshot(1L, 2L, 3L, 4L, 50), new Date(3_000L));
+    emailFolderStorage.updateSyncMemory("erin", created.getId(), null, new Date(4_000L));
+
+    EmailFolder after = emailFolderStorage.getFolder("erin", created.getId());
+    assertFalse(after.isSyncEnabled());
+    assertNull(after.getSnapshot(), "the late snapshot did not land");
+    assertNull(after.getLastSyncDate(), "nor the late checkpoint");
+  }
+
+  /**
    * The index of 1.0.0-53, on the shipped changelog: a second row for the same
    * (USER_ID, REMOTE_NAME) is refused by the database. This is the guarantee the
    * discovery upsert stands on, and a generated schema (the DAO test's) cannot vouch
@@ -133,15 +154,20 @@ public class EmailFolderStorageTest {
   void discoveryRefreshesTheRowAndAnotherUserCannotReachIt() {
     EmailFolder created = emailFolderStorage.createFolder(newFolder("bob", "INBOX.Factures", "Factures"));
 
-    emailFolderStorage.updateDiscovery("bob", created.getId(), "Invoices", ".", true, null);
+    emailFolderStorage.markSeen("bob", created.getId(), "Invoices", ".", new Date(5_000L));
+    emailFolderStorage.markMissing("bob", created.getId());
     EmailFolder missing = emailFolderStorage.getFolder("bob", created.getId());
     assertTrue(missing.isMissing());
     assertEquals("Invoices", missing.getDisplayName());
     assertEquals(".", missing.getDelimiter());
+    assertEquals(5_000L, missing.getLastSeenDate().getTime());
 
-    emailFolderStorage.updateDiscovery("mallory", created.getId(), "Stolen", "/", false, new Date());
+    emailFolderStorage.markSeen("mallory", created.getId(), "Stolen", "/", new Date());
+    emailFolderStorage.updateSyncEnabled("mallory", created.getId(), true, new Date());
     assertNull(emailFolderStorage.getFolder("mallory", created.getId()));
-    assertEquals("Invoices", emailFolderStorage.getFolder("bob", created.getId()).getDisplayName());
+    EmailFolder untouched = emailFolderStorage.getFolder("bob", created.getId());
+    assertEquals("Invoices", untouched.getDisplayName());
+    assertFalse(untouched.isSyncEnabled(), "another user's opt-in is a no-op");
 
     emailFolderStorage.deleteFolder("mallory", created.getId());
     assertNotNull(emailFolderStorage.getFolder("bob", created.getId()), "another user's delete is a no-op");

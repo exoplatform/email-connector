@@ -195,8 +195,8 @@ class EmailFolderServiceTest {
     assertEquals("New/Folder", created.getValue().getRemoteName());
     assertEquals("Folder", created.getValue().getDisplayName(), "the display name is the last segment");
     assertFalse(created.getValue().isSyncEnabled());
-    verify(emailFolderStorage).updateDiscovery(eq(USER), eq(1L), eq("Known"), eq("/"), eq(false), any(Date.class));
-    verify(emailFolderStorage).updateDiscovery(USER, 2L, null, null, true, null);
+    verify(emailFolderStorage).markSeen(eq(USER), eq(1L), eq("Known"), eq("/"), any(Date.class));
+    verify(emailFolderStorage).markMissing(USER, 2L);
     verify(emailFolderStorage).deleteFolder(USER, 3L);
     assertEquals(List.of(gone), purged);
   }
@@ -321,6 +321,19 @@ class EmailFolderServiceTest {
     EmailFolder old = registered(3L, "Old", true, false);
     old.setLastSyncDate(new Date(now - TimeUnit.MINUTES.toMillis(11)));
     assertTrue(emailFolderService.isStale(old, 10, now));
+
+    // The zero default is a RESOLUTION, not a number: it must read the user's period,
+    // never "always stale" (an IMAP round-trip per click) nor "never stale" (no
+    // on-open refresh at all). Both ends of that boundary, at the period itself.
+    EmailFolder atThePeriod = registered(6L, "AtThePeriod", true, false);
+    atThePeriod.setLastSyncDate(new Date(now - TimeUnit.MINUTES.toMillis(10)));
+    assertTrue(emailFolderService.isStale(atThePeriod, 10, now), "exactly one period old is stale");
+    atThePeriod.setLastSyncDate(new Date(now - TimeUnit.MINUTES.toMillis(10) + 1));
+    assertFalse(emailFolderService.isStale(atThePeriod, 10, now), "a moment younger than one period is not");
+    EmailFolder justChecked = registered(7L, "JustChecked", true, false);
+    justChecked.setLastSyncDate(new Date(now));
+    assertFalse(emailFolderService.isStale(justChecked, 10, now), "zero is not \"always stale\"");
+    assertFalse(emailFolderService.isStale(justChecked, 0, now), "and a zero period resolves to a minute, not to always");
 
     System.setProperty(EmailFolderService.CUSTOM_FOLDERS_STALE_MINUTES_PROPERTY, "30");
     assertFalse(emailFolderService.isStale(old, 10, now), "the property overrides the period");

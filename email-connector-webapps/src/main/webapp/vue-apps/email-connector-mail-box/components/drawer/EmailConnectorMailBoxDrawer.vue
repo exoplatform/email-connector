@@ -1576,7 +1576,12 @@ export default {
       const wasSyncing = this.syncInProgress;
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
       // The folder list, kept on the root for the menus and the move-to picker: they
-      // are created on click, deep under this drawer, and read it at that moment.
+      // are created on click, deep under this drawer, and read it at that moment. Not
+      // reactive, on purpose -- a property added to the root after creation is not --
+      // which every reader tolerates: the pickers read it when they open, and the bulk
+      // toolbar's computed re-reads it whenever the selection changes. The one case it
+      // does not cover, a folder opted in from the settings while a selection is held
+      // open, resolves at the next click.
       this.$root.mailFolders = this.folders;
       // `emails` is a computed off `emailBox`, so it follows the line above on its own.
       // Assigning to it did nothing except log "computed property was assigned to but it

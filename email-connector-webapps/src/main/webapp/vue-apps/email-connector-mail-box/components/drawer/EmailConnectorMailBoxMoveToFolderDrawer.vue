@@ -125,6 +125,11 @@ export default {
     path(folder) {
       return this.$emailConnectorMailBoxService.folderPath(folder);
     },
+    /**
+     * Forgets the messages the picker was opened for, so a later open starts clean.
+     *
+     * @returns {void}
+     */
     close() {
       this.drawer = false;
       this.mailRemoteIds = [];
