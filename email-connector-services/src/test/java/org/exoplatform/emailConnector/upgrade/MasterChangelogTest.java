@@ -19,10 +19,16 @@ package org.exoplatform.emailConnector.upgrade;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
+import java.io.StringWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 
@@ -33,7 +39,9 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
+import liquibase.Contexts;
 import liquibase.Liquibase;
+import liquibase.database.Database;
 import liquibase.database.DatabaseFactory;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.resource.ClassLoaderResourceAccessor;
@@ -119,27 +127,28 @@ public class MasterChangelogTest {
   void theRegistryNameKeepsItsCaseOnMySql() throws Exception {
     // An offline connection keeps its "already ran" ledger in a CSV; a fresh one means
     // every changeset is generated, which is what makes 1.0.0-52's CREATE TABLE appear.
-    java.nio.file.Path ledger = java.nio.file.Files.createTempFile("email-connector-mysql", ".csv");
-    java.nio.file.Files.delete(ledger);
-    java.io.StringWriter sql = new java.io.StringWriter();
+    Path ledger = Files.createTempFile("email-connector-mysql", ".csv");
+    Files.delete(ledger);
+    StringWriter sql = new StringWriter();
     try {
-      liquibase.database.Database mysql = DatabaseFactory.getInstance()
-                                                         .openDatabase("offline:mysql?version=8.0.0&changeLogFile=" + ledger,
-                                                                       null,
-                                                                       null,
-                                                                       null,
-                                                                       new ClassLoaderResourceAccessor());
-      new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), mysql).update(new liquibase.Contexts(), sql);
+      Database mysql = DatabaseFactory.getInstance()
+                                      .openDatabase("offline:mysql?version=8.0.17&changeLogFile=" + ledger,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    new ClassLoaderResourceAccessor());
+      new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), mysql).update(new Contexts(), sql);
     } finally {
-      java.nio.file.Files.deleteIfExists(ledger);
+      Files.deleteIfExists(ledger);
     }
-    String createFolder = java.util.Arrays.stream(sql.toString().split(";"))
-                                          .filter(statement -> statement.contains("CREATE TABLE EMAIL_FOLDER"))
-                                          .findFirst()
-                                          .orElseThrow(() -> new AssertionError("no CREATE TABLE EMAIL_FOLDER in the MySQL SQL"));
-    assertTrue(createFolder.contains("REMOTE_NAME VARCHAR(500) COLLATE utf8mb4_bin"), createFolder);
-    assertTrue(createFolder.contains("COLLATE utf8mb4_0900_ai_ci"), "the table keeps the file's collation: " + createFolder);
-    assertTrue(!createFolder.contains("DISPLAY_NAME VARCHAR(255) COLLATE"), "only the identifier is binary: " + createFolder);
+    // The statement itself, not a split on semicolons: the changeset's comment above it
+    // carries semicolons of its own.
+    Matcher createFolder = Pattern.compile("CREATE TABLE EMAIL_FOLDER \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(sql.toString());
+    assertTrue(createFolder.find(), "no CREATE TABLE EMAIL_FOLDER in the MySQL SQL");
+    String statement = createFolder.group();
+    assertTrue(statement.contains("REMOTE_NAME VARCHAR(500) COLLATE utf8mb4_0900_bin NOT NULL"), statement);
+    assertTrue(statement.contains("COLLATE utf8mb4_0900_ai_ci"), "the table keeps the file's collation: " + statement);
+    assertTrue(!statement.contains("DISPLAY_NAME VARCHAR(255) COLLATE"), "only the identifier is binary: " + statement);
   }
 
   /**
@@ -151,7 +160,7 @@ public class MasterChangelogTest {
    * @throws Exception when the metadata cannot be read
    */
   private boolean tableExists(Connection connection, String tableName) throws Exception {
-    try (java.sql.ResultSet tables = connection.getMetaData().getTables(null, null, tableName, null)) {
+    try (ResultSet tables = connection.getMetaData().getTables(null, null, tableName, null)) {
       return tables.next();
     }
   }
