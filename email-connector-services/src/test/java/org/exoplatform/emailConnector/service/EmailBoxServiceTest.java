@@ -2819,6 +2819,7 @@ public class EmailBoxServiceTest {
     state.setArchiveFolderName("MyArchive");
     state.setDraftsFolderName("MyDrafts");
     state.setTrashFolderName("MyTrash");
+    state.setJunkFolderName("MyJunk");
     mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
     IMAPFolder sent = mock(IMAPFolder.class);
     when(sent.exists()).thenReturn(true);
@@ -2832,18 +2833,23 @@ public class EmailBoxServiceTest {
     IMAPFolder trash = mock(IMAPFolder.class);
     when(trash.exists()).thenReturn(true);
     when(trash.getMessageCount()).thenReturn(0);
+    IMAPFolder junk = mock(IMAPFolder.class);
+    when(junk.exists()).thenReturn(true);
+    when(junk.getMessageCount()).thenReturn(0);
     Store connectedStore = userEmailSettingService.connect(userEmailSetting);
     when(connectedStore.getFolder("MySent")).thenReturn(sent);
     when(connectedStore.getFolder("MyArchive")).thenReturn(archive);
     when(connectedStore.getFolder("MyDrafts")).thenReturn(drafts);
     when(connectedStore.getFolder("MyTrash")).thenReturn(trash);
+    when(connectedStore.getFolder("MyJunk")).thenReturn(junk);
     emailBoxService.synchronize(TEST_USER);
-    // All four resolved by name (and INBOX skipped): the full-list scan never runs.
+    // All five resolved by name (and INBOX skipped): the full-list scan never runs.
     verify(connectedStore.getDefaultFolder(), never()).listSubscribed("*");
     verify(sent).open(Folder.READ_ONLY);
     verify(archive).open(Folder.READ_ONLY);
     verify(drafts).open(Folder.READ_ONLY);
     verify(trash).open(Folder.READ_ONLY);
+    verify(junk).open(Folder.READ_ONLY);
   }
 
   @Test
@@ -3037,9 +3043,10 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * A mailbox with no Trash folder anywhere is a no-op, and a QUIET one: "this
-   * account has no Trash folder" is a shape of mailbox, not a fault to report every
-   * period forever.
+   * A mailbox with no Trash folder and no Junk folder anywhere is a no-op for both,
+   * and a QUIET one: "this account has no Trash folder" — or no Spam folder, which
+   * is common on a plain Dovecot that filters nothing — is a shape of mailbox, not a
+   * fault to report every period forever.
    * <p>
    * That it is quiet is what the last two assertions establish. The only warning on
    * this path is in the catch around the Trash pass, so the question is whether the
@@ -3050,13 +3057,14 @@ public class EmailBoxServiceTest {
    */
   @Test
   @SneakyThrows
-  void aMailboxWithNoTrashFolderIsAQuietNoOp() {
+  void aMailboxWithNoHiddenFolderIsAQuietNoOp() {
     Folder defaultFolder = givenAMailboxListing();
     when(defaultFolder.list("*")).thenReturn(new Folder[0]);
 
     emailBoxService.synchronize(TEST_USER);
 
     verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.TRASH);
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.JUNK);
     // Both passes ran and neither found anything: there was nothing to open, hence
     // nothing to fail, hence nothing to warn about.
     verify(defaultFolder, atLeast(1)).listSubscribed("*");
@@ -3088,6 +3096,391 @@ public class EmailBoxServiceTest {
     } finally {
       System.clearProperty(EmailBoxService.TRASH_SYNC_ENABLED_PROPERTY);
     }
+  }
+
+  // ---------------------------------------------------------------------------------
+  // The Junk folder (EXO-89906): discovered by the Trash recipe, synced after the
+  // Trash with the Trash's window, and hidden by the same list. What is Junk's own is
+  // pinned here; what it shares with Trash is pinned once, above, on the shared body.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The Junk folder is cached under its own discriminator and synced AFTER the Trash
+   * — whatever order the listing announces them in. Last on purpose: nothing depends
+   * on it, and it is the folder most likely to be big and noisy, so a slow or failing
+   * pass there costs nobody the folders that matter more.
+   */
+  @Test
+  @SneakyThrows
+  void theJunkFolderIsCachedUnderItsOwnDiscriminatorAfterTheTrash() {
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    lenient().when(junk.getMessageCount()).thenReturn(2);
+    IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    lenient().when(trash.getMessageCount()).thenReturn(2);
+    // Junk FIRST in the listing: the order under test is the sync's, not the server's.
+    givenAMailboxListing(junk, trash);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    InOrder inOrder = inOrder(trash, junk);
+    inOrder.verify(trash).open(Folder.READ_ONLY);
+    inOrder.verify(junk).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.JUNK);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.TRASH);
+  }
+
+  /**
+   * The window, spelled out: thirty, as for Trash — on a folder of 100 the listing
+   * starts at 71. Spam is the folder whose growth is least the user's doing, and every
+   * message in the window costs a body download nobody asked for.
+   */
+  @Test
+  @SneakyThrows
+  void theJunkWindowIsThirtyDeep() {
+    IMAPFolder junk = givenASubscribedJunkFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    when(junk.getMessageCount()).thenReturn(100);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(junk).getMessages(71, 100);
+  }
+
+  /**
+   * The server saying which folder is Junk beats us guessing from a name, whichever
+   * order the listing arrives in — the name match is remembered, not returned.
+   */
+  @Test
+  @SneakyThrows
+  void theSpecialUseAttributeBeatsAFolderMerelyNamedSpam() {
+    IMAPFolder namedSpam = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Spam");
+    IMAPFolder realJunk = aHiddenFolder(new String[] { "\\Junk" }, "Courrier indésirable");
+    lenient().when(realJunk.getMessageCount()).thenReturn(2);
+    // The name match FIRST, which is the case that fails if the scan returns on it.
+    givenAMailboxListing(namedSpam, realJunk);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(realJunk).open(Folder.READ_ONLY);
+    verify(namedSpam, never()).open(Folder.READ_ONLY);
+  }
+
+  /**
+   * Last-segment EQUALITY, never {@code contains} — and here the strictness matters
+   * more than for Trash, because Junk has no loose lookup beside it: a user's own
+   * "Spam reports" folder matched on {@code contains} would be bulk-imported as
+   * quarantined mail, hidden from every read, and become the folder "Mark as spam"
+   * files into.
+   */
+  @Test
+  @SneakyThrows
+  void aFolderWhoseNameMerelyContainsSpamIsNotSynced() {
+    IMAPFolder userFolder = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Spam reports");
+    givenAMailboxListing(userFolder);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(userFolder, never()).open(Folder.READ_ONLY);
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.JUNK);
+  }
+
+  /**
+   * The full listing is scanned when the subscribed one holds no Junk, because
+   * {@code [Gmail]/Spam} is not subscribed on every account — and last-segment
+   * equality finds it there, the segment after the separator being exactly "Spam".
+   */
+  @Test
+  @SneakyThrows
+  void anUnsubscribedNestedSpamIsFoundByTheFullListing() {
+    IMAPFolder junk = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "[Gmail]/Spam");
+    lenient().when(junk.getMessageCount()).thenReturn(3);
+    Folder defaultFolder = givenAMailboxListing();
+    when(defaultFolder.list("*")).thenReturn(new Folder[] { junk });
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(junk).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.JUNK);
+  }
+
+  /**
+   * A French mailbox on a server that never learned SPECIAL-USE: the folder is found
+   * by its localized last segment under a Maildir++ prefix, accent and all.
+   */
+  @Test
+  @SneakyThrows
+  void aFrenchJunkFolderIsFoundByItsLastSegment() {
+    IMAPFolder junk = givenASubscribedJunkFolder(ArrayUtils.EMPTY_STRING_ARRAY, "INBOX.Courrier indésirable");
+    when(junk.getMessageCount()).thenReturn(3);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(junk).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, MailFolder.JUNK);
+  }
+
+  /**
+   * The operator's kill switch takes the Junk folder off the sync loop and nothing
+   * else — the Trash pass, in particular, is untouched by it.
+   */
+  @Test
+  @SneakyThrows
+  void theKillSwitchStopsTheJunkSyncAndNothingElse() {
+    System.setProperty(EmailBoxService.JUNK_SYNC_ENABLED_PROPERTY, "false");
+    try {
+      IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+      lenient().when(junk.getMessageCount()).thenReturn(4);
+      IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+      lenient().when(trash.getMessageCount()).thenReturn(4);
+      givenAMailboxListing(junk, trash);
+
+      emailBoxService.synchronize(TEST_USER);
+
+      verify(junk, never()).open(Folder.READ_ONLY);
+      verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, MailFolder.JUNK);
+      verify(trash).open(Folder.READ_ONLY);
+      assertEquals(SyncStatus.SUCCESS, userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailSyncStatus());
+    } finally {
+      System.clearProperty(EmailBoxService.JUNK_SYNC_ENABLED_PROPERTY);
+    }
+  }
+
+  /**
+   * "Mark as spam" is a move into the STRICTLY resolved Junk folder: the source copy
+   * is copied there and flagged for removal, exactly as a delete files into the
+   * Trash. Out of Sent here, so the per-folder UID collision is in the picture: the
+   * inbox message at the same number is never touched.
+   */
+  @Test
+  @SneakyThrows
+  void markingAsSpamCopiesIntoTheJunkFolderAndRemovesTheSourceCopy() {
+    IMAPFolder sent = aHiddenFolder(new String[] { "\\Sent" }, "Sent");
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    givenAMailboxListing(sent, junk);
+    Message inboxMessage = givenAnInboxMessageAt(1212L);
+    Message sentMessage = givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+
+    int failed = emailBoxService.markAsJunk(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(sent).open(Folder.READ_WRITE);
+    verify(sent).copyMessages(any(Message[].class), eq(junk));
+    verify(sentMessage).setFlag(Flags.Flag.DELETED, true);
+    verify(inboxMessage, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * A mailbox with no Junk folder cannot be told about spam: there is no second
+   * meaning of "mark as spam" to fall back on (a delete would do something the user
+   * did not ask for to a message they were trying to report), so every id fails and
+   * every row goes back — the archive's rule, and refused before the source is opened.
+   */
+  @Test
+  @SneakyThrows
+  void markingAsSpamWithNoJunkFolderFailsEveryIdAndKeepsEveryRow() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    givenAMessageInFolderAt(sent, 1212L, "<sent@host>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
+
+    int failed = emailBoxService.markAsJunk(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(1, failed);
+    verify(sent, never()).open(anyInt());
+    verify(sent, never()).copyMessages(any(), any());
+    verify(emailBoxStorage).createEmail(argThat(email -> email.getId() == null && MailFolder.SENT.equals(email.getFolder())));
+  }
+
+  /**
+   * "Not spam" is the Trash restore out of the other hidden folder: the Junk copy is
+   * copied back into the INBOX, then flagged for removal — the copy first, so a
+   * failure leaves a duplicate the next syncs reconcile rather than a message that
+   * exists nowhere.
+   */
+  @Test
+  @SneakyThrows
+  void notSpamCopiesBackToTheInboxThenRemovesTheJunkCopy() {
+    IMAPFolder junk = givenASubscribedJunkFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    Message message = givenAJunkMessage(junk, "<kept@host>", "<kept@host>");
+    Folder inbox = trashStore().getFolder("INBOX");
+
+    int failed = emailBoxService.restoreFromJunk(List.of(1212L), TEST_USER);
+
+    assertEquals(0, failed);
+    InOrder inOrder = inOrder(junk, message);
+    inOrder.verify(junk).open(Folder.READ_WRITE);
+    inOrder.verify(junk).copyMessages(any(Message[].class), eq(inbox));
+    inOrder.verify(message).setFlag(Flags.Flag.DELETED, true);
+    verify(emailBoxStorage).deleteEmailsByIds(anyList());
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * The identity check, on the path where getting it wrong rescues a stranger's
+   * message into the user's inbox: a UID whose Message-ID is no longer the one the
+   * row remembers (UIDVALIDITY changed, the folder was renumbered) is refused, nothing
+   * is copied, nothing is flagged, and the row goes back so the message stays visible
+   * in the Spam listing for a retry after the next sync.
+   */
+  @Test
+  @SneakyThrows
+  void notSpamRefusesAUidThatNowCarriesSomebodyElsesMessage() {
+    IMAPFolder junk = givenASubscribedJunkFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    Message stranger = givenAJunkMessage(junk, "<mine@host>", "<stranger@host>");
+
+    int failed = emailBoxService.restoreFromJunk(List.of(1212L), TEST_USER);
+
+    assertEquals(1, failed);
+    verify(junk, never()).copyMessages(any(), any());
+    verify(stranger, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(emailBoxStorage).createEmail(argThat(email -> email.getId() == null && MailFolder.JUNK.equals(email.getFolder())));
+  }
+
+  /**
+   * Rows cached as JUNK and no Junk folder to find any more: the mailbox was
+   * reorganized, or the strict lookup no longer recognizes it. Nothing can be acted
+   * on, so every id fails and every row goes back — never a guess at another folder.
+   */
+  @Test
+  @SneakyThrows
+  void aMailboxWithNoJunkFolderCannotRescueAnything() {
+    Folder defaultFolder = givenAMailboxListing();
+    when(defaultFolder.list("*")).thenReturn(new Folder[0]);
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder(MailFolder.JUNK);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.JUNK),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(row);
+
+    int failed = emailBoxService.restoreFromJunk(List.of(1212L), TEST_USER);
+
+    assertEquals(1, failed);
+    verify(emailBoxStorage).createEmail(argThat(email -> email.getId() == null && MailFolder.JUNK.equals(email.getFolder())));
+  }
+
+  /**
+   * Delete out of the Spam files into the Trash, like a delete from anywhere else —
+   * the one move that means something on a quarantined message, and reversible from
+   * the Trash listing (decided with the PO over Gmail's "delete forever"). The source
+   * is the STRICTLY resolved Junk folder, the destination the loosely found Trash.
+   */
+  @Test
+  @SneakyThrows
+  void deletingFromTheSpamFilesIntoTheTrash() {
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    givenAMailboxListing(junk, trash);
+    Message spam = givenAMessageInFolderAt(junk, 1212L, "<spam@host>");
+    givenACachedRow(MailFolder.JUNK, 1212L, "<spam@host>");
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.JUNK);
+
+    assertEquals(0, failed);
+    verify(junk).open(Folder.READ_WRITE);
+    verify(junk).copyMessages(any(Message[].class), eq(trash));
+    verify(spam).setFlag(Flags.Flag.DELETED, true);
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * The whole move matrix, action by folder. A refused move returns before the
+   * mailbox is even connected to; an allowed one reaches the connection (and, in this
+   * bare mailbox, fails there for want of a folder — the count is not what is under
+   * test, the gate is). Every cell is here so a change to the gate has to say which
+   * cell it moved.
+   */
+  @Test
+  @SneakyThrows
+  void theMoveMatrixRefusesEveryMoveThatHasNoMeaningOnItsFolder() {
+    givenAMailboxListing();
+    List<String> refused = List.of("DELETE:TRASH",
+                                   "DELETE:DRAFTS",
+                                   "ARCHIVE:ARCHIVE",
+                                   "ARCHIVE:ALL_MAIL",
+                                   "ARCHIVE:TRASH",
+                                   "ARCHIVE:DRAFTS",
+                                   "ARCHIVE:JUNK",
+                                   "JUNK:TRASH",
+                                   "JUNK:DRAFTS",
+                                   "JUNK:JUNK");
+    List<String> allowed = List.of("DELETE:INBOX",
+                                   "DELETE:SENT",
+                                   "DELETE:ARCHIVE",
+                                   "DELETE:ALL_MAIL",
+                                   "DELETE:JUNK",
+                                   "ARCHIVE:INBOX",
+                                   "ARCHIVE:SENT",
+                                   "JUNK:INBOX",
+                                   "JUNK:SENT",
+                                   "JUNK:ARCHIVE",
+                                   "JUNK:ALL_MAIL");
+
+    for (String cell : refused) {
+      assertEquals(1, move(cell), cell + " must be refused");
+    }
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    for (String cell : allowed) {
+      move(cell);
+    }
+    verify(userEmailSettingService, times(allowed.size())).connect(any(UserEmailSetting.class));
+  }
+
+  /**
+   * The Spam listing is browsable — the "browsable" half of "browsable, not
+   * resurfaced": a folder-scoped read answers the user who asked, while
+   * {@code EmailBoxTrashExclusionStorageTest} pins that no other read does.
+   */
+  @Test
+  @SneakyThrows
+  void theSpamFolderIsBrowsable() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email quarantined = email(TEST_USER);
+    quarantined.setFolder(MailFolder.JUNK);
+    when(emailBoxStorage.getEmails(TEST_USER, MailFolder.JUNK)).thenReturn(List.of(quarantined));
+
+    EmailBox listing = emailBoxService.getEmailBox(TEST_USER, MailFolder.JUNK, false);
+
+    assertEquals(List.of(quarantined), listing.getEmails());
+    verify(emailBoxStorage).getEmails(TEST_USER, MailFolder.JUNK);
+  }
+
+  /**
+   * Both Junk actions are refused outright, before anything is read or touched, when
+   * the user has no connected mailbox to act on.
+   */
+  @Test
+  void junkActionsRequireAConnectedMailbox() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    List<Long> ids = List.of(1212L);
+
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.markAsJunk(ids, TEST_USER, MailFolder.INBOX));
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.restoreFromJunk(ids, TEST_USER));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * One cell of the move matrix: {@code ACTION:FOLDER} sent for uid 1212.
+   *
+   * @param cell the action and the source folder, colon-separated
+   * @return how many of the one id failed
+   */
+  @SneakyThrows
+  private int move(String cell) {
+    String action = cell.substring(0, cell.indexOf(':'));
+    String folder = cell.substring(cell.indexOf(':') + 1);
+    return switch (action) {
+      case "DELETE" -> emailBoxService.deleteEmail(List.of(1212L), TEST_USER, folder);
+      case "ARCHIVE" -> emailBoxService.archiveEmail(List.of(1212L), TEST_USER, folder);
+      default -> emailBoxService.markAsJunk(List.of(1212L), TEST_USER, folder);
+    };
   }
 
   /**
@@ -3262,6 +3655,69 @@ public class EmailBoxServiceTest {
     lenient().when(trash.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
     givenAMailboxListing(trash);
     return trash;
+  }
+
+  /**
+   * A hidden-folder mock — Trash or Junk — announced by the given attributes and
+   * name, existing, open and empty, ready to be put in a listing.
+   *
+   * @param attributes the folder's IMAP attributes (SPECIAL-USE or none)
+   * @param fullName the folder's full name
+   * @return the mocked folder
+   */
+  @SneakyThrows
+  private IMAPFolder aHiddenFolder(String[] attributes, String fullName) {
+    IMAPFolder folder = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(folder.exists()).thenReturn(true);
+    lenient().when(folder.getAttributes()).thenReturn(attributes);
+    lenient().when(folder.getFullName()).thenReturn(fullName);
+    lenient().when(folder.isOpen()).thenReturn(true);
+    lenient().when(folder.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    return folder;
+  }
+
+  /**
+   * A mailbox whose single subscribed folder is its Junk, announced by the given
+   * attributes and name — the Junk twin of {@link #givenASubscribedTrashFolder}.
+   *
+   * @param attributes the folder's IMAP attributes (SPECIAL-USE or none)
+   * @param fullName the folder's full name
+   * @return the mocked Junk folder
+   */
+  private IMAPFolder givenASubscribedJunkFolder(String[] attributes, String fullName) {
+    IMAPFolder junk = aHiddenFolder(attributes, fullName);
+    givenAMailboxListing(junk);
+    return junk;
+  }
+
+  /**
+   * One quarantined message: a cached JUNK row at uid 1212 pinned to
+   * {@code rowMessageId}, and the message the server actually has at that uid
+   * carrying {@code serverMessageId} — {@link #givenATrashedMessage} for the other
+   * hidden folder.
+   *
+   * @param junk the mailbox's Junk folder
+   * @param rowMessageId the Message-ID the local row remembers
+   * @param serverMessageId the Message-ID the server's message at that uid carries
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private Message givenAJunkMessage(IMAPFolder junk, String rowMessageId, String serverMessageId) {
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder(MailFolder.JUNK);
+    row.setMailHeaderId(rowMessageId);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.JUNK),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(row);
+    Message message = mock(Message.class);
+    lenient().when(junk.getMessageByUID(1212L)).thenReturn(message);
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { serverMessageId });
+    return message;
   }
 
 

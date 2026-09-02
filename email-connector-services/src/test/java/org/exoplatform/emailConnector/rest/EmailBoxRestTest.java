@@ -305,6 +305,65 @@ public class EmailBoxRestTest {
     verify(emailBoxService, never()).deleteEmail(anyList(), anyString(), anyString());
   }
 
+  /**
+   * "Mark as spam" is its own POST, folder-addressed exactly as the delete is, and
+   * reaches its own service method — never the delete, never the archive: the three
+   * take the same rows to three different fates, and a route that aliased one to
+   * another would report success on the wrong outcome.
+   */
+  @Test
+  void markAsJunk() throws Exception {
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/junk").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/junk").with(testSimpleUser())
+                                                             .content(asJsonString(new ArrayList<Long>()))
+                                                             .contentType(MediaType.APPLICATION_JSON)
+                                                             .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isNotFound());
+    List<Long> emailIds = List.of(123L, 456L);
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/junk").with(testSimpleUser())
+                                                             .content(asJsonString(emailIds))
+                                                             .contentType(MediaType.APPLICATION_JSON)
+                                                             .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+    // INBOX when the folder is omitted, as for the delete.
+    verify(emailBoxService).markAsJunk(emailIds, SIMPLE_USER, MailFolder.INBOX);
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/junk").with(testSimpleUser())
+                                                             .param("folder", MailFolder.SENT)
+                                                             .content(asJsonString(emailIds))
+                                                             .contentType(MediaType.APPLICATION_JSON)
+                                                             .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+    verify(emailBoxService).markAsJunk(emailIds, SIMPLE_USER, MailFolder.SENT);
+    verify(emailBoxService, never()).deleteEmail(anyList(), anyString(), anyString());
+    verify(emailBoxService, never()).archiveEmail(anyList(), anyString(), anyString());
+  }
+
+  /**
+   * "Not spam" is the Junk folder's own restore, on its own route: the ids it takes
+   * are numbered within the Junk folder, and the Trash restore addressed with them
+   * would act on whatever message holds those numbers in the Trash.
+   */
+  @Test
+  void restoreFromJunk() throws Exception {
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/junk/restore").with(testSimpleUser()));
+    response.andExpect(status().isBadRequest());
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/junk/restore").with(testSimpleUser())
+                                                                     .content(asJsonString(new ArrayList<Long>()))
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isNotFound());
+    List<Long> emailIds = List.of(123L, 456L);
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/junk/restore").with(testSimpleUser())
+                                                                     .content(asJsonString(emailIds))
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk());
+    verify(emailBoxService).restoreFromJunk(emailIds, SIMPLE_USER);
+    verify(emailBoxService, never()).restoreEmail(anyList(), anyString());
+    verify(emailBoxService, never()).purgeEmail(anyList(), anyString());
+  }
+
   @Test
   void sendEmail() throws Exception {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser()));
