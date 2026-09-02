@@ -18,25 +18,38 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 The single row that opens the synchronization settings drawer — the mailbox
 cache size, the sync period and the folder switches now live there instead of
 as separate rows on this page, the same "row opens a drawer" shape as the
-user-side folders row (EXO-89907).
+user-side folders row (EXO-89907). Copies the title/subtitle/spacer/icon-button
+shape of the Calendar synchronization row (agenda's
+AgendaConnectorContemporaryEvents.vue), including the icon button as the
+affordance that opens the drawer.
 -->
 <template>
-  <v-list-item
-    dense
-    class="px-0"
-    @click="open">
-    <v-list-item-content class="py-0">
-      <v-list-item-title>
-        {{ $t('emailConnector.admin.syncSettings.title') }}
-      </v-list-item-title>
-      <v-list-item-subtitle class="text-wrap text-light-color">
-        {{ $t('emailConnector.admin.syncSettings.subtitle') }}
-      </v-list-item-subtitle>
-    </v-list-item-content>
-    <v-list-item-action class="my-0">
-      <v-icon size="16">fa-chevron-right</v-icon>
-    </v-list-item-action>
-  </v-list-item>
+  <div class="d-flex">
+    <div class="d-flex flex-column width-full">
+      <div class="d-flex">
+        <div class="my-auto text-no-wrap text-truncate font-weight-bold text-title-color">
+          {{ $t('emailConnector.admin.syncSettings.title') }}
+        </div>
+        <v-spacer />
+        <v-btn
+          :title="$t('emailConnector.admin.syncSettings.open')"
+          :aria-label="$t('emailConnector.admin.syncSettings.open')"
+          icon
+          max-width="36"
+          max-height="36"
+          @click="open">
+          <v-icon size="20" class="text-light-color">
+            fa-sliders-h
+          </v-icon>
+        </v-btn>
+      </div>
+      <div class="text-subtitle d-flex">
+        <div class="pe-6">
+          {{ $t('emailConnector.admin.syncSettings.subtitle') }}
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script>
