@@ -25,11 +25,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -62,7 +65,6 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
-import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.portal.application.PortalRequestContext;
 import org.exoplatform.portal.config.UserPortalConfigService;
 import org.exoplatform.portal.webui.util.Util;
@@ -79,7 +81,27 @@ import lombok.SneakyThrows;
 
 public class EmailConnectorUtils {
 
-  public static final String   EMAIL_BOX_SYNC_JOB_NAME = "EmailBoxSyncJob";
+  /**
+   * The JVM property naming this node in the sync-state table's claims. Set it
+   * on every node of a cluster ({@code exo.cluster.node.name} is the platform's
+   * own name for it); left blank, the hostname stands in, which two JVMs on one
+   * host would then share.
+   */
+  public static final String   SYNC_NODE_NAME_PROPERTY = "exo.cluster.node.name";
+
+  /**
+   * The JVM property setting how many minutes a mailbox sync claim stands before
+   * any node may take it over: the crash recovery of a node that died mid-sync.
+   * Not administrable on purpose; sixty minutes covers the measured first
+   * download of a large mailbox several times over.
+   */
+  public static final String   SYNC_CLAIM_STALE_MINUTES_PROPERTY = "email.connector.sync.claim.stale.minutes";
+
+  private static final int     DEFAULT_SYNC_CLAIM_STALE_MINUTES = 60;
+
+  // Resolved once: the hostname lookup behind it can take seconds on a machine
+  // with no reverse DNS, and the answer does not change while the JVM runs.
+  private static volatile String syncNodeName;
 
   // Chosen from measurements on a real mailbox at 500, 1000 and 5000 messages. Every size
   // works and the cost is linear, so the number is a trade rather than a limit: at a
@@ -295,27 +317,41 @@ public class EmailConnectorUtils {
   }
 
   /**
-   * The sync period to schedule for a mailbox: the user's own stored override
-   * when there is one, the {@code email.connector.sync.user.minute.period} JVM
-   * property otherwise.
+   * This node's identity in the sync-state table's claims: the
+   * {@value #SYNC_NODE_NAME_PROPERTY} property when it is set, the hostname
+   * otherwise. It is what a restarted node uses to find the claims it left
+   * behind, and what a release matches so it never clears another node's claim.
    *
-   * @param userEmailSetting the mailbox owner's stored setting
-   * @return the sync period, in minutes
-   * @deprecated since the administration settings drawer, the administration-wide
-   *             default is a {@code SettingService} value an administrator can
-   *             change without a restart, which this static utility cannot read
-   *             (it has no service to autowire). Use
-   *             {@code EmailBoxService}'s own effective-period resolution
-   *             instead, which falls back to
-   *             {@code EmailConnectorService#getEmailBoxSyncPeriod()}. Not for
-   *             removal yet: kept for any external caller still on the JVM
-   *             property alone.
+   * @return the node name, never blank
    */
-  @Deprecated
-  public static int getEmailBoxUserSyncPeriod(UserEmailSetting userEmailSetting) {
-    return (userEmailSetting.getEmailBoxUserSyncPeriod() != null ? userEmailSetting.getEmailBoxUserSyncPeriod()
-                                                                 : Integer.parseInt(System.getProperty("email.connector.sync.user.minute.period",
-                                                                                                       "10")));
+  public static String getSyncNodeName() {
+    String name = syncNodeName;
+    if (name == null) {
+      name = System.getProperty(SYNC_NODE_NAME_PROPERTY);
+      if (StringUtils.isBlank(name)) {
+        try {
+          name = InetAddress.getLocalHost().getHostName();
+        } catch (UnknownHostException | RuntimeException e) {
+          name = "localhost";
+        }
+      }
+      syncNodeName = name;
+    }
+    return name;
+  }
+
+  /**
+   * The instant before which a sync claim is stale, i.e. may be taken over by
+   * any node: {@code now} minus the {@value #SYNC_CLAIM_STALE_MINUTES_PROPERTY}
+   * property (default {@value #DEFAULT_SYNC_CLAIM_STALE_MINUTES} minutes).
+   *
+   * @param now the reference instant
+   * @return the staleness threshold
+   */
+  public static Date getSyncClaimStaleBefore(Date now) {
+    int minutes = Integer.parseInt(System.getProperty(SYNC_CLAIM_STALE_MINUTES_PROPERTY,
+                                                      String.valueOf(DEFAULT_SYNC_CLAIM_STALE_MINUTES)));
+    return new Date(now.getTime() - minutes * 60000L);
   }
 
   public static List<EmailRecipient> getEmailRecipients(Address[] messageRecipients, String username, boolean withProfile) {

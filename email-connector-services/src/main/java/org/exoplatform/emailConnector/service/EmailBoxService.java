@@ -132,7 +132,6 @@ import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
-import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
@@ -162,15 +161,13 @@ import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
-import org.exoplatform.services.scheduler.JobInfo;
-import org.exoplatform.services.scheduler.JobSchedulerService;
-import org.exoplatform.services.scheduler.PeriodInfo;
 import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.upload.UploadResource;
 import org.exoplatform.upload.UploadService;
@@ -677,13 +674,14 @@ public class EmailBoxService {
   // the connection's even before the collector looks.
   private final Map<Store, Rediscovery>          rediscoveries         = Collections.synchronizedMap(new WeakHashMap<>());
 
-  // Mailboxes with a synchronization running right now, so two can never overlap and cache
-  // the same message twice.
+  // Mailboxes with a synchronization running right now in THIS JVM, so two can never
+  // overlap and cache the same message twice.
   //
-  // In-JVM only, deliberately: on a clustered deployment two nodes can still sync the same
-  // mailbox at once -- the original duplicate-row bug, at cluster scope. Closing that needs a
-  // shared lock rather than a set, which is its own change; this guard covers the overlap
-  // that actually happens today, where the sync job and a user-triggered reset share a JVM.
+  // The cluster-scope guard is the claim in the sync-state table (EmailSyncStateStorage):
+  // every path that synchronizes a mailbox takes it first, and two nodes can no longer
+  // sync the same mailbox at once. This set stays as the in-JVM fast path between the
+  // executor and the request-thread paths, and it is what the single-folder refreshes
+  // (Sent after a send, a custom folder on open) check without taking a claim of their own.
   private final Set<String>                      syncingUsers          = ConcurrentHashMap.newKeySet();
 
   // One lock per draft, keyed "user/draftLocalId". Every write to a draft goes
@@ -754,7 +752,7 @@ public class EmailBoxService {
   private SettingService          settingService;
 
   @Autowired
-  private JobSchedulerService     jobSchedulerService;
+  private EmailSyncStateStorage   emailSyncStateStorage;
 
   @Autowired
   private ListenerService         listenerService;
@@ -766,28 +764,6 @@ public class EmailBoxService {
   // later consumer) learns who the user writes to without this class knowing about it.
   @Autowired
   private ApplicationEventPublisher eventPublisher;
-
-  /**
-   * Re-registers every connected user's scheduled mailbox sync at startup, so a
-   * restart does not leave mailboxes unsynchronized until their owner reconnects.
-   */
-  @PostConstruct
-  public void initEmailBoxSyncJob() {
-    List<Context> contexts =
-                           settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
-                                                                                  Scope.APPLICATION.getName(),
-                                                                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
-                                                                                  EmailConnectorService.USER_EMAIL_SETTING_KEY,
-                                                                                  0,
-                                                                                  Integer.MAX_VALUE);
-    for (Context context : contexts) {
-      try {
-        scheduleEmailBoxUserSyncJob(context.getId());
-      } catch (Exception e) {
-        LOG.warn("Error scheduling email box sync for user {}", context.getId(), e);
-      }
-    }
-  }
 
   /**
    * Stops the notification scheduler with the Spring context. The thread is a daemon, so a
@@ -818,56 +794,127 @@ public class EmailBoxService {
   }
 
   /**
-   * Synchronize user email box.
+   * Registers a mailbox with the sync dispatcher: its state row is created (or its
+   * schedule reset) with no last sync, so it is due at the very next tick, and
+   * stamped active now. Called when a user connects or rebinds their mailbox; the
+   * dispatcher's own boot reconciliation covers everyone connected before it ran.
+   *
+   * @param username the mailbox owner
+   */
+  public void registerMailboxForSync(String username) {
+    emailSyncStateStorage.upsert(username, null, new Date());
+  }
+
+  /**
+   * Synchronize user email box, on the caller's thread -- the "sync now" of the
+   * drawer and of the MCP tools.
+   * <p>
+   * Takes the cluster-wide claim first: if another node, or the dispatcher on this
+   * one, is synchronizing the mailbox right now, this call returns quietly with a
+   * line in the log, which is the "already running" the in-JVM guard has always
+   * answered, promoted to cluster scope. The claim is released whatever happens
+   * inside, and the release stamps the run's start as the mailbox's last sync, so
+   * a manual sync resets the routine cadence exactly as a scheduled one does.
    *
    * @param username user of which email box will be synchronized
    * @throws IllegalAccessException if user is not allowed to synchronize email
    *           connector
    */
   public void synchronize(String username) throws IllegalAccessException {
-    synchronize(username, false);
-  }
-
-  /**
-   * Synchronize the user's mailbox, optionally restricted to the inbox.
-   *
-   * @param username the mailbox owner
-   * @param inboxOnly when {@code true}, skip the Sent, Archive and Drafts folders. Sent
-   *          and Archive are only needed so a conversation shows the user's own replies
-   *          and archived messages inline, they are never mutated locally, and
-   *          re-fetching them costs one message body per row -- so a caller that just
-   *          needs a fresh inbox (see {@link #resetAndResynchronize(String)}) should not
-   *          pay for them. Drafts is skipped for a stronger reason than cost: the only
-   *          caller of this mode is the cache reset, whose whole premise is that the
-   *          server is the truth and the local copy is disposable — which is false for
-   *          the one folder whose rows are authored here.
-   * @throws IllegalAccessException if the user is not allowed to synchronize
-   */
-  private void synchronize(String username, boolean inboxOnly) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (!canSynchronize(userEmailSetting, username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
     }
-    // The IN_PROGRESS check above lets a sync through once it looks stale, which is deliberate
-    // -- a sync killed mid-flight must not lock the mailbox forever. But "stale" is judged on
-    // the sync period, so a sync that simply takes longer than that period is treated as dead
-    // while it is still running, and a second one starts alongside it. Both then cache the same
-    // messages, and the mailbox ends up with duplicate rows that break every lookup keyed on
-    // (user, folder, UID). Only one sync per user in this JVM, whatever the status says.
-    if (!syncingUsers.add(username)) {
-      LOG.info("A synchronization is already running for user {}; skipping this one", username);
+    Date startedAt = new Date();
+    if (!claimForRequest(username, startedAt)) {
+      LOG.info("A synchronization is already running for user {} (claimed elsewhere); skipping this one", username);
       return;
     }
     try {
-      doSynchronize(username, userEmailSetting, inboxOnly);
+      if (!syncingUsers.add(username)) {
+        LOG.info("A synchronization is already running for user {}; skipping this one", username);
+        return;
+      }
+      try {
+        doSynchronize(username, userEmailSetting, false);
+      } finally {
+        syncingUsers.remove(username);
+      }
+    } finally {
+      emailSyncStateStorage.release(username, EmailConnectorUtils.getSyncNodeName(), startedAt);
+    }
+  }
+
+  /**
+   * One synchronization for the dispatcher, which already holds the mailbox's
+   * claim and releases it itself: no claim is taken here, only the in-JVM guard.
+   * <p>
+   * The two refusals are told apart on purpose, because the dispatcher does two
+   * different things with them. A mailbox with no connector bound is an ORPHAN --
+   * its owner disconnected and the row outlived the cleanup -- and is reported as an
+   * {@link IllegalAccessException} so the dispatcher drops the row. A mailbox that
+   * may not sync for any other reason (its connector disabled, its owner's access
+   * withdrawn, the BLOCKED cooldown after repeated failures) simply answers false:
+   * the row stays, the release stamps the cadence, and the mailbox is looked at
+   * again a period later, which is what a cooldown means.
+   *
+   * @param username the mailbox owner
+   * @return true when a synchronization ran, false when it was refused or another
+   *         one was already running in this JVM
+   * @throws IllegalAccessException when the mailbox is bound to no connector at all
+   */
+  public boolean synchronizeClaimed(String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
+    }
+    if (!canSynchronize(userEmailSetting, username)) {
+      LOG.debug("The mailbox of user {} may not be synchronized right now; it is left for a later dispatch", username);
+      return false;
+    }
+    if (!syncingUsers.add(username)) {
+      LOG.info("A synchronization is already running for user {}; skipping the dispatched one", username);
+      return false;
+    }
+    try {
+      doSynchronize(username, userEmailSetting, false);
+      return true;
     } finally {
       syncingUsers.remove(username);
     }
   }
 
   /**
+   * Takes the sync claim for a request-thread path (a manual sync, a reset).
+   * <p>
+   * A mailbox with no state row yet cannot be claimed, and one exists for a short
+   * while after an upgrade (until the dispatcher's first tick reconciles the rows)
+   * and for a mailbox connected before this add-on kept rows at all. Refusing the
+   * user's own "sync now" in that window would read as a broken button, so the row
+   * is created on the spot and the claim tried once more; a row that IS there and
+   * refuses the claim is genuinely held by someone.
+   *
+   * @param username the mailbox owner
+   * @param now the claim's stamp, which is also the run's start
+   * @return true when this thread now holds the claim
+   */
+  private boolean claimForRequest(String username, Date now) {
+    String node = EmailConnectorUtils.getSyncNodeName();
+    Date staleBefore = EmailConnectorUtils.getSyncClaimStaleBefore(now);
+    if (emailSyncStateStorage.claim(username, now, node, staleBefore)) {
+      return true;
+    }
+    if (emailSyncStateStorage.get(username) != null) {
+      return false;
+    }
+    emailSyncStateStorage.upsert(username, null, now);
+    return emailSyncStateStorage.claim(username, now, node, staleBefore);
+  }
+
+  /**
    * Runs one synchronization for a caller that already holds the {@code syncingUsers} guard
-   * for this user -- {@link #synchronize(String, boolean)} or {@link #resetAndResynchronize}.
+   * for this user -- {@link #synchronize(String)}, {@link #synchronizeClaimed(String)} or
+   * {@link #resetAndResynchronize}.
    * Split out so the guard is taken and released in exactly one place per entry point: every
    * statement that can throw is inside the caller's try/finally, so no failure path can leak
    * the per-user lock and shut that mailbox out of syncing until the JVM restarts.
@@ -1056,7 +1103,8 @@ public class EmailBoxService {
    * @param username user whose mailbox is reset and re-synchronized
    * @throws IllegalAccessException if the user is not allowed to synchronize the
    *           email connector
-   * @throws IllegalStateException if a synchronization is currently running
+   * @throws IllegalStateException if a synchronization is currently running, on
+   *           this node or another
    */
   public void resetAndResynchronize(String username) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
@@ -1064,55 +1112,57 @@ public class EmailBoxService {
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNCHRONIZE_EMAIL_MESSAGE, username));
     }
-    // Refuse to reset while a sync is genuinely running (recent IN_PROGRESS), so the
-    // two do not race over the cache. A stale IN_PROGRESS (past the sync period, i.e. a
-    // stuck sync) is allowed through, since recovering from it is the point of a reset.
-    if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
-      long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate()
-          + getEffectiveSyncPeriod(userEmailSetting) * 60000L;
-      if (System.currentTimeMillis() <= nextAllowedSync) {
-        throw new IllegalStateException("emailConnector.reset.syncInProgress");
-      }
-    }
-    // Hold the same per-user guard the sync itself takes, for the whole clear-then-resync.
-    // The persisted status above is not enough on its own: a scheduled sync can start in the
-    // gap between reading it and clearing the cache, and would then reconcile against rows
-    // being deleted underneath it. Taking the guard here also stops the resync below from
-    // being swallowed by the "already running" branch, which would leave the mailbox cleared
-    // and empty until the next periodic run -- the opposite of an immediate recovery.
-    if (!syncingUsers.add(username)) {
+    // Refuse to reset while a sync is running anywhere in the cluster, so the two do not
+    // race over the cache: the claim in the sync-state table is the truth of "running",
+    // and a claim gone stale (a node that died mid-sync) is taken over rather than waited
+    // on, since recovering from exactly that is the point of a reset. A leftover
+    // IN_PROGRESS status no longer blocks anything; only a live claim does.
+    Date startedAt = new Date();
+    if (!claimForRequest(username, startedAt)) {
       throw new IllegalStateException("emailConnector.reset.syncInProgress");
     }
     try {
-      // Clear the cached INBOX (deleteEmails also unlinks each email's category links). Sent
-      // and Archive are deliberately left alone: they are never mutated locally, so they cannot
-      // be the stale cache the user is recovering from, and re-downloading them costs a message
-      // body per row -- on a 100-message mailbox that is minutes of waiting for folders the
-      // inbox view, the notifications and the AI categorization never read.
-      deleteUserEmails(username, MailFolder.INBOX);
-      // The summaries too, and all of them rather than the inbox's share: a summary is
-      // keyed by conversation, a conversation spans folders, and the resync re-mints
-      // thread ids from the messages it re-downloads -- so what survives a reset is a
-      // summary filed under an id the rebuilt cache may never produce again. A reset is
-      // also what a user reaches for when the mailbox looks wrong, and leaving the one
-      // thing that is not re-derived from the server behind would make it the one thing
-      // a reset cannot fix.
-      emailBoxStorage.deleteThreadAiSummaries(username);
-      // Clear any BLOCKED / failed-attempt backoff so the immediate resync is not refused.
-      userEmailSetting.setEmailSyncFailedAttemps(0);
-      userEmailSetting.setEmailSyncStatus(SyncStatus.SUCCESS);
-      userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
-      // A reset rebuilds the collected contacts too, through a listener rather than a
-      // call: they were collected from the cache being thrown away, and the incremental
-      // pass cannot rebuild them -- it judges each inbox sender against cached sent mail,
-      // which the resync has not read yet.
-      eventPublisher.publishEvent(new MailboxResetEvent(username));
-      // Full re-download of the inbox; the scheduled sync keeps the other folders current.
-      // Straight to doSynchronize: the guard is already held here, and the access check plus
-      // the backoff reset above are exactly what synchronize() would have re-verified.
-      doSynchronize(username, userEmailSettingService.getUserEmailSetting(username), true);
+      // And the same per-user guard the sync itself takes, for the whole clear-then-resync:
+      // the claim keeps other nodes out, this keeps a single-folder refresh on this one out.
+      // Taking the guard here also stops the resync below from being swallowed by the
+      // "already running" branch, which would leave the mailbox cleared and empty until the
+      // next periodic run -- the opposite of an immediate recovery.
+      if (!syncingUsers.add(username)) {
+        throw new IllegalStateException("emailConnector.reset.syncInProgress");
+      }
+      try {
+        // Clear the cached INBOX (deleteEmails also unlinks each email's category links). Sent
+        // and Archive are deliberately left alone: they are never mutated locally, so they cannot
+        // be the stale cache the user is recovering from, and re-downloading them costs a message
+        // body per row -- on a 100-message mailbox that is minutes of waiting for folders the
+        // inbox view, the notifications and the AI categorization never read.
+        deleteUserEmails(username, MailFolder.INBOX);
+        // The summaries too, and all of them rather than the inbox's share: a summary is
+        // keyed by conversation, a conversation spans folders, and the resync re-mints
+        // thread ids from the messages it re-downloads -- so what survives a reset is a
+        // summary filed under an id the rebuilt cache may never produce again. A reset is
+        // also what a user reaches for when the mailbox looks wrong, and leaving the one
+        // thing that is not re-derived from the server behind would make it the one thing
+        // a reset cannot fix.
+        emailBoxStorage.deleteThreadAiSummaries(username);
+        // Clear any BLOCKED / failed-attempt backoff so the immediate resync is not refused.
+        userEmailSetting.setEmailSyncFailedAttemps(0);
+        userEmailSetting.setEmailSyncStatus(SyncStatus.SUCCESS);
+        userEmailSettingService.setUserEmailSetting(userEmailSetting, username, false);
+        // A reset rebuilds the collected contacts too, through a listener rather than a
+        // call: they were collected from the cache being thrown away, and the incremental
+        // pass cannot rebuild them -- it judges each inbox sender against cached sent mail,
+        // which the resync has not read yet.
+        eventPublisher.publishEvent(new MailboxResetEvent(username));
+        // Full re-download of the inbox; the scheduled sync keeps the other folders current.
+        // Straight to doSynchronize: the guard is already held here, and the access check plus
+        // the backoff reset above are exactly what synchronize() would have re-verified.
+        doSynchronize(username, userEmailSettingService.getUserEmailSetting(username), true);
+      } finally {
+        syncingUsers.remove(username);
+      }
     } finally {
-      syncingUsers.remove(username);
+      emailSyncStateStorage.release(username, EmailConnectorUtils.getSyncNodeName(), startedAt);
     }
   }
 
@@ -3426,7 +3476,7 @@ public class EmailBoxService {
     // Switched off, the cache is answered as it stands: the switch exists to shed IMAP
     // load, and a drawer polling a stale folder every two seconds is exactly that load.
     if (emailFolderService.isCustomFoldersEnabled() && emailFolderService.isStale(customFolder,
-                                   EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting),
+                                   emailConnectorService.getEmailBoxSyncPeriod(),
                                    System.currentTimeMillis())) {
       refreshCustomFolder(username, userEmailSetting, customFolder);
     }
@@ -3595,6 +3645,13 @@ public class EmailBoxService {
     } catch (Exception e) {
       LOG.warn("Could not clear the folder registry of user {}", username, e);
     }
+    // And the dispatcher's row: a mailbox with no cache is nothing to synchronize. A
+    // rebind re-creates it through EmailBoxSyncEvent right after this cleanup, due at once.
+    try {
+      emailSyncStateStorage.delete(username);
+    } catch (Exception e) {
+      LOG.warn("Could not clear the sync state row of user {}", username, e);
+    }
   }
 
   /**
@@ -3611,65 +3668,6 @@ public class EmailBoxService {
     // would make the resync skip "unchanged" folders over an empty cache — the
     // mailbox would come up blank and stay blank until new mail happened to arrive.
     clearFolderSyncSnapshot(username, folder);
-  }
-
-  /**
-   * Schedule email box user synchronization job
-   *
-   * @param username user for which email box synchronization job will be
-   *          scheduled
-   */
-  public void scheduleEmailBoxUserSyncJob(String username) throws Exception {
-    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
-    String emailBoxSyncJobName = username + EmailConnectorUtils.EMAIL_BOX_SYNC_JOB_NAME;
-    JobInfo emailBoxSyncJobInfo = new JobInfo(emailBoxSyncJobName, EmailConnectorUtils.EMAIL_FEATURE, EmailBoxSyncJob.class);
-    // Remove next email box sync job for the user
-    jobSchedulerService.removeJob(emailBoxSyncJobInfo);
-    PeriodInfo periodInfo = new PeriodInfo(null, null, 0, getEffectiveSyncPeriod(userEmailSetting) * 60000);
-    jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
-  }
-
-  /**
-   * Re-registers every connected user's scheduled mailbox sync job, the same way
-   * {@link #initEmailBoxSyncJob()} does at startup. Triggered when the
-   * administration-wide sync period changes — see
-   * {@link EmailConnectorService#saveEmailBoxSyncPeriod} — because the period is
-   * read only when a user's Quartz job is (re)registered, never per run: without
-   * this, a period change would only reach a user on their next reconnect or the
-   * next platform restart, and the admin drawer would be lying about taking
-   * effect.
-   */
-  public void rescheduleAllSyncJobs() {
-    List<Context> contexts =
-                           settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
-                                                                                  Scope.APPLICATION.getName(),
-                                                                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
-                                                                                  EmailConnectorService.USER_EMAIL_SETTING_KEY,
-                                                                                  0,
-                                                                                  Integer.MAX_VALUE);
-    for (Context context : contexts) {
-      try {
-        scheduleEmailBoxUserSyncJob(context.getId());
-      } catch (Exception e) {
-        LOG.warn("Error rescheduling email box sync for user {}", context.getId(), e);
-      }
-    }
-  }
-
-  /**
-   * The sync period actually applied to a mailbox: the user's own stored
-   * override when there is one, the administration-wide period otherwise. In
-   * practice the per-user override is always null — nothing sets it any more,
-   * see {@code UserEmailSettingService#setUserEmailSetting} — but the ternary is
-   * kept rather than deleted, in case a legitimate per-user override is ever
-   * reintroduced deliberately.
-   *
-   * @param userEmailSetting the mailbox owner's stored setting
-   * @return the sync period to schedule, in minutes
-   */
-  private int getEffectiveSyncPeriod(UserEmailSetting userEmailSetting) {
-    return userEmailSetting.getEmailBoxUserSyncPeriod() != null ? userEmailSetting.getEmailBoxUserSyncPeriod()
-                                                                 : emailConnectorService.getEmailBoxSyncPeriod();
   }
 
   /**
@@ -9762,6 +9760,17 @@ public class EmailBoxService {
   }
 
 
+  /**
+   * Whether a mailbox may be synchronized at all: bound to a connector its owner may
+   * use, and not sitting out the BLOCKED cooldown. Whether one is ALREADY running is
+   * not judged here any more: that is the claim in the sync-state table, taken by
+   * every path before it gets this far, so a leftover IN_PROGRESS status (a sync
+   * killed mid-flight, before the claim existed) locks nothing out.
+   *
+   * @param userEmailSetting the mailbox owner's stored setting
+   * @param username the mailbox owner
+   * @return true when a synchronization may start
+   */
   private boolean canSynchronize(UserEmailSetting userEmailSetting, String username) {
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -9773,11 +9782,6 @@ public class EmailBoxService {
       // so the user recovers automatically -- a subsequent successful sync clears BLOCKED.
       long retryAfter = userEmailSetting.getLastEmailSyncStartDate() + BLOCKED_RETRY_COOLDOWN_MS;
       return System.currentTimeMillis() > retryAfter;
-    }
-    if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
-      long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate() +
-          getEffectiveSyncPeriod(userEmailSetting) * 60000L;
-      return System.currentTimeMillis() > nextAllowedSync;
     }
     return true;
   }

@@ -58,9 +58,9 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
-import org.exoplatform.services.scheduler.JobSchedulerService;
 import org.exoplatform.upload.UploadService;
 
 import io.meeds.social.category.service.CategoryLinkService;
@@ -116,7 +116,7 @@ public class EmailThreadAiSummaryTest {
   private SettingService          settingService;
 
   @MockBean
-  private JobSchedulerService     jobSchedulerService;
+  private EmailSyncStateStorage   emailSyncStateStorage;
 
   @MockBean
   private ListenerService         listenerService;
