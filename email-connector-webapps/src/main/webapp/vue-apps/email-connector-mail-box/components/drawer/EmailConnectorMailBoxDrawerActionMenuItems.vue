@@ -154,12 +154,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-// Roughly six built-in rows (Inbox, Sent, Archive, Drafts, Spam, Trash -- however many
-// of them this mailbox actually has) plus Benjamin's five, at the 36px row height every
-// entry here uses: enough to show a typical mailbox's full built-in set and the first
-// five custom folders without a scrollbar, ten and eleven scrolling inside their own
-// pane while CATEGORIES and ACTIONS stay put right below it.
-const FOLDERS_MAX_HEIGHT = '396px';
+// The pane's height is a number of rows, not a pixel guess -- the first version was
+// 396px, read as "six built-in rows plus five custom at 36px each", and it never
+// scrolled: a mailbox showing five built-ins reaches exactly eleven rows at the sixth
+// custom folder, lands on the cap to the pixel and overflows by nothing. The height
+// has to be SMALLER than the shortest list that trips the threshold, or the threshold
+// fires and nothing happens.
+//
+// Nine rows is that: past five custom folders, any mailbox with four or more built-in
+// folders overflows and scrolls, and about a third of the list stays visible below the
+// fold as the affordance that says there is more. Below the threshold the pane is not
+// bounded at all, so nothing changes for a mailbox with a handful of folders.
+const FOLDER_ROW_HEIGHT_PX = 36;
+
+const FOLDERS_VISIBLE_ROWS = 9;
+
+const FOLDERS_MAX_HEIGHT = `${FOLDER_ROW_HEIGHT_PX * FOLDERS_VISIBLE_ROWS}px`;
 
 export default {
   props: {
