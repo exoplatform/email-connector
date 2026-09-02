@@ -969,7 +969,14 @@
       <column name="THREAD_ID"/>
     </createIndex>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-52">
+  <!-- 1.0.0-52 is not used, and must never be. The changeset that is 1.0.0-24 today
+       (the IDX_EMAIL_BOX_USER_FOLDER_DATE index) carried id 1.0.0-52 on
+       feature/ai-contribution between 20 and 23 August 2026 (commit fba51f4b, kept on
+       the branch feature/ai-contribution_backup_20_08); every database that ran the
+       branch in those days recorded a 1.0.0-52 row for it, and a changeset's identity
+       is filename plus id plus author. This add-on's registry therefore starts at 53.
+       Ids 53 to 56 were never used on any branch. -->
+  <changeSet author="email-connector" id="1.0.0-53">
     <comment>
       The registry of a user's own mail folders: the ones they made in their mailbox
       ("Factures", "Customers/Acme", a Gmail label), discovered by walking their IMAP
@@ -1009,7 +1016,7 @@
       by one context and refused by the next in a single boot. Every earlier
       changeset that carries a modifySql has the same exposure; 1.0.0-5, -46 and -48
       hide it behind validCheckSum ANY. So the MySQL table options and the collation
-      this table needs live in 1.0.0-55, as literal SQL on a MySQL-only changeset,
+      this table needs live in 1.0.0-56, as literal SQL on a MySQL-only changeset,
       which is checksummed on its text and nothing else.
     </comment>
     <createTable tableName="EMAIL_FOLDER">
@@ -1046,7 +1053,7 @@
       <column name="WINDOW_SIZE" type="INT"/>
     </createTable>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-53">
+  <changeSet author="email-connector" id="1.0.0-54">
     <comment>
       EMAIL_FOLDER's unique index on (USER_ID, REMOTE_NAME), apart from its table for
       the reason 1.0.0-50 sets out. The uniqueness is what makes a discovery walk an
@@ -1060,7 +1067,7 @@
       <column name="REMOTE_NAME"/>
     </createIndex>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-54" dbms="oracle,postgresql,hsqldb">
+  <changeSet author="email-connector" id="1.0.0-55" dbms="oracle,postgresql,hsqldb">
     <comment>
       The registry's sequence, on the vendors that have sequences, created in the
       same breath as its table: the lesson 1.0.0-43 paid for, repeated by 1.0.0-47
@@ -1068,17 +1075,17 @@
     </comment>
     <createSequence sequenceName="SEQ_EMAIL_FOLDER_ID" startValue="1"/>
   </changeSet>
-  <changeSet author="email-connector" id="1.0.0-55" dbms="mysql">
+  <changeSet author="email-connector" id="1.0.0-56" dbms="mysql">
     <comment>
-      What 1.0.0-52 would have said through a modifySql, said as SQL instead, for the
-      reason 1.0.0-52's comment gives: literal SQL is checksummed on its text.
+      What 1.0.0-53 would have said through a modifySql, said as SQL instead, for the
+      reason 1.0.0-53's comment gives: literal SQL is checksummed on its text.
 
       First the table options every table of this file gets on MySQL (InnoDB,
       utf8mb4, the accent-insensitive 0900 collation), applied after the fact.
       Then the one column that must NOT take that collation. REMOTE_NAME is an IMAP
       folder name, and an IMAP folder name is case-sensitive (RFC 3501 makes only
       INBOX an exception), as a Gmail label is: "Projets" and "projets" are two
-      folders the unique index of 1.0.0-53 must keep apart. Under the accent- and
+      folders the unique index of 1.0.0-54 must keep apart. Under the accent- and
       case-insensitive collation the second would fail the index and, worse, the
       lookup by name would answer the FIRST folder's row, which the discovery walk
       would then keep renaming. utf8mb4_0900_bin rather than utf8mb4_bin because the
