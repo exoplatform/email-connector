@@ -58,6 +58,7 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
+import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 import org.exoplatform.emailConnector.event.ContactBookReleaseEvent;
 import org.exoplatform.emailConnector.event.EmailNotificationPreferencesChangedEvent;
 import org.exoplatform.emailConnector.model.ContactPublishQueue;
@@ -72,7 +73,7 @@ import org.exoplatform.web.security.codec.CodecInitializer;
 import org.exoplatform.web.security.security.TokenServiceInitializationException;
 
 import io.meeds.social.translation.service.TranslationService;
-
+import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { UserEmailSettingService.class })
@@ -135,6 +136,31 @@ public class UserEmailSettingServiceTest {
     UserEmailSetting userEmailSetting = userEmailSetting();
     userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
     verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /**
+   * Pins the fix for the per-user sync period injection: nothing in the platform
+   * rejects a client-supplied {@code emailBoxUserSyncPeriod}, and
+   * {@code EmailConnectorUtils#getEmailBoxUserSyncPeriod} prefers a stored
+   * per-user value over the administration-wide one — so a crafted
+   * {@code PUT /user-email-setting} could otherwise schedule a 1-minute sync for
+   * that user, undercutting whatever floor an administrator set. The field must
+   * never survive into what gets persisted, whatever the caller sent.
+   */
+  @Test
+  @SneakyThrows
+  void aClientSuppliedSyncPeriodIsNeverPersisted() {
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    userEmailSetting.setEmailBoxUserSyncPeriod(1);
+
+    userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
+    UserEmailSettingEntity persisted = JsonUtils.fromJsonString(stored.getValue().getValue().toString(), UserEmailSettingEntity.class);
+    assertNull(persisted.getEmailBoxUserSyncPeriod(),
+               "a client-supplied sync period must never reach persistence — it would undercut the admin-set floor");
   }
 
   @Test

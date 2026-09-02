@@ -17,8 +17,9 @@
 import EmailConnectorAdminApp from './components/EmailConnectorAdminApp.vue';
 import EmailConnectorAdminHeader from './components/header/EmailConnectorAdminHeader.vue';
 import EmailConnectorAdminList from './components/main/EmailConnectorAdminList.vue';
-import EmailConnectorAdminCacheSize from './components/main/EmailConnectorAdminCacheSize.vue';
+import EmailConnectorAdminSyncSettings from './components/main/EmailConnectorAdminSyncSettings.vue';
 import EmailConnectorAdminDrawer from './components/drawer/EmailConnectorAdminDrawer.vue';
+import EmailConnectorAdminSyncSettingsDrawer from './components/drawer/EmailConnectorAdminSyncSettingsDrawer.vue';
 import EmailConnectorAdminImageInput from './components/drawer/EmailConnectorAdminImageInput.vue';
 import EmailConnectorAdminFooter from './components/footer/EmailConnectorAdminFooter.vue';
 
@@ -27,8 +28,9 @@ const components = {
   'email-connector-admin-header': EmailConnectorAdminHeader,
   'email-connector-admin-footer': EmailConnectorAdminFooter,
   'email-connector-admin-list': EmailConnectorAdminList,
-  'email-connector-admin-cache-size': EmailConnectorAdminCacheSize,
+  'email-connector-admin-sync-settings': EmailConnectorAdminSyncSettings,
   'email-connector-admin-drawer': EmailConnectorAdminDrawer,
+  'email-connector-admin-sync-settings-drawer': EmailConnectorAdminSyncSettingsDrawer,
   'email-connector-admin-image-input': EmailConnectorAdminImageInput
 };
 

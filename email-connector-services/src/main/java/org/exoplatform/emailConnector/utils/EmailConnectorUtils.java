@@ -294,6 +294,24 @@ public class EmailConnectorUtils {
     return null;
   }
 
+  /**
+   * The sync period to schedule for a mailbox: the user's own stored override
+   * when there is one, the {@code email.connector.sync.user.minute.period} JVM
+   * property otherwise.
+   *
+   * @param userEmailSetting the mailbox owner's stored setting
+   * @return the sync period, in minutes
+   * @deprecated since the administration settings drawer, the administration-wide
+   *             default is a {@code SettingService} value an administrator can
+   *             change without a restart, which this static utility cannot read
+   *             (it has no service to autowire). Use
+   *             {@code EmailBoxService}'s own effective-period resolution
+   *             instead, which falls back to
+   *             {@code EmailConnectorService#getEmailBoxSyncPeriod()}. Not for
+   *             removal yet: kept for any external caller still on the JVM
+   *             property alone.
+   */
+  @Deprecated
   public static int getEmailBoxUserSyncPeriod(UserEmailSetting userEmailSetting) {
     return (userEmailSetting.getEmailBoxUserSyncPeriod() != null ? userEmailSetting.getEmailBoxUserSyncPeriod()
                                                                  : Integer.parseInt(System.getProperty("email.connector.sync.user.minute.period",

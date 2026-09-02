@@ -121,6 +121,126 @@ export function updateEmailBoxCacheSize(size) {
   });
 }
 
+export function getEmailBoxSyncPeriod() {
+  return fetch('/email-connector/rest/connectors/sync-period', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the mailbox sync period');
+    }
+  });
+}
+
+export function updateEmailBoxSyncPeriod(minutes) {
+  return fetch(`/email-connector/rest/connectors/sync-period?minutes=${minutes}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the mailbox sync period');
+    }
+  });
+}
+
+export function getTrashSyncEnabled() {
+  return fetch('/email-connector/rest/connectors/trash-sync', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the Trash folder sync switch');
+    }
+  });
+}
+
+export function updateTrashSyncEnabled(enabled) {
+  return fetch(`/email-connector/rest/connectors/trash-sync?enabled=${enabled}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the Trash folder sync switch');
+    }
+  });
+}
+
+export function getJunkSyncEnabled() {
+  return fetch('/email-connector/rest/connectors/junk-sync', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the Junk folder sync switch');
+    }
+  });
+}
+
+export function updateJunkSyncEnabled(enabled) {
+  return fetch(`/email-connector/rest/connectors/junk-sync?enabled=${enabled}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the Junk folder sync switch');
+    }
+  });
+}
+
+export function getServerDraftsEnabled() {
+  return fetch('/email-connector/rest/connectors/drafts-server', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the server-side drafts switch');
+    }
+  });
+}
+
+export function updateServerDraftsEnabled(enabled) {
+  return fetch(`/email-connector/rest/connectors/drafts-server?enabled=${enabled}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the server-side drafts switch');
+    }
+  });
+}
+
 export function deleteEmailConnector(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}`, {
     headers: {
