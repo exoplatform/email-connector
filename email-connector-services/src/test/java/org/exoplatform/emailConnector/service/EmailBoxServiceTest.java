@@ -3297,12 +3297,11 @@ public class EmailBoxServiceTest {
     when(stale.exists()).thenReturn(false);
     IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
     lenient().when(junk.getMessageCount()).thenReturn(2);
-    Folder defaultFolder = givenAMailboxListing(junk);
+    givenAMailboxListing(junk);
     when(trashStore().getFolder("Old/Spam")).thenReturn(stale);
 
     emailBoxService.synchronize(TEST_USER);
 
-    verify(defaultFolder, atLeast(1)).listSubscribed("*");
     verify(stale, never()).open(anyInt());
     verify(junk).open(Folder.READ_ONLY);
     ArgumentCaptor<SettingValue> saved = ArgumentCaptor.forClass(SettingValue.class);
@@ -3427,6 +3426,10 @@ public class EmailBoxServiceTest {
     verify(junk).copyMessages(any(Message[].class), eq(trash));
     verify(spam).setFlag(Flags.Flag.DELETED, true);
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
+    // The source and the destination are resolved on ONE loaded state, read from the
+    // settings once per move: a second, throwaway load for the source would pay the
+    // rediscovery again on every delete out of Spam once the remembered name is stale.
+    verify(settingService, times(1)).get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
   }
 
   /**
