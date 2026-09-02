@@ -1102,5 +1102,41 @@
       <sql>ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) NOT NULL</sql>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-57" onValidationFail="MARK_RAN">
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <indexExists tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE"/>
+      </not>
+    </preConditions>
+    <comment>
+      IDX_EMAIL_BOX_USER_FOLDER_DATE, created again under an id of its own (EXO-89940).
+
+      1.0.0-24 creates this same index today, but it has not always: before 14 August it
+      carried the ORIGINAL_SENDER addColumn instead, after an upstream two-step BULK_MAIL
+      history got collapsed into one changeset here and every id from 1.0.0-22 on shifted.
+      Liquibase records what it applied by id, author and file only, never by content, and
+      it never re-runs an id it has already ticked off. A database that ran the old
+      1.0.0-24 therefore has this index's id marked done without the index ever having been
+      created, and every later upgrade on that database skips 1.0.0-24 for good: no error,
+      no warning, just the reconcile view findSyncViewByUserIdAndFolder - described on
+      1.0.0-24 itself - range-scanning USER_ID and sorting the rest in memory on the
+      hottest query of the sync path, degrading as each mailbox grows.
+
+      Guarded exactly as 1.0.0-50 and 1.0.0-51 guard their own reissued indexes: a database
+      missing the index gets it here; one that already has it (1.0.0-24 ran with today's
+      content, or the index arrived under 1.0.0-52 on a branch that never merged) marks
+      this changeset ran and moves on. 1.0.0-52 is spent on that unmerged branch and
+      1.0.0-53 through 1.0.0-56 are reserved by the custom-folders work (EXO-89907), so
+      this changeset starts at the next free id, 57.
+    </comment>
+    <createIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE">
+      <column name="USER_ID"/>
+      <column name="FOLDER"/>
+      <column name="RECEIVED_DATE"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_BOX" indexName="IDX_EMAIL_BOX_USER_FOLDER_DATE"/>
+    </rollback>
+  </changeSet>
 
 </databaseChangeLog>
