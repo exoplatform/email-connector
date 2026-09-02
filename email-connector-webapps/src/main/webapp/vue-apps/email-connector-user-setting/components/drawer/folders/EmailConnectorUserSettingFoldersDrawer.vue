@@ -164,7 +164,8 @@ export default {
         .then(list => {
           if (list?.walked) {
             this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.refreshed'), 'success');
-          } else if (list) {
+          } else if (list?.customFoldersEnabled) {
+            // Only when the mailbox was actually asked: switched off, nothing was.
             this.$root.$emit('alert-message', this.$t('UserSettings.emailConnector.folders.walkFailed'), 'error');
           }
         })
