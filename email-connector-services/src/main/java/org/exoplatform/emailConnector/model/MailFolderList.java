@@ -46,4 +46,9 @@ public class MailFolderList {
   // lets the screen tell "refreshed" from "could not reach your mailbox, here is what
   // was registered".
   private boolean              walked;
+
+  // The master switch (email.connector.customFolders.enabled), hot, so the settings
+  // screen hides its Folders row when an administrator turned the feature off rather
+  // than showing an empty list and blaming the mailbox for it.
+  private boolean              customFoldersEnabled;
 }
