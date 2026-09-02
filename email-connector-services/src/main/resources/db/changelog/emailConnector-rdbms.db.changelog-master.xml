@@ -969,5 +969,96 @@
       <column name="THREAD_ID"/>
     </createIndex>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-52">
+    <comment>
+      The registry of a user's own mail folders: the ones they made in their mailbox
+      ("Factures", "Customers/Acme", a Gmail label), discovered by walking their IMAP
+      folder list and mirrored here only once they have opted in.
+
+      Its ID is the whole point of the table. EMAIL_BOX.FOLDER stays the opaque
+      VARCHAR(50) key it has always been and the third leg of (USER_ID, FOLDER,
+      MAIL_REMOTE_ID); a custom folder's messages carry "CUSTOM:" plus this id. The
+      remote name could not have been that key: it would not fit the column, a rename
+      on the server would orphan every row, and a folder the user named "SENT" would
+      collide with a constant. Nothing is added to EMAIL_BOX, no row of it is
+      touched, and the existing (USER_ID, FOLDER, RECEIVED_DATE) index serves a
+      CUSTOM key exactly as it serves ARCHIVE.
+
+      Three writers share a row, and the columns say which. DISPLAY_NAME, DELIMITER,
+      MISSING and LAST_SEEN_DATE are discovery's. SYNC_ENABLED and ENABLED_DATE are the
+      user's opt-in, from the settings screen. The five snapshot columns (UID_VALIDITY,
+      UID_NEXT, MESSAGE_COUNT, HIGHEST_MODSEQ, WINDOW_SIZE) and LAST_SYNC_DATE are the
+      sync job's: the folder's own change memory, kept here rather than in the JSON
+      sync state so the least-recently-synced rotation and the skip-if-unchanged check
+      read one row. The entity is DynamicUpdate for the same reason.
+
+      REMOTE_NAME is VARCHAR(500) rather than longer because it is half of a UNIQUE
+      index beside a VARCHAR(250) USER_ID: on MySQL with utf8mb4 that pair is already
+      3000 of the 3072 bytes InnoDB allows a key, and an IMAP path of five hundred
+      characters is not a folder anyone made by hand.
+
+      The index is in the next changeset and not here, by the rule 1.0.0-50 paid for:
+      modifySql is changeset-scoped, and the MySQL table options appended below would
+      land on a CREATE INDEX too.
+    </comment>
+    <createTable tableName="EMAIL_FOLDER">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_FOLDER"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="REMOTE_NAME" type="VARCHAR(500)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DISPLAY_NAME" type="VARCHAR(255)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DELIMITER" type="VARCHAR(1)"/>
+      <column name="TYPE" type="VARCHAR(20)" defaultValue="CUSTOM">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SYNC_ENABLED" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ENABLED_DATE" type="TIMESTAMP"/>
+      <column name="MISSING" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DISCOVERED_DATE" type="TIMESTAMP"/>
+      <column name="LAST_SEEN_DATE" type="TIMESTAMP"/>
+      <column name="LAST_SYNC_DATE" type="TIMESTAMP"/>
+      <column name="UID_VALIDITY" type="BIGINT"/>
+      <column name="UID_NEXT" type="BIGINT"/>
+      <column name="MESSAGE_COUNT" type="BIGINT"/>
+      <column name="HIGHEST_MODSEQ" type="BIGINT"/>
+      <column name="WINDOW_SIZE" type="INT"/>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-53">
+    <comment>
+      EMAIL_FOLDER's unique index on (USER_ID, REMOTE_NAME), apart from its table for
+      the reason 1.0.0-50 sets out. The uniqueness is what makes a discovery walk an
+      upsert: the same folder seen again finds its row, and the id the mirrored rows
+      carry stays the same. Both columns ascending: this index serves equality
+      lookups only, and the per-user listing it also prefixes is ordered in memory
+      over a list bounded by the mailbox's folder count.
+    </comment>
+    <createIndex tableName="EMAIL_FOLDER" indexName="UQ_EMAIL_FOLDER_USER_NAME" unique="true">
+      <column name="USER_ID"/>
+      <column name="REMOTE_NAME"/>
+    </createIndex>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-54" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The registry's sequence, on the vendors that have sequences, created in the
+      same breath as its table: the lesson 1.0.0-43 paid for, repeated by 1.0.0-47
+      and 1.0.0-49.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_FOLDER_ID" startValue="1"/>
+  </changeSet>
 
 </databaseChangeLog>
