@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list class="pa-0">
+  <v-list dense>
     <!-- Folders: browse the inbox, your sent mail, or archived mail. Bounded to its
          own scroll once the user's own folders push the section past a handful, so
          CATEGORIES and ACTIONS below stay reachable at a fixed scroll position rather
@@ -25,17 +25,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          position; no persistent folder rail -- a layout redesign this drawer was not
          built for), triggered at more than 5 of the user's OWN folders, built-ins
          never counted toward it since their number is fixed by the mailbox itself. -->
-    <div class="ps-2 pe-8 pt-2 pb-1 text-sub-title text-uppercase caption">
+    <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
     </div>
     <div :class="{ 'overflow-y-auto': foldersScrollable }" :style="foldersScrollable ? { maxHeight: FOLDERS_MAX_HEIGHT } : null">
       <v-list-item
         v-for="folder in visibleFolders"
         :key="folder.key"
-        class="ps-2 pe-8 height-auto"
+        class="height-auto"
         @click="switchFolder(folder.key)">
         <v-sheet
-          class="d-flex"
+          class="d-flex me-2"
           width="28"
           height="36">
           <v-icon
@@ -58,16 +58,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          leaves the view. -->
     <template v-if="categories.length">
       <v-divider class="my-1" />
-      <div class="ps-2 pe-8 pt-2 pb-1 text-sub-title text-uppercase caption">
+      <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
         {{ $t('emailConnector.mailBox.list.drawer.menu.categories') }}
       </div>
       <v-list-item
         v-for="category in categories"
         :key="category.id"
-        class="ps-2 pe-8 height-auto"
+        class="height-auto"
         @click="openCategoryView(category.id)">
         <v-sheet
-          class="d-flex"
+          class="d-flex me-2"
           width="28"
           height="36">
           <v-icon
@@ -84,16 +84,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <v-divider class="my-1" />
     <!-- Actions on the mailbox itself. -->
-    <div class="ps-2 pe-8 pt-2 pb-1 text-sub-title text-uppercase caption">
+    <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.actions') }}
     </div>
     <!-- Synchronize now (progress is shown by the header spinner while it runs). -->
     <v-list-item
-      class="ps-2 pe-8 height-auto"
+      class="height-auto"
       :disabled="syncInProgress"
       @click="synchronize()">
       <v-sheet
-        class="d-flex"
+        class="d-flex me-2"
         width="28"
         height="36">
         <v-icon
@@ -108,10 +108,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-list-item>
     <!-- Select mode: multi-select rows to read/archive/delete in bulk. -->
     <v-list-item
-      class="ps-2 pe-8 height-auto"
+      class="height-auto"
       @click="enterSelectMode()">
       <v-sheet
-        class="d-flex"
+        class="d-flex me-2"
         width="28"
         height="36">
         <v-icon
@@ -134,10 +134,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="my-auto" />
     <v-list-item
       v-if="hasWebmailAccess"
-      class="ps-2 pe-8 height-auto"
+      class="height-auto"
       @click="openWebmail()">
       <v-sheet
-        class="d-flex"
+        class="d-flex me-2"
         width="28"
         height="36">
         <v-icon
