@@ -70,13 +70,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @change="save" />
           </v-list-item-action>
         </v-list-item>
-        <v-list-item>
+        <v-list-item class="height-auto">
           <v-list-item-content>
             <v-list-item-title class="text-color">
               {{ $t('UserSettings.emailConnector.notifications.title') }}
             </v-list-item-title>
             <v-list-item-subtitle>
               {{ $t('UserSettings.emailConnector.notifications.all') }}
+            </v-list-item-subtitle>
+            <!-- The badge and the notifications are one rule: the E-mail application's
+                 unread count is exactly the mail these settings would have notified
+                 about, inbox only. Said on this row rather than under the category
+                 chips because it qualifies the whole setting, and it is true in both
+                 states -- with the switch on the badge ignores Sent and Archive, with
+                 it off it ignores every category but the chosen ones. Without it a
+                 user sees unread rows in the list and a badge of zero, and reasonably
+                 reads that as broken. -->
+            <v-list-item-subtitle class="caption text-sub-title text-wrap">
+              {{ $t('UserSettings.emailConnector.notifications.badgeHint') }}
             </v-list-item-subtitle>
           </v-list-item-content>
           <v-list-item-action>
