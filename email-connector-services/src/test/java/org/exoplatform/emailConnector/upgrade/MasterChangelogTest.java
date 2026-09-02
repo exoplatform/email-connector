@@ -95,14 +95,24 @@ public class MasterChangelogTest {
   }
 
   /**
-   * The custom-folder registry's three changesets (1.0.0-53 to 1.0.0-55) apply, roll
-   * back, and apply again. Rolled back with the platform's own Liquibase rather than
-   * by hand, because the org rule this pins is that a changeset's rollback is proven
+   * The custom-folder registry's changesets (1.0.0-53 to 1.0.0-56) apply, roll back,
+   * and apply again. Rolled back with the platform's own Liquibase rather than by
+   * hand, because the org rule this pins is that a changeset's rollback is proven
    * before it ships -- an {@code update} or a {@code dropIndex} has no automatic
    * rollback and an empty {@code rollback} element silences a whole changeset's, and
    * neither mistake is visible in an apply-only run. The re-apply afterwards is what
    * shows the rollback left nothing behind (a surviving sequence or index would fail
    * the second CREATE).
+   * <p>
+   * Rolled back to a tag placed immediately before 1.0.0-53, not by a changeset
+   * count (EXO-89940): {@code rollback(int, ...)} always undoes the last N changesets
+   * recorded at the time it runs, counting back from whatever the changelog's current
+   * tail happens to be -- a fixed "3" silently rolled back 1.0.0-57, -55 and -54 the
+   * moment 1.0.0-57 became the new tail, leaving EMAIL_FOLDER (1.0.0-53) standing and
+   * this test failing on the opposite of what it meant to prove. A tag names a point
+   * in the applied history rather than an offset from the end of it, so
+   * {@code rollback(tag, ...)} keeps undoing exactly the registry regardless of how
+   * many changesets end up appended after it.
    *
    * @throws Exception when a changeset does not apply or roll back
    */
@@ -113,10 +123,12 @@ public class MasterChangelogTest {
                                           new ClassLoaderResourceAccessor(),
                                           DatabaseFactory.getInstance()
                                                          .findCorrectDatabaseImplementation(new JdbcConnection(connection)));
+      liquibase.update(applicableChangeSetsBefore("1.0.0-53"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-folder-registry");
       liquibase.update("");
       assertTrue(tableExists(connection, "EMAIL_FOLDER"), "1.0.0-53 creates EMAIL_FOLDER");
-      liquibase.rollback(3, "");
-      assertTrue(!tableExists(connection, "EMAIL_FOLDER"), "rolling back the last three changesets drops EMAIL_FOLDER");
+      liquibase.rollback("before-folder-registry", "");
+      assertTrue(!tableExists(connection, "EMAIL_FOLDER"), "rolling back to before the folder registry drops EMAIL_FOLDER");
       assertTrue(tableExists(connection, "EMAIL_THREAD_AI_SUMMARY"), "and nothing before them");
       liquibase.update("");
       assertTrue(tableExists(connection, "EMAIL_FOLDER"), "the changesets apply again after their rollback");
