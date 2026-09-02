@@ -21,7 +21,6 @@ import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.emailConnector.dao.EmailFolderDAO;
 import org.exoplatform.emailConnector.entity.EmailFolderEntity;
@@ -33,16 +32,14 @@ import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
  * and one targeted write per writer.
  * <p>
  * Every update here is a named, narrow method -- "mark seen", "record a sync", "set
- * the opt-in" -- rather than a save of a whole DTO, and each one loads, mutates and
- * flushes INSIDE one transaction. That is what makes the entity's {@code DynamicUpdate}
- * mean something: a detached DTO merged back would copy every column it carried,
- * including the sync checkpoint the job wrote after the DTO was read, and put it back.
- * A managed entity mutated in place flushes the mutated columns and nothing else, so
- * the settings screen flipping {@code SYNC_ENABLED} and the job stamping
- * {@code LAST_SYNC_DATE} can cross without either erasing the other. The transaction
- * holds nothing foreign: no other domain is called from inside it, which is the
- * objection {@link EmailBoxStorage#saveDraftRow} raises against transactional writes
- * over there and does not apply here.
+ * the opt-in" -- and each one is a single UPDATE statement in the DAO that names the
+ * columns that writer owns (see {@link EmailFolderDAO}). Nothing here loads a row to
+ * save it back: a merged DTO would copy every column it carried, including the sync
+ * checkpoint the job wrote after the DTO was read, and put it back; and a managed
+ * entity is only as fresh as the persistence context it came from, which on a request
+ * thread is not always this call's. So the settings screen flipping the opt-in and the
+ * job stamping the check date can cross without either erasing the other, by the shape
+ * of the statements rather than by timing.
  */
 @Component
 public class EmailFolderStorage {
@@ -109,7 +106,9 @@ public class EmailFolderStorage {
   /**
    * Registers a folder a discovery walk found for the first time. The opt-in is off
    * and the snapshot empty whatever the DTO says: a new row is a folder nobody has
-   * chosen yet.
+   * chosen yet. Flushed on the spot, so the unique index's refusal of a duplicate name
+   * surfaces HERE, where the reconcile catches it per folder, and not at the end of
+   * whatever persistence context this call happens to run in.
    *
    * @param folder the folder to register (id ignored)
    * @return the row as created, id set
@@ -125,62 +124,51 @@ public class EmailFolderStorage {
     entity.setMissing(false);
     entity.setDiscoveredDate(folder.getDiscoveredDate());
     entity.setLastSeenDate(folder.getLastSeenDate());
-    return fromEntity(emailFolderDAO.save(entity));
+    return fromEntity(emailFolderDAO.saveAndFlush(entity));
   }
 
   /**
-   * Discovery's write: the folder was seen again (or not). Refreshes what the server
-   * says about it and stamps the sighting; touches neither the opt-in nor the sync
-   * memory.
+   * Discovery's write for a folder seen again: what the server now says about it,
+   * un-missed, the sighting stamped. Touches neither the opt-in nor the sync memory.
    *
    * @param userId the mailbox owner
    * @param id the registry id
    * @param displayName the last path segment as the server now spells it
    * @param delimiter the hierarchy separator as the server now reports it
-   * @param missing whether the walk failed to see it
-   * @param seenDate the sighting time, null when it was not seen
+   * @param seenDate the sighting time
    */
-  @Transactional
-  public void updateDiscovery(String userId, long id, String displayName, String delimiter, boolean missing, Date seenDate) {
-    EmailFolderEntity entity = managed(userId, id);
-    if (entity == null) {
-      return;
-    }
-    if (displayName != null) {
-      entity.setDisplayName(displayName);
-    }
-    if (delimiter != null) {
-      entity.setDelimiter(delimiter);
-    }
-    entity.setMissing(missing);
-    if (seenDate != null) {
-      entity.setLastSeenDate(seenDate);
-    }
+  public void markSeen(String userId, long id, String displayName, String delimiter, Date seenDate) {
+    emailFolderDAO.markSeen(id, userId, displayName, delimiter, seenDate);
   }
 
   /**
-   * The user's write: the opt-in. Enabling stamps the opt-in date and forgets any sync
-   * date, so the folder is first in the next rotation; disabling clears the folder's
-   * sync memory along with it, because the mirrored rows are being deleted by the
-   * caller and a surviving snapshot would let a later opt-in skip "unchanged" over an
-   * empty cache.
+   * Discovery's (or the sync's) write for a folder it could not find: the missing
+   * mark, and nothing else.
+   *
+   * @param userId the mailbox owner
+   * @param id the registry id
+   */
+  public void markMissing(String userId, long id) {
+    emailFolderDAO.markMissing(id, userId);
+  }
+
+  /**
+   * The user's write: the opt-in. Enabling stamps the opt-in date and forgets any
+   * check date, so the folder is first in the next rotation; disabling clears the
+   * folder's sync memory along with it, because the mirrored rows are being deleted by
+   * the caller and a surviving snapshot would let a later opt-in skip "unchanged" over
+   * an empty cache.
    *
    * @param userId the mailbox owner
    * @param id the registry id
    * @param enabled the new opt-in
    * @param when the opt-in time
    */
-  @Transactional
   public void updateSyncEnabled(String userId, long id, boolean enabled, Date when) {
-    EmailFolderEntity entity = managed(userId, id);
-    if (entity == null) {
-      return;
-    }
-    entity.setSyncEnabled(enabled);
-    entity.setEnabledDate(enabled ? when : null);
-    entity.setLastSyncDate(null);
-    if (!enabled) {
-      applySnapshot(entity, null);
+    if (enabled) {
+      emailFolderDAO.enableSync(id, userId, when);
+    } else {
+      emailFolderDAO.disableSync(id, userId);
     }
   }
 
@@ -194,15 +182,18 @@ public class EmailFolderStorage {
    *          or captured nothing
    * @param when the check time
    */
-  @Transactional
   public void updateSyncMemory(String userId, long id, FolderSyncSnapshot snapshot, Date when) {
-    EmailFolderEntity entity = managed(userId, id);
-    if (entity == null) {
-      return;
-    }
-    entity.setLastSyncDate(when);
-    if (snapshot != null) {
-      applySnapshot(entity, snapshot);
+    if (snapshot == null) {
+      emailFolderDAO.recordCheck(id, userId, when);
+    } else {
+      emailFolderDAO.recordSnapshot(id,
+                                    userId,
+                                    when,
+                                    snapshot.getUidValidity(),
+                                    snapshot.getUidNext(),
+                                    snapshot.getMessageCount(),
+                                    snapshot.getHighestModSeq(),
+                                    snapshot.getWindowSize());
     }
   }
 
@@ -212,12 +203,8 @@ public class EmailFolderStorage {
    * @param userId the mailbox owner
    * @param id the registry id
    */
-  @Transactional
   public void deleteFolder(String userId, long id) {
-    EmailFolderEntity entity = managed(userId, id);
-    if (entity != null) {
-      emailFolderDAO.delete(entity);
-    }
+    emailFolderDAO.deleteByIdAndUserId(id, userId);
   }
 
   /**
@@ -227,32 +214,6 @@ public class EmailFolderStorage {
    */
   public void deleteFolders(String userId) {
     emailFolderDAO.deleteByUserId(userId);
-  }
-
-  /**
-   * The managed row of a folder, inside the caller's transaction, or null when no such
-   * row belongs to that user.
-   *
-   * @param userId the mailbox owner
-   * @param id the registry id
-   * @return the managed entity, or null
-   */
-  private EmailFolderEntity managed(String userId, long id) {
-    return emailFolderDAO.findByIdAndUserId(id, userId).stream().findFirst().orElse(null);
-  }
-
-  /**
-   * Writes a snapshot's five signals onto a row, or clears them.
-   *
-   * @param entity the managed row
-   * @param snapshot the snapshot, or null to clear
-   */
-  private void applySnapshot(EmailFolderEntity entity, FolderSyncSnapshot snapshot) {
-    entity.setUidValidity(snapshot == null ? null : snapshot.getUidValidity());
-    entity.setUidNext(snapshot == null ? null : snapshot.getUidNext());
-    entity.setMessageCount(snapshot == null ? null : snapshot.getMessageCount());
-    entity.setHighestModSeq(snapshot == null ? null : snapshot.getHighestModSeq());
-    entity.setWindowSize(snapshot == null ? null : snapshot.getWindowSize());
   }
 
   /**
