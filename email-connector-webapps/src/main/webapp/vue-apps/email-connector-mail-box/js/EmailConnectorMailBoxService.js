@@ -331,10 +331,12 @@ export function undoMoveEmails(mailHeaderIds, folder, originFolder) {
  *
  * @param {Array<Number>} mailRemoteIds the IMAP UIDs, within `folder`
  * @param {String} folder the folder those ids are numbered in; INBOX when omitted
+ * @param {Boolean} conversation whether the ids name whole conversations, whose other
+ *   messages go to the Junk folder too, from every folder (see actionQuery)
  * @returns {Promise} resolving to {failedJunkMoves}
  */
-export function markAsJunk(mailRemoteIds, folder) {
-  return fetch(`/email-connector/rest/email-box/junk${folderQuery(folder)}`, {
+export function markAsJunk(mailRemoteIds, folder, conversation = false) {
+  return fetch(`/email-connector/rest/email-box/junk${actionQuery(folder, conversation)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -350,11 +352,13 @@ export function markAsJunk(mailRemoteIds, folder) {
 }
 
 /**
- * Puts quarantined messages back into the inbox — "Not spam". As with the Trash
- * restore, they reappear in the inbox at the next synchronization, not at once.
+ * Puts quarantined messages back where they came from — "Not spam": the user's own
+ * messages to Sent, the others to the inbox (EXO-89942). The answer says which ids
+ * went to Sent; the server re-reads both folders right after, so the drawer shows
+ * the rows there at once and the re-read takes over (see the Trash restore).
  *
  * @param {Array} mailRemoteIds the IMAP UIDs, within the Junk folder, to put back
- * @returns {Promise} resolving to {failedJunkRestores}
+ * @returns {Promise} resolving to {failedJunkRestores, restoredToSent}
  */
 export function restoreFromJunk(mailRemoteIds) {
   return fetch('/email-connector/rest/email-box/junk/restore', {
@@ -375,12 +379,13 @@ export function restoreFromJunk(mailRemoteIds) {
 /**
  * Puts trashed messages back into the inbox.
  *
- * They do NOT come back into the inbox listing at once: the backend deliberately does
- * not chase the new inbox UID, so the message reappears at the next synchronization
- * like any other newly arrived mail.
+ * Each message goes back where it came from (EXO-89942): the user's own to Sent, the
+ * others to the inbox, and the answer says which ids went to Sent. The backend still
+ * does not chase the new UID, but it re-reads the inbox and Sent one second after, so
+ * the drawer shows the rows there at once and the re-read's rows take over.
  *
  * @param {Array} mailRemoteIds the IMAP UIDs, within the Trash folder, to put back
- * @returns {Promise} resolving to {failedRestores}
+ * @returns {Promise} resolving to {failedRestores, restoredToSent}
  */
 export function restoreEmails(mailRemoteIds) {
   return fetch('/email-connector/rest/email-box/trash/restore', {
@@ -519,6 +524,43 @@ export function groupEmailsByThread(emails) {
 }
 
 /**
+ * The message ids one action — started from a list row's ⋮ menu or from the open
+ * reader's header toolbar — applies to: every message of the conversation that also
+ * sits in the ACTING folder (the row's, or the opened message's own), or the row's own
+ * id alone when there is no conversation, or when none of it turns out to be listed in
+ * that folder. The single definition of "the messages this action applies to", so the
+ * two surfaces cannot again disagree about what a conversation is (EXO-89942).
+ *
+ * Two thread shapes reach this, and both are handled without either caller having to
+ * know: the list row's own grouping ({@link groupEmailsByThread}) is already built
+ * from one folder's listing, so every one of its `emails` already sits in the acting
+ * folder and the filter below is a no-op for it. The reader's conversation
+ * (`EmailConnectorMailBoxDrawerThreadContent`'s `messages`) is deliberately assembled
+ * ACROSS folders — a message filed elsewhere still resurfaces in its own conversation
+ * — so filtering here is what keeps an action started from the reader from reaching a
+ * message the user cannot see in the folder they are acting from; moving it would be a
+ * worse bug than the one this fixes.
+ *
+ * @param {Object} email the row's own message — used alone when there is no thread,
+ *   and for its folder (the acting folder) always
+ * @param {Object} thread the conversation, carrying its messages as `emails` (the row
+ *   menu's shape, from {@link groupEmailsByThread}) or `messages` (the reader's shape);
+ *   null/undefined for a lone message
+ * @returns {Array<Number>} the IMAP UIDs the action applies to
+ */
+export function threadIdsInFolder(email, thread) {
+  const messages = thread?.emails || thread?.messages;
+  if (!messages?.length) {
+    return [email.mailRemoteId];
+  }
+  const actingFolder = email.folder || 'INBOX';
+  const scoped = messages
+    .filter(message => (message.folder || 'INBOX') === actingFolder)
+    .map(message => message.mailRemoteId);
+  return scoped.length ? scoped : [email.mailRemoteId];
+}
+
+/**
  * The email categories a user can assign (Important / Invitation / Notification /
  * To review), each { id, name }.
  *
@@ -592,8 +634,28 @@ export function getEmailByRemoteId(mailRemoteId, folder) {
   });
 }
 
-export function getThreadByThreadId(threadId) {
-  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}`, {
+/**
+ * The query naming the folder a conversation is read from, when that matters: opened
+ * from the Trash or the Junk folder, the reader must see the conversation's copies in
+ * that folder (EXO-89942), which every other read hides. Any other folder adds
+ * nothing, so the request stays what it always was.
+ *
+ * @param {String} folder the folder the reader was opened from
+ * @returns {String} the query string, empty unless the folder is a hidden one
+ */
+function openedFromQuery(folder) {
+  return isReadOnlyFolder(folder) && folder ? `?folder=${encodeURIComponent(folder)}` : '';
+}
+
+/**
+ * Reads a cached conversation, as seen from the folder it is opened from.
+ *
+ * @param {String} threadId the conversation id
+ * @param {String} folder the folder the reader was opened from (see openedFromQuery)
+ * @returns {Promise<Array>} the conversation's cached messages
+ */
+export function getThreadByThreadId(threadId, folder) {
+  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}${openedFromQuery(folder)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -614,10 +676,11 @@ export function getThreadByThreadId(threadId) {
  * calls it in the background after rendering the cached thread.
  *
  * @param {String} threadId the conversation id
+ * @param {String} folder the folder the reader was opened from (see openedFromQuery)
  * @returns {Promise<Array>} the thread including any recovered archived messages
  */
-export function completeThreadByThreadId(threadId) {
-  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}/complete`, {
+export function completeThreadByThreadId(threadId, folder) {
+  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}/complete${openedFromQuery(folder)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -756,14 +819,37 @@ function folderQuery(folder) {
 }
 
 /**
+ * The query of a delete or a "Mark as spam": the folder the ids are numbered in, and
+ * whether they name whole conversations (EXO-89942: the server then takes the
+ * conversation's other messages along, wherever they are cached — the user's own
+ * replies in Sent above all — so the result is the one Gmail gives).
+ *
+ * @param {String} folder the folder the ids are numbered in; INBOX when omitted
+ * @param {Boolean} conversation whether the ids name whole conversations
+ * @returns {String} the query string, empty when nothing needs saying
+ */
+function actionQuery(folder, conversation) {
+  const params = [];
+  if (folder && folder !== 'INBOX') {
+    params.push(`folder=${encodeURIComponent(folder)}`);
+  }
+  if (conversation) {
+    params.push('conversation=true');
+  }
+  return params.length ? `?${params.join('&')}` : '';
+}
+
+/**
  * Moves messages to the Trash folder.
  *
  * @param {Array<Number>} mailRemoteIds the IMAP UIDs, within `folder`
  * @param {String} folder the folder those ids are numbered in; INBOX when omitted
+ * @param {Boolean} conversation whether the ids name whole conversations, whose other
+ *   messages go to the Trash too, from every folder (see actionQuery)
  * @returns {Promise} resolves with { failedDeletions }
  */
-export function deleteEmails(mailRemoteIds, folder) {
-  return fetch(`/email-connector/rest/email-box${folderQuery(folder)}`, {
+export function deleteEmails(mailRemoteIds, folder, conversation = false) {
+  return fetch(`/email-connector/rest/email-box${actionQuery(folder, conversation)}`, {
     headers: {
       'Content-Type': 'application/json'
     },

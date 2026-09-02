@@ -1486,7 +1486,9 @@ export default {
       }}));
     },
     /**
-     * Moves messages to the Trash, one request per folder they are listed in.
+     * Moves conversations to the Trash, one request per folder their listed rows are
+     * in; the server takes each conversation's other messages along (EXO-89942), and
+     * the Trash listing shows the rows at once (fileIntoHiddenFolder).
      *
      * The count in the answer is the message the user gets, and it now counts things it
      * never used to: a message the server does not have at that id is a FAILED delete,
@@ -1497,37 +1499,110 @@ export default {
      * @returns {void}
      */
     deleteEmails(emailIdsToDelete = []) {
-      // Group BEFORE hiding the rows: the listing is a computed that filters out
-      // deletedEmailIds, so pushing first would take the rows out of it and leave
-      // folderOfEmail with nothing to read — every delete would then be addressed
-      // to the INBOX default and refused by the server (EXO-89367).
-      const groups = this.byOwnFolder(emailIdsToDelete);
-      this.deletedEmailIds.push(...emailIdsToDelete);
-      groups.forEach(([folder, ids]) =>
-        this.$emailConnectorMailBoxService.deleteEmails(ids, folder)
-          .then(deleteResult => this.alertOnActionFailures(deleteResult.failedDeletions ?? 0, 'delete'))
-          .catch(() => this.alertOnActionFailures(ids.length, 'delete')));
+      this.fileIntoHiddenFolder(emailIdsToDelete, 'TRASH', 'delete', (ids, folder) =>
+        this.$emailConnectorMailBoxService.deleteEmails(ids, folder, true)
+          .then(deleteResult => deleteResult.failedDeletions ?? 0));
     },
     /**
-     * Puts trashed messages back into the inbox.
+     * The shared body of deleteEmails and markAsJunk: files the listed rows into the
+     * Trash or the Junk folder, one request per folder they are listed in, as WHOLE
+     * conversations (EXO-89942 — the server takes the conversation's other messages
+     * along, the user's own replies in Sent above all, so the result is the one Gmail
+     * gives), and shows them in the destination at once.
+     *
+     * Every surface that emits a delete or a "Mark as spam" here acts on a
+     * conversation (the row's ⋮ menu, the swipe, the reader's toolbar, the bulk
+     * toolbar), which is why the conversation flag is not a parameter of this method.
+     *
+     * Grouping happens BEFORE the rows are hidden: the listing is a computed that
+     * filters out the hidden ids, so hiding first would leave folderOfEmail with
+     * nothing to read — every request would then be addressed to the INBOX default
+     * and refused by the server (EXO-89367). The rows are snapshotted at the same
+     * moment, for the same reason: they are what the Trash or Junk listing shows
+     * until the server's own re-read lists them (rememberMovedRows — a delete is a
+     * move into the Trash, EXO-89966's mechanics apply unchanged), and a request the
+     * server refused, in whole or in part, takes its remembered rows out again before
+     * the error toast (they never reached the folder).
+     *
+     * @param {Array<Number>} emailIds the IMAP UIDs to file
+     * @param {String} target the hidden folder's key, TRASH or JUNK
+     * @param {String} action the alert's verb key (see alertOnActionFailures)
+     * @param {Function} request (ids, folder) => Promise<Number> — the request for one
+     *   folder's ids, resolving with how many failed
+     * @returns {void}
+     */
+    fileIntoHiddenFolder(emailIds, target, action, request) {
+      const groups = this.byOwnFolder(emailIds);
+      const filed = groups.map(([folder, ids]) =>
+        this.rememberMovedRows(ids.map(id => ({ ...this.rowOfEmail(id), folder })), target));
+      const hidden = target === 'JUNK' ? this.junkedEmailIds : this.deletedEmailIds;
+      hidden.push(...emailIds);
+      groups.forEach(([folder, ids], index) =>
+        request(ids, folder)
+          .then(failures => failures, () => ids.length)
+          .then(failures => {
+            if (failures > 0) {
+              this.forgetRefreshPendingRows(filed[index]);
+            }
+            this.alertOnActionFailures(failures, action);
+          }));
+    },
+    /**
+     * Puts trashed messages back where they came from — the user's own to Sent, the
+     * others to the inbox (EXO-89942).
      *
      * Optimistic, like delete and archive: the rows leave the Trash listing at once and
-     * an alert says how many did not make it. Which is all the list can honestly show —
-     * the restored message does NOT appear in the inbox until the next sync imports it
-     * (the backend does not chase its new inbox UID on purpose), so there is nothing to
-     * add to a listing here.
+     * an alert says how many did not make it. Once the server has said which went
+     * where, the rows show in their destination too, until its re-read lists them
+     * (restoreFromHiddenFolder).
      *
      * @param {Array} emailIdsToRestore the IMAP UIDs, within the Trash folder
      * @returns {void}
      */
     restoreEmails(emailIdsToRestore = []) {
-      if (!emailIdsToRestore.length) {
+      this.restoreFromHiddenFolder(emailIdsToRestore, 'TRASH', this.restoredEmailIds, 'restore', ids =>
+        this.$emailConnectorMailBoxService.restoreEmails(ids)
+          .then(restoreResult => ({ failures: restoreResult.failedRestores ?? 0, toSent: restoreResult.restoredToSent })));
+    },
+    /**
+     * The shared body of restoreEmails and restoreFromJunk: takes the listed rows out
+     * of the Trash or the Junk folder at once, and once the server has answered shows
+     * each one in the folder it went back to — Sent for the user's own messages, the
+     * inbox for the others (EXO-89942; the server decides and says which ids went to
+     * Sent) — until the server's own re-read of those folders lists them
+     * (rememberMovedRows, EXO-89966's mechanics).
+     *
+     * The rows are snapshotted BEFORE they are hidden, as fileIntoHiddenFolder does
+     * and for its reason. They are remembered only once the answer is in, because the
+     * destination is the server's to say; and only when every id went back: after a
+     * partial failure the drawer does not know which rows moved, and a remembered row
+     * for a message still in the Trash would be a lie the listing tells for minutes.
+     * The rows that did move surface with the server's re-read seconds later.
+     *
+     * @param {Array<Number>} emailIds the IMAP UIDs, within the hidden folder
+     * @param {String} origin the hidden folder's key, TRASH or JUNK
+     * @param {Array<Number>} hidden the drawer's list of optimistically hidden ids
+     * @param {String} action the alert's verb key (see alertOnActionFailures)
+     * @param {Function} request ids => Promise<{failures, toSent}> — the request,
+     *   resolving with how many failed and which ids went back to Sent
+     * @returns {void}
+     */
+    restoreFromHiddenFolder(emailIds, origin, hidden, action, request) {
+      if (!emailIds.length) {
         return;
       }
-      this.restoredEmailIds.push(...emailIdsToRestore);
-      this.$emailConnectorMailBoxService.restoreEmails(emailIdsToRestore)
-        .then(restoreResult => this.alertOnActionFailures(restoreResult.failedRestores ?? 0, 'restore'))
-        .catch(() => this.alertOnActionFailures(emailIdsToRestore.length, 'restore'));
+      const rows = emailIds.map(id => ({ ...this.rowOfEmail(id), folder: origin }));
+      hidden.push(...emailIds);
+      request(emailIds)
+        .then(({ failures, toSent }) => {
+          if (failures === 0) {
+            const sentBack = new Set(toSent || []);
+            this.rememberMovedRows(rows.filter(row => sentBack.has(row.mailRemoteId)), 'SENT');
+            this.rememberMovedRows(rows.filter(row => !sentBack.has(row.mailRemoteId)), 'INBOX');
+          }
+          this.alertOnActionFailures(failures, action);
+        })
+        .catch(() => this.alertOnActionFailures(emailIds.length, action));
     },
     /**
      * Removes trashed messages from the mail server for good.
@@ -1548,43 +1623,34 @@ export default {
         .catch(() => this.alertOnActionFailures(emailIdsToPurge.length, 'purge'));
     },
     /**
-     * Moves messages to the Spam folder — "Mark as spam" — one request per folder
-     * they are listed in, exactly as delete and archive are sent.
+     * Moves conversations to the Spam folder — "Mark as spam" — one request per
+     * folder their listed rows are in, exactly as the delete is sent; the server takes
+     * each conversation's other messages along (EXO-89942).
      *
-     * Optimistic like them: the rows leave the listing at once and an alert says how
-     * many did not make it. The message shows up in the Spam listing at the next
-     * synchronization, not at once (the backend does not chase its new UID).
+     * Optimistic like the delete: the rows leave the listing at once, show in the Spam
+     * listing at once (fileIntoHiddenFolder), and an alert says how many did not make
+     * it.
      *
      * @param {Array<Number>} emailIdsToJunk the IMAP UIDs to report as spam
      * @returns {void}
      */
     markAsJunk(emailIdsToJunk = []) {
-      // Group BEFORE hiding the rows — same reason as deleteEmails above.
-      const groups = this.byOwnFolder(emailIdsToJunk);
-      this.junkedEmailIds.push(...emailIdsToJunk);
-      groups.forEach(([folder, ids]) =>
-        this.$emailConnectorMailBoxService.markAsJunk(ids, folder)
-          .then(junkResult => this.alertOnActionFailures(junkResult.failedJunkMoves ?? 0, 'junk'))
-          .catch(() => this.alertOnActionFailures(ids.length, 'junk')));
+      this.fileIntoHiddenFolder(emailIdsToJunk, 'JUNK', 'junk', (ids, folder) =>
+        this.$emailConnectorMailBoxService.markAsJunk(ids, folder, true)
+          .then(junkResult => junkResult.failedJunkMoves ?? 0));
     },
     /**
-     * Puts quarantined messages back into the inbox — "Not spam".
-     *
-     * Optimistic like the Trash restore, with the same honest limit: the rescued
-     * message reappears in the inbox at the next synchronization, so nothing is added
-     * to a listing here.
+     * Puts quarantined messages back where they came from — "Not spam": the user's
+     * own to Sent, the others to the inbox (EXO-89942), shown there at once as the
+     * Trash restore shows its rows (restoreFromHiddenFolder).
      *
      * @param {Array} emailIdsToRestore the IMAP UIDs, within the Spam folder
      * @returns {void}
      */
     restoreFromJunk(emailIdsToRestore = []) {
-      if (!emailIdsToRestore.length) {
-        return;
-      }
-      this.unjunkedEmailIds.push(...emailIdsToRestore);
-      this.$emailConnectorMailBoxService.restoreFromJunk(emailIdsToRestore)
-        .then(restoreResult => this.alertOnActionFailures(restoreResult.failedJunkRestores ?? 0, 'notJunk'))
-        .catch(() => this.alertOnActionFailures(emailIdsToRestore.length, 'notJunk'));
+      this.restoreFromHiddenFolder(emailIdsToRestore, 'JUNK', this.unjunkedEmailIds, 'notJunk', ids =>
+        this.$emailConnectorMailBoxService.restoreFromJunk(ids)
+          .then(restoreResult => ({ failures: restoreResult.failedJunkRestores ?? 0, toSent: restoreResult.restoredToSent })));
     },
     /**
      * The error alert every one of the six mail actions raises, and the place the
