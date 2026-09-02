@@ -486,6 +486,43 @@ export function groupEmailsByThread(emails) {
 }
 
 /**
+ * The message ids one action — started from a list row's ⋮ menu or from the open
+ * reader's header toolbar — applies to: every message of the conversation that also
+ * sits in the ACTING folder (the row's, or the opened message's own), or the row's own
+ * id alone when there is no conversation, or when none of it turns out to be listed in
+ * that folder. The single definition of "the messages this action applies to", so the
+ * two surfaces cannot again disagree about what a conversation is (EXO-89942).
+ *
+ * Two thread shapes reach this, and both are handled without either caller having to
+ * know: the list row's own grouping ({@link groupEmailsByThread}) is already built
+ * from one folder's listing, so every one of its `emails` already sits in the acting
+ * folder and the filter below is a no-op for it. The reader's conversation
+ * (`EmailConnectorMailBoxDrawerThreadContent`'s `messages`) is deliberately assembled
+ * ACROSS folders — a message filed elsewhere still resurfaces in its own conversation
+ * — so filtering here is what keeps an action started from the reader from reaching a
+ * message the user cannot see in the folder they are acting from; moving it would be a
+ * worse bug than the one this fixes.
+ *
+ * @param {Object} email the row's own message — used alone when there is no thread,
+ *   and for its folder (the acting folder) always
+ * @param {Object} thread the conversation, carrying its messages as `emails` (the row
+ *   menu's shape, from {@link groupEmailsByThread}) or `messages` (the reader's shape);
+ *   null/undefined for a lone message
+ * @returns {Array<Number>} the IMAP UIDs the action applies to
+ */
+export function threadIdsInFolder(email, thread) {
+  const messages = thread?.emails || thread?.messages;
+  if (!messages?.length) {
+    return [email.mailRemoteId];
+  }
+  const actingFolder = email.folder || 'INBOX';
+  const scoped = messages
+    .filter(message => (message.folder || 'INBOX') === actingFolder)
+    .map(message => message.mailRemoteId);
+  return scoped.length ? scoped : [email.mailRemoteId];
+}
+
+/**
  * The email categories a user can assign (Important / Invitation / Notification /
  * To review), each { id, name }.
  *
