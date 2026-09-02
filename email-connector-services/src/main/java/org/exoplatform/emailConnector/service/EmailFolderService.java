@@ -96,6 +96,11 @@ public class EmailFolderService {
    * The master switch: whether custom folders are discovered, mirrored and offered at
    * all. Read hot, like the Trash and Junk switches, so an administrator can withdraw
    * the feature without a restart.
+   * <p>
+   * Since the administration settings drawer shipped, this JVM property is only the
+   * default — the live switch is {@code EmailConnectorService#isCustomFoldersEnabled()},
+   * a {@code SettingService} value an administrator can flip from the drawer, which
+   * falls back to this property when nothing is stored.
    */
   public static final String      CUSTOM_FOLDERS_ENABLED_PROPERTY    = "email.connector.customFolders.enabled";
 
@@ -233,14 +238,21 @@ public class EmailFolderService {
   @Autowired
   private EmailFolderStorage      emailFolderStorage;
 
+  @Autowired
+  private EmailConnectorService   emailConnectorService;
+
   /**
    * Whether custom folders are switched on at all -- see
-   * {@link #CUSTOM_FOLDERS_ENABLED_PROPERTY}.
+   * {@link #CUSTOM_FOLDERS_ENABLED_PROPERTY}. Delegates to
+   * {@code EmailConnectorService#isCustomFoldersEnabled()}, which reads the
+   * administration-wide setting (falling back to the JVM property) so an
+   * administrator can withdraw the feature from the settings drawer without a
+   * restart.
    *
    * @return true when custom folders are discovered, mirrored and offered
    */
   public boolean isCustomFoldersEnabled() {
-    return Boolean.parseBoolean(System.getProperty(CUSTOM_FOLDERS_ENABLED_PROPERTY, "true"));
+    return emailConnectorService.isCustomFoldersEnabled();
   }
 
   /**

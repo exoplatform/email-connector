@@ -241,6 +241,36 @@ export function updateServerDraftsEnabled(enabled) {
   });
 }
 
+export function getCustomFoldersEnabled() {
+  return fetch('/email-connector/rest/connectors/custom-folders-sync', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the custom folders switch');
+    }
+  });
+}
+
+export function updateCustomFoldersEnabled(enabled) {
+  return fetch(`/email-connector/rest/connectors/custom-folders-sync?enabled=${enabled}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PATCH'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when updating the custom folders switch');
+    }
+  });
+}
+
 export function deleteEmailConnector(emailConnectorId) {
   return fetch(`/email-connector/rest/connectors/${emailConnectorId}`, {
     headers: {
