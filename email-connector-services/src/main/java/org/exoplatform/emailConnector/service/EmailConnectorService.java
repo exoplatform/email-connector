@@ -76,6 +76,9 @@ public class EmailConnectorService {
   /** Administration-wide server-side drafts kill switch key. */
   public static final String        DRAFTS_SERVER_ENABLED_KEY                    = "draftsServerEnabled";
 
+  /** Administration-wide custom-folders master-switch key. */
+  public static final String        CUSTOM_FOLDERS_ENABLED_KEY                   = "customFoldersEnabled";
+
   private static final int          MIN_EMAIL_BOX_CACHE_SIZE                     = 1;
 
   private static final int          MAX_EMAIL_BOX_CACHE_SIZE                     = 5000;
@@ -338,6 +341,46 @@ public class EmailConnectorService {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
     }
     settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, DRAFTS_SERVER_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
+  }
+
+  /**
+   * Whether custom folders are switched on at all, administration-wide — see
+   * {@link #isTrashSyncEnabled()} for the shape. Unlike the Trash/Junk/drafts
+   * switches, which only stop caching new mail and leave everything already
+   * cached in place, this one withdraws the whole feature at once: custom
+   * folders disappear from every user's folder list and "Move to…" menu and
+   * from their own settings screen, and opting in/out, on-demand refresh and
+   * moving mail into a custom folder are all refused ({@code EmailBoxService}'s
+   * {@code checkCustomFoldersEnabled}). Nothing is deleted by turning this
+   * off — the opted-in folders and their cached mail are exactly as they were
+   * when it is turned back on. Falls back to the
+   * {@code email.connector.customFolders.enabled} JVM property (default
+   * {@code true}).
+   *
+   * @return true when custom folders are discovered, mirrored and offered
+   */
+  public boolean isCustomFoldersEnabled() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, CUSTOM_FOLDERS_ENABLED_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      return Boolean.parseBoolean(settingValue.getValue().toString());
+    }
+    return Boolean.parseBoolean(System.getProperty("email.connector.customFolders.enabled", "true"));
+  }
+
+  /**
+   * Save the administration-wide custom-folders master switch. Administrators
+   * only.
+   *
+   * @param enabled whether custom folders should be discovered, mirrored and
+   *          offered
+   * @param username user updating the switch
+   * @throws IllegalAccessException if the user is not allowed to update it
+   */
+  public void saveCustomFoldersEnabled(boolean enabled, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, CUSTOM_FOLDERS_ENABLED_KEY, SettingValue.create(String.valueOf(enabled)));
   }
 
   /**

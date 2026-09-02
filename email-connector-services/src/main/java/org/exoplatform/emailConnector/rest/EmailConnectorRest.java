@@ -209,6 +209,31 @@ public class EmailConnectorRest {
     }
   }
 
+  @GetMapping("/custom-folders-sync")
+  @Secured("administrators")
+  @Operation(summary = "Gets whether custom folders are switched on", method = "GET", description = "This will get the administration-wide custom-folders master switch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public boolean isCustomFoldersEnabled(HttpServletRequest request) {
+    return emailConnectorService.isCustomFoldersEnabled();
+  }
+
+  @PatchMapping("/custom-folders-sync")
+  @Secured("administrators")
+  @Operation(summary = "Updates whether custom folders are switched on", method = "PATCH", description = "This will update the administration-wide custom-folders master switch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateCustomFoldersEnabled(HttpServletRequest request,
+                                         @Parameter(description = "Whether custom folders should be discovered, mirrored and offered", required = true)
+                                         @RequestParam("enabled")
+                                         boolean enabled) {
+    try {
+      emailConnectorService.saveCustomFoldersEnabled(enabled, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
   @PostMapping()
   @Secured("administrators")
   @Operation(summary = "Creates email connector", method = "POST", description = "This will create email connector")
