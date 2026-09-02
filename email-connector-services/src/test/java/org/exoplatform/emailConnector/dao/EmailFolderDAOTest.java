@@ -193,6 +193,62 @@ public class EmailFolderDAOTest {
   }
 
   /**
+   * Every writer's statement, executed by the engine, and every one scoped to the
+   * owner: addressed to another user's id, each updates nothing. Read back after
+   * clearing the persistence context, so what is asserted is the row and not the
+   * instance the statement bypassed.
+   */
+  @Test
+  void eachWriterUpdatesItsOwnColumnsAndOnlyItsOwnersRow() {
+    Long id = persist(USERNAME, "Customers/Acme", "Acme", false, false, null);
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(0, emailFolderDAO.markSeen(id, OTHER, "Stolen", ".", new Date(1L)));
+    assertEquals(1, emailFolderDAO.markSeen(id, USERNAME, "ACME", "/", new Date(1_000L)));
+    entityManager.clear();
+    EmailFolderEntity seen = emailFolderDAO.findById(id).orElseThrow();
+    assertEquals("ACME", seen.getDisplayName());
+    assertEquals(1_000L, seen.getLastSeenDate().getTime());
+    assertFalse(seen.isMissing());
+
+    assertEquals(1, emailFolderDAO.markMissing(id, USERNAME));
+    entityManager.clear();
+    assertTrue(emailFolderDAO.findById(id).orElseThrow().isMissing());
+    assertEquals(0, emailFolderDAO.markMissing(id, OTHER));
+
+    assertEquals(1, emailFolderDAO.enableSync(id, USERNAME, new Date(2_000L)));
+    assertEquals(1, emailFolderDAO.recordSnapshot(id, USERNAME, new Date(3_000L), 11L, 12L, 13L, 14L, 50));
+    entityManager.clear();
+    EmailFolderEntity synced = emailFolderDAO.findById(id).orElseThrow();
+    assertTrue(synced.isSyncEnabled());
+    assertEquals(2_000L, synced.getEnabledDate().getTime());
+    assertEquals(3_000L, synced.getLastSyncDate().getTime());
+    assertEquals(11L, synced.getUidValidity());
+    assertEquals(50, synced.getWindowSize());
+
+    assertEquals(1, emailFolderDAO.recordCheck(id, USERNAME, new Date(4_000L)));
+    entityManager.clear();
+    EmailFolderEntity checked = emailFolderDAO.findById(id).orElseThrow();
+    assertEquals(4_000L, checked.getLastSyncDate().getTime());
+    assertEquals(11L, checked.getUidValidity(), "a check keeps the snapshot");
+
+    assertEquals(0, emailFolderDAO.disableSync(id, OTHER));
+    assertEquals(1, emailFolderDAO.disableSync(id, USERNAME));
+    entityManager.clear();
+    EmailFolderEntity disabled = emailFolderDAO.findById(id).orElseThrow();
+    assertFalse(disabled.isSyncEnabled());
+    assertTrue(disabled.getEnabledDate() == null && disabled.getLastSyncDate() == null);
+    assertTrue(disabled.getUidValidity() == null && disabled.getUidNext() == null && disabled.getMessageCount() == null
+        && disabled.getHighestModSeq() == null && disabled.getWindowSize() == null, "an opt-out forgets the whole snapshot");
+
+    assertEquals(0, emailFolderDAO.deleteByIdAndUserId(id, OTHER));
+    assertEquals(1, emailFolderDAO.deleteByIdAndUserId(id, USERNAME));
+    entityManager.clear();
+    assertTrue(emailFolderDAO.findById(id).isEmpty());
+  }
+
+  /**
    * The two-writer pin: changing one column of a managed row flushes an UPDATE of
    * that column and that column only. Without {@code DynamicUpdate} the statement
    * sets every column, and the settings screen's read-modify-save would put back the

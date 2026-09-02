@@ -125,6 +125,7 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -243,7 +244,7 @@ public class EmailBoxServiceTest {
 
   // The registry is mocked at the STORAGE, not the service: the classifier runs for
   // real, because the Trash, Junk and Drafts discovery tests below are its tests now.
-  @MockBean
+  @MockitoBean
   private EmailFolderStorage      emailFolderStorage;
 
   @Autowired
@@ -616,7 +617,7 @@ public class EmailBoxServiceTest {
     when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
     when(inbox.getMessageByUID(1212l)).thenReturn(message);
-    when(trashFolder.exists()).thenReturn(true);
+    lenient().when(trashFolder.exists()).thenReturn(true);
     when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     int failed = emailBoxService.deleteEmail(emailIds, TEST_USER, MailFolder.INBOX);
     assertEquals(0, failed);
@@ -652,7 +653,7 @@ public class EmailBoxServiceTest {
     IMAPFolder trashFolder = mock(IMAPFolder.class);
     when(trashFolder.getFullName()).thenReturn("trash");
     when(folder.listSubscribed("*")).thenReturn(new Folder[] { trashFolder });
-    when(trashFolder.exists()).thenReturn(true);
+    lenient().when(trashFolder.exists()).thenReturn(true);
     when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     Message message = mock(Message.class);
     when(inbox.getMessageByUID(1212l)).thenReturn(message);
@@ -1305,7 +1306,7 @@ public class EmailBoxServiceTest {
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
-    when(allMail.exists()).thenReturn(true);
+    lenient().when(allMail.exists()).thenReturn(true);
     when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
     when(allMail.isOpen()).thenReturn(true);
     when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { allMail });
@@ -1350,7 +1351,7 @@ public class EmailBoxServiceTest {
     when(folder.listSubscribed("*")).thenReturn(folders);
     Message message = mock(Message.class);
     when(inbox.getMessageByUID(1212l)).thenReturn(message);
-    when(archiveFolder.exists()).thenReturn(true);
+    lenient().when(archiveFolder.exists()).thenReturn(true);
     when(archiveFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     int failed = emailBoxService.archiveEmail(emailIds, TEST_USER, MailFolder.INBOX);
     assertEquals(0, failed);
@@ -1382,7 +1383,7 @@ public class EmailBoxServiceTest {
     when(sentFolder.getFullName()).thenReturn("sent");
     Folder[] folders = new Folder[] { sentFolder };
     when(folder.listSubscribed("*")).thenReturn(folders);
-    when(sentFolder.exists()).thenReturn(true);
+    lenient().when(sentFolder.exists()).thenReturn(true);
     when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     when(sentFolder.isOpen()).thenReturn(true);
     try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
@@ -1424,7 +1425,7 @@ public class EmailBoxServiceTest {
     IMAPFolder sentFolder = mock(IMAPFolder.class);
     when(sentFolder.getFullName()).thenReturn("sent");
     when(folder.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
-    when(sentFolder.exists()).thenReturn(true);
+    lenient().when(sentFolder.exists()).thenReturn(true);
     when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     when(sentFolder.isOpen()).thenReturn(true);
     try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
@@ -1459,7 +1460,7 @@ public class EmailBoxServiceTest {
     IMAPFolder sentFolder = mock(IMAPFolder.class);
     when(sentFolder.getFullName()).thenReturn("sent");
     when(folder.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
-    when(sentFolder.exists()).thenReturn(true);
+    lenient().when(sentFolder.exists()).thenReturn(true);
     when(sentFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     when(sentFolder.isOpen()).thenReturn(true);
     try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
@@ -1855,7 +1856,7 @@ public class EmailBoxServiceTest {
     Store store = mock(Store.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder sent = mock(IMAPFolder.class);
-    when(sent.exists()).thenReturn(true);
+    lenient().when(sent.exists()).thenReturn(true);
     when(sent.getFullName()).thenReturn("Sent");
     when(sent.getAttributes()).thenReturn(new String[] { "\\Sent" });
     Folder root = mock(Folder.class);
@@ -2843,19 +2844,19 @@ public class EmailBoxServiceTest {
     state.setJunkFolderName("MyJunk");
     mockInboxForSkipCheck(userEmailSetting, state, 11L, 501L, 100, 777L, true);
     IMAPFolder sent = mock(IMAPFolder.class);
-    when(sent.exists()).thenReturn(true);
+    lenient().when(sent.exists()).thenReturn(true);
     when(sent.getMessageCount()).thenReturn(0);
     IMAPFolder archive = mock(IMAPFolder.class);
-    when(archive.exists()).thenReturn(true);
+    lenient().when(archive.exists()).thenReturn(true);
     when(archive.getMessageCount()).thenReturn(0);
     IMAPFolder drafts = mock(IMAPFolder.class);
-    when(drafts.exists()).thenReturn(true);
+    lenient().when(drafts.exists()).thenReturn(true);
     when(drafts.getMessageCount()).thenReturn(0);
     IMAPFolder trash = mock(IMAPFolder.class);
-    when(trash.exists()).thenReturn(true);
+    lenient().when(trash.exists()).thenReturn(true);
     when(trash.getMessageCount()).thenReturn(0);
     IMAPFolder junk = mock(IMAPFolder.class);
-    when(junk.exists()).thenReturn(true);
+    lenient().when(junk.exists()).thenReturn(true);
     when(junk.getMessageCount()).thenReturn(0);
     Store connectedStore = userEmailSettingService.connect(userEmailSetting);
     when(connectedStore.getFolder("MySent")).thenReturn(sent);
@@ -3325,14 +3326,14 @@ public class EmailBoxServiceTest {
                                                                      any(Scope.class),
                                                                      eq("emailBoxSyncState"));
     IMAPFolder stale = mock(IMAPFolder.class);
-    when(stale.exists()).thenReturn(false);
+    lenient().when(stale.exists()).thenReturn(false);
     IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
     lenient().when(junk.getMessageCount()).thenReturn(2);
     givenAMailboxListing(junk);
     when(trashStore().getFolder("Old/Spam")).thenReturn(stale);
     for (String remembered : List.of("MySent", "MyArchive", "MyDrafts", "MyTrash")) {
       IMAPFolder valid = mock(IMAPFolder.class);
-      when(valid.exists()).thenReturn(true);
+      lenient().when(valid.exists()).thenReturn(true);
       lenient().when(valid.getMessageCount()).thenReturn(0);
       when(trashStore().getFolder(remembered)).thenReturn(valid);
     }
@@ -3580,7 +3581,7 @@ public class EmailBoxServiceTest {
     Store store = mock(Store.class);
     when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
     IMAPFolder trash = mock(IMAPFolder.class);
-    when(trash.exists()).thenReturn(true);
+    lenient().when(trash.exists()).thenReturn(true);
     when(trash.getFullName()).thenReturn("[Gmail]/Trash");
     when(trash.getAttributes()).thenReturn(new String[] { "\\Trash" });
     Folder root = mock(Folder.class);
@@ -3669,7 +3670,7 @@ public class EmailBoxServiceTest {
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
-    when(allMail.exists()).thenReturn(true);
+    lenient().when(allMail.exists()).thenReturn(true);
     when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
     when(allMail.isOpen()).thenReturn(true);
     when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { allMail });
@@ -4731,7 +4732,7 @@ public class EmailBoxServiceTest {
     lenient().when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
     lenient().when(allMail.getFullName()).thenReturn("[Gmail]/All Mail");
     IMAPFolder archive = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
-    when(archive.exists()).thenReturn(true);
+    lenient().when(archive.exists()).thenReturn(true);
     when(archive.getAttributes()).thenReturn(new String[] { "\\Archive" });
     lenient().when(archive.getFullName()).thenReturn("Archive");
     when(archive.isOpen()).thenReturn(true);
@@ -4766,7 +4767,7 @@ public class EmailBoxServiceTest {
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
-    when(allMail.exists()).thenReturn(true);
+    lenient().when(allMail.exists()).thenReturn(true);
     when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
     lenient().when(allMail.getFullName()).thenReturn("[Gmail]/All Mail");
     when(allMail.isOpen()).thenReturn(true);
@@ -4954,7 +4955,7 @@ public class EmailBoxServiceTest {
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     // Gmail shape: an All-Mail superset and NO syncable \Archive.
     IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
-    when(allMail.exists()).thenReturn(true);
+    lenient().when(allMail.exists()).thenReturn(true);
     when(allMail.getAttributes()).thenReturn(new String[] { "\\All" });
     lenient().when(allMail.getFullName()).thenReturn("[Gmail]/All Mail");
     when(allMail.isOpen()).thenReturn(true);
@@ -6594,7 +6595,7 @@ public class EmailBoxServiceTest {
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     IMAPFolder draftsFolder = mock(IMAPFolder.class);
-    when(draftsFolder.exists()).thenReturn(true);
+    lenient().when(draftsFolder.exists()).thenReturn(true);
     when(draftsFolder.getAttributes()).thenReturn(new String[] { "\\Drafts" });
     lenient().when(draftsFolder.getFullName()).thenReturn("Drafts");
     when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { draftsFolder });
@@ -6680,7 +6681,7 @@ public class EmailBoxServiceTest {
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     IMAPFolder draftsFolder = mock(IMAPFolder.class);
-    when(draftsFolder.exists()).thenReturn(true);
+    lenient().when(draftsFolder.exists()).thenReturn(true);
     when(draftsFolder.getAttributes()).thenReturn(new String[] { "\\Drafts" });
     lenient().when(draftsFolder.getFullName()).thenReturn("Drafts");
     when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { draftsFolder });
@@ -7295,7 +7296,7 @@ public class EmailBoxServiceTest {
     IMAPFolder trashFolder = mock(IMAPFolder.class);
     when(trashFolder.getFullName()).thenReturn("trash");
     when(folder.listSubscribed("*")).thenReturn(new Folder[] { trashFolder });
-    when(trashFolder.exists()).thenReturn(true);
+    lenient().when(trashFolder.exists()).thenReturn(true);
     when(trashFolder.getAttributes()).thenReturn(ArrayUtils.EMPTY_STRING_ARRAY);
     when(inbox.getMessageByUID(1212l)).thenReturn(mock(Message.class));
 
@@ -7951,6 +7952,7 @@ public class EmailBoxServiceTest {
     givenAMailboxListing(junk);
     EmailFolder factures = registeredFolder(1L, "Factures", true);
     when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(factures));
+    when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(factures);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(remote.getMessageCount()).thenReturn(120);
     Store store = userEmailSettingService.connect(userEmailSetting());
@@ -7978,12 +7980,12 @@ public class EmailBoxServiceTest {
     givenAMailboxListing();
     when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(registeredFolder(3L, "Gone", true)));
     IMAPFolder remote = mock(IMAPFolder.class);
-    when(remote.exists()).thenReturn(false);
+    lenient().when(remote.exists()).thenReturn(false);
     when(userEmailSettingService.connect(userEmailSetting()).getFolder("Gone")).thenReturn(remote);
 
     emailBoxService.synchronize(TEST_USER);
 
-    verify(emailFolderStorage).updateDiscovery(TEST_USER, 3L, null, null, true, null);
+    verify(emailFolderStorage).markMissing(TEST_USER, 3L);
     verify(emailFolderStorage, never()).updateSyncMemory(anyString(), anyLong(), any(), any());
     verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
   }
@@ -8210,6 +8212,210 @@ public class EmailBoxServiceTest {
   void theWipeTakesTheFolderRegistry() {
     emailBoxService.deleteUserEmails(TEST_USER);
     verify(emailFolderStorage).deleteFolders(TEST_USER);
+  }
+
+  /**
+   * The opt-out that lands WHILE a folder is being synced wins: the rows the sync
+   * wrote are deleted again and its checkpoint is not recorded, so a disabled folder
+   * never keeps orphan rows that would resurface in conversations and search, nor a
+   * snapshot that would let the next opt-in skip "unchanged" over an empty cache.
+   */
+  @Test
+  @SneakyThrows
+  void aFolderOptedOutDuringItsSyncLosesWhatTheSyncWrote() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    givenAMailboxListing();
+    EmailFolder picked = registeredFolder(1L, "Factures", true);
+    when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(picked));
+    // By the time the sync re-reads it, the user has switched it off.
+    when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", false));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(remote.getMessageCount()).thenReturn(3);
+    when(userEmailSettingService.connect(userEmailSetting()).getFolder("Factures")).thenReturn(remote);
+    Email written = email(TEST_USER);
+    written.setId(77L);
+    written.setFolder("CUSTOM:1");
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:1")).thenReturn(List.of(written));
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(remote).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(77L));
+    verify(emailFolderStorage, never()).updateSyncMemory(anyString(), anyLong(), any(), any());
+  }
+
+  /**
+   * The on-open refresh yields to a running sync: with the guard taken, the listing is
+   * answered from the cache and no connection is opened -- the background sync is doing
+   * the work, and two writers of one (user, folder, UID) space must never overlap.
+   */
+  @Test
+  @SneakyThrows
+  @SuppressWarnings("unchecked")
+  void openingAStaleFolderWhileASyncRunsAnswersTheCache() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    Set<String> syncingUsers = (Set<String>) ReflectionTestUtils.getField(emailBoxService, "syncingUsers");
+    syncingUsers.add(TEST_USER);
+    try {
+      emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+    } finally {
+      syncingUsers.remove(TEST_USER);
+    }
+    verify(userEmailSettingService, never()).connect(any());
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:5");
+    verify(emailFolderStorage, never()).updateSyncMemory(anyString(), anyLong(), any(), any());
+  }
+
+  /**
+   * One walk per connection: with every remembered name blank, the five resolvers
+   * share a single pair of LIST commands rather than paying one each -- and the memo
+   * that makes it so is gone once the connection is closed.
+   */
+  @Test
+  @SneakyThrows
+  void fiveResolversOnOneConnectionWalkTheListOnce() {
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    lenient().when(junk.getMessageCount()).thenReturn(0);
+    Folder defaultFolder = givenAMailboxListing(junk);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(defaultFolder, times(1)).listSubscribed("*");
+    verify(defaultFolder, times(1)).list("*");
+    verify(junk).open(Folder.READ_ONLY);
+    Map<?, ?> memo = (Map<?, ?>) ReflectionTestUtils.getField(emailBoxService, "rediscoveries");
+    assertTrue(memo.isEmpty(), "the memo dies with the connection");
+  }
+
+  /**
+   * The memo's value must never strongly reach the connection it is keyed by, or the
+   * weak key is never collected and every closed store -- credentials and all -- is
+   * kept for the life of the JVM. Pinned on the object graph rather than on the
+   * collector: from the walk, following every strong reference, neither the store nor
+   * a listed folder (which holds the store) is reachable.
+   */
+  @Test
+  @SneakyThrows
+  void theWalkMemoNeverStronglyReachesTheConnection() {
+    IMAPFolder listed = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    givenAMailboxListing(listed);
+    Store store = userEmailSettingService.connect(userEmailSetting());
+
+    Object walk = ReflectionTestUtils.invokeMethod(emailBoxService, "walkFolders", store);
+
+    Set<Object> forbidden = Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    forbidden.add(store);
+    forbidden.add(listed);
+    assertFalse(stronglyReaches(walk, forbidden, Collections.newSetFromMap(new java.util.IdentityHashMap<>())),
+                "the walk holds the listed folders, hence the store, strongly");
+  }
+
+  /**
+   * Whether an object graph reaches one of the forbidden objects through strong
+   * references only. Descends into this add-on's own objects (records and DTOs) by
+   * their declared fields and into collections and maps by their elements; stops at a
+   * {@link java.lang.ref.Reference} (that is the point) and at anything else foreign,
+   * which is only ever checked for identity.
+   *
+   * @param root where to start
+   * @param forbidden the objects that must not be reached
+   * @param seen the objects already visited, updated in place
+   * @return true when a forbidden object is strongly reachable
+   */
+  private boolean stronglyReaches(Object root, Set<Object> forbidden, Set<Object> seen) throws IllegalAccessException {
+    if (root == null || !seen.add(root)) {
+      return false;
+    }
+    if (forbidden.contains(root)) {
+      return true;
+    }
+    if (root instanceof java.lang.ref.Reference<?>) {
+      return false;
+    }
+    if (root instanceof Map<?, ?> map) {
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        if (stronglyReaches(entry.getKey(), forbidden, seen) || stronglyReaches(entry.getValue(), forbidden, seen)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (root instanceof Iterable<?> iterable) {
+      for (Object element : iterable) {
+        if (stronglyReaches(element, forbidden, seen)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (!root.getClass().getName().startsWith("org.exoplatform.emailConnector")) {
+      return false;
+    }
+    for (java.lang.reflect.Field field : root.getClass().getDeclaredFields()) {
+      if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+        continue;
+      }
+      field.setAccessible(true);
+      if (stronglyReaches(field.get(root), forbidden, seen)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * An on-demand refresh of a folder that is not mirrored is a 400, not a silent
+   * no-op; and a move out of ALL_MAIL is refused and counted, while one out of the
+   * Archive goes through to the connection.
+   */
+  @Test
+  void refreshRefusesAnUnmirroredFolderAndMoveRefusesTheCompletionStore() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", false));
+    assertEquals("emailConnector.folder.notMirrored",
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.synchronizeCustomFolder(TEST_USER, 6L)).getMessage());
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    assertEquals(2, emailBoxService.moveToFolder(List.of(1L, 2L), TEST_USER, MailFolder.ALL_MAIL, "CUSTOM:5"));
+    verify(userEmailSettingService, never()).connect(any());
+    // From the Archive the move is allowed: it reaches the connection (which this test
+    // does not provide, so the move reports the connection failure rather than a refusal).
+    assertThrows(IllegalStateException.class, () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.ARCHIVE, "CUSTOM:5"));
+    verify(userEmailSettingService).connect(userEmailSetting);
+  }
+
+  /**
+   * The folder list with {@code refresh} walks the mailbox on this request and keeps
+   * what the walk found: the registry rows and the remembered names, saved because
+   * the user asked for this walk.
+   */
+  @Test
+  @SneakyThrows
+  void refreshingTheFolderListWalksNowAndKeepsWhatItFound() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    IMAPFolder factures = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    lenient().when(factures.getName()).thenReturn("Factures");
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    Folder defaultFolder = givenAMailboxListing(factures, junk);
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
+
+    MailFolderList list = emailBoxService.getFolders(TEST_USER, true);
+
+    verify(defaultFolder).listSubscribed("*");
+    ArgumentCaptor<EmailFolder> created = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage).createFolder(created.capture());
+    assertEquals("Factures", created.getValue().getRemoteName());
+    ArgumentCaptor<SettingValue> saved = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), saved.capture());
+    MailboxSyncState state = JsonUtils.fromJsonString(saved.getValue().getValue().toString(), MailboxSyncState.class);
+    assertEquals("[Gmail]/Spam", state.getJunkFolderName());
+    assertNotNull(state.getFoldersDiscoveredAt());
+    assertEquals(List.of(MailFolder.INBOX, MailFolder.JUNK), list.getFolders().stream().map(MailFolderView::getKey).toList(),
+                 "the Junk the walk found is offered, before anything was cached from it");
   }
 
   /**
