@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -99,7 +100,31 @@ public class EmailBoxDAOTest {
   }
 
   /**
-   * Persists one cached message.
+   * The "whole mailbox as it may be SHOWN" read leaves out every hidden folder in one
+   * bound list. Executed here against the engine because nothing in the product calls
+   * it yet — it is the read the total one's javadoc tells a future caller to use, so
+   * its grammar ({@code NOT IN} over a collection parameter) has to be known to parse
+   * and to answer right before that caller exists, not after.
+   */
+  @Test
+  void theShowableReadLeavesOutEveryHiddenFolderAtOnce() {
+    persistEmail(10L, MailFolder.INBOX, "kept", Boolean.TRUE);
+    persistEmail(11L, MailFolder.SENT, "also kept", Boolean.TRUE);
+    persistEmail(12L, MailFolder.TRASH, "deleted", Boolean.TRUE);
+    persistEmail(13L, MailFolder.JUNK, "quarantined", Boolean.TRUE);
+    entityManager.clear();
+
+    List<Long> shown = emailBoxDAO.findByUserIdExcludingFoldersWithAttachments(USERNAME, MailFolder.HIDDEN_FOLDERS)
+                                  .stream()
+                                  .map(EmailBoxEntity::getMailRemoteId)
+                                  .sorted()
+                                  .toList();
+
+    assertEquals(List.of(10L, 11L), shown, "the inbox and sent rows are shown; the deleted and the quarantined ones are not");
+  }
+
+  /**
+   * Persists one cached inbox message.
    *
    * @param remoteId the IMAP UID
    * @param body the cached body
@@ -107,10 +132,23 @@ public class EmailBoxDAOTest {
    * @return the row's generated id
    */
   private Long persistEmail(long remoteId, String body, Boolean html) {
+    return persistEmail(remoteId, MailFolder.INBOX, body, html);
+  }
+
+  /**
+   * Persists one cached message in a given folder.
+   *
+   * @param remoteId the IMAP UID, within that folder
+   * @param folder the {@link MailFolder} discriminator
+   * @param body the cached body
+   * @param html what the message said about that body, null when it was never asked
+   * @return the row's generated id
+   */
+  private Long persistEmail(long remoteId, String folder, String body, Boolean html) {
     EmailBoxEntity email = new EmailBoxEntity();
     email.setMailRemoteId(remoteId);
     email.setUserId(USERNAME);
-    email.setFolder(MailFolder.INBOX);
+    email.setFolder(folder);
     email.setSender("Bob Smith,bob@example.org");
     email.setTo("Alice,alice@example.com");
     email.setCc("");
