@@ -1194,13 +1194,21 @@ export default {
       }
       this.selectMode = true;
     },
-    // Patch the favorite flag on every copy this drawer holds: the cached folder
-    // window (which the list rows and the search's local matches derive from),
-    // the server search hits, and the opened message. No service call here —
-    // this is also how a refused push is rolled back visually.
-    // acknowledged tells whether the value carried here is already the mail server's:
-    // false for an optimistic toggle whose \Flagged push is still travelling, true for
-    // the revert broadcast below, which exists precisely because the server refused.
+    /**
+     * Patches the favorite flag on every copy this drawer holds: the cached folder
+     * window (which the list rows and the search's local matches derive from),
+     * the server search hits, and the opened message. No service call here —
+     * this is also how a refused push is rolled back visually.
+     *
+     * @param {boolean} favorite the flag value to show
+     * @param {Array<number>} emailIds the INBOX IMAP UIDs of the messages
+     * @param {boolean} acknowledged whether the value carried here is already the
+     *          mail server's: false for an optimistic toggle whose \Flagged push
+     *          is still travelling, true for the revert broadcast below (which
+     *          exists precisely because the server refused) and for a change
+     *          another app made and had confirmed
+     * @returns {void}
+     */
     applyEmailsFavoriteStatus(favorite, emailIds = [], acknowledged = false) {
       const ids = new Set(emailIds);
       // INBOX rows only, like the two copies below: the in-app star never fires
