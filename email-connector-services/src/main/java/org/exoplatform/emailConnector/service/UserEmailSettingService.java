@@ -160,6 +160,16 @@ public class UserEmailSettingService {
 
   /**
    * Set user email setting.
+   * <p>
+   * The per-user sync period is deliberately NOT copied from the caller: it is a
+   * client-controlled field with nothing in the platform to reject an out-of-range
+   * value, and {@code EmailConnectorUtils#getEmailBoxUserSyncPeriod} prefers a
+   * stored per-user value over the administration-wide one — so a crafted request
+   * to {@code PUT /user-email-setting} could otherwise schedule that user's mailbox
+   * to sync every minute, multiplying their provider logins and undercutting
+   * whatever floor an administrator set on the sync-settings drawer. No UI ever
+   * sends this field; nothing today legitimately needs it set, so it is always
+   * persisted as {@code null}, which reads as "use the administration-wide period".
    *
    * @param userEmailSetting userEmailSetting to set
    * @param username user setting the user email setting
@@ -169,7 +179,7 @@ public class UserEmailSettingService {
     UserEmailSettingEntity userEmailSettingEntity = new UserEmailSettingEntity(userEmailSetting.getEmailConnectorId(),
                                                                                userEmailSetting.getEmailAddress(),
                                                                                userEmailSetting.getEmailPassword(),
-                                                                               userEmailSetting.getEmailBoxUserSyncPeriod(),
+                                                                               null,
                                                                                userEmailSetting.getEmailSyncStatus(),
                                                                                userEmailSetting.getEmailSyncFailedAttemps(),
                                                                                userEmailSetting.getLastEmailSyncStartDate());
