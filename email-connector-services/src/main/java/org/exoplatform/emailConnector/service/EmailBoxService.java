@@ -846,6 +846,12 @@ public class EmailBoxService {
       // imported leave the plain count where it was while the badge gained one —
       // and a snapshot of the wrong number would keep that badge stale until
       // something else happened to announce. Everyone else still pays one count.
+      // Both snapshots reload the preference on purpose: a preference saved WHILE
+      // this sync runs announces on its own (EmailNotificationPreferencesListener),
+      // and the one case that leaves the badge a step behind — the old rule's
+      // "before" happening to equal the new rule's "after" — self-heals at the next
+      // count change. Folding the two reads into one cached setting would not remove
+      // that race; it would only make the "after" count lie about the rule it used.
       long unreadCountBeforeSync = countUnreadEmails(username);
       syncState = loadMailboxSyncState(username);
       originalSyncStateJson = JsonUtils.toJsonString(syncState);
