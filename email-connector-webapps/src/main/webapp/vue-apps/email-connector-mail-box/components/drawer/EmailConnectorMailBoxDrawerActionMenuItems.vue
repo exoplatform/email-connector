@@ -155,7 +155,7 @@ export default {
       type: Boolean,
       default: false,
     },
-    // Folders that actually hold mail (INBOX plus any of SENT/ARCHIVE/DRAFTS/TRASH with messages).
+    // Folders that actually hold mail (INBOX plus any of SENT/ARCHIVE/DRAFTS/JUNK/TRASH with messages).
     availableFolders: {
       type: Array,
       default: () => ['INBOX'],
@@ -185,11 +185,12 @@ export default {
         { id: 'SENT', label: 'emailConnector.mailBox.list.drawer.folder.sent', icon: 'fa-paper-plane' },
         { id: 'ARCHIVE', label: 'emailConnector.mailBox.list.drawer.folder.archive', icon: 'fa-archive' },
         { id: 'DRAFTS', label: 'emailConnector.mailBox.list.drawer.folder.drafts', icon: 'fa-file-alt' },
-        // Last, the way every mail client puts it last, and offered only once the
-        // mailbox has a Trash folder holding something (see availableFolders). What
-        // it opens is a READ-ONLY listing: nothing in it may be restored, emptied or
-        // deleted for good yet, and none of the ordinary mail actions is offered on
-        // its rows either — see isReadOnlyFolder in the mailbox service for why.
+        // The two hidden folders last, Spam before Trash the way every mail client
+        // orders them, and each offered only once the mailbox has such a folder holding
+        // something (see availableFolders). What they open is a listing on which the
+        // ordinary mail actions are withheld in favour of their own — see
+        // isReadOnlyFolder, hasJunkActions and hasTrashActions in the mailbox service.
+        { id: 'JUNK', label: 'emailConnector.mailBox.list.drawer.folder.junk', icon: 'fa-ban' },
         { id: 'TRASH', label: 'emailConnector.mailBox.list.drawer.folder.trash', icon: 'fa-trash' },
       ],
     };
@@ -210,7 +211,7 @@ export default {
      * listed: inside a category view, re-picking the current folder is the way
      * back to its plain view.
      *
-     * @param {String} folder the folder id (INBOX / SENT / ARCHIVE / DRAFTS / TRASH)
+     * @param {String} folder the folder id (INBOX / SENT / ARCHIVE / DRAFTS / JUNK / TRASH)
      * @returns {void}
      */
     switchFolder(folder) {

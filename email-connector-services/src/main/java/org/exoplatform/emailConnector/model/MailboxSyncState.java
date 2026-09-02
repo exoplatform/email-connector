@@ -26,7 +26,7 @@ import lombok.NoArgsConstructor;
  * read-modified-written by user-facing preference flows, and sync bookkeeping
  * racing user preferences over one JSON blob is how settings get clobbered).
  * Carries one {@link FolderSyncSnapshot} per bulk-synced folder — the basis of
- * the skip-if-unchanged check — and the discovered Sent/Archive/Drafts/Trash
+ * the skip-if-unchanged check — and the discovered Sent/Archive/Drafts/Trash/Junk
  * folder names, so a routine sync stops re-scanning the whole folder list
  * ({@code LIST *}) every period just to re-find folders that never move. Flat
  * fields rather than a map, so the JSON round-trip stays trivial for the settings
@@ -80,6 +80,18 @@ public class MailboxSyncState {
   // deal the other four folders get. Also trailing, for the reason above.
   private FolderSyncSnapshot trashSnapshot;
 
+  // The discovered Junk folder, remembered for the same reason as the four above and
+  // resolved by the same strict lookup as Trash. Trailing, for the reason every field
+  // after the first three is trailing: the positional all-args constructor.
+  private String             junkFolderName;
+
+  // The Junk folder's own change snapshot -- the same skip-if-unchanged deal as the
+  // others, and worth more here than for most: a spam folder is written to by the
+  // server on its own schedule and rarely read by anyone, so most cycles find it
+  // unchanged and the skip is what keeps its 30-message window from being re-listed
+  // every period for nothing. Trailing, for the reason above.
+  private FolderSyncSnapshot junkSnapshot;
+
   /**
    * The stored snapshot of a bulk-synced folder.
    *
@@ -94,6 +106,7 @@ public class MailboxSyncState {
       case MailFolder.ARCHIVE -> archiveSnapshot;
       case MailFolder.DRAFTS -> draftsSnapshot;
       case MailFolder.TRASH -> trashSnapshot;
+      case MailFolder.JUNK -> junkSnapshot;
       default -> null;
     };
   }
@@ -112,6 +125,7 @@ public class MailboxSyncState {
       case MailFolder.ARCHIVE -> archiveSnapshot = snapshot;
       case MailFolder.DRAFTS -> draftsSnapshot = snapshot;
       case MailFolder.TRASH -> trashSnapshot = snapshot;
+      case MailFolder.JUNK -> junkSnapshot = snapshot;
       default -> {
         // ALL_MAIL is an on-demand completion store, never bulk-synced: nothing to track.
       }

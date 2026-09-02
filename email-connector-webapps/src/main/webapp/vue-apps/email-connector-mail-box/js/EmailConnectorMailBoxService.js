@@ -128,10 +128,15 @@ const attachmentMapIconsExtensions = new Map([
 // and the backend refuses the ordinary two on it (EmailBoxService#canMoveOutOf) rather
 // than trusting this list.
 //
+// Junk joins it: the ordinary actions are withheld on a quarantined message for the
+// same reason, and it has actions of its own instead (see JUNK_ACTION_FOLDERS) — "Not
+// spam", and a Delete that files into the Trash like everywhere else (decided with the
+// PO: reversible, not Gmail's "delete forever").
+//
 // One list, asked for in one place: the row menu, the swipe, the reader's toolbar and
 // the bulk toolbar all read it, so a folder cannot be read-only in one of them and
 // writable in the next.
-const READ_ONLY_FOLDERS = ['TRASH'];
+const READ_ONLY_FOLDERS = ['TRASH', 'JUNK'];
 
 /**
  * Whether a folder's messages may only be read, never acted on.
@@ -166,6 +171,83 @@ const TRASH_ACTION_FOLDERS = ['TRASH'];
  */
 export function hasTrashActions(folder) {
   return TRASH_ACTION_FOLDERS.includes(folder || 'INBOX');
+}
+
+// Folders that offer the Junk actions — "Not spam", and a Delete into the Trash.
+//
+// A third list rather than a second entry in TRASH_ACTION_FOLDERS, because the two
+// hidden folders do not offer the same pair: Trash offers restore and destroy, Junk
+// offers restore and the ordinary reversible delete. Read by the same three places as
+// the two lists above.
+const JUNK_ACTION_FOLDERS = ['JUNK'];
+
+/**
+ * Whether a folder's messages may be marked as not spam, or deleted out of the spam.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when the Junk actions may be offered on those messages
+ */
+export function hasJunkActions(folder) {
+  return JUNK_ACTION_FOLDERS.includes(folder || 'INBOX');
+}
+
+/**
+ * Whether a row may be marked as spam: any writable folder's rows, minus the drafts —
+ * exactly the rows the delete and archive are offered on.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when "Mark as spam" may be offered on those messages
+ */
+export function canMarkAsJunk(folder) {
+  return !isReadOnlyFolder(folder) && (folder || 'INBOX') !== 'DRAFTS';
+}
+
+/**
+ * Moves messages to the Junk folder — "Mark as spam". One request per folder the
+ * rows are listed in, the way delete and archive are sent, because the UIDs are
+ * numbered within their folder.
+ *
+ * @param {Array<Number>} mailRemoteIds the IMAP UIDs, within `folder`
+ * @param {String} folder the folder those ids are numbered in; INBOX when omitted
+ * @returns {Promise} resolving to {failedJunkMoves}
+ */
+export function markAsJunk(mailRemoteIds, folder) {
+  return fetch(`/email-connector/rest/email-box/junk${folderQuery(folder)}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(mailRemoteIds)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when marking emails as spam');
+    }
+    return resp.json();
+  });
+}
+
+/**
+ * Puts quarantined messages back into the inbox — "Not spam". As with the Trash
+ * restore, they reappear in the inbox at the next synchronization, not at once.
+ *
+ * @param {Array} mailRemoteIds the IMAP UIDs, within the Junk folder, to put back
+ * @returns {Promise} resolving to {failedJunkRestores}
+ */
+export function restoreFromJunk(mailRemoteIds) {
+  return fetch('/email-connector/rest/email-box/junk/restore', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(mailRemoteIds)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when marking emails as not spam');
+    }
+    return resp.json();
+  });
 }
 
 /**

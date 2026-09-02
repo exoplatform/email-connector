@@ -1239,11 +1239,13 @@ public class EmailBoxStorage {
 
   /**
    * The cached mailbox as the search over cached mail needs it: subject, sender, body,
-   * dates and flags, and nothing else -- minus the mail the user deleted.
+   * dates and flags, and nothing else -- minus the mail the user deleted and the mail
+   * the server quarantined.
    * <p>
-   * Trash is left out because search is the read where a deleted message is hardest to
-   * recognise as one: a hit carries a subject, a sender and a date, and nothing about it
-   * says it came out of the bin.
+   * Trash and Junk ({@link MailFolder#HIDDEN_FOLDERS}) are left out because search is
+   * the read where a hidden message is hardest to recognise as one: a hit carries a
+   * subject, a sender and a date, and nothing about it says it came out of the bin --
+   * or that the server had already decided it was a phishing attempt.
    * <p>
    * Deliberately not {@link #getEmails(String)}. That one fetches every attachment, asks
    * the category service for the linked ids of every single message, and builds an HTML
@@ -1255,7 +1257,7 @@ public class EmailBoxStorage {
    * @return the cached messages, newest first, carrying only what a search reads
    */
   public List<Email> getEmailsForSearch(String userId) {
-    return emailBoxDao.findByUserIdForSearch(userId, MailFolder.TRASH).stream().map(this::fromEntityForSearch).toList();
+    return emailBoxDao.findByUserIdForSearch(userId, MailFolder.HIDDEN_FOLDERS).stream().map(this::fromEntityForSearch).toList();
   }
 
   @SneakyThrows
@@ -1332,7 +1334,7 @@ public class EmailBoxStorage {
   public Map<String, ThreadSummary> getThreadSummaries(String userId, String userEmail) {
     Map<String, List<String>> participants = getDraftThreadParticipants(userId, userEmail);
     Map<String, ThreadSummary> summaries = new HashMap<>();
-    for (Object[] row : emailBoxDao.summarizeThreadsByUserId(userId, MailFolder.TRASH)) {
+    for (Object[] row : emailBoxDao.summarizeThreadsByUserId(userId, MailFolder.HIDDEN_FOLDERS)) {
       String threadId = (String) row[0];
       // The draft column is a SUM, so it can be null on a dialect that returns no
       // rows to add up; "no drafts" is the honest reading of that.
@@ -1382,7 +1384,7 @@ public class EmailBoxStorage {
    *         conversations that carry a draft, never null
    */
   private Map<String, List<String>> getDraftThreadParticipants(String userId, String userEmail) {
-    List<Object[]> rows = new ArrayList<>(emailBoxDao.findDraftThreadParticipantsByUserId(userId, MailFolder.TRASH));
+    List<Object[]> rows = new ArrayList<>(emailBoxDao.findDraftThreadParticipantsByUserId(userId, MailFolder.HIDDEN_FOLDERS));
     rows.sort(Comparator.comparing((Object[] row) -> (Date) row[2], Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(row -> StringUtils.defaultString((String) row[1])));
     Map<String, Map<String, String>> namesByAddress = new HashMap<>();
@@ -1452,11 +1454,15 @@ public class EmailBoxStorage {
    * conversation reader. Bodies and recipients are loaded so each message renders in
    * full.
    * <p>
-   * The one folder left out is the one the user emptied a message into. Deleting a
+   * The folders left out ({@link MailFolder#HIDDEN_FOLDERS}) are the one the user
+   * emptied a message into and the one the server quarantined it in. Deleting a
    * message from a conversation and finding it still in that conversation is the
    * defect this read would produce on its own, and it is why the exclusion went in
    * before the folder that fills it — see
-   * {@link EmailBoxDAO#findByUserIdAndThreadIdWithAttachments}.
+   * {@link EmailBoxDAO#findByUserIdAndThreadIdWithAttachments}. A spam reply
+   * rendered inside the real conversation it answers is the same defect with a
+   * worse payload, which is why Junk joined the same list rather than getting a
+   * predicate of its own.
    * <p>
    * Mail reads in the order the query returns it, by date. A DRAFT reads after the
    * message it answers, which its date cannot say and its In-Reply-To can: see
@@ -1474,7 +1480,7 @@ public class EmailBoxStorage {
   public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndThreadIdWithAttachments(userId,
                                                                                                threadId,
-                                                                                               MailFolder.TRASH);
+                                                                                               MailFolder.HIDDEN_FOLDERS);
     return EmailThreadingUtils.positionDraftsAfterTheirParent(emailBoxEntities.stream()
                                                                              .map(emailBoxEntity -> fromEntity(emailBoxEntity,
                                                                                                                true,
@@ -1487,8 +1493,8 @@ public class EmailBoxStorage {
   }
 
   /**
-   * The {@code Message-ID}s of every cached row of a conversation, TRASH included —
-   * the inventory read, deliberately not the reader's.
+   * The {@code Message-ID}s of every cached row of a conversation, TRASH and JUNK
+   * included — the inventory read, deliberately not the reader's.
    * <p>
    * Its one caller is the on-demand thread completion, which needs to know what it
    * already holds before it goes to the server for what it does not. See
@@ -1498,7 +1504,7 @@ public class EmailBoxStorage {
    *
    * @param userId the mailbox owner
    * @param threadId the conversation id
-   * @return the conversation's Message-IDs, Trash included, never null
+   * @return the conversation's Message-IDs, the hidden folders included, never null
    */
   public List<String> getThreadMessageIdsIncludingTrash(String userId, String threadId) {
     return emailBoxDao.findMailHeaderIdsByUserIdAndThreadId(userId, threadId);

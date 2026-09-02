@@ -54,16 +54,26 @@ import org.exoplatform.upload.UploadService;
 import io.meeds.social.category.service.CategoryLinkService;
 
 /**
- * What a cached {@link MailFolder#TRASH} row is and is not allowed to reach.
+ * What a cached hidden-folder row — {@link MailFolder#TRASH} or
+ * {@link MailFolder#JUNK}, the two of {@link MailFolder#HIDDEN_FOLDERS} — is and is
+ * not allowed to reach.
  * <p>
- * Nothing writes a TRASH row yet, which is exactly why these tests exist and why
- * they are the only place the change can be observed at all: the moment the Trash
- * folder starts being cached, every cross-folder read that carries no folder
- * predicate begins answering with deleted mail — a message thrown out of a
+ * Written when nothing yet wrote a TRASH row, which is exactly why these tests exist
+ * and why they were the only place the change could be observed at all: the moment
+ * the Trash folder starts being cached, every cross-folder read that carries no
+ * folder predicate begins answering with deleted mail — a message thrown out of a
  * conversation reappearing inside it, a search offering back what the user threw
  * away — silently, and everywhere at once. So the rows are written here by hand,
  * ahead of the sync that will write them for real, and the reads are asked what they
  * answer.
+ * <p>
+ * Every exclusion case writes a JUNK row beside its TRASH row, and that is not
+ * thoroughness: the exclusion is one bound list, and a pin that only ever writes an
+ * INBOX row and a TRASH row is green against {@code NOT IN ('TRASH')} exactly as it
+ * is against {@code NOT IN ('TRASH', 'JUNK')} — the badge pin was caught passing
+ * against its own bug that way ({@code EmailBoxBadgeScopeStorageTest}). With both
+ * rows present, dropping either folder from the list fails the read that would
+ * resurface it.
  * <p>
  * At the persistence level, on the SHIPPED Liquibase changelog and with the ambient
  * transaction taken away ({@link Propagation#NOT_SUPPORTED}, the rig
@@ -154,12 +164,15 @@ public class EmailBoxTrashExclusionStorageTest {
     emailBoxStorage.createEmail(mail(READER_USER, MailFolder.INBOX, 1L, "<monday@example.org>", MONDAY));
     emailBoxStorage.createEmail(mail(READER_USER, MailFolder.SENT, 2L, "<tuesday@example.org>", TUESDAY));
     emailBoxStorage.createEmail(mail(READER_USER, MailFolder.TRASH, 3L, "<deleted@example.org>", WEDNESDAY));
+    // A phishing reply to the same conversation, quarantined by the server: the exact
+    // message a reader with no Junk exclusion would render inside the real thread.
+    emailBoxStorage.createEmail(mail(READER_USER, MailFolder.JUNK, 4L, "<phishing@example.org>", WEDNESDAY + 1));
 
     List<Email> conversation = emailBoxStorage.getEmailsByThreadId(READER_USER, THREAD_ID, "alice@example.org");
 
     assertEquals(List.of("<monday@example.org>", "<tuesday@example.org>"),
                  conversation.stream().map(Email::getMailHeaderId).toList(),
-                 "a message the user deleted must not reappear in the conversation they deleted it from");
+                 "a message the user deleted must not reappear in the conversation they deleted it from, and a quarantined one must never appear in it at all");
   }
 
   /**
@@ -173,6 +186,7 @@ public class EmailBoxTrashExclusionStorageTest {
     emailBoxStorage.createEmail(mail(COUNT_USER, MailFolder.INBOX, 1L, "<monday@example.org>", MONDAY));
     emailBoxStorage.createEmail(mail(COUNT_USER, MailFolder.SENT, 2L, "<tuesday@example.org>", TUESDAY));
     emailBoxStorage.createEmail(mail(COUNT_USER, MailFolder.TRASH, 3L, "<deleted@example.org>", WEDNESDAY));
+    emailBoxStorage.createEmail(mail(COUNT_USER, MailFolder.JUNK, 4L, "<phishing@example.org>", WEDNESDAY + 1));
 
     ThreadSummary summary = summaryOf(COUNT_USER, "bob@example.org");
 
@@ -208,6 +222,10 @@ public class EmailBoxTrashExclusionStorageTest {
                                      new EmailSender("Veronika", "veronika@example.org", null, null)));
     emailBoxStorage.createEmail(from(mail(PARTICIPANTS_USER, MailFolder.TRASH, 2L, "<deleted@example.org>", TUESDAY),
                                      new EmailSender("Gianni", "gianni@example.org", null, null)));
+    // And the spammer, whose one message in the thread the server quarantined, is not
+    // somebody the conversation is with either.
+    emailBoxStorage.createEmail(from(mail(PARTICIPANTS_USER, MailFolder.JUNK, 3L, "<phishing@example.org>", TUESDAY + 1),
+                                     new EmailSender("Mallory", "mallory@example.org", null, null)));
     emailBoxStorage.createEmail(liveDraft(PARTICIPANTS_USER, "draft-1", WEDNESDAY));
 
     ThreadSummary summary = summaryOf(PARTICIPANTS_USER, "dave@example.org");
@@ -227,10 +245,11 @@ public class EmailBoxTrashExclusionStorageTest {
   void aDeletedMessageIsNotOfferedBackBySearch() {
     emailBoxStorage.createEmail(mail(SEARCH_USER, MailFolder.INBOX, 1L, "<monday@example.org>", MONDAY));
     emailBoxStorage.createEmail(mail(SEARCH_USER, MailFolder.TRASH, 2L, "<deleted@example.org>", TUESDAY));
+    emailBoxStorage.createEmail(mail(SEARCH_USER, MailFolder.JUNK, 3L, "<phishing@example.org>", WEDNESDAY));
 
     assertEquals(List.of("<monday@example.org>"),
                  emailBoxStorage.getEmailsForSearch(SEARCH_USER).stream().map(Email::getMailHeaderId).toList(),
-                 "what the user threw away must not be searchable back out of the bin");
+                 "what the user threw away must not be searchable back out of the bin, nor what the server quarantined out of the spam");
   }
 
   /**
@@ -243,12 +262,15 @@ public class EmailBoxTrashExclusionStorageTest {
   void wipingAMailboxStillReachesTheMailTheUserDeleted() {
     emailBoxStorage.createEmail(mail(WIPE_USER, MailFolder.INBOX, 1L, "<monday@example.org>", MONDAY));
     emailBoxStorage.createEmail(mail(WIPE_USER, MailFolder.TRASH, 2L, "<deleted@example.org>", TUESDAY));
+    emailBoxStorage.createEmail(mail(WIPE_USER, MailFolder.JUNK, 3L, "<phishing@example.org>", WEDNESDAY));
 
     List<Email> everything = emailBoxStorage.getEmails(WIPE_USER);
 
-    assertEquals(2, everything.size(), "the wipe has to see every row the mailbox produced, the deleted ones included");
+    assertEquals(3, everything.size(), "the wipe has to see every row the mailbox produced, the hidden ones included");
     assertTrue(everything.stream().anyMatch(email -> MailFolder.TRASH.equals(email.getFolder())),
-               "including the folder no other read is allowed to answer with");
+               "including the folders no other read is allowed to answer with");
+    assertTrue(everything.stream().anyMatch(email -> MailFolder.JUNK.equals(email.getFolder())),
+               "both of them: quarantined mail must die with the account it belonged to");
 
     emailBoxStorage.deleteEmailsByIds(everything.stream().map(Email::getId).toList());
 
@@ -265,11 +287,13 @@ public class EmailBoxTrashExclusionStorageTest {
   void theFolderCountsStillReportTheDeletedMail() {
     emailBoxStorage.createEmail(mail(COUNTS_USER, MailFolder.INBOX, 1L, "<monday@example.org>", MONDAY));
     emailBoxStorage.createEmail(mail(COUNTS_USER, MailFolder.TRASH, 2L, "<deleted@example.org>", TUESDAY));
+    emailBoxStorage.createEmail(mail(COUNTS_USER, MailFolder.JUNK, 3L, "<phishing@example.org>", WEDNESDAY));
 
     Map<String, Integer> counts = emailBoxStorage.getFolderMessageCounts(COUNTS_USER);
 
     assertEquals(1, counts.get(MailFolder.INBOX));
     assertEquals(1, counts.get(MailFolder.TRASH), "a Trash tab with something in it has to be offered, not hidden");
+    assertEquals(1, counts.get(MailFolder.JUNK), "and a Spam tab likewise: browsable is the half of the rule the counts serve");
   }
 
   /**
@@ -326,8 +350,11 @@ public class EmailBoxTrashExclusionStorageTest {
   void deletingAnUnreadMessageTakesItOutOfTheBadge() {
     emailBoxStorage.createEmail(unread(mail(BADGE_USER, MailFolder.INBOX, 1L, "<monday@example.org>", MONDAY)));
     emailBoxStorage.createEmail(unread(mail(BADGE_USER, MailFolder.TRASH, 2L, "<deleted@example.org>", TUESDAY)));
+    emailBoxStorage.createEmail(unread(mail(BADGE_USER, MailFolder.JUNK, 3L, "<phishing@example.org>", WEDNESDAY)));
 
-    assertEquals(1, emailBoxStorage.countUnreadEmails(BADGE_USER), "deleting an unread message is a way of reading it");
+    assertEquals(1,
+                 emailBoxStorage.countUnreadEmails(BADGE_USER),
+                 "deleting an unread message is a way of reading it, and spam the user never saw is not unread mail of theirs");
   }
 
   /**

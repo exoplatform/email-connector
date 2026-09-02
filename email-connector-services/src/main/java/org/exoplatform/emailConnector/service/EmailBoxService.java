@@ -258,6 +258,27 @@ public class EmailBoxService {
    */
   private static final int        TRASH_FOLDER_SYNC_LIMIT                                     = 30;
 
+  /**
+   * How many of the most recently quarantined messages the Junk folder caches — the
+   * same thirty as Trash, for the same reasons, and one of its own.
+   * <p>
+   * Spam is the one folder that fills without the user doing anything at all: the
+   * server writes to it on its own schedule, for every user, forever, and nobody reads
+   * it except by exception. What the view promises is the same recent history Trash
+   * promises — "what did the filter catch lately", the answer to the newsletter that
+   * did not arrive or the customer who says they wrote — and thirty messages is a
+   * generous reading of "lately" for a folder consulted only when something is
+   * missing. The reason of its own: every message in the window costs a body download
+   * on first sync, and the bodies here are the ones least worth having — a mailbox
+   * that receives a hundred spam messages a day would put every one of them through
+   * that at the widths the other folders use, for a folder the user may never open.
+   * <p>
+   * As for Trash, <b>changing this number forces a full re-download of the folder for
+   * every mailbox</b>: the window size is part of the {@link FolderSyncSnapshot} and
+   * {@link #canSkipFolderSync} compares it.
+   */
+  private static final int        JUNK_FOLDER_SYNC_LIMIT                                      = 30;
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
@@ -338,6 +359,38 @@ public class EmailBoxService {
                                                                                                      "papirkurv",
                                                                                                      "roskakori");
 
+  // The RFC 6154 SPECIAL-USE attribute that names a mailbox's Junk folder. As with
+  // Drafts and Trash, the server saying so beats any name we could guess, so it is
+  // tried first. Gmail's [Gmail]/Spam carries it; so does Dovecot's and Cyrus's Junk.
+  private static final String     JUNK_SPECIAL_USE_ATTRIBUTE                                  = "\\Junk";
+
+  // The well-known Junk folder names, for the servers that never learned SPECIAL-USE,
+  // in the same spread of locales as TRASH_FOLDER_NAMES plus the "Spam" / "Bulk" names
+  // the big providers and their clients create. Matched on the folder's last path
+  // segment, for equality — see findSyncableJunkFolder for why this list is not
+  // applied as a "contains", and why there is no loose variant beside it.
+  private static final Set<String> JUNK_FOLDER_NAMES                                          =
+                                                                                              Set.of("junk",
+                                                                                                     "junk e-mail",
+                                                                                                     "junk email",
+                                                                                                     "spam",
+                                                                                                     "bulk mail",
+                                                                                                     "courrier indésirable",
+                                                                                                     "indésirables",
+                                                                                                     "pourriel",
+                                                                                                     "spamverdacht",
+                                                                                                     "unerwünscht",
+                                                                                                     "posta indesiderata",
+                                                                                                     "correo no deseado",
+                                                                                                     "no deseado",
+                                                                                                     "lixo eletrônico",
+                                                                                                     "lixo eletronico",
+                                                                                                     "ongewenste e-mail",
+                                                                                                     "skräppost",
+                                                                                                     "roskaposti",
+                                                                                                     "uønsket e-post",
+                                                                                                     "søppelpost");
+
   // Human names for the two folders the by-UID removal mechanic is pointed at, used
   // only in its log lines. The mechanic itself (removeMessageByUid / closeFolderQuietly)
   // is folder-agnostic; these keep the logs readable without it having to ask a folder
@@ -345,6 +398,8 @@ public class EmailBoxService {
   private static final String     DRAFTS_FOLDER_LABEL                                         = "Drafts";
 
   private static final String     TRASH_FOLDER_LABEL                                          = "Trash";
+
+  private static final String     JUNK_FOLDER_LABEL                                           = "Junk";
 
   // How many stray Drafts copies of already-sent mail one sync may remove from the
   // mail server. A bound, not a policy: the janitor exists for the occasional copy a
@@ -537,6 +592,12 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_PURGE_EMAIL_MESSAGE                    =
                                                                              "User %s is not allowed to permanently delete email";
 
+  private static final String     USER_NOT_ALLOWED_FOR_JUNK_EMAIL_MESSAGE                     =
+                                                                             "User %s is not allowed to mark email as spam";
+
+  private static final String     USER_NOT_ALLOWED_FOR_NOT_JUNK_EMAIL_MESSAGE                 =
+                                                                             "User %s is not allowed to mark email as not spam";
+
   /**
    * The administrator's kill switch for the server-side half of drafts, in the
    * style of {@code email.connector.contacts.publish.enabled}: a JVM property read
@@ -573,6 +634,17 @@ public class EmailBoxService {
    */
   public static final String      TRASH_SYNC_ENABLED_PROPERTY                                 =
                                                                                               "email.connector.trash.sync.enabled";
+
+  /**
+   * The administrator's kill switch for the Junk folder's synchronization — the
+   * same switch as {@link #TRASH_SYNC_ENABLED_PROPERTY}, for the same folder shape:
+   * a read, withdrawn without a restart, that stops new JUNK rows being cached and
+   * nothing else. Spam is the folder whose size is least the user's doing, so it is
+   * the one an administrator on a rate-limiting provider is most likely to need to
+   * take off the loop. Default ON.
+   */
+  public static final String      JUNK_SYNC_ENABLED_PROPERTY                                  =
+                                                                                              "email.connector.junk.sync.enabled";
 
   /**
    * The administrator's kill switch for the post-send Sent-folder refresh, in the
@@ -904,6 +976,20 @@ public class EmailBoxService {
           }
         } catch (Exception e) {
           LOG.warn("Could not sync the Trash folder for user {}", username, e);
+        }
+        // Junk after Trash, and everything said of Trash above holds here with one
+        // addition: nothing depends on it, and it is the folder most likely to be big
+        // and noisy, so it goes last where a slow or failing pass costs nobody the
+        // folders that matter. Same window (JUNK_FOLDER_SYNC_LIMIT), same silence on a
+        // mailbox that has no such folder, and it notifies nothing — the server has
+        // already decided these are not news.
+        try {
+          if (isJunkSyncEnabled()) {
+            int junkWindow = Math.min(emailBoxCacheSize, JUNK_FOLDER_SYNC_LIMIT);
+            syncFolderIfChanged(store, resolveJunkFolder(store, syncState), MailFolder.JUNK, username, userEmailSetting, junkWindow, false, syncState);
+          }
+        } catch (Exception e) {
+          LOG.warn("Could not sync the Junk folder for user {}", username, e);
         }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
@@ -1518,6 +1604,33 @@ public class EmailBoxService {
     IMAPFolder trashFolder = findSyncableTrashFolder(store);
     syncState.setTrashFolderName(trashFolder != null ? trashFolder.getFullName() : null);
     return trashFolder;
+  }
+
+  /**
+   * The syncable Junk folder, from the name remembered in the sync state when
+   * possible — same reasoning and same fallback as {@link #resolveTrashFolder}, and
+   * through the same kind of STRICT lookup ({@link #findSyncableJunkFolder}).
+   * <p>
+   * Unlike Trash, this is the ONLY resolver Junk has: "Mark as spam" files into the
+   * folder resolved here, not into a loose destination guessed by name. See
+   * {@link #findSyncableJunkFolder} for why a loose variant would be the wrong tool
+   * on this folder in particular.
+   *
+   * @param store the connected store
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @return the Junk folder, or null when the mailbox has none to bulk-sync
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder resolveJunkFolder(Store store, MailboxSyncState syncState) throws MessagingException {
+    if (StringUtils.isNotBlank(syncState.getJunkFolderName())) {
+      Folder cached = store.getFolder(syncState.getJunkFolderName());
+      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
+        return imapFolder;
+      }
+    }
+    IMAPFolder junkFolder = findSyncableJunkFolder(store);
+    syncState.setJunkFolderName(junkFolder != null ? junkFolder.getFullName() : null);
+    return junkFolder;
   }
 
   /**
@@ -2491,7 +2604,7 @@ public class EmailBoxService {
    *
    * @param username user getting user emails
    * @param folder the folder to list: {@code INBOX}, {@code SENT}, {@code ARCHIVE},
-   *          {@code DRAFTS} or {@code TRASH}
+   *          {@code DRAFTS}, {@code TRASH} or {@code JUNK}
    * @param starredOnly when {@code true}, only the starred messages are returned
    * @return the folder's cached messages plus the per-conversation summaries
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
@@ -2508,14 +2621,11 @@ public class EmailBoxService {
     // EmailConnectorMailBoxDrawer.vue are the same list expressed twice, with no
     // shared constant between them — change one and the other has to change with it,
     // or the client offers a folder this refuses (or hides one it would serve).
-    // TRASH is on THIS half only, on purpose and temporarily. The rows are cached and
-    // this will serve them, but the drawer does not yet offer the folder: the row menu,
-    // the swipe and the detail actions still offer delete and archive everywhere while
-    // the backend resolves both against INBOX (EXO-89367), and a Trash listing whose
-    // three-dots offers an inbox-keyed delete is worse than no Trash listing at all.
-    // The client half arrives with those restrictions, in one piece, in the next slice.
+    // TRASH and JUNK are browsable and nothing more: their rows are served here, and
+    // every OTHER read leaves them out (MailFolder.HIDDEN_FOLDERS) — which is the
+    // whole meaning of "browsable, not resurfaced".
     if (!MailFolder.INBOX.equals(folder) && !MailFolder.SENT.equals(folder) && !MailFolder.ARCHIVE.equals(folder)
-        && !MailFolder.DRAFTS.equals(folder) && !MailFolder.TRASH.equals(folder)) {
+        && !MailFolder.DRAFTS.equals(folder) && !MailFolder.TRASH.equals(folder) && !MailFolder.JUNK.equals(folder)) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
     }
     List<Email> emails = starredOnly ? emailBoxStorage.getStarredEmails(username, folder)
@@ -3385,16 +3495,70 @@ public class EmailBoxService {
   }
 
   /**
+   * Moves messages to the Junk folder — "Mark as spam", the user reporting to their
+   * own mailbox what the filter missed, so every other client of the account agrees
+   * with them and (on the providers that learn from it) the filter does too.
+   * <p>
+   * It files into the STRICTLY resolved Junk folder ({@link #resolveJunkFolder}) and
+   * refuses when the mailbox has none, the way archive does — there is no second
+   * meaning of "mark as spam" to fall back on, and inventing one (a delete, say) would
+   * do something the user did not ask for to a message they were trying to report.
+   * The message reaches the JUNK cache at the next Junk sync, as a restored message
+   * reaches the inbox at the next INBOX sync; nothing is written back here.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to report
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * @return how many of them could NOT be marked as spam
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int markAsJunk(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
+    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK);
+  }
+
+  /**
    * Where {@link #applyMoveAction} is putting the messages it takes out of the folder
-   * they are listed in. The two differ by their destination folder and by nothing else
-   * — same connection, same identity check, same removal, same compensation — which is
-   * the same reason {@link TrashAction} exists beside them.
+   * they are listed in. The three differ by their destination folder and by nothing
+   * else — same connection, same identity check, same removal, same compensation —
+   * which is the same reason {@link HiddenFolderAction} exists beside them.
    */
   private enum MoveAction {
     /** Into the Trash folder. */
     DELETE,
     /** Into the Archive folder. */
-    ARCHIVE
+    ARCHIVE,
+    /** Into the Junk folder. */
+    JUNK
+  }
+
+  /**
+   * The message a caller gets when they may not act on their mailbox, per action —
+   * kept apart from the action's own name so the wording stays what the interface
+   * says ("mark as spam") rather than what the folder is called.
+   *
+   * @param action the action that was refused
+   * @return the {@code String.format} template, taking the username
+   */
+  private String notAllowedMessage(MoveAction action) {
+    return switch (action) {
+      case DELETE -> USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE;
+      case ARCHIVE -> USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE;
+      case JUNK -> USER_NOT_ALLOWED_FOR_JUNK_EMAIL_MESSAGE;
+    };
+  }
+
+  /**
+   * The action as a log line names it while it is happening.
+   *
+   * @param action the action under way
+   * @return its present participle
+   */
+  private String moveVerb(MoveAction action) {
+    return switch (action) {
+      case DELETE -> "deleting";
+      case ARCHIVE -> "archiving";
+      case JUNK -> "marking as spam";
+    };
   }
 
   /**
@@ -3445,9 +3609,7 @@ public class EmailBoxService {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-      throw new IllegalAccessException(String.format(action == MoveAction.DELETE ? USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE
-                                                                                : USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE,
-                                                     username));
+      throw new IllegalAccessException(String.format(notAllowedMessage(action), username));
     }
     String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
     if (!canMoveOutOf(action, sourceFolder)) {
@@ -3483,17 +3645,32 @@ public class EmailBoxService {
         rows.values().forEach(this::recreateCachedRow);
         return mailRemoteIds.size();
       }
-      // The DESTINATION lookups, which are deliberately the loose ones: guessing loosely
-      // where to FILE a message is survivable (it lands in a folder of the user's own,
-      // one message at a time, and they can see it), while guessing loosely what to READ
-      // is not — see findSyncableTrashFolder.
-      Folder destination = action == MoveAction.DELETE ? findTrashFolder(store) : findArchiveFolder(store);
+      // The DESTINATION lookups. Trash and Archive are deliberately the loose ones:
+      // guessing loosely where to FILE a message is survivable (it lands in a folder of
+      // the user's own, one message at a time, and they can see it), while guessing
+      // loosely what to READ is not — see findSyncableTrashFolder. Junk is the one
+      // exception and takes the STRICT resolver, because for Junk the two questions
+      // have one answer: whatever this files into is what the Junk sync reads back and
+      // what every other read then hides, so a loose guess here would not be a message
+      // "landing somewhere the user can see it" — it would be a message hidden from
+      // every screen, in a folder the sync never opens. The state loaded for it is not
+      // written back, on the rule resolveCachedFolder states.
+      Folder destination = switch (action) {
+        case DELETE -> findTrashFolder(store);
+        case ARCHIVE -> findArchiveFolder(store);
+        case JUNK -> resolveJunkFolder(store, loadMailboxSyncState(username));
+      };
       if (destination == null) {
-        if (action == MoveAction.ARCHIVE) {
-          // Nowhere to archive to. The old code silently did nothing here and answered
-          // success; there is no second meaning of "archive" to fall back on, so every
-          // row goes back and every id counts as failed.
-          LOG.warn("No Archive folder for user {}; {} message(s) could not be archived", username, mailRemoteIds.size());
+        if (action != MoveAction.DELETE) {
+          // Nowhere to archive to, or nowhere to file spam. The old archive code
+          // silently did nothing here and answered success; there is no second meaning
+          // of "archive" or of "mark as spam" to fall back on, so every row goes back
+          // and every id counts as failed.
+          LOG.warn("No {} folder for user {}; {} message(s) could not be {}",
+                   action == MoveAction.ARCHIVE ? "Archive" : JUNK_FOLDER_LABEL,
+                   username,
+                   mailRemoteIds.size(),
+                   action == MoveAction.ARCHIVE ? "archived" : "marked as spam");
           rows.values().forEach(this::recreateCachedRow);
           return mailRemoteIds.size();
         }
@@ -3558,7 +3735,7 @@ public class EmailBoxService {
           recreateCachedRow(row);
           failures++;
           LOG.error("Error when {} email {} of folder {} for user {}",
-                    action == MoveAction.DELETE ? "deleting" : "archiving",
+                    moveVerb(action),
                     mailRemoteId,
                     sourceFolder,
                     username,
@@ -3584,20 +3761,28 @@ public class EmailBoxService {
   /**
    * Whether an action has a meaning at all on the folder the caller is acting from.
    * <p>
-   * Three refusals, each one an operation whose destination is its own source or whose
+   * The refusals, each one an operation whose destination is its own source or whose
    * name already belongs to another method:
    * <ul>
-   * <li><b>Delete from TRASH</b> — the message is already in the Trash. Quietly aliasing
-   * it to {@link #purgeEmail} is the trap to avoid above all others: an ordinary Delete
-   * button would then destroy mail irreversibly, from a list whose whole purpose is to
-   * be the place things can still be taken back from. Trash has Restore and Delete
-   * permanently, and they are separate on purpose.</li>
+   * <li><b>Anything from TRASH</b> — the message is already in the Trash. Quietly
+   * aliasing Delete to {@link #purgeEmail} is the trap to avoid above all others: an
+   * ordinary Delete button would then destroy mail irreversibly, from a list whose
+   * whole purpose is to be the place things can still be taken back from. Trash has
+   * Restore and Delete permanently, and they are separate on purpose. Archive and
+   * Mark-as-spam from it are the same confusion pointed elsewhere.</li>
+   * <li><b>Anything from DRAFTS</b> — discarding a draft is its own operation
+   * ({@link #deleteDraft}), with its own lock and its own removal of the server copy.
+   * An unsent draft is not mail to be filed away, and not spam either.</li>
+   * <li><b>Archive or Mark-as-spam from JUNK</b> — a quarantined message is either
+   * spam, in which case the user deletes it (into the Trash: the one move that DOES
+   * mean something there, decided with the PO — Junk keeps the reversible delete every
+   * other folder has rather than Gmail's "delete forever"), or it is not, in which case
+   * they say so with "Not spam" ({@link #restoreFromJunk}), which is the only path back
+   * to the inbox. Archiving spam files it among the user's own mail with no screen
+   * saying so; marking it as spam again is the no-op below.</li>
    * <li><b>Archive from ARCHIVE or ALL_MAIL</b> — copying a message into the folder it
    * is already in and then removing the original is a no-op that costs the message its
    * UID and its mirror row. There is nothing the user could mean by it.</li>
-   * <li><b>Either, from DRAFTS</b> — discarding a draft is its own operation
-   * ({@link #deleteDraft}), with its own lock and its own removal of the server copy. An
-   * unsent draft is not mail to be filed away.</li>
    * </ul>
    * Refusing is not the same as ignoring: the caller gets these back in the failure
    * count, so a client that offers the button anyway says so on screen.
@@ -3609,6 +3794,9 @@ public class EmailBoxService {
   private boolean canMoveOutOf(MoveAction action, String folder) {
     if (MailFolder.TRASH.equals(folder) || MailFolder.DRAFTS.equals(folder)) {
       return false;
+    }
+    if (MailFolder.JUNK.equals(folder)) {
+      return action == MoveAction.DELETE;
     }
     return action != MoveAction.ARCHIVE || (!MailFolder.ARCHIVE.equals(folder) && !MailFolder.ALL_MAIL.equals(folder));
   }
@@ -3663,7 +3851,29 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int restoreEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
-    return applyTrashAction(mailRemoteIds, username, TrashAction.RESTORE);
+    return applyHiddenFolderAction(mailRemoteIds, username, MailFolder.TRASH, HiddenFolderAction.RESTORE);
+  }
+
+  /**
+   * Puts quarantined messages back into the INBOX — "Not spam", the undo of
+   * {@link #markAsJunk} and of the server's own filtering, and the same mechanic as
+   * {@link #restoreEmail} with the Junk folder in place of the Trash.
+   * <p>
+   * Everything said of a restore holds: the local JUNK rows go first, every remote
+   * failure puts its own row back, the new INBOX UID is not chased, and the message
+   * reappears at the next INBOX sync as a newly arrived one — where it may notify, and
+   * for a rescued message that is closer to right than wrong: it IS news to the user
+   * that it arrived. One thing is Junk's own: providers that learn from the Junk
+   * folder (Gmail, Outlook.com) take a move out of it as "this sender is not spam",
+   * which is exactly what the user meant.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within the JUNK folder, to put back
+   * @param username the mailbox owner
+   * @return how many of them could NOT be restored
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int restoreFromJunk(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
+    return applyHiddenFolderAction(mailRemoteIds, username, MailFolder.JUNK, HiddenFolderAction.RESTORE);
   }
 
   /**
@@ -3694,83 +3904,94 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int purgeEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
-    return applyTrashAction(mailRemoteIds, username, TrashAction.PURGE);
+    return applyHiddenFolderAction(mailRemoteIds, username, MailFolder.TRASH, HiddenFolderAction.PURGE);
   }
 
   /**
-   * What {@link #applyTrashAction} is doing with the messages it takes out of the
-   * Trash. The two differ by one COPY and by nothing else — connection, folder
-   * resolution, ordering, identity check, removal and compensation are the same
-   * sequence — and a destructive path is the last place to keep two copies of one
-   * sequence and hope they stay in step.
+   * What {@link #applyHiddenFolderAction} is doing with the messages it takes out of
+   * a hidden folder (Trash or Junk). The two differ by one COPY and by nothing else —
+   * connection, folder resolution, ordering, identity check, removal and compensation
+   * are the same sequence — and a destructive path is the last place to keep two
+   * copies of one sequence and hope they stay in step. Which is also why the Junk
+   * actions did not get a body of their own: "Not spam" is a RESTORE out of a
+   * different folder, and two copies of a routine that can destroy mail if its
+   * identity check is wrong is one copy too many.
    */
-  private enum TrashAction {
-    /** Copy back to the INBOX, then remove the Trash copy. */
+  private enum HiddenFolderAction {
+    /** Copy back to the INBOX, then remove the hidden folder's copy. */
     RESTORE,
-    /** Remove the Trash copy, and nothing else. */
+    /** Remove the hidden folder's copy, and nothing else. */
     PURGE
   }
 
   /**
-   * The shared body of {@link #restoreEmail} and {@link #purgeEmail}.
+   * The shared body of {@link #restoreEmail}, {@link #purgeEmail} and
+   * {@link #restoreFromJunk}: act on messages listed in one of the hidden folders
+   * ({@link MailFolder#HIDDEN_FOLDERS}), resolved through that folder's STRICT lookup
+   * — the one its rows were cached by.
    * <p>
-   * Ordering, which is the part that matters: rows are read FOLDER-SCOPED to TRASH and
-   * deleted locally BEFORE the server is touched, then each message is acted on
-   * individually and its own row re-created if that fails. Reading them folder-scoped
-   * is not defensive tidiness — an IMAP UID numbers messages within one folder, so the
-   * same number names a different message in the inbox, and an unscoped read would hand
-   * this method inbox rows to delete and inbox Message-IDs to check the Trash against.
+   * Ordering, which is the part that matters: rows are read FOLDER-SCOPED to the
+   * hidden folder and deleted locally BEFORE the server is touched, then each message
+   * is acted on individually and its own row re-created if that fails. Reading them
+   * folder-scoped is not defensive tidiness — an IMAP UID numbers messages within one
+   * folder, so the same number names a different message in the inbox, and an
+   * unscoped read would hand this method inbox rows to delete and inbox Message-IDs
+   * to check the folder against.
    * <p>
-   * A UID with no cached TRASH row is refused rather than acted on. This API exists to
-   * act on what the mirror listed; a UID the mirror does not hold is either a stale
-   * client or a number nobody ever saw, and "permanently delete a message I cannot show
-   * you" is not a thing to do on trust.
+   * A UID with no cached row in that folder is refused rather than acted on. This API
+   * exists to act on what the mirror listed; a UID the mirror does not hold is either
+   * a stale client or a number nobody ever saw, and "permanently delete a message I
+   * cannot show you" is not a thing to do on trust.
    * <p>
    * When the removal has to go through {@code close(true)} — no UIDPLUS — the
    * per-message granularity degrades: flags are set one at a time but the removal
    * happens once, at the close. If that close fails, the flagged messages stay in the
-   * Trash while their local rows are already gone. Nothing repairs that here on
-   * purpose: the next Trash sync re-imports whatever the server still holds, and the
-   * mirror converges on the mailbox. Self-healing, not a leak.
+   * folder while their local rows are already gone. Nothing repairs that here on
+   * purpose: the next sync of that folder re-imports whatever the server still holds,
+   * and the mirror converges on the mailbox. Self-healing, not a leak.
    * <p>
-   * A restore that copies into the INBOX and then fails to remove the Trash copy leaves
-   * the message in BOTH folders. That is the deliberate direction — a duplicate the
-   * next syncs reconcile beats a message that exists nowhere — and it is why the copy
-   * comes first.
+   * A restore that copies into the INBOX and then fails to remove the folder's copy
+   * leaves the message in BOTH folders. That is the deliberate direction — a duplicate
+   * the next syncs reconcile beats a message that exists nowhere — and it is why the
+   * copy comes first.
    *
-   * @param mailRemoteIds the IMAP UIDs within the TRASH folder
+   * @param mailRemoteIds the IMAP UIDs within {@code folderKey}
    * @param username the mailbox owner
+   * @param folderKey which hidden folder the UIDs are numbered in:
+   *          {@link MailFolder#TRASH} or {@link MailFolder#JUNK}
    * @param action what to do with them
    * @return how many could not be dealt with
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
-  private int applyTrashAction(List<Long> mailRemoteIds, String username, TrashAction action) throws IllegalAccessException {
+  private int applyHiddenFolderAction(List<Long> mailRemoteIds,
+                                      String username,
+                                      String folderKey,
+                                      HiddenFolderAction action) throws IllegalAccessException {
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
       return 0;
     }
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-      throw new IllegalAccessException(String.format(action == TrashAction.RESTORE ? USER_NOT_ALLOWED_FOR_RESTORE_EMAIL_MESSAGE
-                                                                                   : USER_NOT_ALLOWED_FOR_PURGE_EMAIL_MESSAGE,
-                                                     username));
+      throw new IllegalAccessException(String.format(notAllowedMessage(folderKey, action), username));
     }
-    Map<Long, Email> trashRows = new LinkedHashMap<>();
+    String folderLabel = hiddenFolderLabel(folderKey);
+    Map<Long, Email> hiddenRows = new LinkedHashMap<>();
     for (Long mailRemoteId : mailRemoteIds) {
       try {
-        Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.TRASH, false, false, false, false);
+        Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, folderKey, false, false, false, false);
         if (email != null) {
-          trashRows.put(mailRemoteId, email);
+          hiddenRows.put(mailRemoteId, email);
         }
       } catch (Exception e) {
-        LOG.error("Error getting trashed email {} for user {}", mailRemoteId, username, e);
+        LOG.error("Error getting {} email {} for user {}", folderLabel, mailRemoteId, username, e);
       }
     }
-    deleteEmails(new ArrayList<>(trashRows.values()));
+    deleteEmails(new ArrayList<>(hiddenRows.values()));
 
     int failures = 0;
     Store store = null;
-    IMAPFolder trash = null;
+    IMAPFolder hidden = null;
     boolean expungeOnClose = false;
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
@@ -3780,94 +4001,147 @@ public class EmailBoxService {
       // findTrashFolder the delete path files into. That one may answer a different
       // folder, and a UID from one folder used against another is how this destroys
       // somebody's mail.
-      trash = resolveTrashFolder(store, syncState);
-      if (trash == null) {
-        // Rows cached as TRASH and no Trash folder to find: the mailbox was
-        // reorganized, or the strict lookup no longer recognizes the folder. Nothing
-        // can be acted on, so every row goes back and every id counts as failed.
-        LOG.warn("No Trash folder for user {}; {} message(s) could not be {}",
+      hidden = resolveHiddenFolder(store, folderKey, syncState);
+      if (hidden == null) {
+        // Rows cached under the folder and no such folder to find: the mailbox was
+        // reorganized, or the strict lookup no longer recognizes it. Nothing can be
+        // acted on, so every row goes back and every id counts as failed.
+        LOG.warn("No {} folder for user {}; {} message(s) could not be {}",
+                 folderLabel,
                  username,
                  mailRemoteIds.size(),
-                 action == TrashAction.RESTORE ? "restored" : "permanently deleted");
-        trashRows.values().forEach(this::recreateCachedRow);
+                 action == HiddenFolderAction.RESTORE ? "restored" : "permanently deleted");
+        hiddenRows.values().forEach(this::recreateCachedRow);
         return mailRemoteIds.size();
       }
-      trash.open(Folder.READ_WRITE);
+      hidden.open(Folder.READ_WRITE);
       // The COPY destination is not opened: IMAP copies server-side into a folder named
       // by the command, and opening the inbox here would only invite the read-status and
       // expunge semantics of an open folder into a path that wants none of them.
-      Folder inbox = action == TrashAction.RESTORE ? store.getFolder(INBOX_FOLDER_NAME) : null;
+      Folder inbox = action == HiddenFolderAction.RESTORE ? store.getFolder(INBOX_FOLDER_NAME) : null;
       for (Long mailRemoteId : mailRemoteIds) {
-        Email trashRow = trashRows.get(mailRemoteId);
+        Email hiddenRow = hiddenRows.get(mailRemoteId);
         try {
-          if (trashRow == null) {
-            LOG.warn("No cached Trash row for uid {} of user {}; refusing to act on it", mailRemoteId, username);
+          if (hiddenRow == null) {
+            LOG.warn("No cached {} row for uid {} of user {}; refusing to act on it", folderLabel, mailRemoteId, username);
             failures++;
             continue;
           }
-          Message message = trash.getMessageByUID(mailRemoteId);
+          Message message = hidden.getMessageByUID(mailRemoteId);
           if (message == null) {
-            // Already out of the Trash — emptied by the provider, or by another client
+            // Already out of the folder — emptied by the provider, or by another client
             // of the user's. The outcome the caller asked for is the outcome, so this
             // is a success and the row stays deleted.
-            LOG.debug("The trashed message of user {} (uid {}) is already gone", username, mailRemoteId);
+            LOG.debug("The {} message of user {} (uid {}) is already gone", folderLabel, username, mailRemoteId);
             continue;
           }
-          String expectedMessageId = trashRow.getMailHeaderId();
-          if (!isExpectedMessageAtUid(message, expectedMessageId, mailRemoteId, TRASH_FOLDER_LABEL, username)) {
+          String expectedMessageId = hiddenRow.getMailHeaderId();
+          if (!isExpectedMessageAtUid(message, expectedMessageId, mailRemoteId, folderLabel, username)) {
             // The UID names somebody else's message now. Touch nothing, put the row
             // back, and let the user try again after the next sync has renumbered it.
-            recreateCachedRow(trashRow);
+            recreateCachedRow(hiddenRow);
             failures++;
             continue;
           }
-          if (action == TrashAction.RESTORE) {
-            trash.copyMessages(new Message[] { message }, inbox);
+          if (action == HiddenFolderAction.RESTORE) {
+            hidden.copyMessages(new Message[] { message }, inbox);
           }
-          // Gmail's move, in mirror image of the delete path: [Gmail]/Trash is exclusive
-          // with every label, so copying OUT of it IS the move and the server expunges
-          // the source right away. The message is where it was asked to be, so an
-          // already-expunged source is the success and not the failure it looks like.
+          // Gmail's move, in mirror image of the delete path: [Gmail]/Trash and
+          // [Gmail]/Spam are each exclusive with every label, so copying OUT of one IS
+          // the move and the server expunges the source right away. The message is
+          // where it was asked to be, so an already-expunged source is the success and
+          // not the failure it looks like.
           try {
             if (message.isExpunged()) {
-              LOG.debug("The trashed message of user {} (uid {}) was expunged by the copy out of the Trash",
+              LOG.debug("The {} message of user {} (uid {}) was expunged by the copy out of the folder",
+                        folderLabel,
                         username,
                         mailRemoteId);
               continue;
             }
             expungeOnClose =
-                           removeMessageByUid(trash, mailRemoteId, expectedMessageId, TRASH_FOLDER_LABEL, username)
+                           removeMessageByUid(hidden, mailRemoteId, expectedMessageId, folderLabel, username)
                                || expungeOnClose;
           } catch (MessageRemovedException alreadyRemoved) {
-            LOG.debug("The trashed message of user {} (uid {}) was already removed", username, mailRemoteId);
+            LOG.debug("The {} message of user {} (uid {}) was already removed", folderLabel, username, mailRemoteId);
           }
         } catch (Exception e) {
-          recreateCachedRow(trashRow);
+          recreateCachedRow(hiddenRow);
           failures++;
-          LOG.error("Error when {} email {} for user {}",
-                    action == TrashAction.RESTORE ? "restoring" : "permanently deleting",
+          LOG.error("Error when {} email {} of folder {} for user {}",
+                    action == HiddenFolderAction.RESTORE ? "restoring" : "permanently deleting",
                     mailRemoteId,
+                    folderLabel,
                     username,
                     e);
         }
       }
     } catch (Exception e) {
       LOG.error("Error when connecting store for user {}", username, e);
-      trashRows.values().forEach(this::recreateCachedRow);
+      hiddenRows.values().forEach(this::recreateCachedRow);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       // The folder name the strict lookup just resolved is worth keeping, exactly as
       // the sync keeps it: the alternative is a LIST * per action.
       saveMailboxSyncState(username, syncState, originalSyncStateJson);
-      closeFolderQuietly(trash, expungeOnClose, TRASH_FOLDER_LABEL, username);
+      closeFolderQuietly(hidden, expungeOnClose, folderLabel, username);
       closeQuietly(null, store, username);
       // No unread-count broadcast, and that is a statement rather than an omission:
       // the badge counts the INBOX alone (EmailBoxStorage#countUnreadEmails), so
-      // neither removing a Trash row nor putting one back changes what it counts. The
+      // neither removing a hidden row nor putting one back changes what it counts. The
       // restored message starts counting when the next INBOX sync imports it, which
       // broadcasts on its own.
     }
     return failures;
+  }
+
+  /**
+   * The remote folder behind a hidden {@link MailFolder} key, through its STRICT
+   * resolver — the one its rows were cached by.
+   *
+   * @param store the connected store
+   * @param folderKey {@link MailFolder#TRASH} or {@link MailFolder#JUNK}
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @return the folder, or null when the mailbox has none
+   * @throws MessagingException if the folder list cannot be read
+   * @throws IllegalArgumentException if the key is not a hidden folder — a caller
+   *           passing something else has confused this with {@link #resolveCachedFolder}
+   */
+  private IMAPFolder resolveHiddenFolder(Store store, String folderKey, MailboxSyncState syncState) throws MessagingException {
+    if (MailFolder.TRASH.equals(folderKey)) {
+      return resolveTrashFolder(store, syncState);
+    }
+    if (MailFolder.JUNK.equals(folderKey)) {
+      return resolveJunkFolder(store, syncState);
+    }
+    throw new IllegalArgumentException(folderKey + " is not a hidden folder");
+  }
+
+  /**
+   * A hidden folder's name for the log lines — the label
+   * {@link #isExpectedMessageAtUid} and {@link #removeMessageByUid} print.
+   *
+   * @param folderKey {@link MailFolder#TRASH} or {@link MailFolder#JUNK}
+   * @return "Trash" or "Junk"
+   */
+  private String hiddenFolderLabel(String folderKey) {
+    return MailFolder.JUNK.equals(folderKey) ? JUNK_FOLDER_LABEL : TRASH_FOLDER_LABEL;
+  }
+
+  /**
+   * The message a caller gets when they may not act on a hidden folder, worded for
+   * the action as the interface names it: a restore out of the Junk is "not spam" to
+   * the user, whatever it is to IMAP.
+   *
+   * @param folderKey the hidden folder acted on
+   * @param action the action that was refused
+   * @return the {@code String.format} template, taking the username
+   */
+  private String notAllowedMessage(String folderKey, HiddenFolderAction action) {
+    if (action == HiddenFolderAction.PURGE) {
+      return USER_NOT_ALLOWED_FOR_PURGE_EMAIL_MESSAGE;
+    }
+    return MailFolder.JUNK.equals(folderKey) ? USER_NOT_ALLOWED_FOR_NOT_JUNK_EMAIL_MESSAGE : USER_NOT_ALLOWED_FOR_RESTORE_EMAIL_MESSAGE;
   }
 
   /**
@@ -6073,7 +6347,7 @@ public class EmailBoxService {
    * @param folder the OPEN folder holding the message, opened READ_WRITE
    * @param uid the UID of the message to remove, within that folder
    * @param expectedMessageId the Message-ID the local row says that message carries
-   * @param folderLabel the folder's name for the log ("Drafts", "Trash")
+   * @param folderLabel the folder's name for the log ("Drafts", "Trash", "Junk")
    * @param username the mailbox owner
    * @return true when the caller must close the folder with expunge, because the
    *         server offered no way to remove just this one message
@@ -6131,7 +6405,7 @@ public class EmailBoxService {
    * @param message the message found at the remembered UID
    * @param expectedMessageId the Message-ID the row says its message carries
    * @param uid the remembered UID, for the log
-   * @param folderLabel the folder's name for the log ("Drafts", "Trash")
+   * @param folderLabel the folder's name for the log ("Drafts", "Trash", "Junk")
    * @param username the mailbox owner
    * @return true when the message is the one the row is pointing at
    * @throws MessagingException if the message's headers cannot be read
@@ -6254,7 +6528,7 @@ public class EmailBoxService {
    *
    * @param folder the folder to close, may be null or already closed
    * @param expunge whether the close must expunge the folder
-   * @param folderLabel the folder's name for the log ("Drafts", "Trash")
+   * @param folderLabel the folder's name for the log ("Drafts", "Trash", "Junk")
    * @param username the mailbox owner, for the log
    */
   private void closeFolderQuietly(IMAPFolder folder, boolean expunge, String folderLabel, String username) {
@@ -8291,6 +8565,9 @@ public class EmailBoxService {
     if (MailFolder.TRASH.equals(folder)) {
       return resolveTrashFolder(store, syncState);
     }
+    if (MailFolder.JUNK.equals(folder)) {
+      return resolveJunkFolder(store, syncState);
+    }
     if (MailFolder.ALL_MAIL.equals(folder)) {
       return findAllMailFolder(store);
     }
@@ -9557,6 +9834,97 @@ public class EmailBoxService {
    */
   private boolean isTrashSyncEnabled() {
     return Boolean.parseBoolean(System.getProperty(TRASH_SYNC_ENABLED_PROPERTY, "true"));
+  }
+
+  /**
+   * The folder to <em>synchronize</em> as JUNK — and, unlike Trash, also the folder
+   * "Mark as spam" files into: the SPECIAL-USE {@code \Junk} attribute (RFC 6154)
+   * first, then a name match for the servers that never learned SPECIAL-USE. If
+   * neither finds one, the Junk sync is simply OFF for that account and "Mark as
+   * spam" refuses — we never CREATE a Junk folder, for the reason
+   * {@link #findDraftsFolder} gives about creating folders in a store the user shares
+   * with every other client they own.
+   * <p>
+   * STRICT, by the rule {@link #findSyncableTrashFolder} states, and with no loose
+   * variant beside it — deliberately, where Trash has {@link #findTrashFolder}. The
+   * loose Trash lookup is survivable because a message filed loosely lands somewhere
+   * the user can see it. Junk is hidden from every read but its own listing, so a
+   * message filed into a folder that merely CONTAINS "spam" — a user's "Spam reports"
+   * folder, say — would vanish from every screen into a folder the sync never opens.
+   * One resolver, one answer, and both the sync and the move ask it.
+   * <p>
+   * The name test is last-segment equality against {@link #JUNK_FOLDER_NAMES}, which
+   * still catches the nested layouts that matter: Gmail's {@code [Gmail]/Spam} and
+   * Maildir++'s {@code INBOX.Junk} both end in a known token. Subscribed folders
+   * first, then all, for the reason Trash gives: {@code [Gmail]/Spam} is not
+   * subscribed on every account.
+   *
+   * @param store the connected store
+   * @return the Junk folder, or null when the mailbox has none to bulk-sync
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder findSyncableJunkFolder(Store store) throws MessagingException {
+    IMAPFolder subscribed = findSyncableJunkFolderIn(store.getDefaultFolder().listSubscribed("*"));
+    return subscribed != null ? subscribed : findSyncableJunkFolderIn(store.getDefaultFolder().list("*"));
+  }
+
+  /**
+   * Scans one folder listing for the Junk folder — see {@link #findSyncableJunkFolder}
+   * for the matching rules. Split out so the subscribed listing and the full listing
+   * run the exact same test, as {@link #findSyncableTrashFolderIn} is.
+   *
+   * @param folders the folder listing to scan
+   * @return the first matching folder, or null when the listing holds none
+   * @throws MessagingException if a folder's attributes cannot be read
+   */
+  private IMAPFolder findSyncableJunkFolderIn(Folder[] folders) throws MessagingException {
+    IMAPFolder nameMatch = null;
+    for (Folder folder : folders) {
+      if (!(folder instanceof IMAPFolder imapFolder) || !imapFolder.exists()) {
+        continue;
+      }
+      for (String attribute : imapFolder.getAttributes()) {
+        if (attribute.equalsIgnoreCase(JUNK_SPECIAL_USE_ATTRIBUTE)) {
+          return imapFolder;
+        }
+      }
+      // Remembered, not returned: a SPECIAL-USE match found later in the listing must
+      // still win over a name match found earlier. The attribute is the server telling
+      // us which folder this is; the name is us guessing.
+      if (nameMatch == null && isJunkFolderName(imapFolder.getFullName())) {
+        nameMatch = imapFolder;
+      }
+    }
+    return nameMatch;
+  }
+
+  /**
+   * Whether a folder's full name is one of the well-known Junk names, judged on its
+   * LAST path segment only and by equality — so {@code [Gmail]/Spam} and
+   * {@code INBOX.Junk} match while a user's own "Spam reports" does not.
+   *
+   * @param fullName the folder's full name, hierarchy separators included
+   * @return true when the last segment is a known Junk name
+   */
+  private boolean isJunkFolderName(String fullName) {
+    if (StringUtils.isBlank(fullName)) {
+      return false;
+    }
+    // Same split as isTrashFolderName: both separators seen in the wild, as a pure
+    // string test with no IMAP round-trip.
+    String lastSegment = fullName.substring(Math.max(fullName.lastIndexOf('/'), fullName.lastIndexOf('.')) + 1);
+    return JUNK_FOLDER_NAMES.contains(lastSegment.trim().toLowerCase());
+  }
+
+  /**
+   * Whether the Junk folder's synchronization is switched on — see
+   * {@link #JUNK_SYNC_ENABLED_PROPERTY}. Read on every sync rather than cached, so
+   * an administrator can withdraw it without a restart.
+   *
+   * @return true when the Junk folder may be cached
+   */
+  private boolean isJunkSyncEnabled() {
+    return Boolean.parseBoolean(System.getProperty(JUNK_SYNC_ENABLED_PROPERTY, "true"));
   }
 
   private IMAPFolder findArchiveFolder(Store store) throws MessagingException {

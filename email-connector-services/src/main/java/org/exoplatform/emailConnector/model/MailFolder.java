@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.List;
+
 /**
  * The remote mail folder a cached message belongs to. Stored as a string
  * discriminator on {@code EMAIL_BOX.FOLDER}; IMAP UIDs are per-folder, so the
@@ -67,4 +69,32 @@ public final class MailFolder {
   // a trashed message is orphaned from its conversation and comes back — if it ever
   // comes back — as a conversation of its own.
   public static final String TRASH    = "TRASH";
+
+  // Mail the server quarantined as spam. Mirrored exactly as TRASH is, and in the same
+  // behaviour class as TRASH — "browsable, not resurfaced" — for the same reason with
+  // the same teeth: a user who opens Spam is asking to see what was filtered and to
+  // rescue a false positive, and a folder-scoped read answers them; every other read
+  // is somebody who did not ask, and a phishing reply to a real thread rendered inside
+  // that conversation, offered back by search, or counted in "N messages" is the
+  // exact leak the Trash exclusions were written to prevent. So JUNK does not get its
+  // own set of exclusions: it joins TRASH in HIDDEN_FOLDERS, which is the one spelling
+  // of the excluded set every excluding read is fed, and a read that forgets the list
+  // forgets both folders at once — visibly, because the tests write a row in each.
+  //
+  // The two deliberately-total reads (the mailbox wipe, the thread-identity machinery)
+  // stay total for JUNK too: a quarantined message must die with the account it
+  // belonged to, and it must keep its place in its conversation so "Not spam" puts
+  // it back where it was rather than as a conversation of its own.
+  public static final String JUNK     = "JUNK";
+
+  /**
+   * The folders whose rows are browsable but never resurfaced — the set every
+   * cross-folder read that shows mail leaves out. Passed as one bound list to the
+   * {@code folder NOT IN :excludedFolders} predicates of the DAO so the excluded set
+   * is spelled here and nowhere else: a folder added to this class in the Trash
+   * behaviour class is added to this list and to nothing else, and every excluding
+   * read follows. {@code FOLDER} is {@code NOT NULL} in the schema, so {@code NOT IN}
+   * can never be UNKNOWN for a row and silently drop it.
+   */
+  public static final List<String> HIDDEN_FOLDERS = List.of(TRASH, JUNK);
 }
