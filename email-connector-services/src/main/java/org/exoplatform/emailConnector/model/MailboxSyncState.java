@@ -92,6 +92,14 @@ public class MailboxSyncState {
   // every period for nothing. Trailing, for the reason above.
   private FolderSyncSnapshot junkSnapshot;
 
+  // When the mailbox's folder list was last walked in full (epoch millis), so the
+  // routine sync re-walks it once a day rather than every period: a folder the user
+  // created on their phone shows up in the settings within a day without them doing
+  // anything, and the LIST * that finds it is paid once a day, not once a period. Null
+  // means never, which is what makes the first sync of a mailbox walk it. Trailing,
+  // for the reason every field after the first three is trailing.
+  private Long               foldersDiscoveredAt;
+
   /**
    * The stored snapshot of a bulk-synced folder.
    *

@@ -143,6 +143,9 @@ public class EmailThreadAiSummaryTest {
   private FileService             fileService;
 
   @MockBean
+  private EmailFolderService      emailFolderService;
+
+  @MockBean
   private UploadService           uploadService;
 
   /**

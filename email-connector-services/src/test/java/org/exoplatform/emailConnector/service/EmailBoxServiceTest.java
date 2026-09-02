@@ -162,7 +162,11 @@ import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
+import org.exoplatform.emailConnector.model.EmailFolder;
+import org.exoplatform.emailConnector.model.MailFolderList;
+import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.scheduler.JobInfo;
@@ -177,7 +181,7 @@ import io.meeds.social.category.service.CategoryService;
 import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
 
-@SpringBootTest(classes = { EmailBoxService.class })
+@SpringBootTest(classes = { EmailBoxService.class, EmailFolderService.class })
 @ExtendWith(MockitoExtension.class)
 public class EmailBoxServiceTest {
 
@@ -237,6 +241,11 @@ public class EmailBoxServiceTest {
   @MockBean
   private EmailSignatureService   emailSignatureService;
 
+  // The registry is mocked at the STORAGE, not the service: the classifier runs for
+  // real, because the Trash, Junk and Drafts discovery tests below are its tests now.
+  @MockBean
+  private EmailFolderStorage      emailFolderStorage;
+
   @Autowired
   private EmailBoxService         emailBoxService;
 
@@ -255,12 +264,24 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * Switches the custom folders off for every test in this class, so the daily folder
+   * walk the routine sync runs when they are on does not put a {@code LIST *} into
+   * tests written to prove the remembered names avoid one. The tests that are ABOUT
+   * custom folders turn them back on explicitly.
+   */
+  @BeforeEach
+  void disableCustomFolders() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "false");
+  }
+
+  /**
    * Puts the property back the way the JVM had it, so a test class running after this
    * one sees the shipped default.
    */
   @AfterEach
   void restoreThePostSendSentRefresh() {
     System.clearProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY);
+    System.clearProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY);
   }
 
   @Test
@@ -3283,12 +3304,22 @@ public class EmailBoxServiceTest {
    * opened, discovery runs again, and the state is rewritten with the folder actually
    * found. This is the branch that decides where "Mark as spam" files a message the
    * user will never see again, which is why a stale name must not be believed.
+   * <p>
+   * The other four names are remembered AND valid here, on purpose: a resolver that
+   * misses walks the whole list once per connection and every later resolver reads
+   * that walk, so had Sent missed first, the Junk name would never have been probed
+   * at all. With the four resolving by name, it is the Junk probe itself that misses
+   * and triggers the walk -- the path this test is about.
    */
   @Test
   @SneakyThrows
   void aRenamedJunkFolderIsRediscoveredRatherThanTrusted() {
     MailboxSyncState state = new MailboxSyncState();
     state.setJunkFolderName("Old/Spam");
+    state.setSentFolderName("MySent");
+    state.setArchiveFolderName("MyArchive");
+    state.setDraftsFolderName("MyDrafts");
+    state.setTrashFolderName("MyTrash");
     doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
                                                                 .get(any(Context.class),
                                                                      any(Scope.class),
@@ -3299,6 +3330,12 @@ public class EmailBoxServiceTest {
     lenient().when(junk.getMessageCount()).thenReturn(2);
     givenAMailboxListing(junk);
     when(trashStore().getFolder("Old/Spam")).thenReturn(stale);
+    for (String remembered : List.of("MySent", "MyArchive", "MyDrafts", "MyTrash")) {
+      IMAPFolder valid = mock(IMAPFolder.class);
+      when(valid.exists()).thenReturn(true);
+      lenient().when(valid.getMessageCount()).thenReturn(0);
+      when(trashStore().getFolder(remembered)).thenReturn(valid);
+    }
 
     emailBoxService.synchronize(TEST_USER);
 
@@ -7893,4 +7930,306 @@ public class EmailBoxServiceTest {
     assertEquals(Part.INLINE, related.getBodyPart(1).getDisposition());
   }
 
+
+  // ---------------------------------------------------------------------------------
+  // The user's own folders (EXO-89907): registered by a daily classified walk, mirrored
+  // on opt-in within a cap, a window and a per-cycle budget, refreshed on open when
+  // stale, and addressed by an opaque CUSTOM:<id> key the registry alone resolves.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The custom loop runs AFTER the Junk step, checks each picked folder against its
+   * own registry snapshot, syncs it under its key with the custom window, and records
+   * the check on the row -- never in the JSON sync state.
+   */
+  @Test
+  @SneakyThrows
+  void customFoldersAreSyncedAfterJunkUnderTheirKeyAndRecordedOnTheirRow() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    lenient().when(junk.getMessageCount()).thenReturn(2);
+    givenAMailboxListing(junk);
+    EmailFolder factures = registeredFolder(1L, "Factures", true);
+    when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(factures));
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(remote.getMessageCount()).thenReturn(120);
+    Store store = userEmailSettingService.connect(userEmailSetting());
+    when(store.getFolder("Factures")).thenReturn(remote);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    InOrder inOrder = inOrder(junk, remote);
+    inOrder.verify(junk).open(Folder.READ_ONLY);
+    inOrder.verify(remote).open(Folder.READ_ONLY);
+    // The custom window: fifty on a folder of 120 lists from 71.
+    verify(remote).getMessages(71, 120);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, "CUSTOM:1");
+    verify(emailFolderStorage).updateSyncMemory(eq(TEST_USER), eq(1L), any(), any(Date.class));
+  }
+
+  /**
+   * A picked folder the server no longer has is marked missing -- not failed, not
+   * deleted: the next walk's grace rule owns what happens next.
+   */
+  @Test
+  @SneakyThrows
+  void aPickedFolderTheServerLostIsMarkedMissing() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    givenAMailboxListing();
+    when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(registeredFolder(3L, "Gone", true)));
+    IMAPFolder remote = mock(IMAPFolder.class);
+    when(remote.exists()).thenReturn(false);
+    when(userEmailSettingService.connect(userEmailSetting()).getFolder("Gone")).thenReturn(remote);
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(emailFolderStorage).updateDiscovery(TEST_USER, 3L, null, null, true, null);
+    verify(emailFolderStorage, never()).updateSyncMemory(anyString(), anyLong(), any(), any());
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+  }
+
+  /**
+   * The daily walk: a folder of the user's is registered opt-in off, a registered
+   * folder missing for the second walk running is deleted along with the rows it
+   * mirrored, and the walk is stamped so the next period does not repeat it.
+   */
+  @Test
+  @SneakyThrows
+  void theDueWalkRegistersTheUsersFoldersAndPurgesTheOnesTwiceMissing() {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    IMAPFolder parent = aHiddenFolder(new String[] { "\\Noselect", "\\HasChildren" }, "[Gmail]");
+    IMAPFolder factures = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    lenient().when(factures.getName()).thenReturn("Factures");
+    givenAMailboxListing(parent, factures);
+    EmailFolder gone = registeredFolder(4L, "Old", true);
+    gone.setMissing(true);
+    when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(gone));
+    Email mirrored = email(TEST_USER);
+    mirrored.setId(44L);
+    mirrored.setFolder("CUSTOM:4");
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:4")).thenReturn(List.of(mirrored));
+
+    emailBoxService.synchronize(TEST_USER);
+
+    ArgumentCaptor<EmailFolder> created = ArgumentCaptor.forClass(EmailFolder.class);
+    verify(emailFolderStorage).createFolder(created.capture());
+    assertEquals("Factures", created.getValue().getRemoteName());
+    assertFalse(created.getValue().isSyncEnabled());
+    verify(emailFolderStorage).deleteFolder(TEST_USER, 4L);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(44L));
+    ArgumentCaptor<SettingValue> saved = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService, atLeast(1)).set(any(Context.class), any(Scope.class), eq("emailBoxSyncState"), saved.capture());
+    MailboxSyncState state = JsonUtils.fromJsonString(saved.getValue().getValue().toString(), MailboxSyncState.class);
+    assertNotNull(state.getFoldersDiscoveredAt(), "the walk is stamped");
+    assertNull(state.getSentFolderName(), "no Sent was found, and the unselectable parent is nobody's");
+  }
+
+  /**
+   * A custom key the registry does not know for this user is a refusal with the
+   * unknown-folder code -- the listing is never answered from another folder, and in
+   * particular never from the inbox.
+   */
+  @Test
+  void anUnknownCustomKeyIsRefusedNotServedAsTheInbox() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 99L)).thenReturn(null);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailBoxService.getEmailBox(TEST_USER, "CUSTOM:99"));
+
+    assertEquals(EmailFolderService.UNKNOWN_FOLDER_MESSAGE, refusal.getMessage());
+    verify(emailBoxStorage, never()).getEmails(anyString(), anyString());
+    assertEquals("emailConnector.folder.notBrowsable",
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.getEmailBox(TEST_USER, "CUSTOM:")).getMessage());
+  }
+
+  /**
+   * Opening a folder nobody has checked since the last period refreshes it first, on
+   * this thread, through the same single-folder sync the loop runs; a folder checked a
+   * moment ago is answered from the cache without a connection.
+   */
+  @Test
+  @SneakyThrows
+  void openingAStaleCustomFolderRefreshesItFirstAndAFreshOneIsNot() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    EmailFolder stale = registeredFolder(5L, "Factures", true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(stale);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(store.getFolder("Factures")).thenReturn(remote);
+    when(emailBoxStorage.getSyncEmails(TEST_USER, "CUSTOM:5")).thenReturn(new ArrayList<>());
+
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+
+    verify(remote).open(Folder.READ_ONLY);
+    verify(emailFolderStorage).updateSyncMemory(eq(TEST_USER), eq(5L), any(), any(Date.class));
+    verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:5");
+    // The mailbox's own status and count are not this refresh's to touch.
+    verify(userEmailSettingService, never()).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
+
+    stale.setLastSyncDate(new Date());
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
+    verify(userEmailSettingService, times(1)).connect(userEmailSetting);
+  }
+
+  /**
+   * The folder list says what the mailbox HAS: a Spam folder discovered but holding
+   * no cached mail is offered, a Trash never discovered and never filled is not, the
+   * inbox always is, and a registered custom folder comes with its opt-in.
+   */
+  @Test
+  void theFolderListShowsWhatTheMailboxHasNotWhatTheCacheHolds() throws Exception {
+    System.setProperty(EmailFolderService.CUSTOM_FOLDERS_ENABLED_PROPERTY, "true");
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    MailboxSyncState state = new MailboxSyncState();
+    state.setJunkFolderName("[Gmail]/Spam");
+    doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
+                                                                .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of(MailFolder.INBOX, 3, "CUSTOM:5", 2));
+    EmailFolder factures = registeredFolder(5L, "Customers/Acme", true);
+    factures.setDisplayName("Acme");
+    when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(factures, registeredFolder(6L, "Projets", false)));
+
+    MailFolderList list = emailBoxService.getFolders(TEST_USER, false);
+
+    List<String> keys = list.getFolders().stream().map(MailFolderView::getKey).toList();
+    assertEquals(List.of(MailFolder.INBOX, MailFolder.JUNK, "CUSTOM:5", "CUSTOM:6"), keys);
+    MailFolderView acme = list.getFolders().get(2);
+    assertTrue(acme.isCustom());
+    assertEquals("Acme", acme.getDisplayName());
+    assertEquals("Customers/Acme", acme.getPath());
+    assertEquals(2, acme.getCount());
+    assertTrue(acme.isSyncEnabled());
+    assertFalse(list.getFolders().get(3).isSyncEnabled());
+    assertEquals(10, list.getMaxCustomFolders());
+    assertEquals(1, list.getEnabledCustomFolders());
+    assertEquals(50, list.getWindowSize());
+    verify(userEmailSettingService, never()).connect(any());
+  }
+
+  /**
+   * Opting a folder out deletes what it mirrored, category links and all, after the
+   * registry has cleared its memory -- the order the row's javadoc requires.
+   */
+  @Test
+  void optingOutDeletesTheMirroredRows() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true),
+                                                                  registeredFolder(5L, "Factures", false));
+    Email mirrored = email(TEST_USER);
+    mirrored.setId(55L);
+    mirrored.setFolder("CUSTOM:5");
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:5")).thenReturn(List.of(mirrored));
+
+    MailFolderView view = emailBoxService.setCustomFolderSync(TEST_USER, 5L, false);
+
+    InOrder inOrder = inOrder(emailFolderStorage, emailBoxStorage);
+    inOrder.verify(emailFolderStorage).updateSyncEnabled(eq(TEST_USER), eq(5L), eq(false), any(Date.class));
+    inOrder.verify(emailBoxStorage).deleteEmailsByIds(List.of(55L));
+    assertFalse(view.isSyncEnabled());
+  }
+
+  /**
+   * A move is refused before anything is touched when its target is not one of this
+   * user's folders, or is the folder the messages are already in; and a move out of a
+   * hidden folder is counted as failed like every other refused action, with no
+   * connection opened.
+   */
+  @Test
+  void aMoveIsRefusedForAnUnknownTargetTheSourceItselfOrAHiddenSource() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 99L)).thenReturn(null);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+
+    assertEquals(EmailFolderService.UNKNOWN_FOLDER_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.INBOX, "CUSTOM:99")).getMessage());
+    assertEquals("emailConnector.folder.sameAsSource",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, "CUSTOM:5", "CUSTOM:5")).getMessage());
+    assertEquals(2, emailBoxService.moveToFolder(List.of(1L, 2L), TEST_USER, MailFolder.JUNK, "CUSTOM:5"));
+    assertEquals(1, emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.TRASH, "CUSTOM:5"));
+    verify(userEmailSettingService, never()).connect(any());
+  }
+
+  /**
+   * A move copies into the folder the target's registry row names and removes the
+   * source -- the same mechanic as delete and archive, pointed at the user's own
+   * folder -- and a source that is itself a custom folder is opened through the
+   * registry too.
+   */
+  @Test
+  @SneakyThrows
+  void aMoveFilesIntoTheRegistrysFolderAndReadsItsSourceThroughIt() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder source = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
+    IMAPFolder target = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(store.getFolder("Projets")).thenReturn(source);
+    when(store.getFolder("Factures")).thenReturn(target);
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder("CUSTOM:6");
+    row.setMailHeaderId("<one@example.org>");
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L), eq(TEST_USER), any(), eq("CUSTOM:6"), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(row);
+    Message message = mock(Message.class);
+    when(source.getMessageByUID(1212L)).thenReturn(message);
+    when(message.getHeader("Message-ID")).thenReturn(new String[] { "<one@example.org>" });
+
+    int failures = emailBoxService.moveToFolder(List.of(1212L), TEST_USER, "CUSTOM:6", "CUSTOM:5");
+
+    assertEquals(0, failures);
+    verify(source).open(Folder.READ_WRITE);
+    verify(source).copyMessages(new Message[] { message }, target);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(7L));
+  }
+
+  /**
+   * The mailbox wipe takes the folder registry with it: the next account bound here
+   * walks its own folder list and mints its own keys.
+   */
+  @Test
+  void theWipeTakesTheFolderRegistry() {
+    emailBoxService.deleteUserEmails(TEST_USER);
+    verify(emailFolderStorage).deleteFolders(TEST_USER);
+  }
+
+  /**
+   * A registered custom folder of the test user, present, with '/' as its delimiter.
+   *
+   * @param id the registry id
+   * @param remoteName the IMAP full name
+   * @param enabled the opt-in
+   * @return the DTO
+   */
+  private EmailFolder registeredFolder(long id, String remoteName, boolean enabled) {
+    EmailFolder folder = new EmailFolder();
+    folder.setId(id);
+    folder.setUserId(TEST_USER);
+    folder.setRemoteName(remoteName);
+    folder.setDisplayName(remoteName);
+    folder.setDelimiter("/");
+    folder.setType(MailFolderView.TYPE_CUSTOM);
+    folder.setSyncEnabled(enabled);
+    folder.setEnabledDate(enabled ? new Date(id * 1_000L) : null);
+    return folder;
+  }
 }
