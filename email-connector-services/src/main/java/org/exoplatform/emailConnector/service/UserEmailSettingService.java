@@ -163,8 +163,8 @@ public class UserEmailSettingService {
    * <p>
    * The per-user sync period is deliberately NOT copied from the caller: it is a
    * client-controlled field with nothing in the platform to reject an out-of-range
-   * value, and {@code EmailConnectorUtils#getEmailBoxUserSyncPeriod} prefers a
-   * stored per-user value over the administration-wide one — so a crafted request
+   * value, and the period resolver of the time preferred a stored per-user value
+   * over the administration-wide one — so a crafted request
    * to {@code PUT /user-email-setting} could otherwise schedule that user's mailbox
    * to sync every minute, multiplying their provider logins and undercutting
    * whatever floor an administrator set on the sync-settings drawer. No UI ever

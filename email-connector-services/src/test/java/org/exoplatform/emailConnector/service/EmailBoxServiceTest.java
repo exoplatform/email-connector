@@ -28,12 +28,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -129,7 +126,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import com.sun.mail.imap.AppendUID;
 import com.sun.mail.imap.IMAPFolder;
@@ -158,6 +154,7 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
+import org.exoplatform.emailConnector.model.EmailSyncState;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.SyncStatus;
@@ -169,11 +166,9 @@ import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
+import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
-import org.exoplatform.services.scheduler.JobInfo;
-import org.exoplatform.services.scheduler.JobSchedulerService;
-import org.exoplatform.services.scheduler.PeriodInfo;
 
 import io.meeds.social.category.model.Category;
 import io.meeds.social.category.model.CategoryObject;
@@ -221,6 +216,11 @@ public class EmailBoxServiceTest {
 
   @MockitoBean
   private JobSchedulerService     jobSchedulerService;
+
+  // The cluster-wide claim, mocked: every test that synchronizes gets the claim
+  // (see grantTheSyncClaim), and the tests ABOUT the claim take it away.
+  @MockitoBean
+  private EmailSyncStateStorage   emailSyncStateStorage;
 
   @MockitoBean
   private ListenerService         listenerService;
@@ -303,6 +303,18 @@ public class EmailBoxServiceTest {
    * relevant stub to {@code false} instead of the {@code System.setProperty} this
    * class used before those switches moved to {@code SettingService}.
    */
+  /**
+   * Grants the sync claim to every test in this class: {@code synchronize} and
+   * {@code resetAndResynchronize} take the cluster-wide claim before they do
+   * anything, and a mock answering false would turn every sync test into a test
+   * of the "already running" branch. {@code lenient()} because most tests never
+   * synchronize.
+   */
+  @BeforeEach
+  void grantTheSyncClaim() {
+    lenient().when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(true);
+  }
+
   @BeforeEach
   void defaultTheAdministrationWideSyncSettingsOn() {
     lenient().when(emailConnectorService.isTrashSyncEnabled()).thenReturn(true);
@@ -435,57 +447,117 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
   }
 
+  /**
+   * The request-thread sync takes the cluster-wide claim before touching the
+   * mailbox and releases it afterwards, stamping the run's start as the last sync
+   * -- so "sync now" resets the routine cadence the way a dispatched run does.
+   * Mutation-verified: with the release taken out of the {@code finally}, this
+   * fails.
+   */
   @Test
-  void scheduleEmailBoxUserSyncJob() throws Exception {
-    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
-    emailBoxService.scheduleEmailBoxUserSyncJob(TEST_USER);
-    verify(jobSchedulerService).removeJob(any(JobInfo.class));
-    verify(jobSchedulerService).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
+  @SneakyThrows
+  void synchronizeTakesTheClaimAndReleasesIt() {
+    mockEmptySync();
+    emailBoxService.synchronize(TEST_USER);
+    InOrder inOrder = inOrder(emailSyncStateStorage, userEmailSettingService);
+    inOrder.verify(emailSyncStateStorage).claim(eq(TEST_USER), any(Date.class), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
+    inOrder.verify(userEmailSettingService).connect(any(UserEmailSetting.class));
+    inOrder.verify(emailSyncStateStorage).release(eq(TEST_USER), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
   }
 
   /**
-   * The admin drawer's whole point: without a reschedule, a saved period would
-   * only reach a user on their next reconnect or the next platform restart — this
-   * is what makes the save actually take effect on already-connected mailboxes.
+   * A failing sync still releases the claim: a claim that outlives its run locks
+   * the mailbox out of every node for the whole stale timeout. Mutation-verified
+   * alongside the test above.
    */
   @Test
-  void rescheduleAllSyncJobsRegistersEveryConnectedUser() throws Exception {
-    Context otherUser = Context.USER.id("otherUser");
-    when(settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
-                                                                 Scope.APPLICATION.getName(),
-                                                                 EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
-                                                                 EmailConnectorService.USER_EMAIL_SETTING_KEY,
-                                                                 0,
-                                                                 Integer.MAX_VALUE)).thenReturn(List.of(Context.USER.id(TEST_USER),
-                                                                                                        otherUser));
-    when(userEmailSettingService.getUserEmailSetting(anyString())).thenReturn(userEmailSetting());
-
-    emailBoxService.rescheduleAllSyncJobs();
-
-    verify(jobSchedulerService, times(2)).removeJob(any(JobInfo.class));
-    verify(jobSchedulerService, times(2)).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
+  @SneakyThrows
+  void aFailingSynchronizeStillReleasesTheClaim() {
+    UserEmailSetting userEmailSetting = givenAUsableMailbox();
+    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new RuntimeException("IMAP is down"));
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailSyncStateStorage).release(eq(TEST_USER), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
   }
 
   /**
-   * One user's mailbox failing to reschedule (a bad stored setting, say) must not
-   * stop every other connected user's job from being re-registered.
+   * A mailbox somebody else holds the claim on (another node's dispatcher, say) is
+   * not synchronized twice: the request returns quietly, as the in-JVM guard has
+   * always answered, and nothing is released that this thread did not take.
    */
   @Test
-  void rescheduleAllSyncJobsSkipsAFailingUserWithoutStoppingTheRest() throws Exception {
-    when(settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
-                                                                 Scope.APPLICATION.getName(),
-                                                                 EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
-                                                                 EmailConnectorService.USER_EMAIL_SETTING_KEY,
-                                                                 0,
-                                                                 Integer.MAX_VALUE)).thenReturn(List.of(Context.USER.id("brokenUser"),
-                                                                                                        Context.USER.id(TEST_USER)));
-    when(userEmailSettingService.getUserEmailSetting("brokenUser")).thenThrow(new RuntimeException("stored setting is unreadable"));
-    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+  @SneakyThrows
+  void synchronizeIsRefusedWhileTheMailboxIsClaimedElsewhere() {
+    givenAUsableMailbox();
+    when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(false);
+    when(emailSyncStateStorage.get(TEST_USER)).thenReturn(new EmailSyncState(TEST_USER, new Date(), "other-node", null, null, new Date()));
+    emailBoxService.synchronize(TEST_USER);
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(emailSyncStateStorage, never()).release(anyString(), anyString(), any(Date.class));
+  }
 
-    emailBoxService.rescheduleAllSyncJobs();
+  /**
+   * A mailbox with no state row yet (connected before the dispatcher's first tick
+   * reconciled the rows) is not a refusal: the row is created on the spot and the
+   * claim tried again, so the user's own "sync now" works in that window.
+   */
+  @Test
+  @SneakyThrows
+  void synchronizeCreatesTheMissingRowBeforeClaiming() {
+    mockEmptySync();
+    when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(false, true);
+    when(emailSyncStateStorage.get(TEST_USER)).thenReturn(null);
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailSyncStateStorage).upsert(eq(TEST_USER), isNull(), any(Date.class));
+    verify(emailSyncStateStorage, times(2)).claim(eq(TEST_USER), any(Date.class), anyString(), any(Date.class));
+    verify(userEmailSettingService).connect(any(UserEmailSetting.class));
+  }
 
-    verify(jobSchedulerService, times(1)).removeJob(any(JobInfo.class));
-    verify(jobSchedulerService, times(1)).addPeriodJob(any(JobInfo.class), any(PeriodInfo.class));
+  /**
+   * A reset while a sync runs anywhere in the cluster is refused with the code the
+   * drawer already knows, and the cache is left alone.
+   */
+  @Test
+  @SneakyThrows
+  void resetIsRefusedWhileTheMailboxIsClaimedElsewhere() {
+    givenAUsableMailbox();
+    when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(false);
+    when(emailSyncStateStorage.get(TEST_USER)).thenReturn(new EmailSyncState(TEST_USER, new Date(), "other-node", null, null, new Date()));
+    IllegalStateException refused = assertThrows(IllegalStateException.class, () -> emailBoxService.resetAndResynchronize(TEST_USER));
+    assertEquals("emailConnector.reset.syncInProgress", refused.getMessage());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    verify(emailSyncStateStorage, never()).release(anyString(), anyString(), any(Date.class));
+  }
+
+  /**
+   * A reset takes the claim and releases it, like the sync it ends with.
+   */
+  @Test
+  @SneakyThrows
+  void resetTakesTheClaimAndReleasesIt() {
+    mockEmptySync();
+    emailBoxService.resetAndResynchronize(TEST_USER);
+    verify(emailSyncStateStorage).claim(eq(TEST_USER), any(Date.class), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
+    verify(emailSyncStateStorage).release(eq(TEST_USER), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
+  }
+
+  /**
+   * A connecting mailbox is registered with no last sync (due at the next tick)
+   * and stamped active.
+   */
+  @Test
+  void registerMailboxForSyncUpsertsADueRow() {
+    emailBoxService.registerMailboxForSync(TEST_USER);
+    verify(emailSyncStateStorage).upsert(eq(TEST_USER), isNull(), any(Date.class));
+  }
+
+  /**
+   * The full cleanup a disconnect or rebind runs drops the dispatcher's row with
+   * the cache: a mailbox with no cache is nothing to synchronize.
+   */
+  @Test
+  void deletingTheWholeMailboxDropsTheSyncStateRow() {
+    emailBoxService.deleteUserEmails(TEST_USER);
+    verify(emailSyncStateStorage).delete(TEST_USER);
   }
 
   @Test
