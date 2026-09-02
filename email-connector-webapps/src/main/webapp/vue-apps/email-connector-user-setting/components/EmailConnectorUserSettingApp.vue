@@ -24,6 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-user-setting-connectors-drawer />
       <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
       <email-connector-user-setting-folders-drawer />
+      <email-connector-user-setting-folder-name-drawer />
       <email-connector-user-setting-disconnect-drawer />
       <email-connector-user-setting-signature-drawer />
     </template>
