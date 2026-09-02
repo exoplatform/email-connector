@@ -317,6 +317,18 @@ export default {
     // next page load.
     this.onRefreshUserEmailSetting = () => this.readDefaultCategoryView();
     document.addEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
+    // The global Favorites drawer clears a mail's flag from outside this app, in
+    // its own Vue root: without this door the star it took back would stay lit in
+    // a mailbox left open beside it until the next poll. The value it carries is
+    // already the server's, so it is applied as acknowledged, never as a pending
+    // push to roll back.
+    this.onFavoriteStatusChangedOutside = event => {
+      const mailRemoteIds = event?.detail?.mailRemoteIds;
+      if (mailRemoteIds?.length) {
+        this.$root.$emit('apply-email-favorite-status', !!event.detail.favorite, mailRemoteIds, true);
+      }
+    };
+    document.addEventListener('email-favorite-status-changed', this.onFavoriteStatusChangedOutside);
     this.$root.$on('switch-folder', this.onSwitchFolder);
     this.$root.$on('open-category-view', this.openCategoryView);
     this.$root.$on('enter-select-mode', this.onEnterSelectMode);
@@ -478,6 +490,7 @@ export default {
   },
   beforeDestroy() {
     document.removeEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
+    document.removeEventListener('email-favorite-status-changed', this.onFavoriteStatusChangedOutside);
     this.$root.$off('refresh-email-box', this.onRefreshEmailBox);
     this.$root.$off('email-sent', this.onEmailSent);
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);

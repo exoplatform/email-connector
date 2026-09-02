@@ -116,6 +116,13 @@ export default {
       });
   },
   methods: {
+    /**
+     * Opens the contact's card in the Contacts drawer, and records the favorite
+     * as accessed when a real click (not a keyboard Enter) brought the user there.
+     *
+     * @param {Event} event the row's click or keydown
+     * @returns {void}
+     */
     open(event) {
       // Vuetify re-emits an Enter pressed anywhere inside the row as the row's own
       // click, so a keyboard user unfavoriting from the star would also open the
@@ -145,11 +152,24 @@ export default {
     removed() {
       this.isFavorite = false;
       this.displayAlert(this.$t('Favorite.tooltip.SuccessfullyDeletedFavorite'));
-      this.$root.$emit('refresh-favorite-list');
+      this.$root.$emit('favorite-removed', 'contact', this.id);
     },
+    /**
+     * Tells the user the favorite could not be removed.
+     *
+     * @returns {void}
+     */
     removeError() {
       this.displayAlert(this.$t('Favorite.tooltip.ErrorDeletingFavorite', {0: this.$t('UITopBarFavoritesPortlet.contact.label')}), 'error');
     },
+    /**
+     * Shows a platform toast: the alert component lives in another Vue root, so
+     * it is reached through the document rather than this app's root.
+     *
+     * @param {string} message the text to show
+     * @param {string} type 'success' (default) or 'error'
+     * @returns {void}
+     */
     displayAlert(message, type) {
       document.dispatchEvent(new CustomEvent('notification-alert', {detail: {
         message,
