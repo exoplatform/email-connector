@@ -288,6 +288,15 @@ public class EmailBoxService {
    */
   private static final int        JUNK_FOLDER_SYNC_LIMIT                                      = 30;
 
+  /**
+   * The built-in folders "Move to..." may target. Inbox because filing must be
+   * reversible, Archive because filing and archiving are the same gesture to a user.
+   * Deliberately not Drafts (authored here, not mirrored), Trash or Junk (their own
+   * actions carry their own meaning and their own confirmations), nor ALL_MAIL (a
+   * thread-completion cache, not a place mail lives).
+   */
+  private static final List<String>      MOVE_BUILT_IN_TARGETS   = List.of(MailFolder.INBOX, MailFolder.ARCHIVE);
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
@@ -3132,6 +3141,19 @@ public class EmailBoxService {
                           String targetFolder) throws IllegalAccessException {
     checkCanManageFolders(username);
     checkCustomFoldersEnabled();
+    String sourceKey = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+    // Inbox and Archive are destinations as much as the user's own folders are: filing a
+    // message has to be reversible, and a move that could only ever go deeper left mail
+    // stranded in a folder it could never leave. They are not registry rows, so they are
+    // resolved here rather than looked up -- the registry only knows custom folders.
+    // Nothing else is admitted: Drafts is authored locally, Trash and Junk have their own
+    // actions with their own meaning, and ALL_MAIL is a thread-completion cache.
+    if (MOVE_BUILT_IN_TARGETS.contains(targetFolder)) {
+      if (sourceKey.equals(targetFolder)) {
+        throw new IllegalArgumentException("emailConnector.folder.sameAsSource");
+      }
+      return applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, targetFolder);
+    }
     EmailFolder target = emailFolderService.getFolderByKey(username, targetFolder);
     if (target.isMissing()) {
       throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
@@ -3142,11 +3164,10 @@ public class EmailBoxService {
       // mirrored ones only, and the server says the same thing.
       throw new IllegalArgumentException("emailConnector.folder.notMirrored");
     }
-    String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
-    if (sourceFolder.equals(target.getKey())) {
+    if (sourceKey.equals(target.getKey())) {
       throw new IllegalArgumentException("emailConnector.folder.sameAsSource");
     }
-    return applyMoveAction(mailRemoteIds, username, sourceFolder, MoveAction.MOVE, target.getKey());
+    return applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, target.getKey());
   }
 
   /**

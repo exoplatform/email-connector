@@ -247,7 +247,17 @@ export function folderPath(folder) {
  */
 export function moveTargets(folders, sourceFolder) {
   const source = sourceFolder || 'INBOX';
-  return (folders || []).filter(folder => folder.type === 'CUSTOM' && folder.syncEnabled && !folder.missing && folder.key !== source);
+  // Inbox and Archive are destinations too, not only the user's own folders: filing a
+  // message must be reversible, and a picker that only ever pointed deeper made "Move
+  // to..." a one-way trip -- a message put in "Invoices" could never come back.
+  // Drafts, Trash, Junk and All Mail are not offered: the first is authored here, the
+  // next two have their own actions with their own meaning (Delete, Mark as spam), and
+  // the last is a thread-completion cache rather than a place mail lives.
+  const builtInTargets = ['INBOX', 'ARCHIVE'];
+  return (folders || []).filter(folder => folder.key !== source
+                                          && !folder.missing
+                                          && (builtInTargets.includes(folder.key)
+                                              || (folder.type === 'CUSTOM' && folder.syncEnabled)));
 }
 
 /**
