@@ -205,6 +205,105 @@ public class EmailConnectorServiceTest {
   }
 
   @Test
+  void getEmailBoxSyncPeriodReturnsDefaultWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.EMAIL_BOX_SYNC_PERIOD_KEY)).thenReturn(null);
+    assertEquals(10, emailConnectorService.getEmailBoxSyncPeriod());
+  }
+
+  @Test
+  void getEmailBoxSyncPeriodReturnsStoredValue() {
+    doReturn(SettingValue.create("30")).when(settingService)
+                                       .get(Context.GLOBAL,
+                                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                                            EmailConnectorService.EMAIL_BOX_SYNC_PERIOD_KEY);
+    assertEquals(30, emailConnectorService.getEmailBoxSyncPeriod());
+  }
+
+  @Test
+  @SneakyThrows
+  void saveEmailBoxSyncPeriod() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveEmailBoxSyncPeriod(15, TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxSyncPeriod(4, TEST_USER));
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.saveEmailBoxSyncPeriod(1441, TEST_USER));
+    emailConnectorService.saveEmailBoxSyncPeriod(15, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.EMAIL_BOX_SYNC_PERIOD_KEY),
+                               any(SettingValue.class));
+  }
+
+  @Test
+  void trashSyncEnabledDefaultsToTrueWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.TRASH_SYNC_ENABLED_KEY)).thenReturn(null);
+    assertEquals(true, emailConnectorService.isTrashSyncEnabled());
+  }
+
+  @Test
+  @SneakyThrows
+  void saveTrashSyncEnabled() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveTrashSyncEnabled(false, TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    emailConnectorService.saveTrashSyncEnabled(false, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.TRASH_SYNC_ENABLED_KEY),
+                               any(SettingValue.class));
+  }
+
+  @Test
+  void junkSyncEnabledDefaultsToTrueWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.JUNK_SYNC_ENABLED_KEY)).thenReturn(null);
+    assertEquals(true, emailConnectorService.isJunkSyncEnabled());
+  }
+
+  @Test
+  @SneakyThrows
+  void saveJunkSyncEnabled() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveJunkSyncEnabled(false, TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    emailConnectorService.saveJunkSyncEnabled(false, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.JUNK_SYNC_ENABLED_KEY),
+                               any(SettingValue.class));
+  }
+
+  @Test
+  void serverDraftsEnabledDefaultsToTrueWhenUnset() {
+    when(settingService.get(Context.GLOBAL,
+                            EmailConnectorService.EMAIL_CONNECTOR_SCOPE,
+                            EmailConnectorService.DRAFTS_SERVER_ENABLED_KEY)).thenReturn(null);
+    assertEquals(true, emailConnectorService.isServerDraftsEnabled());
+  }
+
+  @Test
+  @SneakyThrows
+  void saveServerDraftsEnabled() {
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.saveServerDraftsEnabled(false, TEST_USER));
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    emailConnectorService.saveServerDraftsEnabled(false, TEST_USER);
+    verify(settingService).set(eq(Context.GLOBAL),
+                               eq(EmailConnectorService.EMAIL_CONNECTOR_SCOPE),
+                               eq(EmailConnectorService.DRAFTS_SERVER_ENABLED_KEY),
+                               any(SettingValue.class));
+  }
+
+  @Test
   void getEmailConnectors() {
     Locale frLocale = mock(Locale.class);
     List<EmailConnector> list = List.of(mock(EmailConnector.class));
