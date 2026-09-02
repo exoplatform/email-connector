@@ -143,14 +143,23 @@ export default {
      * flag, recomputed from it at every sync — so a removal that stopped at the
      * favorites store would be undone within minutes, the row quietly back in the
      * drawer. The flag is therefore cleared too, through the endpoint the mailbox
-     * star uses. When the server refuses the message, that endpoint reverts the
-     * row and reconciles the favorites itself; when it cannot reach the server at
-     * all it answers before reconciling — so the favorite is put back from here
-     * in both cases (a no-op in the first) and the drawer re-read to show it.
+     * star uses — called directly, as the read above is: the mailbox service that
+     * wraps it lives in the mailbox bundle, which this extension deliberately
+     * does not load on every page. When the server refuses the message, that
+     * endpoint reverts the row and reconciles the favorites itself; when it
+     * cannot reach the server at all it answers before reconciling — so the
+     * favorite is put back from here in both cases (a no-op in the first) and
+     * the drawer re-read to show it.
+     *
+     * The drop below destroys this row before the server answers, and a
+     * destroyed component has no translator any more: what the toasts will say
+     * is resolved first, while there is still one to ask.
      *
      * @returns {void}
      */
     removed() {
+      const removedMessage = this.$t('Favorite.tooltip.SuccessfullyDeletedFavorite');
+      const errorMessage = this.$t('Favorite.tooltip.ErrorDeletingFavorite', {0: this.$t('UITopBarFavoritesPortlet.email.label')});
       this.isFavorite = false;
       this.$root.$emit('favorite-removed', 'email', this.id);
       fetch('/email-connector/rest/email-box/starred?starred=false', {
@@ -177,17 +186,17 @@ export default {
             favorite: false,
           },
         }));
-        this.displayAlert(this.$t('Favorite.tooltip.SuccessfullyDeletedFavorite'));
+        this.displayAlert(removedMessage);
       }).catch(() => this.$favoriteService.addFavorite('email', this.id)
         .catch(() => null)
         .finally(() => {
-          this.isFavorite = true;
-          this.removeError();
+          this.displayAlert(errorMessage, 'error');
           this.$root.$emit('refresh-favorite-list');
         }));
     },
     /**
-     * Tells the user the favorite could not be removed.
+     * Tells the user the favorite could not be removed — the button's own
+     * failure, on a row still alive.
      *
      * @returns {void}
      */
