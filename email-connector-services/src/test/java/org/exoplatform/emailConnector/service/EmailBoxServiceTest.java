@@ -6856,7 +6856,12 @@ public class EmailBoxServiceTest {
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
 
     mockOwnedEmail();
-    // Notified for everything (no preference stored at all): a link cannot move the badge.
+    // Notified for everything, in each of its three spellings — no preference stored
+    // at all, the switch left unset, the switch on: a link cannot move the badge.
+    emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(notifiedForAll(null));
+    emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(notifiedForAll(Boolean.TRUE));
     emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
 
@@ -6882,6 +6887,10 @@ public class EmailBoxServiceTest {
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
 
     mockOwnedEmail();
+    emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(notifiedForAll(null));
+    emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(notifiedForAll(Boolean.TRUE));
     emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER);
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
 
@@ -6943,6 +6952,20 @@ public class EmailBoxServiceTest {
   private void narrow(UserEmailSetting setting, List<Long> categoryIds) {
     setting.setNotifyAllCategories(Boolean.FALSE);
     setting.setNotifyCategories(categoryIds);
+  }
+
+  /**
+   * A user notified for everything, with the switch spelled as given — unset (null)
+   * or on — and a selection stored that must not count for anything.
+   *
+   * @param notifyAllCategories null or TRUE
+   * @return the setting
+   */
+  private UserEmailSetting notifiedForAll(Boolean notifyAllCategories) {
+    UserEmailSetting setting = userEmailSetting();
+    setting.setNotifyAllCategories(notifyAllCategories);
+    setting.setNotifyCategories(List.of(5L));
+    return setting;
   }
 
   /**

@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 
 import javax.mail.MessagingException;
 import javax.mail.Session;
@@ -202,7 +203,9 @@ public class UserEmailSettingService {
    * mail side turns it into the unread-count broadcast the badge listens to. Raised only
    * when the notification half actually changed: the default-view toggle shares this
    * write and does not move the count, and an unchanged preference must not cost an
-   * eviction, a frame and a re-fetch.
+   * eviction, a frame and a re-fetch. "Changed" is what the badge would read
+   * differently — the switch itself, or the SET of opted-in ids while the switch is
+   * off — not the shape the client happened to post ({@link #sameCategories}).
    *
    * @param username the user whose preferences are updated
    * @param notifyAllCategories notify for every new email (null/true) or only for the selected
@@ -220,7 +223,8 @@ public class UserEmailSettingService {
       return;
     }
     boolean notificationPreferenceChanged = !Objects.equals(userEmailSetting.getNotifyAllCategories(), notifyAllCategories)
-        || !Objects.equals(userEmailSetting.getNotifyCategories(), notifyCategories);
+        || (Boolean.FALSE.equals(notifyAllCategories)
+            && !sameCategories(userEmailSetting.getNotifyCategories(), notifyCategories));
     userEmailSetting.setNotifyAllCategories(notifyAllCategories);
     userEmailSetting.setNotifyCategories(notifyCategories);
     userEmailSetting.setDefaultCategoryView(defaultCategoryView);
@@ -228,6 +232,22 @@ public class UserEmailSettingService {
     if (notificationPreferenceChanged) {
       eventPublisher.publishEvent(new EmailNotificationPreferencesChangedEvent(username));
     }
+  }
+
+  /**
+   * Whether two opted-in category selections mean the same thing to the badge and
+   * the notification: the same ids, in any order, with an absent list and an empty
+   * one being the same "none". The client posts a list, the store keeps one, and
+   * neither is guaranteed to spell an unchanged selection the same way twice.
+   *
+   * @param stored the ids as stored, may be null
+   * @param posted the ids as posted, may be null
+   * @return true when the two select the same categories
+   */
+  private boolean sameCategories(List<Long> stored, List<Long> posted) {
+    Set<Long> storedIds = stored == null ? Set.of() : Set.copyOf(stored);
+    Set<Long> postedIds = posted == null ? Set.of() : Set.copyOf(posted);
+    return storedIds.equals(postedIds);
   }
 
   /**
