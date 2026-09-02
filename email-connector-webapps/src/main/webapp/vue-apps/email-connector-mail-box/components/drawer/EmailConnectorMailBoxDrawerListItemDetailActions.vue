@@ -130,6 +130,24 @@ export default {
   },
   computed: {
     /**
+     * All message ids an action started from this toolbar applies to: the whole
+     * conversation as listed in the folder the opened message sits in, or the opened
+     * message alone. The single definition shared with the list row's own ⋮ menu
+     * (EmailConnectorMailBoxDrawerListItemActionMenuItems) — see
+     * $emailConnectorMailBoxService.threadIdsInFolder.
+     *
+     * `thread` here carries the conversation ACROSS folders (a filed message
+     * resurfaces in its own conversation, EXO-89942) — the shared function is what
+     * scopes it back down to the acting folder before any action fires, so an action
+     * started from the reader never reaches a message the user cannot see in the
+     * current listing.
+     *
+     * @returns {Array<Number>} the IMAP UIDs the action applies to
+     */
+    threadIds() {
+      return this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread);
+    },
+    /**
      * The conversation as the extension seam receives it: what the reader assembled,
      * plus the one thing a contributor cannot work out for itself without repeating
      * this add-on's definition of a thread.
@@ -201,65 +219,91 @@ export default {
     },
   },
   methods: {
+    /**
+     * Marks the opened conversation — every message of it listed in the acting
+     * folder, or the opened message alone — read or unread, and closes the reader.
+     *
+     * @returns {void}
+     */
     updateEmailReadStatus() {
-      this.$root.$emit('update-email-read-status', false, [this.email.mailRemoteId]);
-      this.$root.$emit('close-email-detail-drawer');
-    },
-    deleteEmail() {
-      this.$root.$emit('delete-email', [this.email.mailRemoteId]);
-      this.$root.$emit('close-email-detail-drawer');
-    },
-    archiveEmail() {
-      this.$root.$emit('archive-email', [this.email.mailRemoteId]);
+      this.$root.$emit('update-email-read-status', false, this.threadIds);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
-     * Opens the folder picker for the opened message. The reader stays open until a
-     * folder is chosen: the move, not the intent, is what takes the message away.
+     * Deletes the opened conversation — every message of it listed in the acting
+     * folder, or the opened message alone — and closes the reader.
+     *
+     * @returns {void}
+     */
+    deleteEmail() {
+      this.$root.$emit('delete-email', this.threadIds);
+      this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Archives the opened conversation — every message of it listed in the acting
+     * folder, or the opened message alone — and closes the reader.
+     *
+     * @returns {void}
+     */
+    archiveEmail() {
+      this.$root.$emit('archive-email', this.threadIds);
+      this.$root.$emit('close-email-detail-drawer');
+    },
+    /**
+     * Opens the folder picker for the opened conversation — every message of it
+     * listed in the acting folder, or the opened message alone. The reader stays
+     * open until a folder is chosen: the move, not the intent, is what takes the
+     * conversation away.
      *
      * @returns {void}
      */
     moveToFolder() {
-      this.$root.$emit('open-move-to-folder-drawer', [this.email.mailRemoteId], this.email.folder || 'INBOX');
+      this.$root.$emit('open-move-to-folder-drawer', this.threadIds, this.email.folder || 'INBOX');
     },
     /**
-     * Reports the opened message as spam and closes the reader — it is leaving the
-     * listing it was opened from.
+     * Reports the opened conversation — every message of it listed in the acting
+     * folder, or the opened message alone — as spam and closes the reader — it is
+     * leaving the listing it was opened from.
      *
      * @returns {void}
      */
     markAsJunk() {
-      this.$root.$emit('junk-email', [this.email.mailRemoteId]);
+      this.$root.$emit('junk-email', this.threadIds);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
-     * Puts the opened message back into the inbox out of the Spam folder and closes
-     * the reader, as restoreEmail does out of the Trash.
+     * Puts the opened conversation — every message of it listed in the acting
+     * folder, or the opened message alone — back into the inbox out of the Spam
+     * folder and closes the reader, as restoreEmail does out of the Trash.
      *
      * @returns {void}
      */
     restoreFromJunk() {
-      this.$root.$emit('not-junk-email', [this.email.mailRemoteId]);
+      this.$root.$emit('not-junk-email', this.threadIds);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
-     * Puts the opened message back into the inbox and closes the reader — the message
-     * is leaving the Trash listing behind it, so there is nothing left to read here.
+     * Puts the opened conversation — every message of it listed in the acting
+     * folder, or the opened message alone — back into the inbox and closes the
+     * reader — it is leaving the Trash listing behind it, so there is nothing left
+     * to read here.
      *
      * @returns {void}
      */
     restoreEmail() {
-      this.$root.$emit('restore-email', [this.email.mailRemoteId]);
+      this.$root.$emit('restore-email', this.threadIds);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
-     * Asks first, then destroys. The reader closes only once the user has confirmed,
-     * so cancelling leaves them looking at the message they decided to keep.
+     * Asks first, then destroys the opened conversation — every message of it
+     * listed in the acting folder, or the opened message alone. The reader closes
+     * only once the user has confirmed, so cancelling leaves them looking at the
+     * message they decided to keep.
      *
      * @returns {void}
      */
     purgeEmail() {
-      this.$root.$emit('open-purge-email-confirm-popup', [this.email.mailRemoteId], () => this.$root.$emit('close-email-detail-drawer'));
+      this.$root.$emit('open-purge-email-confirm-popup', this.threadIds, () => this.$root.$emit('close-email-detail-drawer'));
     },
   }
 };
