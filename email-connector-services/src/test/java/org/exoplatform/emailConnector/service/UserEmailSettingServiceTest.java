@@ -241,6 +241,36 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
+   * The same selection spelled differently — the ids in another order, as a client
+   * that rebuilds its chips will post them — is not a change. An event here would
+   * cost the badge an eviction for a preference that reads exactly as before.
+   */
+  @Test
+  void savingTheSameSelectionInAnotherOrderLeavesTheBadgeAlone() {
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+    storedSetting("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"notifyAllCategories\":false,\"notifyCategories\":[1,2]}");
+
+    userEmailSettingService.updateEmailPreferences(TEST_USER, Boolean.FALSE, List.of(2L, 1L), null);
+
+    verify(eventPublisher, never()).publishEvent(any(EmailNotificationPreferencesChangedEvent.class));
+  }
+
+  /**
+   * And the ids are irrelevant while the switch is on: a user notified for
+   * everything who posts a different (unused) selection has changed nothing the
+   * badge reads.
+   */
+  @Test
+  void savingUnusedCategoryIdsUnderNotifyAllLeavesTheBadgeAlone() {
+    ReflectionTestUtils.setField(userEmailSettingService, "eventPublisher", eventPublisher);
+    storedSetting("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"notifyAllCategories\":true,\"notifyCategories\":[1]}");
+
+    userEmailSettingService.updateEmailPreferences(TEST_USER, Boolean.TRUE, List.of(1L, 2L, 3L), null);
+
+    verify(eventPublisher, never()).publishEvent(any(EmailNotificationPreferencesChangedEvent.class));
+  }
+
+  /**
    * A stored settings document for the test user, with the connector it names
    * resolving, so the read comes back as a connected mailbox.
    *
