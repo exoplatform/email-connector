@@ -16,8 +16,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <!--
 The single place every mailbox sync setting lives: the mailbox cache size
-(moved in from its former standalone row) plus the sync period and the three
-folder kill switches. Each control saves on change, like the row it replaces
+(moved in from its former standalone row), the sync period of the active
+mailboxes, the tiering and executor rows (the inactive period, the activity
+threshold, the executor size and its status line — in
+EmailConnectorAdminSyncTieringRows, extracted only for size, EXO-89947) and
+the three folder kill switches. Each control saves on change, like the row it replaces
 did — there is no drawer-wide Save, because there is nothing to batch: every
 setting is independent and administration-wide. The two settings whose change
 has a real cost (cache size, sync period) confirm before saving; the switches
@@ -81,6 +84,7 @@ do not, because turning one off only stops a READ (see their subtitles).
               @change="confirmSyncPeriodChange" />
           </v-list-item-action>
         </v-list-item>
+        <email-connector-admin-sync-tiering-rows :active-period="syncPeriod" />
         <v-list-item dense class="px-0 height-auto mt-6">
           <v-list-item-content class="py-0">
             <v-list-item-title>
@@ -280,8 +284,10 @@ export default {
         .finally(() => this.savingCacheSize = false);
     },
     /**
-     * Opens the confirmation before applying a sync period change — it
-     * reschedules every connected user's mailbox sync job.
+     * Opens the confirmation before applying a sync period change — the
+     * dispatcher applies it to every active mailbox at its next tick, and
+     * raises the inactive period to match when this one overtakes it (the
+     * tiering rows re-read it: they watch the value passed to them).
      *
      * @param {Number} value the newly selected period, in minutes
      * @returns {void}
