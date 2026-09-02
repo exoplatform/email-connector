@@ -6856,8 +6856,10 @@ public class EmailBoxServiceTest {
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
 
     mockOwnedEmail();
-    // Notified for everything, in each of its three spellings — no preference stored
-    // at all, the switch left unset, the switch on: a link cannot move the badge.
+    // Notified for everything, in each of its three spellings — a null setting (the
+    // gate's defensive branch; production always returns a model), the switch left
+    // unset (what "nothing stored" really reads as), the switch on: a link cannot
+    // move the badge.
     emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(notifiedForAll(null));
     emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER);
