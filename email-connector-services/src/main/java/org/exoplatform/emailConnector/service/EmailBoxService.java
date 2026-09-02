@@ -374,7 +374,9 @@ public class EmailBoxService {
                                                                                                      "junk e-mail",
                                                                                                      "junk-e-mail",
                                                                                                      "junk email",
+                                                                                                     "junk mail",
                                                                                                      "spam",
+                                                                                                     "спам",
                                                                                                      "bulk mail",
                                                                                                      "courrier indésirable",
                                                                                                      "indésirables",
@@ -3646,7 +3648,7 @@ public class EmailBoxService {
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
       store = userEmailSettingService.connect(userEmailSetting);
-      source = resolveCachedImapFolder(store, sourceFolder, username);
+      source = resolveCachedImapFolder(store, sourceFolder, syncState);
       if (source == null) {
         LOG.warn("No {} folder for user {}; {} message(s) could not be moved", sourceFolder, username, mailRemoteIds.size());
         rows.values().forEach(this::recreateCachedRow);
@@ -3822,6 +3824,25 @@ public class EmailBoxService {
    */
   private IMAPFolder resolveCachedImapFolder(Store store, String folder, String username) throws MessagingException {
     Folder resolved = resolveCachedFolder(store, folder, username);
+    return resolved instanceof IMAPFolder imapFolder ? imapFolder : null;
+  }
+
+  /**
+   * {@link #resolveCachedImapFolder(Store, String, String)} on a sync state the caller
+   * already holds and will write back — the variant for a WRITE ({@link #applyMoveAction}),
+   * so the name a rediscovery finds is kept rather than paid for again on the next
+   * call, and the state is read from the settings once per action rather than once
+   * per resolver.
+   *
+   * @param store the connected store
+   * @param folder the {@link MailFolder} discriminator the rows carry
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @return the remote folder, or null when the mailbox has none (or exposes it under
+   *         an implementation this add-on cannot address by UID)
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder resolveCachedImapFolder(Store store, String folder, MailboxSyncState syncState) throws MessagingException {
+    Folder resolved = resolveCachedFolder(store, folder, syncState);
     return resolved instanceof IMAPFolder imapFolder ? imapFolder : null;
   }
 
@@ -8555,7 +8576,25 @@ public class EmailBoxService {
     if (StringUtils.isBlank(folder) || MailFolder.INBOX.equals(folder)) {
       return store.getFolder(INBOX_FOLDER_NAME);
     }
-    MailboxSyncState syncState = loadMailboxSyncState(username);
+    return resolveCachedFolder(store, folder, loadMailboxSyncState(username));
+  }
+
+  /**
+   * {@link #resolveCachedFolder(Store, String, String)} on a sync state the caller
+   * holds. Whether that state is written back is the caller's decision, which is the
+   * whole difference between the two: a read loads a throwaway copy (the rule above),
+   * a write loads once and saves in its finally.
+   *
+   * @param store the connected store (the caller's own)
+   * @param folder the {@link MailFolder} discriminator the row carries
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @return the remote folder, or null when the mailbox has no such folder
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private Folder resolveCachedFolder(Store store, String folder, MailboxSyncState syncState) throws MessagingException {
+    if (StringUtils.isBlank(folder) || MailFolder.INBOX.equals(folder)) {
+      return store.getFolder(INBOX_FOLDER_NAME);
+    }
     if (MailFolder.SENT.equals(folder)) {
       return resolveSentFolder(store, syncState);
     }
