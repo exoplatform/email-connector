@@ -552,6 +552,11 @@ public class EmailBoxService {
    * administrator might want to withdraw in a hurry, and the reason the switch
    * exists at all: an APPEND loop against a misbehaving server is the one failure
    * mode here that is visible outside this application.
+   * <p>
+   * Since the administration settings drawer shipped, this JVM property is only the
+   * default — the live switch is {@link EmailConnectorService#isServerDraftsEnabled()},
+   * a {@code SettingService} value an administrator can flip from the drawer, which
+   * falls back to this property when nothing is stored.
    */
   public static final String      DRAFTS_SERVER_ENABLED_PROPERTY                              =
                                                                                               "email.connector.drafts.server.enabled";
@@ -575,6 +580,11 @@ public class EmailBoxService {
    * listing on every sync of every user, and an administrator meeting that on a
    * provider that rate-limits has to be able to take this off the sync loop without
    * waiting for a release.
+   * <p>
+   * Since the administration settings drawer shipped, this JVM property is only the
+   * default — the live switch is {@link EmailConnectorService#isTrashSyncEnabled()},
+   * a {@code SettingService} value an administrator can flip from the drawer, which
+   * falls back to this property when nothing is stored.
    */
   public static final String      TRASH_SYNC_ENABLED_PROPERTY                                 =
                                                                                               "email.connector.trash.sync.enabled";
@@ -586,6 +596,11 @@ public class EmailBoxService {
    * nothing else. Spam is the folder whose size is least the user's doing, so it is
    * the one an administrator on a rate-limiting provider is most likely to need to
    * take off the loop. Default ON.
+   * <p>
+   * Since the administration settings drawer shipped, this JVM property is only the
+   * default — the live switch is {@link EmailConnectorService#isJunkSyncEnabled()},
+   * a {@code SettingService} value an administrator can flip from the drawer, which
+   * falls back to this property when nothing is stored.
    */
   public static final String      JUNK_SYNC_ENABLED_PROPERTY                                  =
                                                                                               "email.connector.junk.sync.enabled";
@@ -1054,7 +1069,7 @@ public class EmailBoxService {
     // stuck sync) is allowed through, since recovering from it is the point of a reset.
     if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
       long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate()
-          + EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
+          + getEffectiveSyncPeriod(userEmailSetting) * 60000L;
       if (System.currentTimeMillis() <= nextAllowedSync) {
         throw new IllegalStateException("emailConnector.reset.syncInProgress");
       }
@@ -3415,9 +3430,51 @@ public class EmailBoxService {
     JobInfo emailBoxSyncJobInfo = new JobInfo(emailBoxSyncJobName, EmailConnectorUtils.EMAIL_FEATURE, EmailBoxSyncJob.class);
     // Remove next email box sync job for the user
     jobSchedulerService.removeJob(emailBoxSyncJobInfo);
-    PeriodInfo periodInfo =
-                          new PeriodInfo(null, null, 0, EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000);
+    PeriodInfo periodInfo = new PeriodInfo(null, null, 0, getEffectiveSyncPeriod(userEmailSetting) * 60000);
     jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
+  }
+
+  /**
+   * Re-registers every connected user's scheduled mailbox sync job, the same way
+   * {@link #initEmailBoxSyncJob()} does at startup. Triggered when the
+   * administration-wide sync period changes — see
+   * {@link EmailConnectorService#saveEmailBoxSyncPeriod} — because the period is
+   * read only when a user's Quartz job is (re)registered, never per run: without
+   * this, a period change would only reach a user on their next reconnect or the
+   * next platform restart, and the admin drawer would be lying about taking
+   * effect.
+   */
+  public void rescheduleAllSyncJobs() {
+    List<Context> contexts =
+                           settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                  Scope.APPLICATION.getName(),
+                                                                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                                  EmailConnectorService.USER_EMAIL_SETTING_KEY,
+                                                                                  0,
+                                                                                  Integer.MAX_VALUE);
+    for (Context context : contexts) {
+      try {
+        scheduleEmailBoxUserSyncJob(context.getId());
+      } catch (Exception e) {
+        LOG.warn("Error rescheduling email box sync for user {}", context.getId(), e);
+      }
+    }
+  }
+
+  /**
+   * The sync period actually applied to a mailbox: the user's own stored
+   * override when there is one, the administration-wide period otherwise. In
+   * practice the per-user override is always null — nothing sets it any more,
+   * see {@code UserEmailSettingService#setUserEmailSetting} — but the ternary is
+   * kept rather than deleted, in case a legitimate per-user override is ever
+   * reintroduced deliberately.
+   *
+   * @param userEmailSetting the mailbox owner's stored setting
+   * @return the sync period to schedule, in minutes
+   */
+  private int getEffectiveSyncPeriod(UserEmailSetting userEmailSetting) {
+    return userEmailSetting.getEmailBoxUserSyncPeriod() != null ? userEmailSetting.getEmailBoxUserSyncPeriod()
+                                                                 : emailConnectorService.getEmailBoxSyncPeriod();
   }
 
   /**
@@ -7552,13 +7609,15 @@ public class EmailBoxService {
 
   /**
    * Whether the server-side half of drafts is switched on — see
-   * {@link #DRAFTS_SERVER_ENABLED_PROPERTY}. Read on every call rather than cached,
-   * so an administrator can withdraw it without a restart.
+   * {@link #DRAFTS_SERVER_ENABLED_PROPERTY}. Delegates to
+   * {@link EmailConnectorService#isServerDraftsEnabled()}, which reads the
+   * administration-wide setting (falling back to the JVM property) so an
+   * administrator can withdraw it from the settings drawer without a restart.
    *
    * @return true when drafts may be uploaded to the mail server
    */
   private boolean isServerDraftsEnabled() {
-    return Boolean.parseBoolean(System.getProperty(DRAFTS_SERVER_ENABLED_PROPERTY, "true"));
+    return emailConnectorService.isServerDraftsEnabled();
   }
 
   /**
@@ -9522,7 +9581,7 @@ public class EmailBoxService {
     }
     if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
       long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate() +
-          EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
+          getEffectiveSyncPeriod(userEmailSetting) * 60000L;
       return System.currentTimeMillis() > nextAllowedSync;
     }
     return true;
@@ -10558,24 +10617,28 @@ public class EmailBoxService {
 
   /**
    * Whether the Trash folder's synchronization is switched on — see
-   * {@link #TRASH_SYNC_ENABLED_PROPERTY}. Read on every sync rather than cached, so
-   * an administrator can withdraw it without a restart.
+   * {@link #TRASH_SYNC_ENABLED_PROPERTY}. Delegates to
+   * {@link EmailConnectorService#isTrashSyncEnabled()}, which reads the
+   * administration-wide setting (falling back to the JVM property) so an
+   * administrator can withdraw it from the settings drawer without a restart.
    *
    * @return true when the Trash folder may be cached
    */
   private boolean isTrashSyncEnabled() {
-    return Boolean.parseBoolean(System.getProperty(TRASH_SYNC_ENABLED_PROPERTY, "true"));
+    return emailConnectorService.isTrashSyncEnabled();
   }
 
   /**
    * Whether the Junk folder's synchronization is switched on — see
-   * {@link #JUNK_SYNC_ENABLED_PROPERTY}. Read on every sync rather than cached, so
-   * an administrator can withdraw it without a restart.
+   * {@link #JUNK_SYNC_ENABLED_PROPERTY}. Delegates to
+   * {@link EmailConnectorService#isJunkSyncEnabled()}, which reads the
+   * administration-wide setting (falling back to the JVM property) so an
+   * administrator can withdraw it from the settings drawer without a restart.
    *
    * @return true when the Junk folder may be cached
    */
   private boolean isJunkSyncEnabled() {
-    return Boolean.parseBoolean(System.getProperty(JUNK_SYNC_ENABLED_PROPERTY, "true"));
+    return emailConnectorService.isJunkSyncEnabled();
   }
 
   /**

@@ -19,6 +19,7 @@
 package org.exoplatform.emailConnector.rest;
 
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -149,6 +150,44 @@ public class EmailConnectorRestTest {
   void getEmailConnectors() throws Exception {
     ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH).with(testAdminUser()));
     response.andExpect(status().isOk());
+  }
+
+  @Test
+  void getEmailBoxSyncPeriod() throws Exception {
+    ResultActions response = mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/sync-period").with(testAdminUser()));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
+  void updateEmailBoxSyncPeriod() throws Exception {
+    ResultActions response = mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/sync-period?minutes=15").with(testAdminUser()));
+    response.andExpect(status().isOk());
+  }
+
+  @Test
+  void updateEmailBoxSyncPeriodRefusesBelowTheFloor() throws Exception {
+    doThrow(new IllegalArgumentException("emailConnector.admin.syncSettings.period.outOfRange")).when(emailConnectorService)
+                                                                                                 .saveEmailBoxSyncPeriod(1, ADMIN_USER);
+    ResultActions response = mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/sync-period?minutes=1").with(testAdminUser()));
+    response.andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void trashSync() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/trash-sync").with(testAdminUser())).andExpect(status().isOk());
+    mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/trash-sync?enabled=false").with(testAdminUser())).andExpect(status().isOk());
+  }
+
+  @Test
+  void junkSync() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/junk-sync").with(testAdminUser())).andExpect(status().isOk());
+    mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/junk-sync?enabled=false").with(testAdminUser())).andExpect(status().isOk());
+  }
+
+  @Test
+  void draftsServer() throws Exception {
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/drafts-server").with(testAdminUser())).andExpect(status().isOk());
+    mockMvc.perform(patch(EMAIL_CONNECTOR_PATH + "/drafts-server?enabled=false").with(testAdminUser())).andExpect(status().isOk());
   }
 
   @Test
