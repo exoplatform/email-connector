@@ -220,6 +220,16 @@ const CATEGORY_WATCH_MAX_MS = 600000;
 // first lull between batches looked like the end and the drawer stopped after one batch.
 const CATEGORY_WATCH_QUIET_POLLS = 30;
 
+// How long the drawer keeps a row an Undo put back, and polls for the server's own: the
+// budget the service gives the background re-read, restated -- one second's coalescing
+// delay, then up to 36 retries five seconds apart while a running sync holds the
+// mailbox (181 s), then the window itself (near 8.5 s at the shipped 1000 cached inbox
+// rows, 42 s at the administrator's 5000). A row still unbacked past this is dropped:
+// the re-read failed, or the administrator withdrew it, and an honest empty list beats
+// a row nothing can act on. The message surfaces at the folder's next scheduled check
+// either way (see undoMove).
+const UNDO_WATCH_MAX_MS = 240000;
+
 // How long typing must pause before the whole-mailbox server search fires; the
 // instant local matches don't wait for it.
 const SEARCH_DEBOUNCE_MS = 400;
@@ -284,6 +294,18 @@ export default {
       junkedEmailIds: [],
       unjunkedEmailIds: [],
       movedEmailIds: [],
+      // The rows an Undo put back into the listing before the server's mirror holds
+      // them again: the move's optimistic removal above, mirrored. Each remembers its
+      // folder and its expiry, renders inert (undoPending), and gives way to the
+      // server's row for the same message (same folder, same Message-ID) as soon as a
+      // reload lists one. See undoMove.
+      undoneRows: [],
+      undoWatchDeadline: null,
+      // Whether the undo watch polls for its whole budget rather than until the listed
+      // folder holds no remembered row: set by a PARTLY failed undo, whose rows all
+      // left the listing (which of them went back is not the drawer's to guess) while
+      // some of them are on their way into the mirror.
+      undoWatchUntilDeadline: false,
       currentFolder: 'INBOX',
       // The favorite view: list only the messages carrying the mail server's
       // \Flagged flag, in the listed folder. Toggled from the chip row.
@@ -717,6 +739,7 @@ export default {
       emails = emails.filter(e => !this.junkedEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.unjunkedEmailIds.includes(e.mailRemoteId));
       emails = emails.filter(e => !this.movedEmailIds.includes(e.mailRemoteId));
+      emails = this.withUndoneRows(emails);
       // The filters combine: each one narrows what the others left, so
       // "unread favorites in this category" is just everything toggled on. A
       // category VIEW is single selection (categoryViewId), so at most one
@@ -864,6 +887,13 @@ export default {
      * @returns {void}
      */
     openEmailDetailContent(mailRemoteId) {
+      // A row an Undo put back is a snapshot carrying the UID it had before the move,
+      // which the server's re-read replaces: nothing can be opened by it yet. The row
+      // renders inert meanwhile (see the list item), and a click that reaches here all
+      // the same is ignored rather than answered with a reader that fails to load.
+      if (this.emails.find(e => e.mailRemoteId === mailRemoteId)?.undoPending) {
+        return;
+      }
       // Opening from the list is the user choosing again: whatever was pinned open
       // from elsewhere gives way to it.
       this.pinnedEmail = false;
@@ -1122,6 +1152,8 @@ export default {
     close() {
       this.pinnedEmail = false;
       this.categoryWatchDeadline = null;
+      this.undoWatchDeadline = null;
+      this.undoWatchUntilDeadline = false;
       this.stopAutoRefresh();
       this.clearSearch();
       // Nothing prunes an override until a server answer lands, so a user who toggles
@@ -1147,6 +1179,7 @@ export default {
       this.junkedEmailIds = [];
       this.unjunkedEmailIds = [];
       this.movedEmailIds = [];
+      this.undoneRows = [];
     },
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
@@ -1587,6 +1620,9 @@ export default {
       const undoGroups = groups.map(([folder, ids]) => ({
         folder,
         mailHeaderIds: ids.map(id => this.rowOfEmail(id)?.mailHeaderId || null),
+        // The rows themselves, for the Undo to put back into the listing at once (see
+        // undoMove) -- stamped with their folder, which an inbox row leaves implicit.
+        rows: ids.map(id => ({ ...this.rowOfEmail(id), folder })),
       }));
       this.movedEmailIds.push(...emailIdsToMove);
       const requests = groups.map(([folder, ids]) =>
@@ -1645,33 +1681,132 @@ export default {
       }}));
     },
     /**
-     * Puts the moved messages back, each group into the folder it came from, then
-     * reloads the listing: the server re-reads the folder they went back to before it
-     * answers, so the rows are in the mirror by the time the reload asks for them. That
-     * re-read is a folder sync on the request thread (seconds on a large inbox), so the
-     * listing shows its loading state until the answer -- the wait the Sync button
-     * shows the same way. A failure takes the error toast every other action takes,
-     * and nothing is put back into the listing from memory, for
-     * alertOnActionFailures's reason.
+     * Puts the moved messages back, each group into the folder it came from -- and back
+     * into the listing at once, before the server answers: the move's optimistic
+     * removal, mirrored. The server answers on the IMAP move-back and re-reads the
+     * folder in the background (seconds on a large inbox -- the wait the Undo click
+     * itself paid until EXO-89963), so the rows would otherwise show up at some later
+     * reload, and an Undo that shows nothing reads as an Undo that did nothing.
      *
-     * @param {Array} undoGroups [{folder, mailHeaderIds}] per folder the rows came from
+     * Honesty over comfort, in both directions. A group the server could not honour, in
+     * whole or in part, leaves the listing again and takes the error toast every other
+     * action takes: the server says how many did not go back, not which, and a row kept
+     * on a guess would be this drawer claiming a move-back the server refused
+     * (alertOnActionFailures's reason). The ones that DID go back are listed once the
+     * folder's re-read lands -- which is why a PARTLY failed undo polls for its whole
+     * budget (undoWatchUntilDeadline): with no remembered row to wait for, the poll
+     * would otherwise end at once and the messages that did go back would sit in the
+     * mirror unlisted. And a remembered row is a snapshot: it carries the UID it had
+     * before the move, which the server's re-read replaces, so nothing can act on it yet
+     * (it renders inert, undoPending), it gives way to the server's row the moment a
+     * reload lists the message again (pruneUndoneRows) -- the watch armed below polls
+     * for exactly that -- and it is dropped once the re-read's budget is spent
+     * (UNDO_WATCH_MAX_MS) rather than kept as a row nothing can open.
+     *
+     * @param {Array} undoGroups [{folder, mailHeaderIds, rows}] per folder the rows came from
      * @param {String} target the folder the messages are in now
-     * @returns {Promise} resolving once the listing is reloaded
+     * @returns {Promise} resolving once every request has answered
      */
     undoMove(undoGroups, target) {
-      this.loading = true;
-      return Promise.all(undoGroups.map(group =>
+      const undoExpiresAt = Date.now() + UNDO_WATCH_MAX_MS;
+      const remembered = undoGroups.map(group => group.rows.map(row => ({ ...row, undoPending: true, undoExpiresAt })));
+      remembered.forEach(rows => this.undoneRows.push(...rows));
+      let partial = false;
+      return Promise.all(undoGroups.map((group, index) =>
         this.$emailConnectorMailBoxService.undoMoveEmails(group.mailHeaderIds, target, group.folder)
-          .then(undoResult => undoResult.failedUndos ?? 0, () => group.mailHeaderIds.length)))
+          .then(undoResult => undoResult.failedUndos ?? 0, () => group.mailHeaderIds.length)
+          .then(failures => {
+            if (failures > 0) {
+              this.forgetUndoneRows(remembered[index]);
+              partial = partial || failures < group.mailHeaderIds.length;
+            }
+            return failures;
+          })))
         .then(failures => {
           this.alertOnActionFailures(failures.reduce((sum, count) => sum + count, 0), 'undoMove');
-          return this.loadEmailBox();
+          if (this.undoneRows.length || partial) {
+            this.watchUndoneRows(partial);
+          }
         })
-        // A reload that failed is the listing's own to say, as it is on every other
-        // path; the undo itself has answered, and the toast's callback would otherwise
+        // Nothing above should reject; if something did, the toast's callback would
         // leave the rejection unhandled.
-        .catch(() => null)
-        .finally(() => this.loading = false);
+        .catch(() => null);
+    },
+    /**
+     * The listed rows with the ones an Undo put back merged in, each at its place by
+     * date, for the folder being listed -- unless the server already lists the message
+     * again (same Message-ID), in which case the server's row is the one shown.
+     *
+     * @param {Array} emails the listed rows, already narrowed by the optimistic removals
+     * @returns {Array} the rows to show
+     */
+    withUndoneRows(emails) {
+      const pending = this.undoneRows.filter(row => row.folder === this.currentFolder
+        && !emails.some(e => e.mailHeaderId === row.mailHeaderId));
+      if (!pending.length) {
+        return emails;
+      }
+      const merged = emails.slice();
+      pending.forEach(row => {
+        const at = merged.findIndex(e => new Date(e.receivedDate) < new Date(row.receivedDate));
+        merged.splice(at < 0 ? merged.length : at, 0, row);
+      });
+      return merged;
+    },
+    /**
+     * Drops rows an Undo had put back into the listing: the server refused their
+     * move-back, or a reload lists them again on its own.
+     *
+     * @param {Array} rows the rows to forget
+     * @returns {void}
+     */
+    forgetUndoneRows(rows) {
+      this.undoneRows = this.undoneRows.filter(row => !rows.includes(row));
+    },
+    /**
+     * Forgets the remembered rows a reload just listed again (same folder, same
+     * Message-ID) -- from here on the server's row, with the UID the re-read gave it, is
+     * the one the listing shows and acts on -- and the ones whose budget is spent
+     * without the server listing them: a row nothing can act on is not kept.
+     *
+     * @returns {void}
+     */
+    pruneUndoneRows() {
+      if (!this.undoneRows.length) {
+        return;
+      }
+      const listed = this.emailBox?.emails || [];
+      const now = Date.now();
+      this.forgetUndoneRows(this.undoneRows.filter(row => row.undoExpiresAt <= now
+        || (row.folder === this.currentFolder && listed.some(e => e.mailHeaderId === row.mailHeaderId))));
+    },
+    /**
+     * Polls the listing until the server lists the rows an Undo put back into the folder
+     * being listed -- or, for a partly failed undo, for the whole budget -- and for
+     * UNDO_WATCH_MAX_MS at most, on the post-sync category watch's own interval, not a
+     * second timer (see the email-sent listener for why two timers over one listing is
+     * one too many). Ended by loadEmailBox.
+     *
+     * @param {Boolean} untilDeadline whether to poll for the whole budget regardless of
+     *        the remembered rows
+     * @returns {void}
+     */
+    watchUndoneRows(untilDeadline = false) {
+      this.undoWatchDeadline = Date.now() + UNDO_WATCH_MAX_MS;
+      this.undoWatchUntilDeadline = this.undoWatchUntilDeadline || untilDeadline;
+      this.startAutoRefresh();
+    },
+    /**
+     * Stops the polling once nothing needs it any more. The interval has three owners
+     * -- a running sync (open() and the synchronize-in-progress listener), the category
+     * watch and the undo watch -- and one of them ending must not cut the others short.
+     *
+     * @returns {void}
+     */
+    stopAutoRefreshWhenIdle() {
+      if (!this.syncInProgress && !this.categoryWatchDeadline && !this.undoWatchDeadline) {
+        this.stopAutoRefresh();
+      }
     },
     /**
      * A folder's name as the listing shows it, from the descriptors the server listed
@@ -1687,6 +1822,7 @@ export default {
     async loadEmailBox() {
       const wasSyncing = this.syncInProgress;
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
+      this.pruneUndoneRows();
       // The folder list, kept on the root for the menus and the move-to picker: they
       // are created on click, deep under this drawer, and read it at that moment. Not
       // reactive, on purpose -- a property added to the root after creation is not --
@@ -1716,6 +1852,18 @@ export default {
         if (wasSyncing || this.categoryWatchDeadline) {
           this.watchIncomingCategories();
         }
+      }
+      // The undo watch ends when the listed folder holds no remembered row any more
+      // (the server lists the message again, or the user moved on to another folder)
+      // unless a partly failed undo asked for the whole budget, and in any case once
+      // the budget is spent. A row of another folder stays remembered until that folder
+      // is listed again or its own expiry prunes it.
+      if (this.undoWatchDeadline
+        && (Date.now() > this.undoWatchDeadline
+          || (!this.undoWatchUntilDeadline && !this.undoneRows.some(row => row.folder === this.currentFolder)))) {
+        this.undoWatchDeadline = null;
+        this.undoWatchUntilDeadline = false;
+        this.stopAutoRefreshWhenIdle();
       }
     },
     // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
@@ -1790,7 +1938,7 @@ export default {
       this.lastCategoryCount = count;
       if (this.stableCategoryPolls >= CATEGORY_WATCH_QUIET_POLLS || Date.now() > this.categoryWatchDeadline) {
         this.categoryWatchDeadline = null;
-        this.stopAutoRefresh();
+        this.stopAutoRefreshWhenIdle();
       }
     },
     // How many categories are applied across the listed emails; its only use is to notice
