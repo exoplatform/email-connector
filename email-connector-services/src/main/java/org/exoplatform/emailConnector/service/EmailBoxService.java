@@ -1231,7 +1231,8 @@ public class EmailBoxService {
       long cleanupStart = System.currentTimeMillis();
       cleanupObsoleteEmails(uidFolder, folderEmails, serverMessages, username, emailBoxCacheSize);
       long cleanupEnd = System.currentTimeMillis();
-      LOG.info("Synchronized folder {} of user {}: {} message(s) on the server, {} already known, {} newly cached, {} flag update(s)"
+      logSyncOutcome(!newEmailIds.isEmpty() || flagUpdates > 0,
+                     "Synchronized folder {} of user {}: {} message(s) on the server, {} already known, {} newly cached, {} flag update(s)"
           + " | open {} ms, window fetch {} ms, cache load {} ms, reconcile {} ms, download+create {} ms, cleanup {} ms"
           + " | {} MIME part(s) fetched for {} new message(s) [{}]",
                folderKey,
@@ -1487,6 +1488,26 @@ public class EmailBoxService {
   }
 
   /**
+   * Writes a folder-sync outcome line at INFO when the sync actually changed
+   * something, and at DEBUG otherwise. The periodic sync runs over every folder of
+   * every connected mailbox, and a pass that finds nothing new is the normal case:
+   * logged at INFO it drowns the platform log (measured at ~17 lines per mailbox
+   * pass, ~4.9 million lines a day at 1,000 users on a 5-minute period). The line
+   * itself is unchanged, so raising the class to DEBUG restores the full trace.
+   *
+   * @param eventful whether the sync cached, updated or removed anything
+   * @param message the log message, with {@code {}} placeholders
+   * @param args the placeholder values
+   */
+  private void logSyncOutcome(boolean eventful, String message, Object... args) {
+    if (eventful) {
+      LOG.info(message, args);
+    } else {
+      LOG.debug(message, args);
+    }
+  }
+
+  /**
    * Whether a folder's sync can be skipped because the server provably did not
    * change since the last full sync. Reads the four change signals off a STATUS on
    * the still-closed folder (two round-trips: JavaMail batches MESSAGES / UIDNEXT /
@@ -1549,7 +1570,7 @@ public class EmailBoxService {
         // and skipping would leave them stale forever. Checked FIRST (before any
         // STATUS is issued, and before the snapshot's own fields) so the log
         // separates "this server cannot do it" from "the capture came back short".
-        LOG.info("Folder {} of user {} cheap change check: no CONDSTORE on this server -> full sync", folderKey, username);
+        LOG.debug("Folder {} of user {} cheap change check: no CONDSTORE on this server -> full sync", folderKey, username);
         return false;
       }
       if (snapshot.getWindowSize() != windowSize) {
@@ -1567,7 +1588,7 @@ public class EmailBoxService {
         // CONDSTORE but only sends mod-sequences when asked, which the sync now does
         // at open). If it still fires persistently, the folder's SELECT is coming
         // back without the signal even when requested.
-        LOG.info("Folder {} of user {} cheap change check: snapshot incomplete (uidValidity {}, uidNext {}, {} message(s),"
+        LOG.debug("Folder {} of user {} cheap change check: snapshot incomplete (uidValidity {}, uidNext {}, {} message(s),"
             + " highestModSeq {}) -> full sync",
                  folderKey,
                  username,
@@ -1585,7 +1606,7 @@ public class EmailBoxService {
           && uidNext > 0 && uidNext == snapshot.getUidNext()
           && messageCount > 0 && messageCount == snapshot.getMessageCount()
           && highestModSeq > 0 && highestModSeq == snapshot.getHighestModSeq();
-      LOG.info("Folder {} of user {} cheap change check: server (uidValidity {}, uidNext {}, {} message(s), highestModSeq {})"
+      LOG.debug("Folder {} of user {} cheap change check: server (uidValidity {}, uidNext {}, {} message(s), highestModSeq {})"
           + " vs last sync ({}, {}, {}, {}) -> {}",
                folderKey,
                username,
@@ -2861,7 +2882,7 @@ public class EmailBoxService {
       // Traced on purpose: consumers only ever see messages that were *created* by this sync,
       // so "nothing was new" and "the consumer is broken" are otherwise indistinguishable from
       // the outside -- both are complete silence.
-      LOG.info("No new email to broadcast for user {}: this sync created no message, so '{}' consumers (e.g. AI auto-categorization) are not invoked",
+      LOG.debug("No new email to broadcast for user {}: this sync created no message, so '{}' consumers (e.g. AI auto-categorization) are not invoked",
                username,
                EmailConnectorUtils.NEW_EMAILS_SYNCED);
       return;
@@ -2910,7 +2931,8 @@ public class EmailBoxService {
    */
   private void broadcastNewEmailsSyncCompleted(String username, List<Long> newEmailIds) {
     try {
-      LOG.info("Broadcasting '{}' for user {}: the inbox sync ended with {} newly-cached message(s) in total",
+      logSyncOutcome(!newEmailIds.isEmpty(),
+                     "Broadcasting '{}' for user {}: the inbox sync ended with {} newly-cached message(s) in total",
                EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED,
                username,
                newEmailIds.size());
@@ -9842,7 +9864,8 @@ public class EmailBoxService {
     // feature exists to protect (see isProtectedDraft).
     cleanupObsoleteEmails(uidFolder, cachedDrafts, serverMessages, username, windowSize);
     int removedStrays = removeStrayDraftCopies(strayCopies, username, userEmailSetting);
-    LOG.info("Synchronized folder {} of user {}: {} draft(s) on the server, {} written in another client and imported,"
+    logSyncOutcome(imported > 0 || detached > 0 || !strayCopies.isEmpty() || removedStrays > 0,
+                   "Synchronized folder {} of user {}: {} draft(s) on the server, {} written in another client and imported,"
         + " {} kept locally after their server copy vanished, {} stray copy(ies) of already-sent mail found, {} removed",
              MailFolder.DRAFTS,
              username,
