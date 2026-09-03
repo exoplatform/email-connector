@@ -9448,6 +9448,128 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * The inbox refresh hands the message back to the sync as NEW -- the scheduled sync's
+   * own notify flag for the inbox -- so the run-completed broadcast the categorizer
+   * hangs off fires and the message the move stripped of its categories gets them
+   * again. The restore's documented trade, taken deliberately here too.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoIntoTheInboxHandsTheMessageToTheSyncAsNewSoItIsCategorizedAgain() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+    Folder inbox = trashStore().getFolder("INBOX");
+    when(inbox.getMessageCount()).thenReturn(1);
+    MimeMessage returned = mock(MimeMessage.class);
+    when(returned.getSubject()).thenReturn("the one that came back");
+    when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[] { returned });
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(emailBoxStorage).createEmail(argThat(row -> "the one that came back".equals(row.getSubject())));
+    verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED), eq(TEST_USER), any());
+  }
+
+  /**
+   * A COPY the server refused: counted, and nothing else happens -- the message is not
+   * flagged, no row is dropped, and there is nothing to refresh.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWhoseCopyTheServerRefusedCountsItAndTouchesNothingElse() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    doThrow(new MessagingException("COPY rejected")).when(factures).copyMessages(any(), any());
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(message, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(emailBoxStorage, never()).getEmailIdsByMailHeaderId(anyString(), anyString(), anyString());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+    verify(trashStore().getFolder("INBOX"), never()).open(anyInt());
+  }
+
+  /**
+   * A removal that failed AFTER the copy: the message is in both folders, which is the
+   * deliberate direction (a duplicate the next syncs reconcile beats a message that
+   * exists nowhere). Counted as a failure, the current folder's row already dropped,
+   * and the origin still refreshed -- it did receive the message.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWhoseRemovalFailedAfterTheCopyIsCountedAndStillRefreshesTheOrigin() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+    doThrow(new MessagingException("STORE refused")).when(message).setFlag(Flags.Flag.DELETED, true);
+    when(emailBoxStorage.getEmailIdsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(44L));
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(factures).copyMessages(any(), any());
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(44L));
+    verify(trashStore().getFolder("INBOX")).open(Folder.READ_ONLY);
+  }
+
+  /**
+   * Gmail, where a COPY between labels IS the move and the source is expunged by it:
+   * the success it is, not the failure it looks like -- nothing to flag, nothing
+   * counted.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWhoseCopyExpungedTheSourceIsASuccess() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    when(message.isExpunged()).thenReturn(true);
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(message, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(factures, never()).getMessageByUID(anyLong());
+  }
+
+  /**
+   * With a sync running for the user, the messages still go back (the move is the
+   * user's, not the sync's) but the origin is left to the sync to re-read: two writers
+   * of one (user, folder, UID) space must never overlap.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWhileASyncRunsMovesTheMessagesBackAndLeavesTheRefreshToTheSync() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+    syncingUsers().add(TEST_USER);
+    try {
+      int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+      assertEquals(0, failed);
+    } finally {
+      syncingUsers().remove(TEST_USER);
+    }
+
+    verify(factures).copyMessages(any(), any());
+    verify(message).setFlag(Flags.Flag.DELETED, true);
+    verify(trashStore().getFolder("INBOX"), never()).open(anyInt());
+    assertFalse(syncingUsers().contains(TEST_USER), "the guard the undo did not take is not the undo's to release");
+  }
+
+  /**
    * A connected mailbox with nothing stubbed about its folder LISTING, an inbox handed
    * out by name, and a cache that answers empty. The undo never walks the listing (a
    * custom folder resolves through the registry, the inbox by name), so
