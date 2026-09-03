@@ -3221,11 +3221,90 @@ public class EmailBoxService {
     // resolved here rather than looked up -- the registry only knows custom folders.
     // Nothing else is admitted: Drafts is authored locally, Trash and Junk have their own
     // actions with their own meaning, and ALL_MAIL is a thread-completion cache.
+    String targetKey = resolveMoveTarget(username, sourceKey, targetFolder);
+    return applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, targetKey);
+  }
+
+  /**
+   * Puts messages back where a "Move to..." took them from -- the Undo the move's
+   * toast offers, and the one undo in this mailbox that cannot be addressed by UID.
+   * <p>
+   * A UID numbers a message within one folder, and a COPY hands the destination's copy
+   * a new one that this add-on deliberately never chases (see {@link #restoreEmail}: a
+   * COPY reports it only under UIDPLUS, and writing a row from a message the sync has
+   * not fetched would be a second, weaker importer beside it). So a moved message has
+   * no UID the client knows, and no mirror row in the folder it landed in until that
+   * folder's next check -- which is exactly what {@link #applyMoveAction}'s "no cached
+   * row, refusing to act" guard would answer a reverse move with. What the message DOES
+   * keep across a move is its Message-ID, the one identity
+   * {@link #isExpectedMessageAtUid} already trusts over any number, so that is what the
+   * undo is addressed by: each id is looked up in the folder the move filed into, and
+   * moved back only when that folder holds EXACTLY one message carrying it. None, and
+   * there is nothing to move back; more than one, and moving "one of them" is a guess,
+   * which in a path that flags messages {@code \Deleted} is the one thing worse than
+   * doing nothing. Both are counted, logged and left alone
+   * ({@link #findTheOneMessageCarrying}).
+   * <p>
+   * The two folders are admitted by the move's own rules, read backwards: the messages
+   * are now in a folder a move may file INTO ({@link #resolveMoveTarget}: the inbox,
+   * the archive or one of the user's mirrored folders), and they go back to a folder a
+   * move may take FROM ({@link #checkUndoOrigin}) -- so a message moved out of Sent goes
+   * back to Sent, a folder "Move to..." itself would never offer as a destination.
+   * <p>
+   * Unlike every other action here, the row is NOT deleted first and re-created on
+   * failure: the folder the messages are taken out of may hold no row at all for them
+   * (its next check has not happened), so the rows it may hold are dropped once the
+   * copy is confirmed ({@link #dropMirrorRows}) and never need putting back. And the
+   * folder they go back to is refreshed on this thread ({@link #refreshFolderAfterUndo})
+   * -- an undo whose effect showed up minutes later would read as an undo that did not
+   * work, and the message going back is one the user is looking at the list for.
+   *
+   * @param mailHeaderIds the Message-IDs of the messages to put back
+   * @param username the mailbox owner
+   * @param folder the key of the folder the move filed them into, where they are now
+   * @param originFolder the key of the folder they came from; blank means INBOX
+   * @return how many of them could NOT be moved back
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   * @throws IllegalArgumentException if either folder is not one the move admits
+   *           ({@code emailConnector.folder.unknown}), the current one is not
+   *           mirrored ({@code emailConnector.folder.notMirrored}), or the two are
+   *           the same ({@code emailConnector.folder.sameAsSource})
+   */
+  public int undoMove(List<String> mailHeaderIds,
+                      String username,
+                      String folder,
+                      String originFolder) throws IllegalAccessException {
+    checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    String originKey = StringUtils.isBlank(originFolder) ? MailFolder.INBOX : originFolder;
+    checkUndoOrigin(username, originKey);
+    String currentKey = resolveMoveTarget(username, originKey, folder);
+    return applyUndoMove(mailHeaderIds, username, currentKey, originKey);
+  }
+
+  /**
+   * Admits and resolves the destination of a move -- the checks {@link #moveToFolder}
+   * makes before anything is touched, shared with {@link #undoMove}, whose messages
+   * are by definition sitting in a folder a move was admitted into. A key this user
+   * does not own is a 400, never a move into someone else's folder or into a folder
+   * the user does not mirror.
+   *
+   * @param username the mailbox owner
+   * @param sourceKey the folder the messages are in
+   * @param targetFolder the destination: a {@code CUSTOM:<id>} key, or one of
+   *          {@link #MOVE_BUILT_IN_TARGETS}
+   * @return the destination's key as its rows carry it
+   * @throws IllegalArgumentException if the target is not one of this user's custom
+   *           folders ({@code emailConnector.folder.unknown}), is not mirrored
+   *           ({@code emailConnector.folder.notMirrored}), or is the source
+   *           ({@code emailConnector.folder.sameAsSource})
+   */
+  private String resolveMoveTarget(String username, String sourceKey, String targetFolder) {
     if (MOVE_BUILT_IN_TARGETS.contains(targetFolder)) {
       if (sourceKey.equals(targetFolder)) {
         throw new IllegalArgumentException("emailConnector.folder.sameAsSource");
       }
-      return applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, targetFolder);
+      return targetFolder;
     }
     EmailFolder target = emailFolderService.getFolderByKey(username, targetFolder);
     if (target.isMissing()) {
@@ -3240,7 +3319,275 @@ public class EmailBoxService {
     if (sourceKey.equals(target.getKey())) {
       throw new IllegalArgumentException("emailConnector.folder.sameAsSource");
     }
-    return applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, target.getKey());
+    return target.getKey();
+  }
+
+  /**
+   * Admits the folder an undo puts messages back into: any folder a move may take
+   * messages OUT of ({@link #canMoveOutOf}), which is wider than the folders it may
+   * file INTO -- Sent is a place a message can be moved from and so must be a place it
+   * can go back to. A custom origin has to exist and be mirrored, for the reason a
+   * custom destination has to ({@link #resolveMoveTarget}); a built-in one has to be
+   * one of the keys this schema writes, because {@link #canMoveOutOf} admits any
+   * string it does not recognise and an undo "back to" a folder that does not exist
+   * would be a copy into nowhere.
+   *
+   * @param username the mailbox owner
+   * @param originKey the folder the messages came from
+   * @throws IllegalArgumentException if the folder is not one a move can come from
+   *           ({@code emailConnector.folder.unknown}), or a custom folder the user does
+   *           not mirror ({@code emailConnector.folder.notMirrored})
+   */
+  private void checkUndoOrigin(String username, String originKey) {
+    if (MailFolder.isCustom(originKey)) {
+      EmailFolder origin = emailFolderService.getFolderByKey(username, originKey);
+      if (origin.isMissing()) {
+        throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+      }
+      if (!origin.isSyncEnabled()) {
+        throw new IllegalArgumentException("emailConnector.folder.notMirrored");
+      }
+      return;
+    }
+    if (!MailFolder.isBuiltIn(originKey) || !canMoveOutOf(MoveAction.MOVE, originKey)) {
+      throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    }
+  }
+
+  /**
+   * The body of {@link #undoMove}: the messages, found by identity in the folder the
+   * move filed them into, copied back to the folder they came from, then removed from
+   * where they were -- the copy first, for {@link #applyHiddenFolderAction}'s reason: a
+   * duplicate the next syncs reconcile beats a message that exists nowhere.
+   * <p>
+   * Every way of not doing the work is counted: a blank id (nothing to search for -- a
+   * blank HEADER search would match the whole folder), an id the folder does not hold
+   * or holds twice, a folder the mailbox has not got, a copy that failed. Silence is
+   * kept for the one case that is a success: a source the COPY already expunged (Gmail,
+   * where a copy between labels IS the move).
+   * <p>
+   * The refresh of the origin folder runs once, after the current folder is closed
+   * (so the removals are on the server before anything is read back), and only when at
+   * least one message went back -- an undo that moved nothing has nothing to show.
+   *
+   * @param mailHeaderIds the Message-IDs to put back
+   * @param username the mailbox owner
+   * @param currentKey the folder the messages are in now, already admitted
+   * @param originKey the folder they go back to, already admitted
+   * @return how many could not be moved back
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  private int applyUndoMove(List<String> mailHeaderIds,
+                            String username,
+                            String currentKey,
+                            String originKey) throws IllegalAccessException {
+    if (CollectionUtils.isEmpty(mailHeaderIds)) {
+      return 0;
+    }
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(notAllowedMessage(MoveAction.MOVE), username));
+    }
+    int failures = 0;
+    boolean movedAny = false;
+    Store store = null;
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    String originalSyncStateJson = JsonUtils.toJsonString(syncState);
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      IMAPFolder current = resolveCachedImapFolder(store, currentKey, username, syncState);
+      Folder origin = resolveCachedFolder(store, originKey, username, syncState);
+      if (current == null || origin == null) {
+        LOG.warn("No {} folder for user {}; {} message(s) could not be moved back",
+                 current == null ? currentKey : originKey,
+                 username,
+                 mailHeaderIds.size());
+        return mailHeaderIds.size();
+      }
+      boolean expungeOnClose = false;
+      try {
+        current.open(Folder.READ_WRITE);
+        for (String mailHeaderId : mailHeaderIds) {
+          try {
+            Message message = findTheOneMessageCarrying(current, mailHeaderId, currentKey, username);
+            if (message == null) {
+              failures++;
+              continue;
+            }
+            long uid = current.getUID(message);
+            current.copyMessages(new Message[] { message }, origin);
+            movedAny = true;
+            dropMirrorRows(username, currentKey, mailHeaderId);
+            try {
+              if (message.isExpunged()) {
+                LOG.debug("The {} message of user {} (uid {}) was expunged by the copy out of it", currentKey, username, uid);
+                continue;
+              }
+              expungeOnClose = removeMessageByUid(current, uid, mailHeaderId, currentKey, username) || expungeOnClose;
+            } catch (MessageRemovedException alreadyRemoved) {
+              LOG.debug("Message {} already removed from {} by the copy for user {}", mailHeaderId, currentKey, username);
+            }
+          } catch (Exception e) {
+            failures++;
+            LOG.error("Error when moving message {} of folder {} back to {} for user {}",
+                      mailHeaderId,
+                      currentKey,
+                      originKey,
+                      username,
+                      e);
+          }
+        }
+      } finally {
+        closeFolderQuietly(current, expungeOnClose, currentKey, username);
+      }
+      if (movedAny) {
+        refreshFolderAfterUndo(store, origin, originKey, username, userEmailSetting, syncState);
+      }
+    } catch (Exception e) {
+      LOG.error("Error when connecting store for user {}", username, e);
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    } finally {
+      saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      closeQuietly(null, store, username);
+      // A message going back into the inbox unread changes the badge, exactly as its
+      // leaving did.
+      broadcastUnreadCountChanged(username);
+    }
+    return failures;
+  }
+
+  /**
+   * The one message of an open folder carrying a given Message-ID, or null -- with the
+   * two ways of there not being exactly one told apart in the log, because they are
+   * different events: none is a message that moved on (another client, a filter, the
+   * user from their phone), two or more is a folder holding the same message twice
+   * (a copy the user made, a duplicate delivery) with nothing to say which is "the"
+   * one the move filed.
+   * <p>
+   * The server's search is asked first ({@code HEADER Message-ID}, one round-trip,
+   * no message bodies), and its answers are then checked for EXACT equality, the way
+   * {@link #isExpectedMessageAtUid} checks: IMAP's HEADER search is a substring
+   * match, so {@code <a@host>} also answers {@code <a@host.example>}, and a match on
+   * part of an identifier is not an identity.
+   *
+   * @param folder the OPEN folder to look in
+   * @param mailHeaderId the Message-ID to look for
+   * @param folderKey the folder's key, for the log
+   * @param username the mailbox owner
+   * @return the message, or null when the folder holds none or several
+   * @throws MessagingException if the folder cannot be searched
+   */
+  private Message findTheOneMessageCarrying(IMAPFolder folder,
+                                            String mailHeaderId,
+                                            String folderKey,
+                                            String username) throws MessagingException {
+    if (StringUtils.isBlank(mailHeaderId)) {
+      LOG.warn("A message with no Message-ID cannot be found again in folder {} of user {}; it was not moved back",
+               folderKey,
+               username);
+      return null;
+    }
+    String expected = StringUtils.trim(mailHeaderId);
+    Message[] hits = folder.search(new MessageIDTerm(expected));
+    List<Message> exact = new ArrayList<>();
+    for (Message hit : hits == null ? new Message[0] : hits) {
+      String[] messageIds = hit.getHeader(HEADER_MESSAGE_ID);
+      String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
+      if (StringUtils.equals(actual, expected)) {
+        exact.add(hit);
+      }
+    }
+    if (exact.isEmpty()) {
+      LOG.warn("No message carrying {} in folder {} of user {}; it was not moved back", expected, folderKey, username);
+      return null;
+    }
+    if (exact.size() > 1) {
+      LOG.warn("{} messages carry {} in folder {} of user {}; refusing to guess which one to move back",
+               exact.size(),
+               expected,
+               folderKey,
+               username);
+      return null;
+    }
+    return exact.get(0);
+  }
+
+  /**
+   * Drops the rows a folder's mirror holds for a message that has just been moved back
+   * out of it. Usually none: the move that filed the message there is seconds old and
+   * the folder has not been checked since. But a check can land in between (the user
+   * opened the folder, the routine sync ran), and a row left behind would list a
+   * message the folder no longer holds -- the mirror lying about the mailbox, which is
+   * the class of thing EXO-89367 was about. Through {@link #deleteEmails}, so the
+   * category links go with the rows as they do everywhere else.
+   *
+   * @param username the mailbox owner
+   * @param folderKey the folder the message was taken out of
+   * @param mailHeaderId the message's Message-ID
+   */
+  private void dropMirrorRows(String username, String folderKey, String mailHeaderId) {
+    List<Long> rowIds = emailBoxStorage.getEmailIdsByMailHeaderId(username, mailHeaderId, folderKey);
+    if (CollectionUtils.isEmpty(rowIds)) {
+      return;
+    }
+    deleteEmails(rowIds.stream().map(rowId -> {
+      Email row = new Email();
+      row.setId(rowId);
+      return row;
+    }).toList());
+  }
+
+  /**
+   * Re-reads the folder an undo just put messages back into, on this thread, through
+   * the sync's own single-folder path -- {@link #refreshSentFolder}'s precedent, and
+   * for its reason: a second folder-reading path would drift from the sync's (its skip
+   * check, its snapshot, its window, its cache trim). The windows are the scheduled
+   * sync's own, NOT a narrower "just the newest": the sync trims the cache to the window
+   * it read, and the window size is stored in the snapshot, so a refresh over fewer
+   * messages would delete older rows and make the next scheduled sync re-download the
+   * folder.
+   * <p>
+   * Under the {@code syncingUsers} guard, as {@link #refreshCustomFolder} is: a folder
+   * sync and a mailbox sync must never write the same rows at once, and if the guard
+   * is taken the background sync is already doing the work. Best-effort throughout --
+   * the messages ARE back on the server whatever this does, and a refresh that fails
+   * costs the user a wait for the next scheduled check, not a message.
+   *
+   * @param store the connected store (the undo's own)
+   * @param origin the remote folder the messages went back to
+   * @param originKey its {@link MailFolder} discriminator
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param syncState the mailbox's sync memory, updated in place for a built-in folder
+   */
+  private void refreshFolderAfterUndo(Store store,
+                                      Folder origin,
+                                      String originKey,
+                                      String username,
+                                      UserEmailSetting userEmailSetting,
+                                      MailboxSyncState syncState) {
+    if (!syncingUsers.add(username)) {
+      LOG.debug("A synchronization is running for user {}; folder {} lists the message(s) moved back at its next check",
+                username,
+                originKey);
+      return;
+    }
+    try {
+      if (MailFolder.isCustom(originKey)) {
+        syncCustomFolder(store, emailFolderService.getFolderByKey(username, originKey), username, userEmailSetting);
+      } else {
+        int emailBoxCacheSize = emailConnectorService.getEmailBoxCacheSize();
+        int window = MailFolder.INBOX.equals(originKey) ? emailBoxCacheSize
+                                                        : Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
+        syncFolderIfChanged(store, origin, originKey, username, userEmailSetting, window, false, syncState);
+      }
+    } catch (Exception e) {
+      LOG.warn("Could not refresh folder {} of user {} after moving message(s) back into it; they surface at its next"
+          + " scheduled check", originKey, username, e);
+    } finally {
+      syncingUsers.remove(username);
+    }
   }
 
   /**

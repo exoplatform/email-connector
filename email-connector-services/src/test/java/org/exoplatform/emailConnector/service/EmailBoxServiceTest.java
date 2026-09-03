@@ -56,6 +56,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
@@ -111,6 +112,7 @@ import javax.mail.search.OrTerm;
 import javax.mail.search.ReceivedDateTerm;
 import javax.mail.search.SearchException;
 import javax.mail.search.RecipientStringTerm;
+import javax.mail.search.MessageIDTerm;
 import javax.mail.search.SearchTerm;
 import javax.mail.search.SubjectTerm;
 
@@ -9229,6 +9231,261 @@ public class EmailBoxServiceTest {
 
     verify(remote, never()).delete(anyBoolean());
     verify(emailFolderStorage).deleteFolder(TEST_USER, 5L);
+  }
+
+  // ---------------------------------------------------------------------------------
+  // EXO-89952: the Undo of a "Move to...". Addressed by Message-ID rather than by UID,
+  // because the moved message has a new UID the client never learnt and no mirror row
+  // in the folder it landed in -- so it is found again by the one identity it kept.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The headline case: the message is found in the folder the move filed it into by
+   * its Message-ID, copied back to the inbox, removed from where it was, and the row
+   * that folder's mirror may already hold for it is dropped -- with nothing re-created,
+   * since nothing was deleted up front.
+   */
+  @Test
+  @SneakyThrows
+  void undoingAMoveFindsTheMessageByIdentityAndCopiesItBackWhereItCameFrom() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+    when(emailBoxStorage.getEmailIdsByMailHeaderId(TEST_USER, "<a@host>", "CUSTOM:1")).thenReturn(List.of(44L));
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    Folder inbox = trashStore().getFolder("INBOX");
+    verify(factures).open(Folder.READ_WRITE);
+    verify(factures).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == message), eq(inbox));
+    verify(message).setFlag(Flags.Flag.DELETED, true);
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(44L));
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * Two messages carrying the same Message-ID in the folder: moving "one of them"
+   * back would be a guess, and in a path that flags messages deleted a guess is worse
+   * than doing nothing. Counted, nothing copied, nothing flagged, no row dropped.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoRefusesToGuessBetweenTwoMessagesCarryingTheSameId() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message first = aMessageCarrying("<a@host>");
+    Message second = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { first, second });
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(factures, never()).copyMessages(any(), any());
+    verify(first, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(second, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * IMAP's HEADER search is a substring match, so the server answers {@code <a@host>}
+   * with a message carrying {@code <a@host.example>}. A part of an identifier is not
+   * an identity: the lookalike is left alone and the undo counts a failure.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoTakesOnlyAnExactIdentityNotTheServersSubstringMatch() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message lookalike = aMessageCarrying("<a@host.example>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { lookalike });
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(factures, never()).copyMessages(any(), any());
+    verify(lookalike, never()).setFlag(any(Flags.Flag.class), anyBoolean());
+  }
+
+  /**
+   * A message the folder no longer holds is counted, not guessed at; a blank id never
+   * reaches the server at all, because a blank HEADER search would answer the whole
+   * folder.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWithNothingToFindIsCountedAndTouchesNothing() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[0]);
+
+    int failed = emailBoxService.undoMove(Arrays.asList("<gone@host>", " ", null), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(3, failed);
+    verify(factures, times(1)).search(any(SearchTerm.class));
+    verify(factures, never()).copyMessages(any(), any());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * Sent is a folder a move may come FROM but never one it may go INTO, so the undo
+   * admits it as the origin all the same: a message moved out of Sent goes back to
+   * Sent.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoPutsAMessageBackIntoSentThoughSentIsNeverAMoveDestination() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    IMAPFolder factures = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    IMAPFolder sent = aHiddenFolder(new String[] { "\\Sent" }, "Sent");
+    givenAMailboxListing(factures, sent);
+    when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", true));
+    when(trashStore().getFolder("Factures")).thenReturn(factures);
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(factures).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == message), eq(sent));
+    verify(message).setFlag(Flags.Flag.DELETED, true);
+  }
+
+  /**
+   * The folder the messages go back to is re-read on the undo's own thread, through
+   * the sync's single-folder path -- here a custom origin, synced under its key: an
+   * undo whose effect showed up at the next scheduled check would read as an undo that
+   * did not work.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoRefreshesTheFolderTheMessageWentBackTo() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    when(factures.getMessageCount()).thenReturn(1);
+    IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    when(trashStore().getFolder("INBOX")).thenReturn(inbox);
+    Message message = aMessageCarrying("<a@host>");
+    when(inbox.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(inbox.getUID(message)).thenReturn(5L);
+    when(inbox.getMessageByUID(5L)).thenReturn(message);
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, MailFolder.INBOX, "CUSTOM:1");
+
+    assertEquals(0, failed);
+    InOrder inOrder = inOrder(inbox, factures);
+    inOrder.verify(inbox).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == message), eq(factures));
+    inOrder.verify(inbox).close(anyBoolean());
+    inOrder.verify(factures).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, "CUSTOM:1");
+  }
+
+  /**
+   * An undo that moved nothing has nothing to show: the origin is not re-read.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoThatMovedNothingDoesNotRefreshAnything() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[0]);
+
+    emailBoxService.undoMove(List.of("<gone@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    verify(emailBoxStorage, never()).getSyncEmails(anyString(), anyString());
+  }
+
+  /**
+   * The two folders are admitted by the move's own rules read backwards, before the
+   * server is touched: the current one must be somewhere a move files into, the origin
+   * somewhere a move comes from, a custom folder on either side must be mirrored, and
+   * the two must differ.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoAdmitsItsFoldersByTheMovesOwnRulesReadBackwards() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    List<String> ids = List.of("<a@host>");
+
+    assertEquals(EmailFolderService.UNKNOWN_FOLDER_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.TRASH)).getMessage(),
+                 "nothing is ever moved out of the Trash, so nothing goes back into it");
+    assertEquals(EmailFolderService.UNKNOWN_FOLDER_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.ALL_MAIL)).getMessage());
+    assertEquals(EmailFolderService.UNKNOWN_FOLDER_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", "NOWHERE")).getMessage(),
+                 "canMoveOutOf admits any string it does not know; the undo must not");
+    assertEquals(EmailFolderService.UNKNOWN_FOLDER_MESSAGE,
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, MailFolder.SENT, MailFolder.INBOX)).getMessage(),
+                 "a move never files into Sent, so no message is undone out of it");
+    assertEquals("emailConnector.folder.sameAsSource",
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, MailFolder.INBOX, MailFolder.INBOX)).getMessage());
+    when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", false));
+    assertEquals("emailConnector.folder.notMirrored",
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX)).getMessage());
+    assertEquals("emailConnector.folder.notMirrored",
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, MailFolder.INBOX, "CUSTOM:1")).getMessage());
+    verify(userEmailSettingService, never()).connect(any());
+  }
+
+  /**
+   * A mailbox with one mirrored custom folder, "Factures" ({@code CUSTOM:1}), handed
+   * out by the store under its remote name, beside the empty listed inbox
+   * {@link #givenAMailboxListing} sets up.
+   *
+   * @return the mocked Factures folder
+   */
+  @SneakyThrows
+  private IMAPFolder givenAMirroredFacturesFolder() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    IMAPFolder factures = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    givenAConnectedMailboxWithAnInbox();
+    when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", true));
+    when(trashStore().getFolder("Factures")).thenReturn(factures);
+    return factures;
+  }
+
+  /**
+   * A connected mailbox with nothing stubbed about its folder LISTING, an inbox handed
+   * out by name, and a cache that answers empty. The undo never walks the listing (a
+   * custom folder resolves through the registry, the inbox by name), so
+   * {@link #givenAMailboxListing}'s listing stubs would be dead stubbing under strict
+   * Mockito -- {@link #givenAConnectedDefaultFolder}'s reason, one folder over.
+   *
+   * @return the mocked inbox
+   */
+  @SneakyThrows
+  private Folder givenAConnectedMailboxWithAnInbox() {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    lenient().when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
+    lenient().when(inbox.getMessageCount()).thenReturn(0);
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    lenient().when(emailBoxStorage.getSyncEmails(anyString(), anyString())).thenReturn(new ArrayList<>());
+    return inbox;
+  }
+
+  /**
+   * A message carrying a given Message-ID, as the server's copy would answer a header
+   * read.
+   *
+   * @param messageId the Message-ID header value
+   * @return the mocked message
+   */
+  @SneakyThrows
+  private Message aMessageCarrying(String messageId) {
+    Message message = mock(Message.class);
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { messageId });
+    return message;
   }
 
   /**
