@@ -1621,13 +1621,27 @@ export default {
         return;
       }
       const folderName = this.folderLabelOf(target);
+      // Single-shot, and the toast closes on the click. The snackbar does not close
+      // itself on a link click (social's Notifications leaves it up for its timeout),
+      // and a second Undo would either find the message already gone and report a
+      // failure for an undo that worked, or -- while the first is still running --
+      // copy the message back a second time: the server looks the message up before
+      // either request flags it, so nothing server-side can close that window.
+      let undone = false;
       document.dispatchEvent(new CustomEvent('alert-message', {detail: {
         alertType: 'success',
         alertMessage: count === 1
           ? this.$t('emailConnector.mailBox.list.drawer.move.email.success', { 0: folderName })
           : this.$t('emailConnector.mailBox.list.drawer.move.emails.success', { 0: count, 1: folderName }),
         alertLinkText: this.$t('emailConnector.mailBox.list.drawer.move.undo.label'),
-        alertLinkCallback: () => this.undoMove(undoGroups, target),
+        alertLinkCallback: () => {
+          if (undone) {
+            return Promise.resolve(null);
+          }
+          undone = true;
+          document.dispatchEvent(new CustomEvent('close-alert-message'));
+          return this.undoMove(undoGroups, target);
+        },
       }}));
     },
     /**
