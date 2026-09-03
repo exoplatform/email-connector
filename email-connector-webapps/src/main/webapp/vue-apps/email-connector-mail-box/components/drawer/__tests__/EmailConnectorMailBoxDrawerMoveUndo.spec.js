@@ -30,6 +30,7 @@ import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBox
 const FOLDERS = [
   { key: 'INBOX', type: 'BUILT_IN', syncEnabled: true },
   { key: 'CUSTOM:1', type: 'CUSTOM', displayName: 'Factures', path: 'Factures', syncEnabled: true },
+  { key: 'ARCHIVE', type: 'BUILT_IN', syncEnabled: true },
 ];
 
 /**
@@ -159,6 +160,56 @@ describe('the move toast and its Undo (EXO-89952)', () => {
 
     expect(fixture.service.moveEmails).toHaveBeenCalledWith([1, 2], 'INBOX', 'CUSTOM:1');
     expect(fixture.alerts).toHaveLength(0);
+  });
+
+  it('a batch from two folders goes back to each of them, one request per origin', async () => {
+    fixture = await mountDrawer([row(1, '<a@host>')], {});
+    await fixture.wrapper.setData({ searchServerResults: [{ mailRemoteId: 9, mailHeaderId: '<s@host>', folder: 'SENT' }] });
+
+    await fixture.wrapper.vm.moveEmails([1, 9], 'CUSTOM:1');
+    await fixture.alerts[0].alertLinkCallback();
+
+    expect(fixture.service.moveEmails).toHaveBeenCalledWith([1], 'INBOX', 'CUSTOM:1');
+    expect(fixture.service.moveEmails).toHaveBeenCalledWith([9], 'SENT', 'CUSTOM:1');
+    expect(fixture.alerts[0].alertMessage).toBe('emailConnector.mailBox.list.drawer.move.emails.success|2|Factures');
+    expect(fixture.service.undoMoveEmails).toHaveBeenCalledWith(['<a@host>'], 'CUSTOM:1', 'INBOX');
+    expect(fixture.service.undoMoveEmails).toHaveBeenCalledWith(['<s@host>'], 'CUSTOM:1', 'SENT');
+  });
+
+  it('a move request the server rejected outright takes the error toast and offers no Undo', async () => {
+    fixture = await mountDrawer([row(1, '<a@host>'), row(2, '<b@host>')], {});
+    fixture.service.moveEmails.mockImplementation(() => Promise.reject(new Error('Error when moving emails')));
+
+    await fixture.wrapper.vm.moveEmails([1, 2], 'CUSTOM:1');
+
+    expect(fixture.alerts).toHaveLength(1);
+    expect(fixture.alerts[0].alertType).toBe('error');
+    expect(fixture.alerts[0].alertMessage).toBe('emailConnector.mailBox.list.drawer.move.emails.error|2');
+  });
+
+  it('a built-in destination is named through its translation key', async () => {
+    fixture = await mountDrawer([row(1, '<a@host>')], {});
+
+    await fixture.wrapper.vm.moveEmails([1], 'ARCHIVE');
+
+    expect(fixture.alerts[0].alertMessage)
+      .toBe('emailConnector.mailBox.list.drawer.move.email.success|emailConnector.mailBox.list.drawer.folder.archive');
+  });
+
+  it('the listing shows its loading state while the Undo runs, and a failed reload does not escape', async () => {
+    fixture = await mountDrawer([row(1, '<a@host>')], {});
+    await fixture.wrapper.vm.moveEmails([1], 'CUSTOM:1');
+    fixture.service.getEmailBox.mockImplementation(() => Promise.reject(new Error('reload refused')));
+    let seenLoading = false;
+    fixture.service.undoMoveEmails.mockImplementation(() => {
+      seenLoading = fixture.wrapper.vm.loading;
+      return Promise.resolve({ failedUndos: 0 });
+    });
+
+    await expect(fixture.alerts[0].alertLinkCallback()).resolves.toBeNull();
+
+    expect(seenLoading).toBe(true);
+    expect(fixture.wrapper.vm.loading).toBe(false);
   });
 
   it('an Undo the server could not honour takes the error toast', async () => {
