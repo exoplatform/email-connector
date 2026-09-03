@@ -292,6 +292,39 @@ export function moveEmails(mailRemoteIds, folder, target) {
 }
 
 /**
+ * Puts moved messages back where they came from -- the Undo the move's toast offers.
+ * Addressed by Message-ID rather than by UID: the moved message has a new UID in the
+ * folder it landed in that this client never learns, and the one thing it keeps across
+ * a move is its identity. One request per folder the messages came from, the way the
+ * move went out.
+ *
+ * @param {Array<String>} mailHeaderIds the Message-IDs of the messages to put back
+ * @param {String} folder the folder the move filed them into, where they are now
+ * @param {String} originFolder the folder they came from; INBOX when omitted
+ * @returns {Promise} resolving to {failedUndos}
+ */
+export function undoMoveEmails(mailHeaderIds, folder, originFolder) {
+  const params = new URLSearchParams();
+  params.append('folder', folder);
+  if (originFolder && originFolder !== 'INBOX') {
+    params.append('target', originFolder);
+  }
+  return fetch(`/email-connector/rest/email-box/move/undo?${params}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(mailHeaderIds)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when undoing a move');
+    }
+    return resp.json();
+  });
+}
+
+/**
  * Moves messages to the Junk folder — "Mark as spam". One request per folder the
  * rows are listed in, the way delete and archive are sent, because the UIDs are
  * numbered within their folder.
