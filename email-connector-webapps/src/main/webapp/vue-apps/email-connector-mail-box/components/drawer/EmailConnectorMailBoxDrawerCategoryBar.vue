@@ -19,13 +19,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-if="categories.length"
     class="d-flex align-center pb-2 category-chips-thin-scrollbar"
     style="gap: 6px; overflow-x: auto; flex-wrap: nowrap;">
+    <!-- Outlined, not filled: a category is metadata about the conversation, not the
+         point of it, so the chips must weigh less than the subject above them and the
+         sender below. Primary keeps border and label blue, so they still read as
+         categories rather than disabled text, and the row sits as one group with the
+         grey "Category" button next to it.
+
+         text-color="primary", NOT color="primary": on an outlined chip, color= adds
+         both the `primary` and `primary--text` classes, and the platform skin rule
+         `.VuetifyApp .v-application .primary:not([disabled]) { color: #fff !important }`
+         (meant for filled primary surfaces) matches the `primary` class regardless of
+         v-chip--outlined and, with its higher specificity, paints the label and the
+         close icon white on a transparent chip, i.e. invisible. text-color= only adds
+         `primary--text`, which that rule never matches, and the outlined border still
+         renders primary because Vuetify draws it with currentColor. -->
     <v-chip
       v-for="category in assignedCategories"
       :key="category.id"
       small
+      outlined
       close
-      color="primary"
-      text-color="white"
+      text-color="primary"
       class="flex-shrink-0"
       @click:close="toggle(category, false)">
       {{ category.name }}
