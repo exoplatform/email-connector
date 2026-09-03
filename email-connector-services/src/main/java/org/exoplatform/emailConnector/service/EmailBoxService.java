@@ -619,10 +619,12 @@ public class EmailBoxService {
    * The administrator's kill switch for the post-undo folder refresh
    * ({@link #scheduleFolderRefresh}), the twin of
    * {@link #SENT_REFRESH_ENABLED_PROPERTY} for the same reason: the refresh opens an
-   * IMAP connection per UNDO on top of the undo's own, and a provider that
-   * rate-limits logins is a failure an administrator has to be able to withdraw from
-   * without a restart. Default ON. Off, the messages still go back (the undo itself
-   * is untouched) and their rows surface at the folder's next scheduled check.
+   * IMAP connection per UNDO on top of the undo's own -- two when a synchronization or
+   * another refresh holds the mailbox at the time of the undo, see
+   * {@link FolderRefreshCause#UNDO_OUT} -- and a provider that rate-limits logins is a
+   * failure an administrator has to be able to withdraw from without a restart.
+   * Default ON. Off, the messages still go back (the undo itself is untouched) and
+   * their rows surface at the folder's next scheduled check.
    */
   public static final String      UNDO_REFRESH_ENABLED_PROPERTY                               =
                                                                 "email.connector.undo.refresh.enabled";
@@ -3592,7 +3594,11 @@ public class EmailBoxService {
    * ({@link #runFolderRefresh}), so there is nothing here to cancel, and its caller
    * queues the reconciling re-read instead. Never interrupts: {@code cancel(false)} on
    * a task that has begun is a no-op, and a half-read folder must never be left half
-   * written.
+   * written. Key-only, whatever the cause: an entry another action of the same user
+   * queued for this folder inside the coalescing second (a move into it from another
+   * tab, an undo back into it) is withdrawn too, and that action's rows surface at the
+   * folder's next scheduled check -- two actions on one folder within a second, and a
+   * wasted login was judged the worse of the two rare outcomes to keep.
    *
    * @param username the mailbox owner
    * @param folderKey the key of the folder whose queued re-read is no longer wanted
