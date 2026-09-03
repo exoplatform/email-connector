@@ -617,7 +617,7 @@ public class EmailBoxService {
 
   /**
    * The administrator's kill switch for the post-undo folder refresh
-   * ({@link #scheduleUndoFolderRefresh}), the twin of
+   * ({@link #scheduleFolderRefresh}), the twin of
    * {@link #SENT_REFRESH_ENABLED_PROPERTY} for the same reason: the refresh opens an
    * IMAP connection per UNDO on top of the undo's own, and a provider that
    * rate-limits logins is a failure an administrator has to be able to withdraw from
@@ -626,6 +626,19 @@ public class EmailBoxService {
    */
   public static final String      UNDO_REFRESH_ENABLED_PROPERTY                               =
                                                                 "email.connector.undo.refresh.enabled";
+
+  /**
+   * The administrator's kill switch for the post-move refresh of the destination
+   * folder ({@link #scheduleFolderRefresh}, cause {@link FolderRefreshCause#MOVE}),
+   * apart from {@link #UNDO_REFRESH_ENABLED_PROPERTY} because the two volumes are not
+   * alike: an undo is a rare second thought, a "Move to..." is how mail gets filed, so
+   * a provider that rate-limits logins may need the one withdrawn while the other is
+   * kept. Default ON. Off, the messages are still moved (the move itself is untouched)
+   * and their rows surface in the destination at its next scheduled check -- the
+   * behaviour that existed before this refresh did.
+   */
+  public static final String      MOVE_REFRESH_ENABLED_PROPERTY                               =
+                                                                "email.connector.move.refresh.enabled";
 
   // How long a send waits before its Sent folder is re-read. Short enough that the
   // copy is there by the time the user looks, long enough to be a coalescing window:
@@ -748,25 +761,29 @@ public class EmailBoxService {
                                                                         return thread;
                                                                       });
 
-  // Post-undo folder refreshes queued but not started, keyed "owner/folder key" (see
-  // undoRefreshKey): the coalescing rule of pendingSentRefreshes, per FOLDER rather
-  // than per user, because two undos into two folders are two re-reads and neither
-  // may ride on the other. Same lifecycle: released when the refresh starts, replaced
-  // by a retry (rescheduleUndoFolderRefresh), never left stale.
-  private final Map<String, ScheduledFuture<?>>  pendingUndoRefreshes  = new ConcurrentHashMap<>();
+  // Folder refreshes queued but not started -- after an undo, after a move (see
+  // FolderRefreshCause) -- keyed "owner/folder key" (see folderRefreshKey): the
+  // coalescing rule of pendingSentRefreshes, per FOLDER rather than per user, because
+  // two actions into two folders are two re-reads and neither may ride on the other,
+  // while an undo and a move into ONE folder are one re-read whichever came first.
+  // Same lifecycle: released when the refresh starts, replaced by a retry
+  // (rescheduleFolderRefresh), never left stale.
+  private final Map<String, ScheduledFuture<?>>  pendingFolderRefreshes  = new ConcurrentHashMap<>();
 
-  // One daemon thread for every user's post-undo folder refresh. Its own thread, NOT
-  // the Sent refresher's, for the Sent refresher's own argument against sharing the
-  // notification thread: an undo into the inbox re-reads the whole inbox window
-  // (measured near 8.5 s at the shipped 1000 rows, 42 s at the administrator's 5000),
-  // and on a shared thread one user's undo would hold up everyone's post-send Sent
-  // refresh for that long. Single-threaded on purpose, as that one is: it bounds the
-  // IMAP load undos can add to a provider at one connection at a time, and a queue
-  // delays a refresh rather than dropping it.
-  private final ScheduledExecutorService         undoRefreshScheduler  =
+  // One daemon thread for every user's post-undo and post-move folder refresh. Its own
+  // thread, NOT the Sent refresher's, for the Sent refresher's own argument against
+  // sharing the notification thread: a refresh of the inbox re-reads the whole inbox
+  // window (measured near 8.5 s at the shipped 1000 rows, 42 s at the administrator's
+  // 5000), and on a shared thread one user's undo or move would hold up everyone's
+  // post-send Sent refresh for that long. Single-threaded on purpose, as that one is:
+  // it bounds the IMAP load undos and moves can add to a provider at one connection at
+  // a time, and a queue delays a refresh rather than dropping it. One thread for BOTH
+  // causes rather than one each, for the same bound: two threads would be two
+  // connections at once to the same provider from one feature.
+  private final ScheduledExecutorService         folderRefreshScheduler  =
                                                                       Executors.newSingleThreadScheduledExecutor(runnable -> {
                                                                         Thread thread = new Thread(runnable,
-                                                                                                   "email-undo-folder-refresh");
+                                                                                                   "email-folder-refresh");
                                                                         thread.setDaemon(true);
                                                                         return thread;
                                                                       });
@@ -829,16 +846,16 @@ public class EmailBoxService {
   }
 
   /**
-   * Stops the post-undo folder refresher with the Spring context, for
+   * Stops the post-undo and post-move folder refresher with the Spring context, for
    * {@link #shutdownSentRefreshScheduler}'s reasons and at the same cost: a refresh
-   * that never starts leaves the messages where the undo put them on the server and
-   * the cache short of their rows, which the next scheduled sync brings in. Nothing
-   * here writes to the mailbox.
+   * that never starts leaves the messages where the undo or the move put them on the
+   * server and the cache short of their rows, which the next scheduled sync brings in.
+   * Nothing here writes to the mailbox.
    */
   @PreDestroy
-  public void shutdownUndoRefreshScheduler() {
-    undoRefreshScheduler.shutdownNow();
-    pendingUndoRefreshes.clear();
+  public void shutdownFolderRefreshScheduler() {
+    folderRefreshScheduler.shutdownNow();
+    pendingFolderRefreshes.clear();
   }
 
   /**
@@ -3270,6 +3287,18 @@ public class EmailBoxService {
    * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to move
    * @param username the mailbox owner
    * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * <p>
+   * The destination is re-read in the background once anything moved
+   * ({@link #scheduleFolderRefresh}, cause {@link FolderRefreshCause#MOVE}): the move
+   * answers on the COPY, as it always did, and the row the destination gains is
+   * written seconds later by the sync's own path rather than at that folder's next
+   * scheduled check -- until EXO-89966 a user who filed a message and opened the folder
+   * found it empty of it for up to a whole sync period. Nothing about the move's own
+   * addressing changes: the COPY's new UID is still not chased (see
+   * {@link #applyMoveAction}), the refresh fetches the message as the sync would.
+   * Queued only for a move that moved something: a batch refused whole (nowhere to
+   * file, a source the mailbox has not got, every UID stale) has nothing to show.
+   *
    * @param targetFolder the {@code CUSTOM:<id>} key of the destination
    * @return how many of them could NOT be moved
    * @throws IllegalAccessException if the user may not act on their mailbox
@@ -3293,7 +3322,11 @@ public class EmailBoxService {
     // Nothing else is admitted: Drafts is authored locally, Trash and Junk have their own
     // actions with their own meaning, and ALL_MAIL is a thread-completion cache.
     String targetKey = resolveMoveTarget(username, sourceKey, targetFolder);
-    return applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, targetKey);
+    int failures = applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, targetKey);
+    if (failures < CollectionUtils.size(mailRemoteIds)) {
+      scheduleFolderRefresh(username, targetKey, FolderRefreshCause.MOVE);
+    }
+    return failures;
   }
 
   /**
@@ -3327,7 +3360,7 @@ public class EmailBoxService {
    * (its next check has not happened), so the rows it may hold are dropped once the
    * copy is confirmed ({@link #dropMirrorRows}) and never need putting back. And the
    * folder they go back to is re-read in the background, seconds after this answers
-   * ({@link #scheduleUndoFolderRefresh}) -- an undo whose effect showed up minutes
+   * ({@link #scheduleFolderRefresh}) -- an undo whose effect showed up minutes
    * later would read as an undo that did not work, and the message going back is one
    * the user is looking at the list for; but a re-read on THIS thread cost the Undo
    * click the whole inbox window (EXO-89963), so the answer carries the move-back
@@ -3531,7 +3564,7 @@ public class EmailBoxService {
       broadcastUnreadCountChanged(username);
     }
     if (movedAny) {
-      scheduleUndoFolderRefresh(username, originKey);
+      scheduleFolderRefresh(username, originKey, FolderRefreshCause.UNDO);
     }
     return failures;
   }
@@ -3618,77 +3651,138 @@ public class EmailBoxService {
   }
 
   /**
-   * Whether the post-undo folder refresh is switched on -- see
-   * {@link #UNDO_REFRESH_ENABLED_PROPERTY}. Read at every undo rather than cached, as
-   * {@link #isSentRefreshEnabled} is, so withdrawing it needs no restart.
-   *
-   * @return true when an undo should queue a re-read of the folder it put messages
-   *         back into
+   * Why a folder is being re-read in the background -- the two callers of
+   * {@link EmailBoxService#scheduleFolderRefresh}, which differ by their kill switch and
+   * by the words of their log lines, and by nothing else: same scheduler, same
+   * coalescing map, same re-read. One map for both is a decision, not a saving: an undo
+   * into a folder and a "Move to..." into the same folder inside the window are ONE
+   * re-read, and the row each one waits for is written by whichever runs.
+   * <p>
+   * Two switches rather than one because the two volumes are not alike -- an undo is a
+   * rare second thought, a move is how mail gets filed -- and the switch exists for a
+   * provider that rate-limits logins: an administrator withdrawing from one IMAP
+   * connection per move must be able to keep the one per undo.
+   * <p>
+   * Package-visible, as {@link EmailBoxService#refreshFolder} is, so a test can drive a
+   * refresh on its own thread under either cause.
    */
-  private boolean isUndoRefreshEnabled() {
-    return Boolean.parseBoolean(System.getProperty(UNDO_REFRESH_ENABLED_PROPERTY, "true"));
+  enum FolderRefreshCause {
+    /** An undo put messages back into the folder ({@link EmailBoxService#undoMove}). */
+    UNDO(UNDO_REFRESH_ENABLED_PROPERTY, "moving message(s) back into it"),
+    /** A "Move to..." filed messages into the folder ({@link EmailBoxService#moveToFolder}). */
+    MOVE(MOVE_REFRESH_ENABLED_PROPERTY, "moving message(s) into it");
+
+    private final String property;
+
+    private final String phrase;
+
+    /**
+     * @param property the JVM property that switches this cause's refresh off
+     * @param phrase what the log lines say the folder is re-read after
+     */
+    FolderRefreshCause(String property, String phrase) {
+      this.property = property;
+      this.phrase = phrase;
+    }
+
+    /**
+     * Whether this cause's refresh is switched on -- see
+     * {@link EmailBoxService#UNDO_REFRESH_ENABLED_PROPERTY} and
+     * {@link EmailBoxService#MOVE_REFRESH_ENABLED_PROPERTY}. Read at every call rather
+     * than cached, as {@link EmailBoxService#isSentRefreshEnabled} is, so withdrawing
+     * it needs no restart. Default ON.
+     *
+     * @return true when the folder should be re-read after this cause
+     */
+    boolean isEnabled() {
+      return Boolean.parseBoolean(System.getProperty(property, "true"));
+    }
+
+    /**
+     * What the log lines say the folder is re-read after -- "after " is the caller's.
+     *
+     * @return the phrase
+     */
+    String phrase() {
+      return phrase;
+    }
   }
 
   /**
-   * The key a queued post-undo refresh is coalesced under: one per (owner, folder).
+   * The key a queued folder refresh is coalesced under: one per (owner, folder),
+   * whatever the cause -- see {@link FolderRefreshCause}.
    *
    * @param username the mailbox owner
-   * @param originKey the key of the folder to re-read
+   * @param folderKey the key of the folder to re-read
    * @return the map key
    */
-  private static String undoRefreshKey(String username, String originKey) {
-    return username + "/" + originKey;
+  private static String folderRefreshKey(String username, String folderKey) {
+    return username + "/" + folderKey;
   }
 
   /**
-   * Queues a background re-read of the folder an undo just put messages back into, so
-   * their rows are in the mirror seconds after the answer rather than at the folder's
-   * next scheduled check -- {@link #scheduleSentFolderRefresh}'s pattern, and for its
-   * reason: the undo has to answer on the IMAP move-back, not on a folder sync.
+   * Queues a background re-read of a folder messages were just put into -- by an undo
+   * ({@link #undoMove}) or by a "Move to..." ({@link #moveToFolder}) -- so their rows
+   * are in the mirror seconds after the answer rather than at the folder's next
+   * scheduled check: {@link #scheduleSentFolderRefresh}'s pattern, and for its reason:
+   * the action has to answer on the IMAP COPY, not on a folder sync.
    * <p>
-   * Until EXO-89963 that sync ran on the request thread, and its cost was the inbox
-   * window: the cheap-change gate cannot skip a folder a COPY just changed, so an undo
-   * back into the inbox paid the same window FETCH the scheduled sync pays for new
+   * Until EXO-89963 the undo's sync ran on the request thread, and its cost was the
+   * inbox window: the cheap-change gate cannot skip a folder a COPY just changed, so an
+   * undo back into the inbox paid the same window FETCH the scheduled sync pays for new
    * mail -- measured near 8.5 s at the shipped 1000 cached rows by the phase log
    * {@link #syncFolder} prints, so about 2 s at 250 and 42 s at the administrator's
    * 5000, the Undo click blocked for all of it and the top of that range in gateway
    * timeout territory. Off the thread, the click costs the search, the COPY and the
    * flag whatever the cache size, and the drawer puts the row back on its own until
-   * the re-read lands. The refresh itself is unchanged: the same windows, the same
-   * path, for the reasons {@link #refreshFolderAfterUndo} keeps.
+   * the re-read lands. The move, until EXO-89966, never re-read its destination at
+   * all: a COPY hands the destination's copy a UID this add-on deliberately never
+   * chases ({@link #applyMoveAction}), so a moved message had no row in the folder it
+   * landed in until that folder's next check -- up to a whole sync period after the
+   * user filed it and opened the folder to look for it. The same re-read, pointed at
+   * the destination, closes that gap without the second importer that chasing the
+   * COPY's UID would be: the row is still written by the sync's own path, from the
+   * message the sync fetched. The refresh itself is the same for both: the same
+   * windows, the same path, for the reasons {@link #refreshFolder} keeps.
    * <p>
-   * Coalesced per (owner, folder) by the map key: two undos into one folder inside
-   * the window ride on one re-read, undos into two folders get one each. The entry is
-   * released when the refresh STARTS, as the Sent one is, so an undo landing during a
-   * re-read gets its own. Nothing propagates: the messages are back on the server by
-   * the time this runs, and a queueing failure (the executor shut down under a
-   * redeploy) must never reach a caller that would then tell the user their undo
-   * failed -- the scheduled sync is the fallback, exactly as before the refresh
-   * existed. The delay is the Sent refresh's coalescing window, not a wait for the
-   * server: the COPY is confirmed and the source folder closed before this is called.
+   * Coalesced per (owner, folder) by the map key, whatever the cause: two actions into
+   * one folder inside the window ride on one re-read, actions into two folders get one
+   * each. The entry is released when the refresh STARTS, as the Sent one is, so an
+   * action landing during a re-read gets its own. Nothing propagates: the messages are
+   * in the folder on the server by the time this runs, and a queueing failure (the
+   * executor shut down under a redeploy) must never reach a caller that would then
+   * tell the user their move or undo failed -- the scheduled sync is the fallback,
+   * exactly as before the refresh existed. The delay is the Sent refresh's coalescing
+   * window, not a wait for the server: the COPY is confirmed and the source folder
+   * closed before this is called.
    *
    * @param username the mailbox owner
-   * @param originKey the key of the folder the messages went back to
+   * @param folderKey the key of the folder the messages went into
+   * @param cause what put them there -- its kill switch, its log line
    */
-  private void scheduleUndoFolderRefresh(String username, String originKey) {
-    if (!isUndoRefreshEnabled() || StringUtils.isBlank(username) || StringUtils.isBlank(originKey)) {
+  private void scheduleFolderRefresh(String username, String folderKey, FolderRefreshCause cause) {
+    if (!cause.isEnabled() || StringUtils.isBlank(username) || StringUtils.isBlank(folderKey)) {
       return;
     }
     try {
-      pendingUndoRefreshes.computeIfAbsent(undoRefreshKey(username, originKey),
-                                           key -> undoRefreshScheduler.schedule(() -> runUndoFolderRefresh(username,
-                                                                                                           originKey,
+      pendingFolderRefreshes.computeIfAbsent(folderRefreshKey(username, folderKey),
+                                             key -> folderRefreshScheduler.schedule(() -> runFolderRefresh(username,
+                                                                                                           folderKey,
+                                                                                                           cause,
                                                                                                            1),
-                                                                                 SENT_REFRESH_DELAY_MS,
-                                                                                 TimeUnit.MILLISECONDS));
+                                                                                   SENT_REFRESH_DELAY_MS,
+                                                                                   TimeUnit.MILLISECONDS));
     } catch (Exception e) {
-      LOG.warn("Could not queue the refresh of folder {} of user {} after moving message(s) back into it; they surface"
-          + " at its next scheduled check", originKey, username, e);
+      LOG.warn("Could not queue the refresh of folder {} of user {} after {}; they surface at its next scheduled check",
+               folderKey,
+               username,
+               cause.phrase(),
+               e);
     }
   }
 
   /**
-   * Runs one queued post-undo refresh, or puts it back in the queue when the user's
+   * Runs one queued folder refresh, or puts it back in the queue when the user's
    * scheduled sync currently holds the mailbox -- {@link #runSentFolderRefresh}'s
    * decision, QUEUE rather than skip or run anyway, for its reasons: two readers of one
    * folder both create rows keyed on (user, folder, UID), which is what
@@ -3698,72 +3792,81 @@ public class EmailBoxService {
    * thread nobody is blocked on, and it is a re-schedule, not a sleep.
    *
    * @param username the mailbox owner
-   * @param originKey the key of the folder to re-read
+   * @param folderKey the key of the folder to re-read
+   * @param cause what put the messages there, for the log
    * @param attempt which attempt this is, starting at 1
    */
-  private void runUndoFolderRefresh(String username, String originKey, int attempt) {
+  private void runFolderRefresh(String username, String folderKey, FolderRefreshCause cause, int attempt) {
     if (!syncingUsers.add(username)) {
-      LOG.debug("A synchronization is running for user {}; the post-undo refresh of folder {} waits its turn (attempt {})",
+      LOG.debug("A synchronization is running for user {}; the refresh of folder {} after {} waits its turn (attempt {})",
                 username,
-                originKey,
+                folderKey,
+                cause.phrase(),
                 attempt);
-      rescheduleUndoFolderRefresh(username, originKey, attempt);
+      rescheduleFolderRefresh(username, folderKey, cause, attempt);
       return;
     }
     // Released before the work, not after: from here on this refresh reads a window it
-    // has already committed to, and an undo landing now needs its own pass.
-    pendingUndoRefreshes.remove(undoRefreshKey(username, originKey));
+    // has already committed to, and an action landing now needs its own pass.
+    pendingFolderRefreshes.remove(folderRefreshKey(username, folderKey));
     try {
       // The refresh reads settings and writes rows; on a bare scheduler thread there is
       // no request lifecycle for either, the same reason the Sent refresh opens one.
       RequestLifeCycle.begin(PortalContainer.getInstance());
       try {
-        refreshFolderAfterUndo(username, originKey);
+        refreshFolder(username, folderKey, cause);
       } finally {
         RequestLifeCycle.end();
       }
     } catch (Exception e) {
-      LOG.warn("Could not refresh folder {} of user {} after moving message(s) back into it; they surface at its next"
-          + " scheduled check", originKey, username, e);
+      LOG.warn("Could not refresh folder {} of user {} after {}; they surface at its next scheduled check",
+               folderKey,
+               username,
+               cause.phrase(),
+               e);
     } finally {
       syncingUsers.remove(username);
     }
   }
 
   /**
-   * Puts a post-undo refresh that could not get past the sync guard back in the queue,
-   * or gives up once it has waited long enough -- {@link #rescheduleSentFolderRefresh}
+   * Puts a folder refresh that could not get past the sync guard back in the queue, or
+   * gives up once it has waited long enough -- {@link #rescheduleSentFolderRefresh}
    * with the same budget ({@value #SENT_REFRESH_MAX_ATTEMPTS} attempts,
    * {@value #SENT_REFRESH_RETRY_DELAY_MS} ms apart), because the budget is the
    * sync-guard wait itself, not a per-feature number: a sync that has held the mailbox
    * for three minutes is one that brings the messages in itself.
    *
    * @param username the mailbox owner
-   * @param originKey the key of the folder to re-read
+   * @param folderKey the key of the folder to re-read
+   * @param cause what put the messages there, for the log
    * @param attempt the attempt that just found the mailbox busy
    */
-  private void rescheduleUndoFolderRefresh(String username, String originKey, int attempt) {
-    String key = undoRefreshKey(username, originKey);
+  private void rescheduleFolderRefresh(String username, String folderKey, FolderRefreshCause cause, int attempt) {
+    String key = folderRefreshKey(username, folderKey);
     if (attempt >= SENT_REFRESH_MAX_ATTEMPTS) {
-      LOG.info("A synchronization has held the mailbox of user {} for the whole post-undo refresh window; folder {} lists"
-          + " the message(s) moved back with that sync", username, originKey);
-      pendingUndoRefreshes.remove(key);
+      LOG.info("A synchronization has held the mailbox of user {} for the whole refresh window after {}; folder {} lists"
+          + " the message(s) with that sync", username, cause.phrase(), folderKey);
+      pendingFolderRefreshes.remove(key);
       return;
     }
     try {
-      pendingUndoRefreshes.put(key,
-                               undoRefreshScheduler.schedule(() -> runUndoFolderRefresh(username, originKey, attempt + 1),
-                                                             SENT_REFRESH_RETRY_DELAY_MS,
-                                                             TimeUnit.MILLISECONDS));
+      pendingFolderRefreshes.put(key,
+                                 folderRefreshScheduler.schedule(() -> runFolderRefresh(username, folderKey, cause, attempt + 1),
+                                                                 SENT_REFRESH_RETRY_DELAY_MS,
+                                                                 TimeUnit.MILLISECONDS));
     } catch (Exception e) {
-      pendingUndoRefreshes.remove(key);
-      LOG.warn("Could not re-queue the refresh of folder {} of user {} after moving message(s) back into it; they surface"
-          + " at its next scheduled check", originKey, username, e);
+      pendingFolderRefreshes.remove(key);
+      LOG.warn("Could not re-queue the refresh of folder {} of user {} after {}; they surface at its next scheduled check",
+               folderKey,
+               username,
+               cause.phrase(),
+               e);
     }
   }
 
   /**
-   * Re-reads the folder an undo put messages back into, through the sync's own
+   * Re-reads a folder an undo or a move put messages into, through the sync's own
    * single-folder path -- {@link #refreshSentFolder}'s precedent, and for its reason: a
    * second folder-reading path would drift from the sync's (its skip check, its
    * snapshot, its window, its cache trim). The windows are the scheduled sync's own,
@@ -3775,63 +3878,77 @@ public class EmailBoxService {
    * ({@link #doSynchronize}: the inbox and nothing else), and for the inbox that is a
    * decision, not a default. It gates the {@code NEW_EMAILS_SYNCED} broadcast the AI
    * categorizer listens to, and the move's {@link #deleteEmails} already unlinked the
-   * message's categories on the way out -- so a message put back into the inbox is
-   * handed to the sync as NEW, exactly as {@link #restoreEmail} documents for a
-   * restore, and gets categorized again. The price is the one the restore accepts: a
-   * message that was UNREAD when it was moved may fire the new-mail notification when
-   * it comes back (the window counts unread rows only, so a read message never does).
+   * message's categories on the way out -- so a message put back into the inbox by an
+   * undo, or filed into it by a "Move to... Inbox", is handed to the sync as NEW,
+   * exactly as {@link #restoreEmail} documents for a restore, and gets categorized
+   * again. The price is the one the restore accepts: a message that was UNREAD when it
+   * was moved may fire the new-mail notification when it arrives (the window counts
+   * unread rows only, so a read message never does).
    * <p>
-   * Runs on the undo refresher's thread, under the {@code syncingUsers} guard its
-   * caller ({@link #runUndoFolderRefresh}) takes, with a store and a sync state of its
-   * own: the undo's are closed and saved by the time this starts. The permission and
-   * the folder are re-checked here rather than inherited from the undo, as the Sent
+   * Runs on the folder refresher's thread, under the {@code syncingUsers} guard its
+   * caller ({@link #runFolderRefresh}) takes, with a store and a sync state of its
+   * own: the action's are closed and saved by the time this starts. The permission and
+   * the folder are re-checked here rather than inherited from the action, as the Sent
    * refresh re-checks -- the connector can be withdrawn, and a custom folder
    * unregistered, in the second between the two. Three things the scheduled sync does
    * that this must not, for {@link #refreshSentFolder}'s reasons: touch the mailbox's
    * sync STATUS, broadcast a run's completion, or claim the whole mailbox is cached.
-   * Best-effort throughout -- the messages ARE back on the server whatever this does,
-   * and a refresh that fails costs the user a wait for the next scheduled check, not
-   * a message.
+   * Best-effort throughout -- the messages ARE in the folder on the server whatever
+   * this does, and a refresh that fails costs the user a wait for the next scheduled
+   * check, not a message.
    * <p>
    * Package-visible so a test can run it on the calling thread rather than through the
    * scheduler.
    *
    * @param username the mailbox owner
-   * @param originKey the {@link MailFolder} key of the folder the messages went back to
+   * @param folderKey the {@link MailFolder} key of the folder the messages went into
+   * @param cause what put them there, for the log
    */
-  void refreshFolderAfterUndo(String username, String originKey) {
+  void refreshFolder(String username, String folderKey, FolderRefreshCause cause) {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
-      LOG.debug("User {} may no longer use their mailbox; skipping the post-undo refresh of folder {}", username, originKey);
+      LOG.debug("User {} may no longer use their mailbox; skipping the refresh of folder {} after {}",
+                username,
+                folderKey,
+                cause.phrase());
       return;
     }
-    boolean inbox = MailFolder.INBOX.equals(originKey);
+    boolean inbox = MailFolder.INBOX.equals(folderKey);
     Store store = null;
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
       store = userEmailSettingService.connect(userEmailSetting);
-      if (MailFolder.isCustom(originKey)) {
-        EmailFolder origin = emailFolderService.getFolderByKey(username, originKey);
-        if (origin.isMissing() || !origin.isSyncEnabled()) {
-          LOG.debug("Folder {} of user {} is no longer mirrored; skipping its post-undo refresh", originKey, username);
+      if (MailFolder.isCustom(folderKey)) {
+        EmailFolder target = emailFolderService.getFolderByKey(username, folderKey);
+        if (target.isMissing() || !target.isSyncEnabled()) {
+          LOG.debug("Folder {} of user {} is no longer mirrored; skipping its refresh after {}",
+                    folderKey,
+                    username,
+                    cause.phrase());
           return;
         }
-        syncCustomFolder(store, origin, username, userEmailSetting);
+        syncCustomFolder(store, target, username, userEmailSetting);
       } else {
-        Folder origin = resolveCachedFolder(store, originKey, username, syncState);
-        if (origin == null) {
-          LOG.debug("Mailbox of user {} exposes no {} folder; nothing to refresh after the undo", username, originKey);
+        Folder target = resolveCachedFolder(store, folderKey, username, syncState);
+        if (target == null) {
+          LOG.debug("Mailbox of user {} exposes no {} folder; nothing to refresh after {}",
+                    username,
+                    folderKey,
+                    cause.phrase());
           return;
         }
         int emailBoxCacheSize = emailConnectorService.getEmailBoxCacheSize();
         int window = inbox ? emailBoxCacheSize : Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
-        syncFolderIfChanged(store, origin, originKey, username, userEmailSetting, window, inbox, syncState);
+        syncFolderIfChanged(store, target, folderKey, username, userEmailSetting, window, inbox, syncState);
       }
     } catch (Exception e) {
-      LOG.warn("Could not refresh folder {} of user {} after moving message(s) back into it; they surface at its next"
-          + " scheduled check", originKey, username, e);
+      LOG.warn("Could not refresh folder {} of user {} after {}; they surface at its next scheduled check",
+               folderKey,
+               username,
+               cause.phrase(),
+               e);
     } finally {
       // Saved even on the early returns: resolveCachedFolder remembers (or forgets) a
       // folder's name in the state, and that discovery is worth keeping whatever the
@@ -3839,8 +3956,8 @@ public class EmailBoxService {
       saveMailboxSyncState(username, syncState, originalSyncStateJson);
       closeQuietly(null, store, username);
       if (inbox) {
-        // A message going back into the inbox unread changes the badge, and this is
-        // where its row is written -- the undo's own broadcast ran before it existed.
+        // A message arriving in the inbox unread changes the badge, and this is where
+        // its row is written -- the action's own broadcast ran before it existed.
         broadcastUnreadCountChanged(username);
       }
     }
