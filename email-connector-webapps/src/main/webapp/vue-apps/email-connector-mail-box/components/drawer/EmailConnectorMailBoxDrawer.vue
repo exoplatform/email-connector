@@ -1648,12 +1648,14 @@ export default {
       // forgets exactly its own.
       const filed = undoGroups.map(group => this.rememberMovedRows(group.rows, target));
       this.movedEmailIds.push(...groups.flatMap(([folder, ids]) => ids.map(id => ({ folder, id }))));
+      let partial = false;
       const requests = groups.map(([folder, ids], index) =>
         this.$emailConnectorMailBoxService.moveEmails(ids, folder, target)
           .then(moveResult => moveResult.failedMoves ?? 0, () => ids.length)
           .then(failures => {
             if (failures > 0) {
               this.forgetRefreshPendingRows(filed[index]);
+              partial = partial || failures < ids.length;
             }
             this.alertOnActionFailures(failures, 'move');
             return failures;
@@ -1664,9 +1666,14 @@ export default {
         }
         // The destination is usually not the folder on screen, and arms its own watch
         // when it is opened (loadEmailBox). It IS on screen when a batch picked from a
-        // search across folders was filed into the one being listed.
+        // search across folders was filed into the one being listed -- and then a
+        // request honoured in part has messages on their way into the listed folder
+        // with no remembered row to wait for: undoMove's case, and its answer, the
+        // whole budget.
         if (this.refreshPendingRows.some(row => row.folder === this.currentFolder)) {
           this.watchRefreshPendingRows();
+        } else if (partial && target === this.currentFolder) {
+          this.watchRefreshPendingRows(true);
         }
       });
     },
