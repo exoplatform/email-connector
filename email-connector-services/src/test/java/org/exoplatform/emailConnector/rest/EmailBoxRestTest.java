@@ -809,5 +809,13 @@ public class EmailBoxRestTest {
                                                        .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isBadRequest())
            .andExpect(status().reason("emailConnector.folder.notMirrored"));
+    doThrow(new IllegalAccessException("not yours")).when(emailBoxService)
+                                                    .undoMove(mailHeaderIds, SIMPLE_USER, "CUSTOM:7", MailFolder.INBOX);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:7")
+                                                       .with(testSimpleUser())
+                                                       .content(asJsonString(mailHeaderIds))
+                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                       .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isUnauthorized());
   }
 }

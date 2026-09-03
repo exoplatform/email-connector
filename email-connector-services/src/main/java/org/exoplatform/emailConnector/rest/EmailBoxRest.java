@@ -280,7 +280,7 @@ public class EmailBoxRest {
   @PostMapping("/move")
   @Secured("users")
   @Operation(summary = "Moves emails into one of the user's own folders", method = "POST",
-             description = "Moves the given emails (IMAP UIDs numbered within the source folder) into the custom folder named by target. Answers 400 emailConnector.folder.unknown for a target that is not one of the caller's folders, 400 emailConnector.folder.notMirrored for one they do not mirror, 400 emailConnector.folder.sameAsSource when target is the source. Returns how many could not be moved")
+             description = "Moves the given emails (IMAP UIDs numbered within the source folder) into the custom folder named by target. Answers 400 emailConnector.folder.disabled when custom folders are switched off, 400 emailConnector.folder.unknown for a target that is not one of the caller's folders, 400 emailConnector.folder.notMirrored for one they do not mirror, 400 emailConnector.folder.sameAsSource when target is the source. Returns how many could not be moved")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
@@ -323,7 +323,7 @@ public class EmailBoxRest {
   @PostMapping("/move/undo")
   @Secured("users")
   @Operation(summary = "Puts moved emails back into the folder they came from", method = "POST",
-             description = "The undo of a move: the emails, named by their Message-ID, are looked up in the folder the move filed them into and moved back to the folder they came from. Answers 400 emailConnector.folder.unknown for a folder the move does not admit on either side, 400 emailConnector.folder.notMirrored for a custom folder the caller does not mirror, 400 emailConnector.folder.sameAsSource when the two are one. Returns how many could not be moved back")
+             description = "The undo of a move: the emails, named by their Message-ID, are looked up in the folder the move filed them into and moved back to the folder they came from. Answers 400 emailConnector.folder.disabled when custom folders are switched off, 400 emailConnector.folder.unknown for a folder the move does not admit on either side, 400 emailConnector.folder.notMirrored for a custom folder the caller does not mirror, 400 emailConnector.folder.sameAsSource when the two are one. Returns how many could not be moved back")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),

@@ -1633,22 +1633,31 @@ export default {
     /**
      * Puts the moved messages back, each group into the folder it came from, then
      * reloads the listing: the server re-reads the folder they went back to before it
-     * answers, so the rows are in the mirror by the time the reload asks for them. A
-     * failure takes the error toast every other action takes, and nothing is put back
-     * into the listing from memory, for alertOnActionFailures's reason.
+     * answers, so the rows are in the mirror by the time the reload asks for them. That
+     * re-read is a folder sync on the request thread (seconds on a large inbox), so the
+     * listing shows its loading state until the answer -- the wait the Sync button
+     * shows the same way. A failure takes the error toast every other action takes,
+     * and nothing is put back into the listing from memory, for
+     * alertOnActionFailures's reason.
      *
      * @param {Array} undoGroups [{folder, mailHeaderIds}] per folder the rows came from
      * @param {String} target the folder the messages are in now
      * @returns {Promise} resolving once the listing is reloaded
      */
     undoMove(undoGroups, target) {
+      this.loading = true;
       return Promise.all(undoGroups.map(group =>
         this.$emailConnectorMailBoxService.undoMoveEmails(group.mailHeaderIds, target, group.folder)
           .then(undoResult => undoResult.failedUndos ?? 0, () => group.mailHeaderIds.length)))
         .then(failures => {
           this.alertOnActionFailures(failures.reduce((sum, count) => sum + count, 0), 'undoMove');
           return this.loadEmailBox();
-        });
+        })
+        // A reload that failed is the listing's own to say, as it is on every other
+        // path; the undo itself has answered, and the toast's callback would otherwise
+        // leave the rejection unhandled.
+        .catch(() => null)
+        .finally(() => this.loading = false);
     },
     /**
      * A folder's name as the listing shows it, from the descriptors the server listed
