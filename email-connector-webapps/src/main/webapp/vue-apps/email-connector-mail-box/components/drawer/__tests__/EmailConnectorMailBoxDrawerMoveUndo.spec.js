@@ -556,6 +556,34 @@ describe('the moved rows in their destination (EXO-89966)', () => {
     expect(fixture.wrapper.vm.refreshPendingRows.map(remembered => remembered.mailHeaderId)).toEqual(['<a@host>']);
   });
 
+  it('a batch filed into the folder on screen shows there at once and the move arms the poll itself', async () => {
+    fixture = await mountDrawer([row(1, '<a@host>')], {});
+    await fixture.wrapper.setData({ searchServerResults: [{ mailRemoteId: 9, mailHeaderId: '<s@host>', folder: 'SENT' }] });
+
+    await fixture.wrapper.vm.moveEmails([9], 'INBOX');
+
+    expect(fixture.service.moveEmails).toHaveBeenCalledWith([9], 'SENT', 'INBOX');
+    expect(fixture.wrapper.vm.emails.map(email => email.mailHeaderId)).toEqual(['<a@host>', '<s@host>']);
+    expect(fixture.wrapper.vm.refreshWatchDeadline).toBeGreaterThan(Date.now());
+    expect(fixture.wrapper.vm.refreshInterval).toBeTruthy();
+  });
+
+  it('a batch filed into the folder on screen that the server honoured in part polls for the whole budget', async () => {
+    fixture = await mountDrawer([row(1, '<a@host>')], { moveEmails: { failedMoves: 1 } });
+    await fixture.wrapper.setData({ searchServerResults: [
+      { mailRemoteId: 9, mailHeaderId: '<s@host>', folder: 'SENT' },
+      { mailRemoteId: 10, mailHeaderId: '<t@host>', folder: 'SENT' },
+    ] });
+
+    await fixture.wrapper.vm.moveEmails([9, 10], 'INBOX');
+
+    // Which of the two moved is not the drawer's to guess: no remembered row, but a poll.
+    expect(fixture.wrapper.vm.refreshPendingRows).toEqual([]);
+    expect(fixture.wrapper.vm.refreshWatchUntilDeadline).toBe(true);
+    expect(fixture.wrapper.vm.refreshWatchDeadline).toBeGreaterThan(Date.now());
+    expect(fixture.wrapper.vm.refreshInterval).toBeTruthy();
+  });
+
   it('the Undo takes the moved row out of the destination and puts it back in its origin', async () => {
     fixture = await mountDrawer([row(1, '<a@host>')], {});
     await fixture.wrapper.vm.moveEmails([1], 'CUSTOM:1');
