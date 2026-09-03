@@ -269,15 +269,17 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Switches the post-undo folder refresh off for every test in this class, for the
-   * reason the Sent one is switched off: it is a real timer firing a second after any
-   * undo, against the very mocks an undo test counts interactions on. The tests that
-   * are ABOUT the refresh mock its scheduler ({@link #mockUndoRefreshScheduler}) or
-   * drive {@link EmailBoxService#refreshFolderAfterUndo} on this thread instead.
+   * Switches the post-undo and post-move folder refreshes off for every test in this
+   * class, for the reason the Sent one is switched off: each is a real timer firing a
+   * second after any undo or move, against the very mocks such a test counts
+   * interactions on. The tests that are ABOUT the refresh mock its scheduler
+   * ({@link #mockFolderRefreshScheduler}) or drive
+   * {@link EmailBoxService#refreshFolder} on this thread instead.
    */
   @BeforeEach
-  void disableThePostUndoRefresh() {
+  void disableTheFolderRefreshes() {
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "false");
+    System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "false");
   }
 
   /**
@@ -8441,6 +8443,155 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * EXO-89966 -- a move queues the re-read of its DESTINATION and answers on the COPY:
+   * the destination is never opened on the move's thread, its rows are never read, and
+   * the queued entry is coalesced under the folder it re-reads. With the re-read
+   * removed from {@link EmailBoxService#moveToFolder}, nothing is scheduled and this
+   * fails.
+   */
+  @Test
+  @SneakyThrows
+  void aMoveQueuesTheRefreshOfItsDestinationAndAnswersWithoutReadingIt() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    MoveFixture fixture = givenAMovableMessageInProjets();
+
+    int failures = emailBoxService.moveToFolder(List.of(1212L), TEST_USER, "CUSTOM:6", "CUSTOM:5");
+
+    assertEquals(0, failures);
+    InOrder inOrder = inOrder(fixture.source(), fixture.store(), scheduler);
+    inOrder.verify(fixture.source()).copyMessages(new Message[] { fixture.message() }, fixture.target());
+    inOrder.verify(fixture.store()).close();
+    inOrder.verify(scheduler).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    verify(fixture.target(), never()).open(anyInt());
+    verify(emailBoxStorage, never()).getSyncEmails(anyString(), anyString());
+    assertTrue(pendingFolderRefreshes().containsKey(TEST_USER + "/CUSTOM:5"),
+               "the queued refresh is coalesced under the destination it re-reads");
+  }
+
+  /**
+   * A move that moved nothing has nothing to show in its destination: the server had
+   * no message at the UID, so every row went back and no re-read is queued.
+   */
+  @Test
+  @SneakyThrows
+  void aMoveThatMovedNothingQueuesNoRefresh() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    MoveFixture fixture = givenAMovableMessageInProjets();
+    when(fixture.source().getMessageByUID(1212L)).thenReturn(null);
+
+    int failures = emailBoxService.moveToFolder(List.of(1212L), TEST_USER, "CUSTOM:6", "CUSTOM:5");
+
+    assertEquals(1, failures);
+    verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+    assertTrue(pendingFolderRefreshes().isEmpty());
+  }
+
+  /**
+   * Two moves into one folder inside the coalescing window ride on ONE re-read, as two
+   * undos do: the second finds the first's entry and queues nothing of its own.
+   */
+  @Test
+  @SneakyThrows
+  void twoMovesIntoOneFolderRideOnOneQueuedRefresh() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    givenAMovableMessageInProjets();
+
+    emailBoxService.moveToFolder(List.of(1212L), TEST_USER, "CUSTOM:6", "CUSTOM:5");
+    emailBoxService.moveToFolder(List.of(1212L), TEST_USER, "CUSTOM:6", "CUSTOM:5");
+
+    verify(scheduler, times(1)).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+  }
+
+  /**
+   * The move's refresh has its own kill switch, apart from the undo's: with it off the
+   * message still moves and nothing is queued -- its row surfaces in the destination at
+   * the next scheduled check, as it did before the refresh existed -- while the undo's
+   * switch, still on, is not what decides.
+   */
+  @Test
+  @SneakyThrows
+  void theAdministratorCanWithdrawTheMoveRefreshWithoutBreakingTheMove() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "false");
+    MoveFixture fixture = givenAMovableMessageInProjets();
+
+    int failures = emailBoxService.moveToFolder(List.of(1212L), TEST_USER, "CUSTOM:6", "CUSTOM:5");
+
+    assertEquals(0, failures);
+    verify(fixture.source()).copyMessages(new Message[] { fixture.message() }, fixture.target());
+    verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+  }
+
+  /**
+   * The queued re-read is the same whatever put the messages there: under the MOVE
+   * cause a custom destination is synced under its key through the sync's own
+   * single-folder path, with a store of the refresh's own, closed behind it -- the
+   * pin {@link #theQueuedRefreshReadsACustomOriginThroughTheSyncsOwnPath} makes for
+   * the undo, made for the move.
+   */
+  @Test
+  @SneakyThrows
+  void theQueuedRefreshReadsAMoveDestinationThroughTheSyncsOwnPath() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    when(factures.getMessageCount()).thenReturn(1);
+
+    emailBoxService.refreshFolder(TEST_USER, "CUSTOM:1", EmailBoxService.FolderRefreshCause.MOVE);
+
+    verify(factures).open(Folder.READ_ONLY);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, "CUSTOM:1");
+    verify(trashStore()).close();
+  }
+
+  /**
+   * What {@link #givenAMovableMessageInProjets} sets up: a connected store, the source
+   * and destination folders as the registry names them, and the one message at the
+   * UID the move is asked for.
+   *
+   * @param store the connected store
+   * @param source the "Projets" folder ({@code CUSTOM:6}) the message is listed in
+   * @param target the "Factures" folder ({@code CUSTOM:5}) it is filed into
+   * @param message the message at UID 1212 of the source
+   */
+  private record MoveFixture(IMAPStore store, IMAPFolder source, IMAPFolder target, Message message) {
+  }
+
+  /**
+   * A mailbox where UID 1212 of the custom folder "Projets" ({@code CUSTOM:6}) is a
+   * cached row whose Message-ID the server's message carries, and "Factures"
+   * ({@code CUSTOM:5}) is a mirrored destination -- the fixture of
+   * {@link #aMoveFilesIntoTheRegistrysFolderAndReadsItsSourceThroughIt}, shared by the
+   * post-move refresh pins.
+   *
+   * @return the folders and the message, for the verifications
+   */
+  @SneakyThrows
+  private MoveFixture givenAMovableMessageInProjets() {
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder source = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
+    IMAPFolder target = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
+    when(store.getFolder("Projets")).thenReturn(source);
+    when(store.getFolder("Factures")).thenReturn(target);
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder("CUSTOM:6");
+    row.setMailHeaderId("<one@example.org>");
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L), eq(TEST_USER), any(), eq("CUSTOM:6"), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(row);
+    Message message = mock(Message.class);
+    when(source.getMessageByUID(1212L)).thenReturn(message);
+    // lenient: the pin about a UID the server has nothing at never reaches the header.
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { "<one@example.org>" });
+    return new MoveFixture(store, source, target, message);
+  }
+
+  /**
    * The mailbox wipe takes the folder registry with it: the next account bound here
    * walks its own folder list and mints its own keys.
    */
@@ -9375,7 +9526,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void anUndoQueuesTheRefreshOfTheFolderTheMessageWentBackToAndAnswersWithoutReadingIt() {
-    ScheduledExecutorService scheduler = mockUndoRefreshScheduler();
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
     lenient().when(inbox.isOpen()).thenReturn(true);
@@ -9395,7 +9546,7 @@ public class EmailBoxServiceTest {
     inOrder.verify(scheduler).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
     verify(factures, never()).open(anyInt());
     verify(emailBoxStorage, never()).getSyncEmails(anyString(), anyString());
-    assertTrue(pendingUndoRefreshes().containsKey(TEST_USER + "/CUSTOM:1"),
+    assertTrue(pendingFolderRefreshes().containsKey(TEST_USER + "/CUSTOM:1"),
                "the queued refresh is coalesced under the folder it re-reads");
   }
 
@@ -9410,7 +9561,7 @@ public class EmailBoxServiceTest {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     when(factures.getMessageCount()).thenReturn(1);
 
-    emailBoxService.refreshFolderAfterUndo(TEST_USER, "CUSTOM:1");
+    emailBoxService.refreshFolder(TEST_USER, "CUSTOM:1", EmailBoxService.FolderRefreshCause.UNDO);
 
     verify(factures).open(Folder.READ_ONLY);
     verify(emailBoxStorage).getSyncEmails(TEST_USER, "CUSTOM:1");
@@ -9424,7 +9575,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void twoUndosIntoOneFolderRideOnOneQueuedRefresh() {
-    ScheduledExecutorService scheduler = mockUndoRefreshScheduler();
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
     when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
@@ -9445,16 +9596,16 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void theQueuedRefreshWaitsItsTurnWhileASynchronizationHoldsTheMailbox() {
-    ScheduledExecutorService scheduler = mockUndoRefreshScheduler();
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     syncingUsers().add(TEST_USER);
     try {
-      ReflectionTestUtils.invokeMethod(emailBoxService, "runUndoFolderRefresh", TEST_USER, MailFolder.INBOX, 1);
+      ReflectionTestUtils.invokeMethod(emailBoxService, "runFolderRefresh", TEST_USER, MailFolder.INBOX, EmailBoxService.FolderRefreshCause.UNDO, 1);
     } finally {
       syncingUsers().remove(TEST_USER);
     }
     verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
     verify(scheduler).schedule(any(Runnable.class), eq(5000L), eq(TimeUnit.MILLISECONDS));
-    assertTrue(pendingUndoRefreshes().containsKey(TEST_USER + "/" + MailFolder.INBOX),
+    assertTrue(pendingFolderRefreshes().containsKey(TEST_USER + "/" + MailFolder.INBOX),
                "the retry keeps the folder's entry, so a new undo rides on it rather than queueing beside it");
   }
 
@@ -9466,16 +9617,16 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aQueuedRefreshThatWaitedOutItsWholeWindowStandsDown() {
-    ScheduledExecutorService scheduler = mockUndoRefreshScheduler();
-    pendingUndoRefreshes().put(TEST_USER + "/" + MailFolder.INBOX, mock(ScheduledFuture.class));
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    pendingFolderRefreshes().put(TEST_USER + "/" + MailFolder.INBOX, mock(ScheduledFuture.class));
     syncingUsers().add(TEST_USER);
     try {
-      ReflectionTestUtils.invokeMethod(emailBoxService, "runUndoFolderRefresh", TEST_USER, MailFolder.INBOX, 36);
+      ReflectionTestUtils.invokeMethod(emailBoxService, "runFolderRefresh", TEST_USER, MailFolder.INBOX, EmailBoxService.FolderRefreshCause.UNDO, 36);
     } finally {
       syncingUsers().remove(TEST_USER);
     }
     verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
-    assertFalse(pendingUndoRefreshes().containsKey(TEST_USER + "/" + MailFolder.INBOX));
+    assertFalse(pendingFolderRefreshes().containsKey(TEST_USER + "/" + MailFolder.INBOX));
   }
 
   /**
@@ -9490,7 +9641,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
 
-    emailBoxService.refreshFolderAfterUndo(TEST_USER, MailFolder.INBOX);
+    emailBoxService.refreshFolder(TEST_USER, MailFolder.INBOX, EmailBoxService.FolderRefreshCause.UNDO);
 
     verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
   }
@@ -9507,7 +9658,7 @@ public class EmailBoxServiceTest {
     lenient().when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", false));
 
-    emailBoxService.refreshFolderAfterUndo(TEST_USER, "CUSTOM:1");
+    emailBoxService.refreshFolder(TEST_USER, "CUSTOM:1", EmailBoxService.FolderRefreshCause.UNDO);
 
     verify(trashStore(), never()).getFolder("Factures");
     verify(emailBoxStorage, never()).getSyncEmails(anyString(), anyString());
@@ -9524,7 +9675,7 @@ public class EmailBoxServiceTest {
   void theQueuedInboxRefreshBroadcastsTheUnreadCount() {
     givenAConnectedMailboxWithAnInbox();
 
-    emailBoxService.refreshFolderAfterUndo(TEST_USER, MailFolder.INBOX);
+    emailBoxService.refreshFolder(TEST_USER, MailFolder.INBOX, EmailBoxService.FolderRefreshCause.UNDO);
 
     verify(listenerService).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), eq(TEST_USER), any());
   }
@@ -9539,7 +9690,7 @@ public class EmailBoxServiceTest {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     when(factures.getMessageCount()).thenReturn(1);
 
-    emailBoxService.refreshFolderAfterUndo(TEST_USER, "CUSTOM:1");
+    emailBoxService.refreshFolder(TEST_USER, "CUSTOM:1", EmailBoxService.FolderRefreshCause.UNDO);
 
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.UNREAD_EMAILS_CHANGED), any(), any());
   }
@@ -9558,7 +9709,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new MessagingException("imap refused"));
 
-    assertDoesNotThrow(() -> emailBoxService.refreshFolderAfterUndo(TEST_USER, MailFolder.INBOX));
+    assertDoesNotThrow(() -> emailBoxService.refreshFolder(TEST_USER, MailFolder.INBOX, EmailBoxService.FolderRefreshCause.UNDO));
 
     verify(userEmailSettingService, never()).setUserEmailSetting(any(UserEmailSetting.class), anyString(), anyBoolean());
     verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.MAILBOX_SYNC_COMPLETED), any(), any());
@@ -9573,7 +9724,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void theAdministratorCanWithdrawTheUndoRefreshWithoutBreakingTheUndo() {
-    ScheduledExecutorService scheduler = mockUndoRefreshScheduler();
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "false");
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
@@ -9594,7 +9745,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void anUndoThatMovedNothingDoesNotRefreshAnything() {
-    ScheduledExecutorService scheduler = mockUndoRefreshScheduler();
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[0]);
 
@@ -9672,7 +9823,7 @@ public class EmailBoxServiceTest {
     when(returned.getSubject()).thenReturn("the one that came back");
     when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[] { returned });
 
-    emailBoxService.refreshFolderAfterUndo(TEST_USER, MailFolder.INBOX);
+    emailBoxService.refreshFolder(TEST_USER, MailFolder.INBOX, EmailBoxService.FolderRefreshCause.UNDO);
 
     verify(emailBoxStorage).createEmail(argThat(row -> "the one that came back".equals(row.getSubject())));
     verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED), eq(TEST_USER), any());
@@ -9710,7 +9861,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void anUndoWhoseRemovalFailedAfterTheCopyIsCountedAndStillQueuesTheOriginsRefresh() {
-    ScheduledExecutorService scheduler = mockUndoRefreshScheduler();
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
     when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
@@ -9759,7 +9910,7 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void anUndoWhileASyncRunsMovesTheMessagesBackAndQueuesTheRefreshAllTheSame() {
-    ScheduledExecutorService scheduler = mockUndoRefreshScheduler();
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     IMAPFolder factures = givenAMirroredFacturesFolder();
     Message message = aMessageCarrying("<a@host>");
     when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
@@ -9781,32 +9932,33 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Replaces the service's real post-undo refresher with a mock, and switches the
-   * refresh on -- {@link #mockSentRefreshScheduler}'s twin, for its reasons: the real
+   * Replaces the service's real folder refresher with a mock, and switches both its
+   * causes on -- {@link #mockSentRefreshScheduler}'s twin, for its reasons: the real
    * one is a live timer, so the tests capture what WOULD have been queued instead.
    *
    * @return the scheduler mock, stubbed to hand back a handle so the coalescing map
    *         actually records the queued entry
    */
-  private ScheduledExecutorService mockUndoRefreshScheduler() {
+  private ScheduledExecutorService mockFolderRefreshScheduler() {
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "true");
-    pendingUndoRefreshes().clear();
+    System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "true");
+    pendingFolderRefreshes().clear();
     ScheduledExecutorService scheduler = mock(ScheduledExecutorService.class);
     lenient().when(scheduler.schedule(any(Runnable.class), anyLong(), any(TimeUnit.class)))
              .thenReturn(mock(ScheduledFuture.class));
-    ReflectionTestUtils.setField(emailBoxService, "undoRefreshScheduler", scheduler);
+    ReflectionTestUtils.setField(emailBoxService, "folderRefreshScheduler", scheduler);
     return scheduler;
   }
 
   /**
-   * The service's map of queued-but-not-started post-undo refreshes, keyed
-   * "owner/folder key" -- the coalescing window itself.
+   * The service's map of queued-but-not-started folder refreshes (post-undo and
+   * post-move alike), keyed "owner/folder key" -- the coalescing window itself.
    *
    * @return the live map
    */
   @SuppressWarnings("unchecked")
-  private Map<String, ScheduledFuture<?>> pendingUndoRefreshes() {
-    return (Map<String, ScheduledFuture<?>>) ReflectionTestUtils.getField(emailBoxService, "pendingUndoRefreshes");
+  private Map<String, ScheduledFuture<?>> pendingFolderRefreshes() {
+    return (Map<String, ScheduledFuture<?>>) ReflectionTestUtils.getField(emailBoxService, "pendingFolderRefreshes");
   }
 
   /**
