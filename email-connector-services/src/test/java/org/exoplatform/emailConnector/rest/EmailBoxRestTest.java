@@ -762,4 +762,47 @@ public class EmailBoxRestTest {
            .andExpect(status().isBadRequest())
            .andExpect(status().reason("emailConnector.folder.unknown"));
   }
+
+  /**
+   * The undo of a move is its own endpoint, addressed by Message-ID, and reaches its
+   * own service method with the two folders the way the client names them: the one the
+   * messages are in now, and the one they go back to (the inbox when unsaid).
+   */
+  @Test
+  void undoMoveEmails() throws Exception {
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:5").with(testSimpleUser()))
+           .andExpect(status().isBadRequest());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:5")
+                                                       .with(testSimpleUser())
+                                                       .content(asJsonString(new ArrayList<String>()))
+                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                       .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNotFound());
+    List<String> mailHeaderIds = List.of("<a@host>", "<b@host>");
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:5")
+                                                       .with(testSimpleUser())
+                                                       .content(asJsonString(mailHeaderIds))
+                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                       .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).undoMove(mailHeaderIds, SIMPLE_USER, "CUSTOM:5", MailFolder.INBOX);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:5")
+                                                       .param("target", MailFolder.SENT)
+                                                       .with(testSimpleUser())
+                                                       .content(asJsonString(mailHeaderIds))
+                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                       .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).undoMove(mailHeaderIds, SIMPLE_USER, "CUSTOM:5", MailFolder.SENT);
+    verify(emailBoxService, never()).moveToFolder(anyList(), anyString(), anyString(), anyString());
+    doThrow(new IllegalArgumentException("emailConnector.folder.notMirrored")).when(emailBoxService)
+                                                                              .undoMove(mailHeaderIds, SIMPLE_USER, "CUSTOM:99", MailFolder.INBOX);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/move/undo").param("folder", "CUSTOM:99")
+                                                       .with(testSimpleUser())
+                                                       .content(asJsonString(mailHeaderIds))
+                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                       .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason("emailConnector.folder.notMirrored"));
+  }
 }

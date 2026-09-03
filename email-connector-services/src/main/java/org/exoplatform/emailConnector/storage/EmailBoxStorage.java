@@ -917,6 +917,26 @@ public class EmailBoxStorage {
     return emailBoxDao.countByMailHeaderIdAndUserIdAndFolder(mailHeaderId, userId, folder) > 0;
   }
 
+  /**
+   * The ids of a folder's cached rows carrying a given Message-ID -- what the undo of
+   * a move drops from the folder it takes the message back out of, should that folder
+   * have been checked between the move and the undo and already hold a row for it.
+   * Ids only, for the reason {@link #isMessageCachedInFolder} answers with a count:
+   * the caller deletes them, and a body CLOB has no business being loaded on its way
+   * out.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the Message-ID to look for
+   * @param folder the folder discriminator to look in
+   * @return the matching row ids, empty for a blank Message-ID
+   */
+  public List<Long> getEmailIdsByMailHeaderId(String userId, String mailHeaderId, String folder) {
+    if (StringUtils.isBlank(mailHeaderId)) {
+      return List.of();
+    }
+    return emailBoxDao.findIdsByMailHeaderIdAndUserIdAndFolder(mailHeaderId, userId, folder);
+  }
+
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
     emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus, folder);
   }
