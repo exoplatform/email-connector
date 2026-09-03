@@ -3203,9 +3203,10 @@ public class EmailBoxService {
    * @param targetFolder the {@code CUSTOM:<id>} key of the destination
    * @return how many of them could NOT be moved
    * @throws IllegalAccessException if the user may not act on their mailbox
-   * @throws IllegalArgumentException if the target is not one of this user's custom
-   *           folders ({@code emailConnector.folder.unknown}), is not mirrored
-   *           ({@code emailConnector.folder.notMirrored}), or is the source
+   * @throws IllegalArgumentException if custom folders are switched off
+   *           ({@code emailConnector.folder.disabled}), the target is not one of this
+   *           user's custom folders ({@code emailConnector.folder.unknown}), is not
+   *           mirrored ({@code emailConnector.folder.notMirrored}), or is the source
    *           ({@code emailConnector.folder.sameAsSource})
    */
   public int moveToFolder(List<Long> mailRemoteIds,
@@ -3265,8 +3266,9 @@ public class EmailBoxService {
    * @param originFolder the key of the folder they came from; blank means INBOX
    * @return how many of them could NOT be moved back
    * @throws IllegalAccessException if the user may not act on their mailbox
-   * @throws IllegalArgumentException if either folder is not one the move admits
-   *           ({@code emailConnector.folder.unknown}), the current one is not
+   * @throws IllegalArgumentException if custom folders are switched off
+   *           ({@code emailConnector.folder.disabled}), either folder is not one the
+   *           move admits ({@code emailConnector.folder.unknown}), a custom one is not
    *           mirrored ({@code emailConnector.folder.notMirrored}), or the two are
    *           the same ({@code emailConnector.folder.sameAsSource})
    */
@@ -3548,6 +3550,26 @@ public class EmailBoxService {
    * messages would delete older rows and make the next scheduled sync re-download the
    * folder.
    * <p>
+   * The {@code notify} flag is the scheduled sync's own for the folder too
+   * ({@link #doSynchronize}: the inbox and nothing else), and for the inbox that is a
+   * decision, not a default. It gates the {@code NEW_EMAILS_SYNCED} broadcast the AI
+   * categorizer listens to, and the move's {@link #deleteEmails} already unlinked the
+   * message's categories on the way out -- so a message put back into the inbox is
+   * handed to the sync as NEW, exactly as {@link #restoreEmail} documents for a
+   * restore, and gets categorized again. The price is the one the restore accepts: a
+   * message that was UNREAD when it was moved may fire the new-mail notification when
+   * it comes back (the window counts unread rows only, so a read message never does).
+   * <p>
+   * The cost, stated because it lands on the request thread: for the inbox the window
+   * is the full cache size, and the cheap-change gate cannot skip a folder a COPY just
+   * changed, so an undo out of the inbox pays the same window FETCH the scheduled sync
+   * pays for any new mail (the phase log {@link #syncFolder} prints measured it near
+   * 8.5 s at 1000 cached rows) -- less than the Sync button, which runs the whole
+   * mailbox on the request thread, and the drawer shows its loading state meanwhile.
+   * If that proves too long in use, the Sent-refresh scheduler
+   * ({@link #scheduleSentFolderRefresh}) is the off-thread alternative, at the price
+   * of the row reappearing at the drawer's next reload rather than with the answer.
+   * <p>
    * Under the {@code syncingUsers} guard, as {@link #refreshCustomFolder} is: a folder
    * sync and a mailbox sync must never write the same rows at once, and if the guard
    * is taken the background sync is already doing the work. Best-effort throughout --
@@ -3578,9 +3600,9 @@ public class EmailBoxService {
         syncCustomFolder(store, emailFolderService.getFolderByKey(username, originKey), username, userEmailSetting);
       } else {
         int emailBoxCacheSize = emailConnectorService.getEmailBoxCacheSize();
-        int window = MailFolder.INBOX.equals(originKey) ? emailBoxCacheSize
-                                                        : Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
-        syncFolderIfChanged(store, origin, originKey, username, userEmailSetting, window, false, syncState);
+        boolean inbox = MailFolder.INBOX.equals(originKey);
+        int window = inbox ? emailBoxCacheSize : Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
+        syncFolderIfChanged(store, origin, originKey, username, userEmailSetting, window, inbox, syncState);
       }
     } catch (Exception e) {
       LOG.warn("Could not refresh folder {} of user {} after moving message(s) back into it; they surface at its next"
