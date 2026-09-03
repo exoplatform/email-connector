@@ -18,113 +18,47 @@
 /*
  * The "Add to my contacts" action on a people profile header: one click files
  * the colleague into the caller's contact store as a directory-linked row and
- * opens the Contacts drawer on the new card.
- *
- * The action lives in the profile header's OWN extension point
- * ('profile-header'/'action-component'), registered by the always-on head
- * script js/emailConnectorProfileHeaderPlugin.js — NOT in the shared
- * ('profile-extension'/'action') point, which every user card surface (people
- * list, search results, org chart, popovers) renders too and where the product
- * does not want it. That point's contract is imperative: the header calls
- * init(container, username) below once its per-action container div is
- * mounted, and this module renders its own button into it.
+ * opens the Contacts drawer on the new card. Slice 1 is the plain action; the
+ * stateful Add / View toggle is slice 2.
  */
 
 /**
- * The profile header's entry point for this action, called once per header
- * with the mounted container element and the profile owner's username. The
- * header only renders action components when the viewer is NOT the profile
- * owner, and this module only mounts for a live colleague — a disabled or
- * deleted profile shows nothing, exactly as the old card-action guard did.
- * The i18n bundle loads BEFORE mounting because the button's tooltip renders
- * through the shared i18n instance.
+ * Loads this add-on's contact translations, then registers the profile action.
+ * The i18n load comes FIRST because the profile header renders the action's
+ * tooltip through the shared i18n instance ($t on titleKey), and registering
+ * after the merge is safe: the header re-runs its extension load on the
+ * extension-profile-extension-action-updated event registration fires.
  *
- * @param {Element} container - the header's per-action container div
- * @param {string} username - the profile owner's platform username
  * @returns {void}
  */
-export function init(container, username) {
-  if (!container || !username || username === eXo.env.portal.userName
-      || container.dataset.emailConnectorContactMounted) {
-    return;
-  }
-  container.dataset.emailConnectorContactMounted = 'true';
-  // A REST round-trip per profile view, where the old card extension had none: it read the
-  // user object the card already held. The header point hands init() the username only, not
-  // the user, so there is nothing here to read it from.
-  fetch(`/portal/rest/v1/social/users/${encodeURIComponent(username)}`, {credentials: 'include'})
-    .then(response => response.ok && response.json() || null)
-    .then(user => {
-      if (!user?.enabled || user?.deleted) {
-        return;
-      }
-      const lang = eXo?.env?.portal?.language || 'en';
-      const url = `/email-connector/i18n/locale.portlet.emailConnector.emailConnectorContacts?lang=${lang}`;
-      window.require(['SHARED/eXoVueI18n'], exoi18n =>
-        exoi18n.loadLanguageAsync(lang, url).then(i18n => mountAction(container, username, i18n)));
-    })
-    .catch(error => {
-      // Clear the flag so it does not outlive the failure. It does not buy a retry in this
-      // page view: the host guards on the descriptor, not the element - ProfileHeaderActions
-      // sets action.isStartedInit = true before the async work and never clears it, and the
-      // descriptor is the registry's singleton - so init() is called once per page load
-      // whatever this flag says.
-      delete container.dataset.emailConnectorContactMounted;
-      console.warn('Could not add the email-connector profile header action', error);
-    });
+export function init() {
+  const lang = eXo?.env?.portal?.language || 'en';
+  const url = `/email-connector/i18n/locale.portlet.emailConnector.emailConnectorContacts?lang=${lang}`;
+  window.require(['SHARED/eXoVueI18n'], exoi18n =>
+    exoi18n.loadLanguageAsync(lang, url).then(registerProfileAction));
 }
 
 /**
- * Mounts the action button into the header's container — into an appended
- * child div, because Vue 2's $mount REPLACES its target and the container is
- * the header's own ref div, carrying the classes the header put on it. The
- * button mirrors the header's sibling action buttons (same v-btn chrome, same
- * breakpoint-driven icon size as the header's own iconSize computed).
+ * Registers the icon action into social's 'profile-extension'/'action' point.
+ * The enabled signature is (user, spaceId, isCard) — the point is consumed
+ * with different arities: the profile header passes the user alone, people
+ * cards pass all three with isCard=true. The action shows only on the full
+ * header (not cards), for a live colleague who is not the viewer.
  *
- * @param {Element} container - the header's per-action container div
- * @param {string} username - the profile owner's platform username
- * @param {object} i18n - the shared vue-i18n instance with our bundle merged
  * @returns {void}
  */
-function mountAction(container, username, i18n) {
-  const mountPoint = document.createElement('div');
-  container.appendChild(mountPoint);
-  // An Element, not a selector string, which every other call site in social passes.
-  // Deliberate and supported: Vue.createApp's target is `typeof el === 'string' ?
-  // document.querySelector(...) : el` (social -> vue-apps/common/initComponents.js:158),
-  // so a node is handed straight to $mount. There is no selector for this div - it is
-  // created here and never given an id.
-  Vue.createApp({
-    template: `
-      <v-btn
-        :title="label"
-        :aria-label="label"
-        class="no-border my-auto mb-0"
-        icon
-        @click="addToContacts">
-        <v-icon
-          class="ma-1"
-          :size="iconSize"
-          color="primary">
-          fas fa-address-book
-        </v-icon>
-      </v-btn>`,
-    computed: {
-      label() {
-        return this.$t('emailConnector.contacts.profileAction.add');
-      },
-      iconSize() {
-        return this.$vuetify.breakpoint.width < this.$vuetify.breakpoint.thresholds.lg ? 16 : 20;
-      },
-    },
-    methods: {
-      addToContacts() {
-        addToContacts(username);
-      },
-    },
-    vuetify: Vue.prototype.vuetifyOptions,
-    i18n,
-  }, mountPoint, 'Email Connector Profile Header Action');
+function registerProfileAction() {
+  extensionRegistry.registerExtension('profile-extension', 'action', {
+    id: 'email-connector-add-contact',
+    titleKey: 'emailConnector.contacts.profileAction.add',
+    icon: 'fas fa-address-book',
+    order: 20,
+    enabled: (user, spaceId, isCard) => !isCard
+      && !!user?.enabled
+      && !user?.deleted
+      && user?.username !== eXo.env.portal.userName,
+    click: user => addToContacts(user?.username),
+  });
 }
 
 /**
