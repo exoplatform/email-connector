@@ -8486,6 +8486,24 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A batch the server honoured in part -- one UID the mirror does not hold beside one
+   * that moved -- still queues the destination's re-read: the message that moved has
+   * a row to show, whatever the count says about the other.
+   */
+  @Test
+  @SneakyThrows
+  void aMoveThatMovedPartOfItsBatchStillQueuesTheRefreshOfItsDestination() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    givenAMovableMessageInProjets();
+
+    int failures = emailBoxService.moveToFolder(List.of(1212L, 9999L), TEST_USER, "CUSTOM:6", "CUSTOM:5");
+
+    assertEquals(1, failures);
+    verify(scheduler).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    assertTrue(pendingFolderRefreshes().containsKey(TEST_USER + "/CUSTOM:5"));
+  }
+
+  /**
    * Two moves into one folder inside the coalescing window ride on ONE re-read, as two
    * undos do: the second finds the first's entry and queues nothing of its own.
    */
@@ -9588,6 +9606,91 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * The map is one for every cause: a move into a folder and an undo back into the
+   * same folder inside the window are ONE re-read, whichever came first -- the decision
+   * {@link EmailBoxService.FolderRefreshCause} states, pinned so a later split of the
+   * map per cause cannot pass unnoticed.
+   */
+  @Test
+  @SneakyThrows
+  void aMoveAndAnUndoIntoOneFolderRideOnOneQueuedRefresh() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
+    lenient().when(inbox.isOpen()).thenReturn(true);
+    when(trashStore().getFolder("INBOX")).thenReturn(inbox);
+    Message message = aMessageCarrying("<a@host>");
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setMailHeaderId("<a@host>");
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(5L), eq(TEST_USER), any(), eq(MailFolder.INBOX), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(row);
+    when(inbox.getMessageByUID(5L)).thenReturn(message);
+    lenient().when(inbox.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    lenient().when(inbox.getUID(message)).thenReturn(5L);
+
+    assertEquals(0, emailBoxService.moveToFolder(List.of(5L), TEST_USER, MailFolder.INBOX, "CUSTOM:1"));
+    assertEquals(0, emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, MailFolder.INBOX, "CUSTOM:1"));
+
+    verify(inbox, times(2)).copyMessages(argThat(copied -> copied.length == 1 && copied[0] == message), eq(factures));
+    verify(scheduler, times(1)).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+    assertEquals(Set.of(TEST_USER + "/CUSTOM:1"), pendingFolderRefreshes().keySet());
+  }
+
+  /**
+   * An undo inside the move's coalescing window withdraws the move's queued re-read of
+   * the folder the messages just left again: cancelled, its entry gone, and only the
+   * origin's re-read queued -- one IMAP login for a folder the messages are no longer
+   * in is one the kill switches exist to avoid.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWithdrawsTheQueuedReReadOfTheFolderTheMessagesLeft() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+    ScheduledFuture<?> queuedByTheMove = mock(ScheduledFuture.class);
+    pendingFolderRefreshes().put(TEST_USER + "/CUSTOM:1", queuedByTheMove);
+
+    int failed = emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(queuedByTheMove).cancel(false);
+    verify(scheduler, times(1)).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+    assertEquals(Set.of(TEST_USER + "/" + MailFolder.INBOX), pendingFolderRefreshes().keySet());
+  }
+
+  /**
+   * An undo while the folder the messages left is being re-read -- the move's own
+   * re-read of it, or the scheduled sync -- queues a reconciling re-read of that folder
+   * behind the running one: the reader may have fetched the message before the undo
+   * expunged it and write its row after {@code dropMirrorRows} ran. Without the queue,
+   * that row stays until the folder's next scheduled check, and this fails.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWhileTheFolderTheMessagesLeftIsBeingReReadQueuesItsReconciliation() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    Message message = aMessageCarrying("<a@host>");
+    when(factures.search(any(MessageIDTerm.class))).thenReturn(new Message[] { message });
+    when(factures.getUID(message)).thenReturn(77L);
+    when(factures.getMessageByUID(77L)).thenReturn(message);
+
+    syncingUsers().add(TEST_USER);
+    try {
+      assertEquals(0, emailBoxService.undoMove(List.of("<a@host>"), TEST_USER, "CUSTOM:1", MailFolder.INBOX));
+    } finally {
+      syncingUsers().remove(TEST_USER);
+    }
+
+    verify(scheduler, times(2)).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    assertEquals(Set.of(TEST_USER + "/" + MailFolder.INBOX, TEST_USER + "/CUSTOM:1"), pendingFolderRefreshes().keySet());
+  }
+
+  /**
    * The queued refresh finding the mailbox held by a scheduled sync WAITS ITS TURN, as
    * the post-send one does and for its reasons: running alongside would duplicate rows,
    * and skipping would leave the user waiting a whole period behind a log line.
@@ -9904,7 +10007,10 @@ public class EmailBoxServiceTest {
    * user's, not the sync's) and the origin's re-read is queued all the same: the guard
    * is the refresher's to check when its turn comes ({@link #theQueuedRefreshWaitsItsTurnWhileASynchronizationHoldsTheMailbox}),
    * never the undo's to take -- two writers of one (user, folder, UID) space must never
-   * overlap, and the undo writes none.
+   * overlap, and the undo writes none. Since EXO-89966 the running reader also earns the
+   * folder the messages LEFT a reconciling re-read behind it
+   * ({@link #anUndoWhileTheFolderTheMessagesLeftIsBeingReReadQueuesItsReconciliation}),
+   * so two re-reads are queued here, the origin's among them.
    */
   @Test
   @SneakyThrows
@@ -9926,7 +10032,8 @@ public class EmailBoxServiceTest {
     verify(factures).copyMessages(any(), any());
     verify(message).setFlag(Flags.Flag.DELETED, true);
     verify(trashStore().getFolder("INBOX"), never()).open(anyInt());
-    verify(scheduler).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    verify(scheduler, times(2)).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    assertTrue(pendingFolderRefreshes().containsKey(TEST_USER + "/" + MailFolder.INBOX), "the origin's re-read is queued");
     assertFalse(syncingUsers().contains(TEST_USER), "the guard the undo did not take is not the undo's to release");
   }
 

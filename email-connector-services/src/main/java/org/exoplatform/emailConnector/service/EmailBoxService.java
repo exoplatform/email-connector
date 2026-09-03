@@ -3283,10 +3283,6 @@ public class EmailBoxService {
    * a move into the folder the messages are already in is refused for the reason
    * archive-from-Archive is: it would cost the message its UID and its row for
    * nothing.
-   *
-   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to move
-   * @param username the mailbox owner
-   * @param folder the folder those UIDs are numbered in; blank means INBOX
    * <p>
    * The destination is re-read in the background once anything moved
    * ({@link #scheduleFolderRefresh}, cause {@link FolderRefreshCause#MOVE}): the move
@@ -3299,6 +3295,9 @@ public class EmailBoxService {
    * Queued only for a move that moved something: a batch refused whole (nowhere to
    * file, a source the mailbox has not got, every UID stale) has nothing to show.
    *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to move
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
    * @param targetFolder the {@code CUSTOM:<id>} key of the destination
    * @return how many of them could NOT be moved
    * @throws IllegalAccessException if the user may not act on their mailbox
@@ -3564,9 +3563,45 @@ public class EmailBoxService {
       broadcastUnreadCountChanged(username);
     }
     if (movedAny) {
+      // The folder the messages just LEFT may have a re-read of its own on the way or
+      // under way -- the move's (scheduleFolderRefresh, MOVE), queued a second after the
+      // move and, for a "Move to... Inbox", holding the refresher for the inbox window
+      // while the toast's Undo is on screen. One not yet started is withdrawn: it would
+      // re-read a folder the messages are no longer in, one IMAP login for nothing. One
+      // running now (or the scheduled sync, which reads the same folder) may have fetched
+      // the message before this undo expunged it and write its row AFTER dropMirrorRows
+      // ran -- a row for a message that is back in its origin, until the folder's next
+      // check. A re-read queued behind it heals that: the expunge is a change the gate
+      // in front of syncFolder cannot skip, and the sync trims the row. The window this
+      // leaves open -- a re-read that finished between the expunge and this check -- is
+      // the one every folder always had against the scheduled sync, healed at the next
+      // check the same way; not worth a second connection per undo to close.
+      withdrawQueuedFolderRefresh(username, currentKey);
       scheduleFolderRefresh(username, originKey, FolderRefreshCause.UNDO);
+      if (syncingUsers.contains(username)) {
+        scheduleFolderRefresh(username, currentKey, FolderRefreshCause.UNDO_OUT);
+      }
     }
     return failures;
+  }
+
+  /**
+   * Withdraws a queued, not-yet-started re-read of a folder -- the move's re-read of a
+   * destination an undo just emptied again ({@link #applyUndoMove}). A re-read that has
+   * started is past withdrawing: it released its entry when it took the mailbox
+   * ({@link #runFolderRefresh}), so there is nothing here to cancel, and its caller
+   * queues the reconciling re-read instead. Never interrupts: {@code cancel(false)} on
+   * a task that has begun is a no-op, and a half-read folder must never be left half
+   * written.
+   *
+   * @param username the mailbox owner
+   * @param folderKey the key of the folder whose queued re-read is no longer wanted
+   */
+  private void withdrawQueuedFolderRefresh(String username, String folderKey) {
+    ScheduledFuture<?> queued = pendingFolderRefreshes.remove(folderRefreshKey(username, folderKey));
+    if (queued != null) {
+      queued.cancel(false);
+    }
   }
 
   /**
@@ -3651,10 +3686,10 @@ public class EmailBoxService {
   }
 
   /**
-   * Why a folder is being re-read in the background -- the two callers of
+   * Why a folder is being re-read in the background -- the callers of
    * {@link EmailBoxService#scheduleFolderRefresh}, which differ by their kill switch and
    * by the words of their log lines, and by nothing else: same scheduler, same
-   * coalescing map, same re-read. One map for both is a decision, not a saving: an undo
+   * coalescing map, same re-read. One map for all is a decision, not a saving: an undo
    * into a folder and a "Move to..." into the same folder inside the window are ONE
    * re-read, and the row each one waits for is written by whichever runs.
    * <p>
@@ -3670,7 +3705,13 @@ public class EmailBoxService {
     /** An undo put messages back into the folder ({@link EmailBoxService#undoMove}). */
     UNDO(UNDO_REFRESH_ENABLED_PROPERTY, "moving message(s) back into it"),
     /** A "Move to..." filed messages into the folder ({@link EmailBoxService#moveToFolder}). */
-    MOVE(MOVE_REFRESH_ENABLED_PROPERTY, "moving message(s) into it");
+    MOVE(MOVE_REFRESH_ENABLED_PROPERTY, "moving message(s) into it"),
+    /**
+     * An undo took messages OUT of the folder while a re-read of it was under way
+     * ({@link EmailBoxService#applyUndoMove}) -- on the undo's switch, as the undo's
+     * other re-read is.
+     */
+    UNDO_OUT(UNDO_REFRESH_ENABLED_PROPERTY, "moving message(s) back out of it while it was being re-read");
 
     private final String property;
 
