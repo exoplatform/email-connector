@@ -1205,10 +1205,20 @@ export default {
      * @returns {String} the folder that id is numbered in
      */
     folderOfEmail(mailRemoteId) {
-      const row = (this.emails || []).find(email => email.mailRemoteId === mailRemoteId)
+      return this.rowOfEmail(mailRemoteId)?.folder || 'INBOX';
+    },
+    /**
+     * The row this drawer holds for a message id, from the three places it holds rows
+     * -- see folderOfEmail for why they genuinely differ. Null for an id from none of
+     * them.
+     *
+     * @param {Number} mailRemoteId the message's IMAP UID
+     * @returns {Object} the row, or null
+     */
+    rowOfEmail(mailRemoteId) {
+      return (this.emails || []).find(email => email.mailRemoteId === mailRemoteId)
         || (this.searchServerResults || []).find(result => result.mailRemoteId === mailRemoteId)
         || (this.email?.mailRemoteId === mailRemoteId ? this.email : null);
-      return row?.folder || 'INBOX';
     },
     /**
      * Groups message ids by the folder each one is listed in, so one request goes out
@@ -1520,8 +1530,8 @@ export default {
      * would be this drawer guessing at what the server decided.
      *
      * @param {Number} failures how many messages the action could not be applied to
-     * @param {String} action 'delete', 'archive', 'restore', 'purge', 'junk' or
-     *        'notJunk', which picks the message
+     * @param {String} action 'delete', 'archive', 'restore', 'purge', 'junk', 'notJunk',
+     *        'move' or 'undoMove', which picks the message
      * @returns {void}
      */
     alertOnActionFailures(failures, action) {
@@ -1556,21 +1566,100 @@ export default {
      * are listed in. Optimistic like archive: the rows leave at once, and the folder
      * they land in lists them at its next check.
      *
+     * The one action here that says something on success -- see offerUndoMove for why
+     * it is the one, and why only when every request succeeded: a batch that failed in
+     * part is the error toast's alone. The server put the failed rows back, and an Undo
+     * covering "the ones that moved" would be this drawer guessing which those are.
+     *
      * @param {Array<Number>} emailIdsToMove the IMAP UIDs to move
-     * @param {String} target the destination's key (CUSTOM:<id>)
-     * @returns {void}
+     * @param {String} target the destination's key (CUSTOM:<id>, INBOX or ARCHIVE)
+     * @returns {Promise} resolving once every request has answered
      */
     moveEmails(emailIdsToMove = [], target) {
       if (!target) {
-        return;
+        return Promise.resolve();
       }
       // Group BEFORE hiding the rows — same reason as deleteEmails above.
       const groups = this.byOwnFolder(emailIdsToMove);
+      // The undo's addresses, taken now for the same reason: it names the messages by
+      // Message-ID, the one thing they keep across a move (the COPY renumbers the UID),
+      // and the row is the only place this drawer can read it from.
+      const undoGroups = groups.map(([folder, ids]) => ({
+        folder,
+        mailHeaderIds: ids.map(id => this.rowOfEmail(id)?.mailHeaderId || null),
+      }));
       this.movedEmailIds.push(...emailIdsToMove);
-      groups.forEach(([folder, ids]) =>
+      const requests = groups.map(([folder, ids]) =>
         this.$emailConnectorMailBoxService.moveEmails(ids, folder, target)
-          .then(moveResult => this.alertOnActionFailures(moveResult.failedMoves ?? 0, 'move'))
-          .catch(() => this.alertOnActionFailures(ids.length, 'move')));
+          .then(moveResult => moveResult.failedMoves ?? 0, () => ids.length)
+          .then(failures => {
+            this.alertOnActionFailures(failures, 'move');
+            return failures;
+          }));
+      return Promise.all(requests).then(failures => {
+        if (failures.every(count => count === 0)) {
+          this.offerUndoMove(undoGroups, target, emailIdsToMove.length);
+        }
+      });
+    },
+    /**
+     * The move's toast: "Moved to <folder>" with an Undo. Every other action here says
+     * nothing on success (alertOnActionFailures returns on zero), and this one is no
+     * reassurance either -- the rows leaving the list already say the move happened.
+     * What earns the interruption is the Undo: a misfiled message is otherwise found
+     * again in the target folder and moved back by hand. Which is why the toast is not
+     * shown when the Undo could not work -- a row with no Message-ID cannot be found
+     * again by identity, and a toast whose Undo fails is worse than none.
+     *
+     * @param {Array} undoGroups [{folder, mailHeaderIds}] per folder the rows came from
+     * @param {String} target the folder the messages went to
+     * @param {Number} count how many messages moved
+     * @returns {void}
+     */
+    offerUndoMove(undoGroups, target, count) {
+      if (!count || undoGroups.some(group => group.mailHeaderIds.some(id => !id))) {
+        return;
+      }
+      const folderName = this.folderLabelOf(target);
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'success',
+        alertMessage: count === 1
+          ? this.$t('emailConnector.mailBox.list.drawer.move.email.success', { 0: folderName })
+          : this.$t('emailConnector.mailBox.list.drawer.move.emails.success', { 0: count, 1: folderName }),
+        alertLinkText: this.$t('emailConnector.mailBox.list.drawer.move.undo.label'),
+        alertLinkCallback: () => this.undoMove(undoGroups, target),
+      }}));
+    },
+    /**
+     * Puts the moved messages back, each group into the folder it came from, then
+     * reloads the listing: the server re-reads the folder they went back to before it
+     * answers, so the rows are in the mirror by the time the reload asks for them. A
+     * failure takes the error toast every other action takes, and nothing is put back
+     * into the listing from memory, for alertOnActionFailures's reason.
+     *
+     * @param {Array} undoGroups [{folder, mailHeaderIds}] per folder the rows came from
+     * @param {String} target the folder the messages are in now
+     * @returns {Promise} resolving once the listing is reloaded
+     */
+    undoMove(undoGroups, target) {
+      return Promise.all(undoGroups.map(group =>
+        this.$emailConnectorMailBoxService.undoMoveEmails(group.mailHeaderIds, target, group.folder)
+          .then(undoResult => undoResult.failedUndos ?? 0, () => group.mailHeaderIds.length)))
+        .then(failures => {
+          this.alertOnActionFailures(failures.reduce((sum, count) => sum + count, 0), 'undoMove');
+          return this.loadEmailBox();
+        });
+    },
+    /**
+     * A folder's name as the listing shows it, from the descriptors the server listed
+     * with the mailbox -- the raw key when it listed no such folder.
+     *
+     * @param {String} key the folder key
+     * @returns {String} the name to show
+     */
+    folderLabelOf(key) {
+      const folder = (this.folders || []).find(candidate => candidate.key === key);
+      return folder ? this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)) : key;
     },
     async loadEmailBox() {
       const wasSyncing = this.syncInProgress;
