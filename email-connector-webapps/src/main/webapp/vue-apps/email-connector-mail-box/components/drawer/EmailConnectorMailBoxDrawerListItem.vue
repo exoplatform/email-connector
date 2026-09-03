@@ -66,12 +66,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         width: `${minWidth}px`,
         'min-width': `${minWidth}px`,
       }">
+      <!-- Disabled as well as unclickable for a row the server has not listed yet
+           (refreshPending): pointer-events stops the mouse, not Tab + Space, and a
+           placeholder UID must not enter the selection. -->
       <v-checkbox
         v-if="selectMode"
         class="me-0 pt-0 align-self-center"
         color="#707070"
         background-color="transparent"
         :input-value="selected"
+        :disabled="email.refreshPending"
         @click.stop
         @change="onSelectChange" />
       <div class="flex-grow-1 no-min-width">    
