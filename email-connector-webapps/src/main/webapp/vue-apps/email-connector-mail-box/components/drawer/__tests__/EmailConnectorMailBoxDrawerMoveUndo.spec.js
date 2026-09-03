@@ -212,6 +212,24 @@ describe('the move toast and its Undo (EXO-89952)', () => {
     expect(fixture.wrapper.vm.loading).toBe(false);
   });
 
+  it('the Undo is single-shot and closes its toast: a second click sends nothing', async () => {
+    fixture = await mountDrawer([row(1, '<a@host>')], {});
+    await fixture.wrapper.vm.moveEmails([1], 'CUSTOM:1');
+    const closed = jest.fn();
+    document.addEventListener('close-alert-message', closed);
+    try {
+      const first = fixture.alerts[0].alertLinkCallback();
+      await fixture.alerts[0].alertLinkCallback();
+      await first;
+      await fixture.alerts[0].alertLinkCallback();
+    } finally {
+      document.removeEventListener('close-alert-message', closed);
+    }
+
+    expect(fixture.service.undoMoveEmails).toHaveBeenCalledTimes(1);
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
   it('an Undo the server could not honour takes the error toast', async () => {
     fixture = await mountDrawer([row(1, '<a@host>')], { undoMoveEmails: { failedUndos: 1 } });
     await fixture.wrapper.vm.moveEmails([1], 'CUSTOM:1');
