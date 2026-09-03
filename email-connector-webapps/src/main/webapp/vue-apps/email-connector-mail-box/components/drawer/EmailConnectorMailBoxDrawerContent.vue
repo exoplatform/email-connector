@@ -88,7 +88,9 @@ export default {
   },
   methods: {
     onSelectAllChange(value) {
-      const newSelection = value ? this.emails.map(e => e.mailRemoteId) : [];
+      // A row an Undo put back (undoPending) is not selectable: it carries a UID the
+      // server has renumbered, and any action on it would be counted a failure.
+      const newSelection = value ? this.emails.filter(e => !e.undoPending).map(e => e.mailRemoteId) : [];
       this.$emit('update:selected-emails', newSelection);
     }
   }
