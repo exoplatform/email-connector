@@ -308,6 +308,49 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Puts moved messages back where they came from -- the Undo of {@link #moveEmails}.
+   * Addressed by Message-ID rather than by UID, because a moved message has a new UID
+   * in the folder it landed in that the client never learns (see
+   * {@code EmailBoxService#undoMove}).
+   *
+   * @param request the caller
+   * @param mailHeaderIds the Message-IDs of the messages to put back
+   * @param folder the folder the move filed them into, where they are now
+   * @param target the folder they came from; INBOX when omitted
+   * @return how many could not be moved back, as {@code failedUndos}
+   */
+  @PostMapping("/move/undo")
+  @Secured("users")
+  @Operation(summary = "Puts moved emails back into the folder they came from", method = "POST",
+             description = "The undo of a move: the emails, named by their Message-ID, are looked up in the folder the move filed them into and moved back to the folder they came from. Answers 400 emailConnector.folder.unknown for a folder the move does not admit on either side, 400 emailConnector.folder.notMirrored for a custom folder the caller does not mirror, 400 emailConnector.folder.sameAsSource when the two are one. Returns how many could not be moved back")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public Map<String, Integer> undoMoveEmails(HttpServletRequest request,
+                                             @Parameter(description = "The Message-IDs of the emails to put back", required = true)
+                                             @RequestBody
+                                             List<String> mailHeaderIds,
+                                             @Parameter(description = "The folder the move filed the emails into", required = true)
+                                             @RequestParam("folder")
+                                             String folder,
+                                             @Parameter(description = "The folder they came from; INBOX when omitted")
+                                             @RequestParam(value = "target", required = false, defaultValue = "INBOX")
+                                             String target) {
+    if (mailHeaderIds == null || mailHeaderIds.isEmpty()) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+    try {
+      int failedUndos = emailBoxService.undoMove(mailHeaderIds, request.getRemoteUser(), folder, target);
+      return Map.of("failedUndos", failedUndos);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
   @PostMapping("/synchronization")
   @Secured("users")
   @Operation(summary = "Synchronizes email box", method = "POST", description = "This will synchronize email box")

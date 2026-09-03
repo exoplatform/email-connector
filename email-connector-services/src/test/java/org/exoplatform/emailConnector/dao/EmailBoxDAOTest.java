@@ -124,6 +124,41 @@ public class EmailBoxDAOTest {
   }
 
   /**
+   * The folder-scoped id lookup behind the undo of a move answers the one folder it is
+   * asked about, for the one user, and only the rows carrying that Message-ID --
+   * executed against the engine because a lookup that answered another folder's row
+   * would have the undo delete the row of a message that is still there.
+   */
+  @Test
+  void theIdLookupByMessageIdIsScopedToItsFolderAndItsOwner() {
+    Long inFactures = persistEmailCarrying(20L, "CUSTOM:1", "<a@host>");
+    persistEmailCarrying(21L, MailFolder.INBOX, "<a@host>");
+    persistEmailCarrying(22L, "CUSTOM:1", "<b@host>");
+    entityManager.clear();
+
+    assertEquals(List.of(inFactures), emailBoxDAO.findIdsByMailHeaderIdAndUserIdAndFolder("<a@host>", USERNAME, "CUSTOM:1"));
+    assertEquals(List.of(), emailBoxDAO.findIdsByMailHeaderIdAndUserIdAndFolder("<a@host>", "someone-else", "CUSTOM:1"));
+    assertEquals(List.of(), emailBoxDAO.findIdsByMailHeaderIdAndUserIdAndFolder("<c@host>", USERNAME, "CUSTOM:1"));
+  }
+
+  /**
+   * Persists one cached message in a given folder, pinned to a Message-ID.
+   *
+   * @param remoteId the IMAP UID, within that folder
+   * @param folder the {@link MailFolder} discriminator
+   * @param mailHeaderId the Message-ID the row remembers
+   * @return the row's generated id
+   */
+  private Long persistEmailCarrying(long remoteId, String folder, String mailHeaderId) {
+    Long id = persistEmail(remoteId, folder, "body", Boolean.FALSE);
+    EmailBoxEntity email = entityManager.find(EmailBoxEntity.class, id);
+    email.setMailHeaderId(mailHeaderId);
+    entityManager.persist(email);
+    entityManager.flush();
+    return id;
+  }
+
+  /**
    * Persists one cached inbox message.
    *
    * @param remoteId the IMAP UID
