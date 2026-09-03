@@ -452,6 +452,24 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String folder);
 
   /**
+   * The ids of a folder's cached rows carrying a given Message-ID -- the count above,
+   * for the one caller that goes on to delete what it counted: the undo of a move,
+   * taking a message back out of a folder that may already have been checked and hold
+   * a row for it. Ids rather than rows for the count's own reason: nothing of a row
+   * about to be deleted needs to cross the persistence layer, least of all its body.
+   *
+   * @param mailHeaderId the Message-ID to look for
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator to look in
+   * @return the matching row ids
+   */
+  @Query("SELECT email.id FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId AND email.folder = :folder")
+  List<Long> findIdsByMailHeaderIdAndUserIdAndFolder(@Param("mailHeaderId")
+  String mailHeaderId, @Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
    * Cuts a draft's row loose from the copy it had on the mail server: the state
    * goes back to {@link org.exoplatform.emailConnector.model.DraftState#LOCAL_ONLY}
    * and the UID is cleared. Used by the Drafts sync when the copy this row pointed
