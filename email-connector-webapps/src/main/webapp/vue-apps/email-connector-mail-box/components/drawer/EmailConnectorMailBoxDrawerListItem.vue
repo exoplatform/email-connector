@@ -17,6 +17,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
   <div
+    :style="email.undoPending ? 'pointer-events: none; opacity: 0.6;' : null"
     @mouseenter="!isMobile && (isHover = true)"
     @mouseleave="!isMobile && (isHover = false)"
     @focusin="!isMobile && (isHover = true)"
