@@ -27,10 +27,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.UndeclaredThrowableException;
@@ -40,14 +42,15 @@ import java.util.Locale;
 import java.util.Properties;
 
 import javax.crypto.BadPaddingException;
+import javax.mail.Authenticator;
 import javax.mail.MessagingException;
 import javax.mail.Session;
 import javax.mail.Store;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.MockedStatic;
 import org.mockito.ArgumentCaptor;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -73,6 +76,9 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.web.security.codec.AbstractCodec;
 import org.exoplatform.web.security.codec.CodecInitializer;
 import org.exoplatform.web.security.security.TokenServiceInitializationException;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 
 import io.meeds.social.translation.service.TranslationService;
 import io.meeds.social.util.JsonUtils;
@@ -105,6 +111,9 @@ public class UserEmailSettingServiceTest {
   @MockitoBean
   private EmailSignatureService     emailSignatureService;
 
+  @MockitoBean
+  private EmailCredentialsResolver  emailCredentialsResolver;
+
   @Autowired
   private UserEmailSettingService   userEmailSettingService;
 
@@ -120,13 +129,16 @@ public class UserEmailSettingServiceTest {
     when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
     Session session = mock(Session.class);
     try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
-      mockedSession.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
       Store store = mock(Store.class);
       when(session.getStore()).thenReturn(store);
       when(store.isConnected()).thenReturn(true);
       when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
       userEmailSettingService.connectUserEmailSetting(userEmailSetting, TEST_USER, false);
-      verify(store).connect(anyString(), anyInt(), anyString(), anyString());
+      // Validating a typed password asks NO provider: the setting is not stored yet, so a
+      // provider would be answering about the previous one, or about nothing at all.
+      verifyNoInteractions(emailCredentialsResolver);
+      verify(store).connect();
       verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
     }
   }
@@ -529,15 +541,30 @@ public class UserEmailSettingServiceTest {
   }
 
   @Test
-  void connect() throws MessagingException {
-    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+  void connect() throws MessagingException, ConnectorCredentialsException {
+    EmailConnector withProvider = emailConnector();
+    withProvider.setAuthProviderName("personal");
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(withProvider);
+    Authenticator provided = new Authenticator() {
+    };
+    when(emailCredentialsResolver.authenticator(any(), any(), any(), any())).thenReturn(provided);
     Session session = mock(Session.class);
+    ArgumentCaptor<Authenticator> onTheSession = ArgumentCaptor.forClass(Authenticator.class);
     try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
-      mockedSession.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), onTheSession.capture())).thenReturn(session);
       Store store = mock(Store.class);
       when(session.getStore()).thenReturn(store);
-      userEmailSettingService.connect(userEmailSetting());
-      verify(store).connect(anyString(), anyInt(), anyString(), anyString());
+
+      userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
+
+      // Asked on IMAP, for this connector row's own provider, and for the eXo login —
+      // never for the stored address, which is the provider's business to derive.
+      verify(emailCredentialsResolver).authenticator(null, "personal", TEST_USER, ConnectorCredentialsChannel.IMAP);
+      assertSame(provided, onTheSession.getValue(), "the session must authenticate with what the provider produced");
+      // The no-args form: the four-argument connect(host, port, user, password) is what
+      // carried the stored password, and its absence is the migration.
+      verify(store).connect();
+      verify(store, never()).connect(anyString(), anyInt(), anyString(), anyString());
     }
   }
 
