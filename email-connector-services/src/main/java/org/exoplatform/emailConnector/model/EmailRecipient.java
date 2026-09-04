@@ -30,6 +30,6 @@ public class EmailRecipient {
   private String address;
 
   private String profileUrl;
-  
-  private boolean isCurrentUser;
+
+  private boolean currentUser;
 }

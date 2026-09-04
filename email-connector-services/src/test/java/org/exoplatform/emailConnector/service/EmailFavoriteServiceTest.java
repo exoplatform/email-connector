@@ -36,7 +36,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
@@ -54,13 +54,13 @@ public class EmailFavoriteServiceTest {
 
   private static final long    IDENTITY_ID = 42L;
 
-  @MockBean
+  @MockitoBean
   private EmailBoxStorage      emailBoxStorage;
 
-  @MockBean
+  @MockitoBean
   private FavoriteService      favoriteService;
 
-  @MockBean
+  @MockitoBean
   private IdentityManager      identityManager;
 
   @Autowired

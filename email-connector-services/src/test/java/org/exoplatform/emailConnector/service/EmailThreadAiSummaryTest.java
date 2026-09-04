@@ -34,14 +34,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.domain.EntityScan;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -109,40 +109,40 @@ public class EmailThreadAiSummaryTest {
   @Autowired
   private EmailBoxStorage         emailBoxStorage;
 
-  @MockBean
+  @MockitoBean
   private UserEmailSettingService userEmailSettingService;
 
-  @MockBean
+  @MockitoBean
   private SettingService          settingService;
 
-  @MockBean
+  @MockitoBean
   private JobSchedulerService     jobSchedulerService;
 
-  @MockBean
+  @MockitoBean
   private ListenerService         listenerService;
 
-  @MockBean
+  @MockitoBean
   private EmailConnectorService   emailConnectorService;
 
-  @MockBean
+  @MockitoBean
   private CategoryLinkService     categoryLinkService;
 
-  @MockBean
+  @MockitoBean
   private CategoryService         categoryService;
 
-  @MockBean
+  @MockitoBean
   private EmailFavoriteService    emailFavoriteService;
 
-  @MockBean
+  @MockitoBean
   private EmailSignatureService   emailSignatureService;
 
-  @MockBean
+  @MockitoBean
   private ApplicationEventPublisher eventPublisher;
 
-  @MockBean
+  @MockitoBean
   private FileService             fileService;
 
-  @MockBean
+  @MockitoBean
   private UploadService           uploadService;
 
   /**

@@ -45,7 +45,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
@@ -77,19 +77,19 @@ class EmailSignatureServiceTest {
 
   private static final String TEST_USER = "testuser";
 
-  @MockBean
+  @MockitoBean
   private SettingService      settingService;
 
-  @MockBean
+  @MockitoBean
   private IdentityManager     identityManager;
 
-  @MockBean
+  @MockitoBean
   private BrandingService     brandingService;
 
-  @MockBean
+  @MockitoBean
   private FileService         fileService;
 
-  @MockBean
+  @MockitoBean
   private UploadService       uploadService;
 
   @Autowired

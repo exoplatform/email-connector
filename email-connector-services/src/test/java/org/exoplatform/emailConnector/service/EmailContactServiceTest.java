@@ -53,8 +53,8 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.commons.api.settings.SettingService;
@@ -92,28 +92,28 @@ public class EmailContactServiceTest {
 
   private static final String     OWN_ADDRESS = "alice@example.com";
 
-  @MockBean
+  @MockitoBean
   private EmailContactStorage     emailContactStorage;
 
-  @MockBean
+  @MockitoBean
   private EmailBoxStorage         emailBoxStorage;
 
-  @MockBean
+  @MockitoBean
   private UserEmailSettingService userEmailSettingService;
 
-  @MockBean
+  @MockitoBean
   private SettingService          settingService;
 
-  @MockBean
+  @MockitoBean
   private IdentityManager         identityManager;
 
-  @MockBean
+  @MockitoBean
   private EmailContactFavoriteService emailContactFavoriteService;
 
-  @MockBean
+  @MockitoBean
   private ProfilePropertyService  profilePropertyService;
 
-  @MockBean
+  @MockitoBean
   private ApplicationEventPublisher eventPublisher;
 
   @Autowired
@@ -125,7 +125,7 @@ public class EmailContactServiceTest {
     // The publisher mock is pinned into the service by hand, as EmailBoxServiceTest
     // already has to do: for ApplicationEventPublisher the context registers ITSELF
     // as a resolvable dependency, and that candidate can win the @Autowired
-    // resolution over the @MockBean -- leaving the mock unobserved and every
+    // resolution over the @MockitoBean -- leaving the mock unobserved and every
     // "this path announces nothing" assertion passing for the wrong reason.
     ReflectionTestUtils.setField(emailContactService, "eventPublisher", eventPublisher);
   }

@@ -47,7 +47,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.exoplatform.emailConnector.carddav.AddressBook;
 import org.exoplatform.emailConnector.carddav.CardDavClient;
@@ -83,28 +83,28 @@ public class EmailContactCardDavSyncServiceTest {
 
   private static final String                BOOK_URL     = "https://mail.example.com/dav/alice/default/";
 
-  @MockBean
+  @MockitoBean
   private EmailContactStorage                emailContactStorage;
 
-  @MockBean
+  @MockitoBean
   private UserEmailSettingService            userEmailSettingService;
 
-  @MockBean
+  @MockitoBean
   private EmailConnectorService              emailConnectorService;
 
-  @MockBean
+  @MockitoBean
   private CardDavClient                      cardDavClient;
 
-  @MockBean
+  @MockitoBean
   private VCardParser                        vCardParser;
 
-  @MockBean
+  @MockitoBean
   private EmailContactFavoriteService        emailContactFavoriteService;
 
-  @MockBean
+  @MockitoBean
   private EmailContactService                emailContactService;
 
-  @MockBean
+  @MockitoBean
   private EmailContactVCardService           emailContactVCardService;
 
   @Autowired

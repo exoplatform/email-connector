@@ -48,8 +48,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.commons.api.settings.ExoFeatureService;
@@ -70,6 +70,7 @@ import org.exoplatform.web.security.codec.CodecInitializer;
 import org.exoplatform.web.security.security.TokenServiceInitializationException;
 
 import io.meeds.social.translation.service.TranslationService;
+
 import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { UserEmailSettingService.class })
@@ -78,25 +79,25 @@ public class UserEmailSettingServiceTest {
 
   private static final String       TEST_USER = "testuser";
 
-  @MockBean
+  @MockitoBean
   private SettingService            settingService;
 
-  @MockBean
+  @MockitoBean
   private CodecInitializer          codecInitializer;
 
-  @MockBean
+  @MockitoBean
   private TranslationService        translationService;
 
-  @MockBean
+  @MockitoBean
   private ExoFeatureService         featureService;
 
-  @MockBean
+  @MockitoBean
   private EmailConnectorService     emailConnectorService;
 
-  @MockBean
+  @MockitoBean
   private ApplicationEventPublisher eventPublisher;
 
-  @MockBean
+  @MockitoBean
   private EmailSignatureService     emailSignatureService;
 
   @Autowired
