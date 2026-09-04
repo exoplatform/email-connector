@@ -31,6 +31,7 @@ import org.exoplatform.commons.utils.IOUtil;
 import org.exoplatform.emailConnector.dao.EmailConnectorDAO;
 import org.exoplatform.emailConnector.entity.EmailConnectorEntity;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.upload.UploadResource;
 import org.exoplatform.upload.UploadService;
 
@@ -85,6 +86,16 @@ public class EmailConnectorStorage {
     if (StringUtils.isNotBlank(emailConnector.getImageUploadId())) {
       Long imageFileId = saveImageFileItem(oldImageFileId, emailConnector.getImageUploadId());
       emailConnector.setImageFileId(imageFileId);
+    }
+
+    // The provider the row authenticates through is kept from what is stored, not
+    // taken from the body: no admin screen carries a field for it (EXO-89648 is
+    // what will), so every save would otherwise arrive with it null and blank the
+    // column. Blanking it used to cost nothing, because nothing read it; since
+    // EXO-89645 it is what the send resolves its credentials through, so an edit
+    // to a connector's name would stop its users' mail from going out at all.
+    if (StringUtils.isBlank(emailConnector.getAuthProviderName())) {
+      emailConnector.setAuthProviderName(storedEmailConnectorEntity.getAuthProviderName());
     }
 
     EmailConnectorEntity emailConnectorEntity = toEntity(emailConnector);
@@ -142,7 +153,14 @@ public class EmailConnectorStorage {
                                       emailConnector.isActive(),
                                       emailConnector.getWebmailUrl(),
                                       emailConnector.getCarddavUrl(),
-                                      emailConnector.getAuthProviderName());
+                                      // Never null: the column is NOT NULL, no admin screen carries a
+                                      // field for it (EXO-89648 is what will), and the entity's own
+                                      // field initialiser cannot help -- @AllArgsConstructor overwrites
+                                      // it with whatever is passed. A create would fail on the
+                                      // constraint, an update would blank a row the send authenticates
+                                      // through.
+                                      StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(),
+                                                                 PersonalCredentialsProvider.NAME));
     }
   }
 

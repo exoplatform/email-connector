@@ -66,7 +66,6 @@ import javax.activation.DataHandler;
 import javax.activation.DataSource;
 import javax.activation.FileDataSource;
 import javax.mail.Address;
-import javax.mail.Authenticator;
 import javax.mail.BodyPart;
 import javax.mail.FetchProfile;
 import javax.mail.Flags;
@@ -76,7 +75,6 @@ import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Part;
-import javax.mail.PasswordAuthentication;
 import javax.mail.Session;
 import javax.mail.Store;
 import javax.mail.Transport;
@@ -161,11 +159,14 @@ import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.listener.ListenerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -822,6 +823,13 @@ public class EmailBoxService {
 
   @Autowired
   private EmailConnectorService   emailConnectorService;
+
+  // required = false, and the same reason as EmailPersonalCredentialsSource's own
+  // guard: the resolver needs ConnectorCredentialsService, a bean of another WAR,
+  // so it is undefined in this addon's own Spring test contexts. Without this the
+  // context fails to refresh and every test sharing it fails with it.
+  @Autowired(required = false)
+  private EmailCredentialsResolver emailCredentialsResolver;
 
   // Publishes EmailSentEvent after a successful send, so contact collection (and any
   // later consumer) learns who the user writes to without this class knowing about it.
@@ -6231,7 +6239,7 @@ public class EmailBoxService {
       MimeMessage message = buildOutgoingMessage(email, userEmailSetting, emailConnector, null, uploadIds, username);
       applyThreadingHeaders(message, email, username);
       deliver(message, email, StringUtils.isNotEmpty(email.getMailHeaderId()), username, userEmailSetting);
-    } catch (MessagingException | UnsupportedEncodingException e) {
+    } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
     } finally {
@@ -6242,27 +6250,50 @@ public class EmailBoxService {
   }
 
   /**
+   * The resolver, refused rather than worked around when it is absent.
+   * <p>
+   * Falling back on the stored password here would be the failure mode this
+   * whole migration exists to remove: the connector would keep authenticating
+   * with the user's own credentials whatever provider an administrator
+   * configured, with no error and no trace. An absent resolver is a deployment
+   * that cannot honour its own configuration, and it says so.
+   *
+   * @return the resolver, never null
+   * @throws IllegalStateException when the credentials contract is not wired
+   */
+  private EmailCredentialsResolver credentialsResolver() {
+    if (emailCredentialsResolver == null) {
+      throw new IllegalStateException("The connector credentials contract is not available; no mail can be authenticated");
+    }
+    return emailCredentialsResolver;
+  }
+
+  /**
    * The SMTP session a send runs on, built from the user's connector and
    * authenticated as the user themselves.
    *
-   * @param emailConnector the connector the user is bound to
-   * @param userEmailSetting the user's credentials
+   * @param emailConnector the connector the user is bound to, holding the SMTP
+   *          endpoint and the provider the credentials come from
+   * @param username the eXo login the session is authenticated for
    * @return the session to build and transmit the message on
+   * @throws ConnectorCredentialsException when the configured provider cannot
+   *           produce credentials for this account
    */
-  private Session smtpSession(EmailConnector emailConnector, UserEmailSetting userEmailSetting) {
-    String emailAddress = userEmailSetting.getEmailAddress();
-    String emailPassword = userEmailSetting.getEmailPassword();
+  private Session smtpSession(EmailConnector emailConnector,
+                              String username) throws ConnectorCredentialsException {
     Properties props = new Properties();
     props.put("mail.smtp.auth", "true");
     props.put("mail.smtp." + emailConnector.getSmtpSecurityType() + ".enable", "true");
     props.put("mail.smtp.host", emailConnector.getSmtpUrl());
     props.put("mail.smtp.port", emailConnector.getSmtpPort());
-    return Session.getInstance(props, new Authenticator() {
-      @Override
-      protected PasswordAuthentication getPasswordAuthentication() {
-        return new PasswordAuthentication(emailAddress, emailPassword);
-      }
-    });
+    // The props are connector configuration and stay where they were; only the
+    // authenticator moves, from one built here out of the stored setting to one
+    // the configured provider produces.
+    return Session.getInstance(props,
+                               credentialsResolver().authenticator(emailConnector.getId(),
+                                                                   emailConnector.getAuthProviderName(),
+                                                                   username,
+                                                                   ConnectorCredentialsChannel.SMTP));
   }
 
   /**
@@ -6292,9 +6323,17 @@ public class EmailBoxService {
                                            EmailConnector emailConnector,
                                            String pinnedMessageId,
                                            List<String> uploadIds,
-                                           String username) throws MessagingException, UnsupportedEncodingException {
-    String emailAddress = userEmailSetting.getEmailAddress();
-    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, userEmailSetting), pinnedMessageId);
+                                           String username) throws MessagingException, UnsupportedEncodingException,
+                                                             ConnectorCredentialsException {
+    // The address the message is sent AS, which is the provider's to name and not
+    // the setting's: Personal answers the stored address, so nothing changes for
+    // it, but a provider authenticating as a technical account sends for someone
+    // else. A provider naming no target leaves the stored address in place.
+    String resolved = credentialsResolver().senderAddress(emailConnector.getId(),
+                                                          emailConnector.getAuthProviderName(),
+                                                          username);
+    String emailAddress = StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
+    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username), pinnedMessageId);
     Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
     message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
     if (!CollectionUtils.isEmpty(email.getTo())) {
@@ -6949,7 +6988,7 @@ public class EmailBoxService {
                           buildOutgoingMessage(draft, userEmailSetting, emailConnector, stored.getMailHeaderId(), uploadIds, username);
       applyStoredThreadingHeaders(message, stored);
       deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
-    } catch (MessagingException | UnsupportedEncodingException e) {
+    } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
       throw new IllegalStateException(String.format("Error when sending email for user %s", username));
     } finally {
