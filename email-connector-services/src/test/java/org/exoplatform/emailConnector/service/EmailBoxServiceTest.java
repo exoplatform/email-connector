@@ -166,6 +166,8 @@ import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
@@ -251,6 +253,9 @@ public class EmailBoxServiceTest {
   @MockitoBean
   private EmailFolderStorage      emailFolderStorage;
 
+  @MockitoBean
+  private EmailCredentialsResolver emailCredentialsResolver;
+
   @Autowired
   private EmailBoxService         emailBoxService;
 
@@ -263,6 +268,19 @@ public class EmailBoxServiceTest {
    * tests that are ABOUT the refresh turn it back on explicitly, or drive
    * {@link EmailBoxService#refreshSentFolder} on this thread instead.
    */
+  /** The connector row the send resolves its credentials on. */
+  private static final Long   CONNECTOR_ID              = 42L;
+
+  /** The provider that row is configured with. */
+  private static final String PROVIDER_NAME             = "personal";
+
+  /**
+   * The address the provider answers, deliberately different from the stored one
+   * ("testEmail"): a call site reading the setting instead of asking the contract
+   * would put the stored address on the wire, and the assertion would say so.
+   */
+  private static final String SENDER_THE_PROVIDER_NAMES = "technical@dav.example";
+
   @BeforeEach
   void disableThePostSendSentRefresh() {
     System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
@@ -300,6 +318,20 @@ public class EmailBoxServiceTest {
   @BeforeEach
   void disableCustomFolders() {
     lenient().when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(false);
+  }
+
+  /**
+   * The credentials the configured provider answers for every send in this class.
+   * <p>
+   * Lenient because most tests here never reach a send; the ones that do assert
+   * what was asked for rather than relying on this default.
+   */
+  @BeforeEach
+  @SneakyThrows
+  void theProviderAnswersTheStoredAccount() {
+    lenient().when(emailCredentialsResolver.authenticator(any(), any(), any(), any())).thenReturn(new Authenticator() {
+    });
+    lenient().when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(null);
   }
 
   /**
@@ -1583,6 +1615,71 @@ public class EmailBoxServiceTest {
     verify(inbox).expunge(any(Message[].class));
     verify(inbox).close(false);
     verify(store).close();
+  }
+
+  @Test
+  @SneakyThrows
+  void theProviderDecidesWhatAuthenticatesTheSendAndWhatItSendsAs() {
+    // The two questions a send asks the contract, pinned on the same send: what
+    // authenticates the session, and what address the message goes out as. The
+    // second is the one worth a test of its own -- for Personal it answers the
+    // stored address and nothing looks different, so only a provider answering
+    // something else can tell a call site that reads the setting from one that
+    // asks the contract.
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    EmailConnector connector = new EmailConnector(CONNECTOR_ID,
+                                                  "testName",
+                                                  null,
+                                                  1L,
+                                                  null,
+                                                  "testImapUrl",
+                                                  "8000",
+                                                  "testSmtpUrl",
+                                                  "9000",
+                                                  "STARTTLS",
+                                                  true,
+                                                  false,
+                                                  true,
+                                                  "testUploadId",
+                                                  "", null, PROVIDER_NAME);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(connector);
+    Authenticator provided = new Authenticator() {
+    };
+    when(emailCredentialsResolver.authenticator(any(), any(), any(), any())).thenReturn(provided);
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(SENDER_THE_PROVIDER_NAMES);
+
+    Session session = mock(Session.class);
+    when(session.getProperties()).thenReturn(new Properties());
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    Folder folder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(folder);
+    when(store.isConnected()).thenReturn(true);
+    when(folder.listSubscribed("*")).thenReturn(new Folder[0]);
+
+    ArgumentCaptor<Authenticator> onTheSession = ArgumentCaptor.forClass(Authenticator.class);
+    try (MockedStatic<Session> sessionMock = mockStatic(Session.class);
+        MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      sessionMock.when(() -> Session.getInstance(any(Properties.class), onTheSession.capture())).thenReturn(session);
+      emailBoxService.sendEmail(email(TEST_USER), TEST_USER);
+
+      // Asked on this connector row, for its own provider, on the SMTP channel and
+      // for the eXo login -- never for the stored address, which is the provider's
+      // business to derive.
+      verify(emailCredentialsResolver).authenticator(CONNECTOR_ID,
+                                                     PROVIDER_NAME,
+                                                     TEST_USER,
+                                                     ConnectorCredentialsChannel.SMTP);
+      assertSame(provided, onTheSession.getValue(), "the session must authenticate with what the provider produced");
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      assertEquals(SENDER_THE_PROVIDER_NAMES,
+                   ((InternetAddress) sent.getValue().getFrom()[0]).getAddress(),
+                   "the From must be the address the provider named, not the stored one");
+    }
   }
 
   @Test
