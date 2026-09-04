@@ -328,6 +328,15 @@ public class EmailBoxServiceTest {
    */
   @BeforeEach
   @SneakyThrows
+  void theSyncResolvesAnAuthenticatorForItsWorkers() {
+    // The prefetch resolves this once on the sync thread and hands it to workers that
+    // must not read the database; unstubbed it answers null, which no worker could use.
+    lenient().when(userEmailSettingService.authenticatorFor(any(), any())).thenReturn(new Authenticator() {
+    });
+  }
+
+  @BeforeEach
+  @SneakyThrows
   void theProviderAnswersTheStoredAccount() {
     lenient().when(emailCredentialsResolver.authenticator(any(), any(), any(), any())).thenReturn(new Authenticator() {
     });
@@ -381,7 +390,7 @@ public class EmailBoxServiceTest {
     assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -510,7 +519,7 @@ public class EmailBoxServiceTest {
     emailBoxService.synchronize(TEST_USER);
     InOrder inOrder = inOrder(emailSyncStateStorage, userEmailSettingService);
     inOrder.verify(emailSyncStateStorage).claim(eq(TEST_USER), any(Date.class), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
-    inOrder.verify(userEmailSettingService).connect(any(UserEmailSetting.class));
+    inOrder.verify(userEmailSettingService).connect(anyString(), anyString());
     inOrder.verify(emailSyncStateStorage).release(eq(TEST_USER), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
   }
 
@@ -523,7 +532,7 @@ public class EmailBoxServiceTest {
   @SneakyThrows
   void aFailingSynchronizeStillReleasesTheClaim() {
     UserEmailSetting userEmailSetting = givenAUsableMailbox();
-    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new RuntimeException("IMAP is down"));
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new RuntimeException("IMAP is down"));
     emailBoxService.synchronize(TEST_USER);
     verify(emailSyncStateStorage).release(eq(TEST_USER), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
   }
@@ -602,7 +611,7 @@ public class EmailBoxServiceTest {
     when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(false);
     when(emailSyncStateStorage.get(TEST_USER)).thenReturn(new EmailSyncState(TEST_USER, new Date(), "other-node", null, null, new Date()));
     emailBoxService.synchronize(TEST_USER);
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     verify(emailSyncStateStorage, never()).release(anyString(), anyString(), any(Date.class));
   }
 
@@ -620,7 +629,7 @@ public class EmailBoxServiceTest {
     emailBoxService.synchronize(TEST_USER);
     verify(emailSyncStateStorage).upsert(eq(TEST_USER), isNull(), any(Date.class));
     verify(emailSyncStateStorage, times(2)).claim(eq(TEST_USER), any(Date.class), anyString(), any(Date.class));
-    verify(userEmailSettingService).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService).connect(anyString(), anyString());
   }
 
   /**
@@ -758,7 +767,7 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     reset(emailBoxStorage);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -799,7 +808,7 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).updateEmailStarredStatusByMailRemoteIds(mailRemoteIds, TEST_USER, true, "INBOX");
     reset(emailBoxStorage);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -833,7 +842,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -858,7 +867,7 @@ public class EmailBoxServiceTest {
     Email email = email(TEST_USER);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, "testEmail", "INBOX", false, false, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -897,7 +906,7 @@ public class EmailBoxServiceTest {
     Email email = email(TEST_USER);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, "testEmail", "INBOX", false, false, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -1021,7 +1030,7 @@ public class EmailBoxServiceTest {
     assertEquals(1, failed);
     // Refused before anything local is touched and before a connection is even opened.
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     // Same for Gmail's All Mail superset, which is the very folder the archive files into.
     assertEquals(1, emailBoxService.archiveEmail(List.of(1212L), TEST_USER, MailFolder.ALL_MAIL));
   }
@@ -1041,7 +1050,7 @@ public class EmailBoxServiceTest {
 
     assertEquals(1, failed);
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     // And a draft is not mail to be filed away either: discarding one is its own action.
     assertEquals(1, emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.DRAFTS));
   }
@@ -1362,7 +1371,7 @@ public class EmailBoxServiceTest {
    */
   @SneakyThrows
   private Store trashStore() {
-    return userEmailSettingService.connect(userEmailSettingService.getUserEmailSetting(TEST_USER));
+    return userEmailSettingService.connect(userEmailSettingService.getUserEmailSetting(TEST_USER).getEmailConnectorId(), TEST_USER);
   }
 
   /**
@@ -1410,7 +1419,7 @@ public class EmailBoxServiceTest {
     List<Email> thread = emailBoxService.getThread("<self@host>", TEST_USER);
 
     assertEquals(1, thread.size());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -1520,7 +1529,7 @@ public class EmailBoxServiceTest {
     assertEquals(1, thread.size());
     assertEquals(STORED_THREAD_ID, thread.get(0).getThreadId());
     // Nothing is missing from this conversation, so it stays a pure cache read.
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   @Test
@@ -1538,7 +1547,7 @@ public class EmailBoxServiceTest {
     List<Email> thread = emailBoxService.completeThread("<self@host>", TEST_USER);
 
     assertEquals(1, thread.size());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   @Test
@@ -1556,7 +1565,7 @@ public class EmailBoxServiceTest {
     when(emailBoxStorage.getEmailsByThreadId(anyString(), anyString(), anyString())).thenReturn(List.of(cached));
 
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -1592,7 +1601,7 @@ public class EmailBoxServiceTest {
     Email email = email(TEST_USER);
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, "testEmail", "INBOX", false, false, false)).thenReturn(email);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -1653,7 +1662,7 @@ public class EmailBoxServiceTest {
     Session session = mock(Session.class);
     when(session.getProperties()).thenReturn(new Properties());
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder folder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(folder);
     when(store.isConnected()).thenReturn(true);
@@ -1694,7 +1703,7 @@ public class EmailBoxServiceTest {
     Session session = mock(Session.class);
     when(session.getProperties()).thenReturn(new Properties());
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder folder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(folder);
     when(store.isConnected()).thenReturn(true);
@@ -1737,7 +1746,7 @@ public class EmailBoxServiceTest {
     Session session = mock(Session.class);
     when(session.getProperties()).thenReturn(new Properties());
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder folder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(folder);
     when(store.isConnected()).thenReturn(true);
@@ -1772,7 +1781,7 @@ public class EmailBoxServiceTest {
     Session session = mock(Session.class);
     when(session.getProperties()).thenReturn(new Properties());
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder folder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(folder);
     when(store.isConnected()).thenReturn(true);
@@ -1863,7 +1872,7 @@ public class EmailBoxServiceTest {
     } finally {
       syncingUsers().remove(TEST_USER);
     }
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     verify(scheduler).schedule(any(Runnable.class), eq(5000L), eq(TimeUnit.MILLISECONDS));
   }
 
@@ -1917,7 +1926,7 @@ public class EmailBoxServiceTest {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new MessagingException("imap refused"));
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new MessagingException("imap refused"));
 
     emailBoxService.refreshSentFolder(TEST_USER);
 
@@ -1936,7 +1945,7 @@ public class EmailBoxServiceTest {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new MessagingException("mailbox unreachable"));
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new MessagingException("mailbox unreachable"));
     assertDoesNotThrow(() -> emailBoxService.refreshSentFolder(TEST_USER));
   }
 
@@ -1952,7 +1961,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -1979,7 +1988,7 @@ public class EmailBoxServiceTest {
 
     emailBoxService.refreshSentFolder(TEST_USER);
 
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -2051,7 +2060,7 @@ public class EmailBoxServiceTest {
     Session session = mock(Session.class);
     lenient().when(session.getProperties()).thenReturn(new Properties());
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder defaultFolder = mock(Folder.class);
     lenient().when(store.getDefaultFolder()).thenReturn(defaultFolder);
     lenient().when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
@@ -2094,7 +2103,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(500);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder sent = mock(IMAPFolder.class);
     lenient().when(sent.getFullName()).thenReturn("Sent");
@@ -2118,7 +2127,7 @@ public class EmailBoxServiceTest {
     assertThrows(IllegalAccessException.class, () -> emailBoxService.synchronize(TEST_USER));
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Message message = mock(Message.class);
@@ -2173,7 +2182,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     IMAPFolder sent = mock(IMAPFolder.class);
     lenient().when(sent.exists()).thenReturn(true);
     when(sent.getFullName()).thenReturn("Sent");
@@ -2508,7 +2517,7 @@ public class EmailBoxServiceTest {
     emailBoxService.synchronize(TEST_USER);
     // Below the minimum batch the extra connections cost more than they save: the
     // parallel path must not run, and the bodies come from the serial loop as before.
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class), any(EmailConnector.class));
+    verify(userEmailSettingService, never()).connect(any(EmailConnector.class), any(Authenticator.class));
     verify(emailBoxStorage, times(3)).createEmail(any(Email.class));
     // The serial path streams nothing: one NEW_EMAILS_SYNCED with the whole sync's new
     // messages, then the completion event closing the run.
@@ -2579,7 +2588,7 @@ public class EmailBoxServiceTest {
       UserEmailSetting userEmailSetting = userEmailSetting();
       mockInboxForSync(userEmailSetting, 12);
       emailBoxService.synchronize(TEST_USER);
-      verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class), any(EmailConnector.class));
+      verify(userEmailSettingService, never()).connect(any(EmailConnector.class), any(Authenticator.class));
       verify(emailBoxStorage, times(12)).createEmail(any(Email.class));
     } finally {
       System.clearProperty("email.connector.sync.body.fetch.threads");
@@ -2631,7 +2640,7 @@ public class EmailBoxServiceTest {
     // main connection's messages have none — so a created email carrying a
     // "prefetched-<uid>" body proves the parallel map was used, not the serial fetch.
     Store workerStore = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting, emailConnector)).thenReturn(workerStore);
+    when(userEmailSettingService.connect(eq(emailConnector), any(Authenticator.class))).thenReturn(workerStore);
     when(workerStore.isConnected()).thenReturn(true);
     Folder workerFolder = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(workerStore.getFolder("INBOX")).thenReturn(workerFolder);
@@ -2656,7 +2665,7 @@ public class EmailBoxServiceTest {
     emailBoxService.synchronize(TEST_USER);
     // 100 new UIDs on the ramp (3, 6, 12, then 20s from the newest end) = 7 slices, each
     // fetched on its own connection and every one closed when its worker finished.
-    verify(userEmailSettingService, times(7)).connect(userEmailSetting, emailConnector);
+    verify(userEmailSettingService, times(7)).connect(eq(emailConnector), any(Authenticator.class));
     verify(workerFolder, times(7)).close(false);
     verify(workerStore, times(7)).close();
     ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
@@ -2710,7 +2719,7 @@ public class EmailBoxServiceTest {
     when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
     // Every worker connection fails outright: the sync must neither fail nor lose
     // messages — the serial loop fetches every body itself, as before the prefetch.
-    when(userEmailSettingService.connect(userEmailSetting, emailConnector)).thenThrow(new javax.mail.AuthenticationFailedException("Too many simultaneous connections"));
+    when(userEmailSettingService.connect(eq(emailConnector), any(Authenticator.class))).thenThrow(new javax.mail.AuthenticationFailedException("Too many simultaneous connections"));
     emailBoxService.synchronize(TEST_USER);
     verify(emailBoxStorage, times(12)).createEmail(any(Email.class));
     assertEquals(SyncStatus.SUCCESS, userEmailSetting.getEmailSyncStatus());
@@ -3229,7 +3238,7 @@ public class EmailBoxServiceTest {
     IMAPFolder junk = mock(IMAPFolder.class);
     lenient().when(junk.exists()).thenReturn(true);
     when(junk.getMessageCount()).thenReturn(0);
-    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    Store connectedStore = userEmailSettingService.connect(anyString(), anyString());
     when(connectedStore.getFolder("MySent")).thenReturn(sent);
     when(connectedStore.getFolder("MyArchive")).thenReturn(archive);
     when(connectedStore.getFolder("MyDrafts")).thenReturn(drafts);
@@ -3869,11 +3878,11 @@ public class EmailBoxServiceTest {
     for (String cell : refused) {
       assertEquals(1, move(cell), cell + " must be refused");
     }
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     for (String cell : allowed) {
       move(cell);
     }
-    verify(userEmailSettingService, times(allowed.size())).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, times(allowed.size())).connect(anyString(), anyString());
   }
 
   /**
@@ -3942,7 +3951,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     IMAPFolder trash = mock(IMAPFolder.class);
     lenient().when(trash.exists()).thenReturn(true);
     when(trash.getFullName()).thenReturn("[Gmail]/Trash");
@@ -4006,7 +4015,7 @@ public class EmailBoxServiceTest {
 
     emailBoxService.completeThread("<reply@host>", TEST_USER);
 
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
   }
 
@@ -4029,7 +4038,7 @@ public class EmailBoxServiceTest {
     // The inventory knows only the reply: the root is nowhere in the cache, bin included.
     when(emailBoxStorage.getThreadMessageIdsIncludingTrash(TEST_USER, "<reply@host>")).thenReturn(List.of("<reply@host>"));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     IMAPFolder allMail = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
@@ -4065,7 +4074,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     // Lenient: this listing is also the harness for the Trash actions, and a permanent
@@ -4096,7 +4105,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -4196,7 +4205,7 @@ public class EmailBoxServiceTest {
     // the sync must open with SELECT (CONDSTORE), never with a plain SELECT.
     UserEmailSetting userEmailSetting = userEmailSetting();
     IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
-    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    Store connectedStore = userEmailSettingService.connect(anyString(), anyString());
     lenient().when(inbox.getStore()).thenReturn(connectedStore);
     lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
     emailBoxService.synchronize(TEST_USER);
@@ -4213,7 +4222,7 @@ public class EmailBoxServiceTest {
     // skip simply stays off for that folder, exactly the pre-fix behavior.
     UserEmailSetting userEmailSetting = userEmailSetting();
     IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, 777L, true);
-    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    Store connectedStore = userEmailSettingService.connect(anyString(), anyString());
     lenient().when(inbox.getStore()).thenReturn(connectedStore);
     when(inbox.open(Folder.READ_ONLY, ResyncData.CONDSTORE)).thenThrow(new MessagingException("CONDSTORE not supported"));
     lenient().when(inbox.isOpen()).thenReturn(false).thenReturn(true);
@@ -4232,7 +4241,7 @@ public class EmailBoxServiceTest {
     // shows exactly which signal is missing), and the skip must never fire.
     UserEmailSetting userEmailSetting = userEmailSetting();
     IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting, null, 11L, 501L, 100, -1L, true);
-    Store connectedStore = userEmailSettingService.connect(userEmailSetting);
+    Store connectedStore = userEmailSettingService.connect(anyString(), anyString());
     lenient().when(inbox.getStore()).thenReturn(connectedStore);
     lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
     emailBoxService.synchronize(TEST_USER);
@@ -4310,7 +4319,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     lenient().when(store.hasCapability("CONDSTORE")).thenReturn(condstore);
     when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
@@ -4535,7 +4544,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
@@ -4584,7 +4593,7 @@ public class EmailBoxServiceTest {
   @SneakyThrows
   private Folder mockPrefetchWorkerConnection(EmailConnector emailConnector, int count, SliceHook beforeSlice) {
     Store workerStore = mock(Store.class);
-    when(userEmailSettingService.connect(any(UserEmailSetting.class), eq(emailConnector))).thenReturn(workerStore);
+    when(userEmailSettingService.connect(eq(emailConnector), any(Authenticator.class))).thenReturn(workerStore);
     when(workerStore.isConnected()).thenReturn(true);
     Folder workerFolder = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(workerStore.getFolder("INBOX")).thenReturn(workerFolder);
@@ -4636,7 +4645,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
@@ -4741,7 +4750,7 @@ public class EmailBoxServiceTest {
                  () -> emailBoxService.searchEmails(TEST_USER, " ", null, false, null, "INBOX", 20));
 
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -4792,7 +4801,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
@@ -4997,7 +5006,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(1L, TEST_USER)).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -5039,7 +5048,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -5075,7 +5084,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -5107,7 +5116,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -5146,7 +5155,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -5175,7 +5184,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -5211,7 +5220,7 @@ public class EmailBoxServiceTest {
                                                                                     20));
     assertEquals("emailConnector.search.invalidSinceDays", thrown.getMessage());
     // Refused before any connection is opened.
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -5226,7 +5235,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
@@ -5264,7 +5273,7 @@ public class EmailBoxServiceTest {
 
     assertSame(email, emailBoxService.fetchSearchedEmail(1212L, "INBOX", TEST_USER));
 
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -5286,7 +5295,7 @@ public class EmailBoxServiceTest {
                                                                                                                               null,
                                                                                                                               cachedAfterCreate);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -5307,7 +5316,7 @@ public class EmailBoxServiceTest {
     verify(store).close();
     // The mutex is released: this second call short-circuits on the cache.
     assertSame(cachedAfterCreate, emailBoxService.fetchSearchedEmail(9999L, "INBOX", TEST_USER));
-    verify(userEmailSettingService, times(1)).connect(userEmailSetting);
+    verify(userEmailSettingService, times(1)).connect(anyString(), anyString());
     // INBOX is bulk-synced, so the documented self-restoring eviction applies and the
     // search-fed trim must keep its hands off it.
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
@@ -5333,7 +5342,7 @@ public class EmailBoxServiceTest {
                                                                                                                                 null,
                                                                                                                                 cachedAfterCreate);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     when(store.isConnected()).thenReturn(true);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
@@ -5379,7 +5388,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.isOpen()).thenReturn(true);
@@ -5406,7 +5415,7 @@ public class EmailBoxServiceTest {
     CountDownLatch releaseSync = new CountDownLatch(1);
     // The sync thread parks inside connect() -- i.e. AFTER it acquired the mutex --
     // until the assertion below has run, then aborts (the sync outcome is irrelevant).
-    when(userEmailSettingService.connect(userEmailSetting)).thenAnswer(invocation -> {
+    when(userEmailSettingService.connect(anyString(), anyString())).thenAnswer(invocation -> {
       syncStarted.countDown();
       releaseSync.await(10, TimeUnit.SECONDS);
       throw new MessagingException("test: abort the sync");
@@ -5470,7 +5479,7 @@ public class EmailBoxServiceTest {
     Email saved = emailBoxService.saveDraft(draft(null), TEST_USER, false);
     assertEquals(MailFolder.DRAFTS, saved.getFolder());
     assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   @Test
@@ -5571,7 +5580,7 @@ public class EmailBoxServiceTest {
 
     assertNotNull(saved);
     assertFalse(DraftState.SYNCED.equals(saved.getDraftState()), "a draft that cannot be assembled whole is not up there");
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -5871,7 +5880,7 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).copyDraftAttachment(eq(TEST_USER), eq("draft-1"), eq("typed-here.txt"), eq("text/plain"),
                                                 copied.capture());
     assertArrayEquals("here it is".getBytes(), copied.getValue());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -5897,7 +5906,7 @@ public class EmailBoxServiceTest {
     assertNull(emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 1212L, MailFolder.INBOX));
 
     verify(emailBoxStorage, never()).copyDraftAttachment(anyString(), anyString(), anyString(), anyString(), any());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -5921,7 +5930,7 @@ public class EmailBoxServiceTest {
 
     assertNotNull(forwarded.getDraft());
     assertTrue(forwarded.getNotAttached().isEmpty());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   @Test
@@ -6036,7 +6045,7 @@ public class EmailBoxServiceTest {
     incoming.setDraftRevision(5L);
     Email saved = emailBoxService.saveDraft(incoming, TEST_USER, true);
     assertEquals(DraftState.SYNCED, saved.getDraftState());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   @Test
@@ -6078,7 +6087,7 @@ public class EmailBoxServiceTest {
     // typed two words into a compose window.
     givenAUsableMailbox();
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(any(UserEmailSetting.class))).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
@@ -6099,7 +6108,7 @@ public class EmailBoxServiceTest {
     // saved, listable, resumable -- just not uploaded
     assertEquals(MailFolder.DRAFTS, saved.getFolder());
     assertEquals(DraftState.LOCAL_ONLY, saved.getDraftState());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   @Test
@@ -6124,7 +6133,7 @@ public class EmailBoxServiceTest {
     assertTrue(emailBoxService.deleteDraft("draft-1", TEST_USER));
     verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
     // Never uploaded, so there is nothing up there to remove and no connection to make
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   @Test
@@ -6711,7 +6720,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     when(inbox.getMessageCount()).thenReturn(1);
@@ -6947,7 +6956,7 @@ public class EmailBoxServiceTest {
     // caller for which the difference is not about cost.
     UserEmailSetting userEmailSetting = givenAUsableMailbox();
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     emailBoxService.resetAndResynchronize(TEST_USER);
@@ -6969,7 +6978,7 @@ public class EmailBoxServiceTest {
   private IMAPFolder givenASyncableDraftsFolder(MimeMessage... serverDrafts) {
     UserEmailSetting userEmailSetting = givenAUsableMailbox();
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Folder defaultFolder = mock(Folder.class);
@@ -7057,7 +7066,7 @@ public class EmailBoxServiceTest {
   @SneakyThrows
   private IMAPFolder givenADraftsFolder() {
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(any(UserEmailSetting.class))).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder defaultFolder = mock(Folder.class);
     when(store.getDefaultFolder()).thenReturn(defaultFolder);
     IMAPFolder draftsFolder = mock(IMAPFolder.class);
@@ -7297,7 +7306,7 @@ public class EmailBoxServiceTest {
   private Folder givenAForwardableMessage(long mailRemoteId, String folder, MimeMessage message, EmailAttachment... rows) {
     UserEmailSetting userEmailSetting = givenAUsableMailbox();
     Store store = mock(Store.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder sourceFolder = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(sourceFolder);
     when(((UIDFolder) sourceFolder).getMessageByUID(mailRemoteId)).thenReturn(message);
@@ -7668,7 +7677,7 @@ public class EmailBoxServiceTest {
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(1212l, TEST_USER, "testEmail", "INBOX", false, false, false))
                                                                                                                .thenReturn(email(TEST_USER));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     IMAPFolder inbox = mock(IMAPFolder.class, withSettings().extraInterfaces(UIDFolder.class));
     when(store.getFolder("INBOX")).thenReturn(inbox);
     Folder folder = mock(Folder.class);
@@ -7907,7 +7916,7 @@ public class EmailBoxServiceTest {
     lenient().when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     lenient().when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     Store store = mock(Store.class);
-    lenient().when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
     lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new MimeMessage[0]);
@@ -8338,7 +8347,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(factures));
     when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(factures);
     when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Factures")).thenReturn(factures);
-    Store store = userEmailSettingService.connect(userEmailSetting());
+    Store store = userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
     when(store.getFolder("Factures")).thenReturn(remote);
 
     emailBoxService.synchronize(TEST_USER);
@@ -8364,7 +8373,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getEnabledFolders(TEST_USER)).thenReturn(List.of(registeredFolder(3L, "Gone", true)));
     IMAPFolder remote = mock(IMAPFolder.class);
     lenient().when(remote.exists()).thenReturn(false);
-    when(userEmailSettingService.connect(userEmailSetting()).getFolder("Gone")).thenReturn(remote);
+    when(userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER).getFolder("Gone")).thenReturn(remote);
 
     emailBoxService.synchronize(TEST_USER);
 
@@ -8445,7 +8454,7 @@ public class EmailBoxServiceTest {
     EmailFolder stale = registeredFolder(5L, "Factures", true);
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(stale);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(store.getFolder("Factures")).thenReturn(remote);
@@ -8461,7 +8470,7 @@ public class EmailBoxServiceTest {
 
     stale.setLastSyncDate(new Date());
     emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
-    verify(userEmailSettingService, times(1)).connect(userEmailSetting);
+    verify(userEmailSettingService, times(1)).connect(anyString(), anyString());
   }
 
   /**
@@ -8498,7 +8507,7 @@ public class EmailBoxServiceTest {
     assertEquals(10, list.getMaxCustomFolders());
     assertEquals(1, list.getEnabledCustomFolders());
     assertEquals(50, list.getWindowSize());
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -8549,7 +8558,7 @@ public class EmailBoxServiceTest {
                               () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, "CUSTOM:5", "CUSTOM:5")).getMessage());
     assertEquals(2, emailBoxService.moveToFolder(List.of(1L, 2L), TEST_USER, MailFolder.JUNK, "CUSTOM:5"));
     assertEquals(1, emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.TRASH, "CUSTOM:5"));
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -8568,7 +8577,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder source = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
     IMAPFolder target = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
@@ -8740,7 +8749,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder source = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
     IMAPFolder target = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
@@ -8786,7 +8795,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Factures")).thenReturn(picked);
     // By the time the sync re-reads it, the user has switched it off.
     when(emailFolderStorage.getFolder(TEST_USER, 1L)).thenReturn(registeredFolder(1L, "Factures", false));
-    when(userEmailSettingService.connect(userEmailSetting()).getFolder("Factures")).thenReturn(remote);
+    when(userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER).getFolder("Factures")).thenReturn(remote);
     Email written = email(TEST_USER);
     written.setId(77L);
     written.setFolder("CUSTOM:1");
@@ -8820,7 +8829,7 @@ public class EmailBoxServiceTest {
     } finally {
       syncingUsers.remove(TEST_USER);
     }
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:5");
     verify(emailFolderStorage, never()).updateSyncMemory(anyString(), anyLong(), any(), any());
   }
@@ -8858,7 +8867,7 @@ public class EmailBoxServiceTest {
   void theWalkMemoNeverStronglyReachesTheConnection() {
     IMAPFolder listed = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
     givenAMailboxListing(listed);
-    Store store = userEmailSettingService.connect(userEmailSetting());
+    Store store = userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
 
     Object walk = ReflectionTestUtils.invokeMethod(emailBoxService, "walkFolders", store);
 
@@ -8938,11 +8947,11 @@ public class EmailBoxServiceTest {
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.synchronizeCustomFolder(TEST_USER, 6L)).getMessage());
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     assertEquals(2, emailBoxService.moveToFolder(List.of(1L, 2L), TEST_USER, MailFolder.ALL_MAIL, "CUSTOM:5"));
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     // From the Archive the move is allowed: it reaches the connection (which this test
     // does not provide, so the move reports the connection failure rather than a refusal).
     assertThrows(IllegalStateException.class, () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.ARCHIVE, "CUSTOM:5"));
-    verify(userEmailSettingService).connect(userEmailSetting);
+    verify(userEmailSettingService).connect(anyString(), anyString());
   }
 
   /**
@@ -8989,7 +8998,7 @@ public class EmailBoxServiceTest {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new IllegalStateException("refused"));
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new IllegalStateException("refused"));
     when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
     when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(registeredFolder(5L, "Factures", true)));
 
@@ -9016,7 +9025,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     EmailFolder stale = registeredFolder(5L, "Factures", true);
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(stale);
-    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new IllegalStateException("too many connections"));
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new IllegalStateException("too many connections"));
     // The stamp the failure writes is what the second open reads back.
     doAnswer(invocation -> {
       stale.setLastSyncDate(new Date());
@@ -9026,7 +9035,7 @@ public class EmailBoxServiceTest {
     emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
     emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
 
-    verify(userEmailSettingService, times(1)).connect(userEmailSetting);
+    verify(userEmailSettingService, times(1)).connect(anyString(), anyString());
     verify(emailFolderStorage, times(1)).updateSyncMemory(eq(TEST_USER), eq(5L), isNull(), any(Date.class));
     verify(emailBoxStorage, times(2)).getEmails(TEST_USER, "CUSTOM:5");
   }
@@ -9045,7 +9054,7 @@ public class EmailBoxServiceTest {
     assertEquals("emailConnector.folder.notMirrored",
                  assertThrows(IllegalArgumentException.class,
                               () -> emailBoxService.moveToFolder(List.of(1L), TEST_USER, MailFolder.INBOX, "CUSTOM:6")).getMessage());
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -9068,11 +9077,11 @@ public class EmailBoxServiceTest {
                                                                                               eq("emailBoxSyncState"));
     // Between the walk's load and its save, a sync commits a state of its own.
     UserEmailSetting userEmailSetting = userEmailSetting();
-    Store store = userEmailSettingService.connect(userEmailSetting);
+    Store store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), TEST_USER);
     reset(userEmailSettingService);
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    when(userEmailSettingService.connect(userEmailSetting)).thenAnswer(invocation -> {
+    when(userEmailSettingService.connect(anyString(), anyString())).thenAnswer(invocation -> {
       MailboxSyncState synced = new MailboxSyncState();
       synced.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(1L, 2L, 3L, 4L, 100));
       stored.set(JsonUtils.toJsonString(synced));
@@ -9112,11 +9121,11 @@ public class EmailBoxServiceTest {
         () -> emailBoxService.deleteCustomFolder(TEST_USER, 5L))) {
       assertEquals("emailConnector.folder.disabled", assertThrows(IllegalArgumentException.class, refused).getMessage());
     }
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     // A folder already mirrored is still listed from the cache, without a refresh.
     emailBoxService.getEmailBox(TEST_USER, "CUSTOM:5");
     verify(emailBoxStorage).getEmails(TEST_USER, "CUSTOM:5");
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     verify(emailFolderStorage, never()).updateSyncEnabled(anyString(), anyLong(), anyBoolean(), any());
     MailFolderList list = emailBoxService.getFolders(TEST_USER, true);
     assertFalse(list.isCustomFoldersEnabled());
@@ -9189,7 +9198,7 @@ public class EmailBoxServiceTest {
     assertEquals(EmailFolderService.FOLDER_NAME_RESERVED_MESSAGE,
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.createCustomFolder(TEST_USER, "Trash"))
                                                                                                                             .getMessage());
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -9315,7 +9324,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Invoices")).thenReturn(null);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(store.getFolder("Factures")).thenReturn(remote);
@@ -9350,7 +9359,7 @@ public class EmailBoxServiceTest {
     when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Customers/Acme", true));
     when(emailFolderStorage.getFolderByRemoteName(TEST_USER, "Customers/AcmeCorp")).thenReturn(null);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Customers/Acme");
     when(store.getFolder("Customers/Acme")).thenReturn(remote);
@@ -9383,7 +9392,7 @@ public class EmailBoxServiceTest {
 
     emailBoxService.renameCustomFolder(TEST_USER, 5L, "Factures");
 
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     verify(emailFolderStorage, never()).renameFolder(anyString(), anyLong(), anyString(), anyString());
   }
 
@@ -9403,7 +9412,7 @@ public class EmailBoxServiceTest {
     assertEquals(EmailFolderService.FOLDER_NAME_DUPLICATE_MESSAGE,
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "Projets"))
                                                                                                                                   .getMessage());
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -9421,7 +9430,7 @@ public class EmailBoxServiceTest {
     assertEquals(EmailFolderService.FOLDER_NAME_NESTED_MESSAGE,
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 5L, "New/Name"))
                                                                                                                                    .getMessage());
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -9437,7 +9446,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(store.getFolder("Factures")).thenReturn(remote);
@@ -9466,7 +9475,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(store.getFolder("Factures")).thenReturn(remote);
@@ -9492,7 +9501,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(store.getFolder("Factures")).thenReturn(remote);
@@ -9524,7 +9533,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder remote = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Factures");
     when(store.getFolder("Factures")).thenReturn(remote);
@@ -9551,7 +9560,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     IMAPFolder remote = mock(IMAPFolder.class);
     when(store.getFolder("Factures")).thenReturn(remote);
@@ -9855,7 +9864,7 @@ public class EmailBoxServiceTest {
     } finally {
       syncingUsers().remove(TEST_USER);
     }
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     verify(scheduler).schedule(any(Runnable.class), eq(5000L), eq(TimeUnit.MILLISECONDS));
     assertTrue(pendingFolderRefreshes().containsKey(TEST_USER + "/" + MailFolder.INBOX),
                "the retry keeps the folder's entry, so a new undo rides on it rather than queueing beside it");
@@ -9895,7 +9904,7 @@ public class EmailBoxServiceTest {
 
     emailBoxService.refreshFolder(TEST_USER, MailFolder.INBOX, EmailBoxService.FolderRefreshCause.UNDO);
 
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -9959,7 +9968,7 @@ public class EmailBoxServiceTest {
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
-    when(userEmailSettingService.connect(userEmailSetting)).thenThrow(new MessagingException("imap refused"));
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new MessagingException("imap refused"));
 
     assertDoesNotThrow(() -> emailBoxService.refreshFolder(TEST_USER, MailFolder.INBOX, EmailBoxService.FolderRefreshCause.UNDO));
 
@@ -10040,7 +10049,7 @@ public class EmailBoxServiceTest {
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX)).getMessage());
     assertEquals("emailConnector.folder.notMirrored",
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, MailFolder.INBOX, "CUSTOM:1")).getMessage());
-    verify(userEmailSettingService, never()).connect(any());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
   }
 
   /**
@@ -10233,7 +10242,7 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     lenient().when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(100);
     IMAPStore store = mock(IMAPStore.class);
-    when(userEmailSettingService.connect(userEmailSetting)).thenReturn(store);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
     lenient().when(store.isConnected()).thenReturn(true);
     Folder inbox = mock(Folder.class, withSettings().extraInterfaces(UIDFolder.class));
     lenient().when(store.getFolder("INBOX")).thenReturn(inbox);
