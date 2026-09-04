@@ -41,6 +41,7 @@ import org.exoplatform.emailConnector.dao.EmailConnectorDAO;
 import org.exoplatform.emailConnector.entity.EmailConnectorEntity;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.upload.UploadService;
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 
 @SpringBootTest(classes = { EmailConnectorStorage.class })
 @ExtendWith(MockitoExtension.class)
@@ -90,6 +91,49 @@ public class EmailConnectorStorageTest {
     assertNotNull(storedEmailConnector);
     assertNotNull(storedEmailConnector.getId());
     assertTrue(storedEmailConnector.getId() > 0);
+  }
+
+  @Test
+  void aCreateThatCarriesNoProviderGetsTheDefaultOne() {
+    // The column is NOT NULL and no admin screen carries a field for it, so the
+    // drawer's create arrives with it blank. The entity's own field initialiser
+    // cannot cover this: @AllArgsConstructor overwrites it with whatever toEntity
+    // passes. Measured on a live server before this guard existed -- adding a
+    // connector failed on "NOT NULL check constraint ... column: AUTH_PROVIDER_NAME".
+    EmailConnector carryingNoProvider = emailConnector();
+    assertNull(carryingNoProvider.getAuthProviderName(), "the fixture must reproduce what the drawer sends");
+
+    EmailConnector created = emailConnectorStorage.createEmailConnector(carryingNoProvider);
+
+    assertEquals(PersonalCredentialsProvider.NAME,
+                 emailConnectorStorage.getEmailConnector(created.getId()).getAuthProviderName(),
+                 "a create with no provider must land on the default, never on null");
+  }
+
+  @Test
+  void anEditThatCarriesNoProviderKeepsTheStoredOne() {
+    // No admin screen carries a field for the provider (EXO-89648 is what will),
+    // so every save arrives with it null. Letting that null through blanked the
+    // column -- free while nothing read it, and since EXO-89645 enough to stop
+    // the mail of every user on that connector from going out, because the send
+    // resolves its credentials through exactly this value.
+    EmailConnector created = emailConnectorStorage.createEmailConnector(emailConnector());
+    created.setAuthProviderName("bluemind-sudo");
+    emailConnectorStorage.updateEmailConnector(created);
+    assertEquals("bluemind-sudo", emailConnectorStorage.getEmailConnector(created.getId()).getAuthProviderName());
+
+    // The edit a drawer actually sends: every field it knows, and nothing for the
+    // provider it has no control for.
+    EmailConnector asTheDrawerSendsIt = emailConnectorStorage.getEmailConnector(created.getId());
+    asTheDrawerSendsIt.setName("renamed");
+    asTheDrawerSendsIt.setAuthProviderName(null);
+    emailConnectorStorage.updateEmailConnector(asTheDrawerSendsIt);
+
+    EmailConnector afterTheEdit = emailConnectorStorage.getEmailConnector(created.getId());
+    assertEquals("renamed", afterTheEdit.getName(), "the edit must still apply");
+    assertEquals("bluemind-sudo",
+                 afterTheEdit.getAuthProviderName(),
+                 "the provider must survive an edit that says nothing about it");
   }
 
   @Test
