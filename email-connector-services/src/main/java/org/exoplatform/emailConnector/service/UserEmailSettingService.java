@@ -24,7 +24,9 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import javax.mail.Authenticator;
 import javax.mail.MessagingException;
+import javax.mail.PasswordAuthentication;
 import javax.mail.Session;
 import javax.mail.Store;
 
@@ -52,7 +54,10 @@ import org.exoplatform.emailConnector.model.ContactSyncState;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.web.security.codec.CodecInitializer;
@@ -124,6 +129,12 @@ public class UserEmailSettingService {
   @Autowired
   private EmailSignatureService     emailSignatureService;
 
+  // required = false, same reason as EmailBoxService's own guard: the resolver
+  // needs ConnectorCredentialsService, a bean of another WAR, so it is undefined
+  // in this addon's own Spring test contexts.
+  @Autowired(required = false)
+  private EmailCredentialsResolver  emailCredentialsResolver;
+
   /**
    * Connect user email setting.
    *
@@ -142,7 +153,8 @@ public class UserEmailSettingService {
     }
     Store store = null;
     try {
-      store = connect(userEmailSetting);
+      store = connectWithTypedCredentials(userEmailSetting,
+                                          emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId())));
       setUserEmailSetting(userEmailSetting, username, broadcast);
       eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
     } catch (Exception e) {
@@ -400,31 +412,98 @@ public class UserEmailSettingService {
   }
 
   /**
-   * Connect to user mail box.
+   * Connect to user mail box, resolving both the connector preset and what
+   * authenticates the session.
    *
-   * @param userEmailSetting userEmailSetting used to connect
+   * @param emailConnectorId the connector preset the account is bound to
+   * @param username the eXo login the session is authenticated for — the key the
+   *          configured provider derives the account from, and not something
+   *          {@link UserEmailSetting} carries
    * @return store user box connected store
+   * @throws MessagingException when the mailbox cannot be reached
+   * @throws ConnectorCredentialsException when the configured provider cannot
+   *           produce credentials for this account
    */
-  public Store connect(UserEmailSetting userEmailSetting) throws MessagingException {
-    EmailConnector emailConnector =
-                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
-    return connect(userEmailSetting, emailConnector);
+  public Store connect(String emailConnectorId,
+                       String username) throws MessagingException, ConnectorCredentialsException {
+    EmailConnector emailConnector = emailConnectorService.getEmailConnector(Long.parseLong(emailConnectorId));
+    return connect(emailConnector, authenticatorFor(emailConnector, username));
+  }
+
+  /**
+   * Connects with the credentials held by a setting, without asking any provider.
+   * <p>
+   * The one path that must stay raw, and the same exception CalDAV's connect-drawer
+   * probe is: this validates credentials the user has <b>just typed</b>, before
+   * {@code setUserEmailSetting} has stored them. A provider asked here would read
+   * the <i>stored</i> setting — the previous password, or nothing at all on a first
+   * connection — so the check would pass or fail on something other than what the
+   * user entered.
+   *
+   * @param userEmailSetting the setting carrying the typed credentials
+   * @param emailConnector the connector preset holding the IMAP endpoint
+   * @return store user box connected store
+   * @throws MessagingException when the mailbox refuses those credentials
+   */
+  public Store connectWithTypedCredentials(UserEmailSetting userEmailSetting,
+                                           EmailConnector emailConnector) throws MessagingException {
+    return connect(emailConnector, new Authenticator() {
+      @Override
+      protected PasswordAuthentication getPasswordAuthentication() {
+        return new PasswordAuthentication(userEmailSetting.getEmailAddress(), userEmailSetting.getEmailPassword());
+      }
+    });
+  }
+
+  /**
+   * What authenticates a mailbox connection, from the provider the connector
+   * preset is configured with.
+   * <p>
+   * Split out because the sync's prefetch resolves it once on its own thread and
+   * hands it to workers that must not read the database — the same reason the
+   * connector is pre-resolved there.
+   *
+   * @param emailConnector the connector preset, holding the provider name
+   * @param username the eXo login the material is resolved for
+   * @return the authenticator to hand to the IMAP session
+   * @throws ConnectorCredentialsException when the configured provider cannot
+   *           produce credentials for this account
+   */
+  public Authenticator authenticatorFor(EmailConnector emailConnector,
+                                        String username) throws ConnectorCredentialsException {
+    if (emailCredentialsResolver == null) {
+      // Falling back on the stored password here would be the failure mode this
+      // migration exists to remove: the connector would keep authenticating with
+      // the user's own credentials whatever provider an administrator configured,
+      // with no error and no trace.
+      throw new IllegalStateException("The connector credentials contract is not available; no mailbox can be authenticated");
+    }
+    return emailCredentialsResolver.authenticator(emailConnector.getId(),
+                                                  emailConnector.getAuthProviderName(),
+                                                  username,
+                                                  ConnectorCredentialsChannel.IMAP);
   }
 
   /**
    * Connect to the user's mail box against an already-resolved connector preset. Pure
    * IMAP — no database read happens here, which is what lets the sync's parallel
    * body-prefetch workers call it from bare threads (no request lifecycle, no
-   * EntityManager) after the sync thread resolved the connector once for all of them.
+   * EntityManager) after the sync thread resolved the connector AND the authenticator
+   * once for all of them.
    *
-   * @param userEmailSetting userEmailSetting used to connect
    * @param emailConnector the connector preset holding the IMAP endpoint
+   * @param authenticator what authenticates the session, resolved by the caller —
+   *          the signature is what keeps this method free of any lookup, where a
+   *          comment used to be all that said so
    * @return store user box connected store
    */
-  public Store connect(UserEmailSetting userEmailSetting, EmailConnector emailConnector) throws MessagingException {
+  public Store connect(EmailConnector emailConnector, Authenticator authenticator) throws MessagingException {
     Properties props = new Properties();
     props.setProperty("mail.imaps.ssl.enable", "true");
     props.setProperty("mail.store.protocol", "imaps");
+    // Host and port both in the props now: the no-args connect() below reads the
+    // endpoint from here, where the four-argument form used to carry it.
+    props.setProperty("mail.imaps.host", emailConnector.getImapUrl());
     props.setProperty("mail.imaps.port", emailConnector.getImapPort());
     // Timeouts on the imaps store so a slow or stuck fetch can never hang the sync
     // forever — a hung sync stays IN_PROGRESS and blocks every subsequent one. The
@@ -438,13 +517,12 @@ public class UserEmailSettingService {
     // the network rather than on the mailbox.
     props.setProperty("mail.imaps.fetchsize", "1048576");
     // getInstance (not getDefaultInstance) so these props actually apply rather than
-    // silently reusing the first-ever session's properties.
-    Session session = Session.getInstance(props);
+    // silently reusing the first-ever session's properties — and with the authenticator,
+    // so that the no-args connect() below has its credentials supplied by a callback at
+    // connection time rather than read from a stored password here.
+    Session session = Session.getInstance(props, authenticator);
     Store store = session.getStore();
-    store.connect(emailConnector.getImapUrl(),
-                  Integer.parseInt(emailConnector.getImapPort()),
-                  userEmailSetting.getEmailAddress(),
-                  userEmailSetting.getEmailPassword());
+    store.connect();
     return store;
   }
 
