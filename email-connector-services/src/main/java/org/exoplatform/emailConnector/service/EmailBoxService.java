@@ -66,6 +66,7 @@ import javax.activation.DataHandler;
 import javax.activation.DataSource;
 import javax.activation.FileDataSource;
 import javax.mail.Address;
+import javax.mail.Authenticator;
 import javax.mail.BodyPart;
 import javax.mail.FetchProfile;
 import javax.mail.Flags;
@@ -1077,7 +1078,7 @@ public class EmailBoxService {
       long unreadCountBeforeSync = countUnreadEmails(username);
       syncState = loadMailboxSyncState(username);
       originalSyncStateJson = JsonUtils.toJsonString(syncState);
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       updateEmailSyncStatus(username, SyncStatus.IN_PROGRESS);
       int emailBoxCacheSize = emailConnectorService.getEmailBoxCacheSize();
       // INBOX drives the new-mail notifications; Sent and Archive are cached (best
@@ -2362,12 +2363,15 @@ public class EmailBoxService {
       return createEmailsAndBroadcast(uidFolder, serverMessages, username, folderKey, knownEmailsByUid, streamNewEmails, fetchedParts);
     }
     EmailConnector emailConnector;
+    Authenticator authenticator;
     try {
-      // Resolved once, on this thread: the workers must stay pure IMAP, and the one-argument
-      // connect() would re-read the connector from the database on every bare worker thread.
+      // Both resolved once, on this thread: the workers must stay pure IMAP, and the
+      // two-argument connect() would re-read the connector — and now ask the credentials
+      // provider, which reads the user's own setting — on every bare worker thread.
       emailConnector = emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+      authenticator = userEmailSettingService.authenticatorFor(emailConnector, username);
     } catch (Exception e) {
-      LOG.warn("Could not resolve the connector of user {}; the sync falls back to fetching bodies serially", username, e);
+      LOG.warn("Could not resolve the credentials of user {}; the sync falls back to fetching bodies serially", username, e);
       return createEmailsAndBroadcast(uidFolder, serverMessages, username, folderKey, knownEmailsByUid, streamNewEmails, fetchedParts);
     }
     Map<Long, Message> messagesByUid = new HashMap<>();
@@ -2409,8 +2413,8 @@ public class EmailBoxService {
       for (long[] uidSlice : uidSlices) {
         pendingSlices.put(completedSlices.submit(() -> prefetchSlice(folderFullName,
                                                                      uidSlice,
-                                                                     userEmailSetting,
                                                                      emailConnector,
+                                                                     authenticator,
                                                                      username,
                                                                      fleet,
                                                                      fetchedParts)),
@@ -2927,8 +2931,8 @@ public class EmailBoxService {
    */
   private Map<Long, EmailContent> prefetchSlice(String folderFullName,
                                                 long[] uids,
-                                                UserEmailSetting userEmailSetting,
                                                 EmailConnector emailConnector,
+                                                Authenticator authenticator,
                                                 String username,
                                                 BodyPrefetchFleet fleet,
                                                 MimePartStats fetchedParts) {
@@ -2936,7 +2940,7 @@ public class EmailBoxService {
     Store store = null;
     Folder folder = null;
     try {
-      store = userEmailSettingService.connect(userEmailSetting, emailConnector);
+      store = userEmailSettingService.connect(emailConnector, authenticator);
       folder = store.getFolder(folderFullName);
       folder.open(Folder.READ_ONLY);
       // Everything the drain must not confuse with fetching is now behind us: TLS
@@ -3265,7 +3269,7 @@ public class EmailBoxService {
       // written over it (see saveDiscoveredFolderNames).
       Store store = null;
       try {
-        store = userEmailSettingService.connect(userEmailSetting);
+        store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
         walkAndReconcileFolders(store, username, syncState);
         walked = true;
       } catch (Exception e) {
@@ -3597,7 +3601,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       IMAPFolder current = resolveCachedImapFolder(store, currentKey, username, syncState);
       Folder origin = resolveCachedFolder(store, originKey, username, syncState);
       if (current == null || origin == null) {
@@ -4057,7 +4061,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       if (MailFolder.isCustom(folderKey)) {
         EmailFolder target = emailFolderService.getFolderByKey(username, folderKey);
         if (target.isMissing() || !target.isSyncEnabled()) {
@@ -4137,7 +4141,7 @@ public class EmailBoxService {
     String trimmedName = emailFolderService.validateFolderName(name);
     Store store = null;
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       Folder defaultFolder = store.getDefaultFolder();
       String delimiter = defaultNamespaceDelimiter(defaultFolder);
       emailFolderService.checkNotNested(trimmedName, delimiter);
@@ -4157,7 +4161,7 @@ public class EmailBoxService {
       boolean enabled = emailFolderService.tryAutoEnable(username, registered.getId());
       EmailFolder finalFolder = enabled ? emailFolderService.getFolder(username, registered.getId()) : registered;
       return customFolderView(finalFolder, emailBoxStorage.getFolderMessageCounts(username));
-    } catch (MessagingException e) {
+    } catch (MessagingException | ConnectorCredentialsException e) {
       LOG.warn("Could not create folder '{}' for user {}", trimmedName, username, e);
       throw new IllegalArgumentException(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE);
     } finally {
@@ -4215,7 +4219,7 @@ public class EmailBoxService {
     emailFolderService.checkNameAvailable(username, newRemoteName, id);
     Store store = null;
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       Folder remote = store.getFolder(customFolder.getRemoteName());
       if (!(remote instanceof IMAPFolder imapFolder) || !remote.exists()) {
         throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
@@ -4230,7 +4234,7 @@ public class EmailBoxService {
       if (!imapFolder.renameTo(target)) {
         throw new IllegalArgumentException(EmailFolderService.FOLDER_RENAME_FAILED_MESSAGE);
       }
-    } catch (MessagingException e) {
+    } catch (MessagingException | ConnectorCredentialsException e) {
       LOG.warn("Could not rename folder '{}' of user {} to '{}'", customFolder.getRemoteName(), username, newRemoteName, e);
       throw new IllegalArgumentException(EmailFolderService.FOLDER_RENAME_FAILED_MESSAGE);
     } finally {
@@ -4269,7 +4273,7 @@ public class EmailBoxService {
     EmailFolder customFolder = emailFolderService.getFolder(username, id);
     Store store = null;
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       Folder remote = store.getFolder(customFolder.getRemoteName());
       if (remote instanceof IMAPFolder imapFolder && remote.exists()) {
         if (imapFolder.getMessageCount() != 0) {
@@ -4286,7 +4290,7 @@ public class EmailBoxService {
                  customFolder.getRemoteName(),
                  username);
       }
-    } catch (MessagingException e) {
+    } catch (MessagingException | ConnectorCredentialsException e) {
       LOG.warn("Could not delete folder '{}' of user {}", customFolder.getRemoteName(), username, e);
       throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
     } finally {
@@ -4370,7 +4374,7 @@ public class EmailBoxService {
     }
     Store store = null;
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       syncCustomFolder(store, customFolder, username, userEmailSetting);
     } catch (Exception e) {
       // Stamped as a check even though it failed: the listing asks for a refresh on
@@ -4573,7 +4577,7 @@ public class EmailBoxService {
     Store store = null;
     Folder inbox = null;
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       inbox = resolveCachedFolder(store, cachedFolder, username);
       if (inbox == null) {
         // The mailbox has no such folder any more (renamed, deleted, or never had one
@@ -5061,7 +5065,7 @@ public class EmailBoxService {
       Folder remoteFolder = null;
       try {
         if (updateRemoteReadStatus) {
-          store = userEmailSettingService.connect(userEmailSetting);
+          store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
           // Through the same resolver the rows were cached by, never a folder name
           // spelled out here: ARCHIVE and Gmail's ALL_MAIL are different mailboxes
           // numbering their messages independently, and only that resolver knows which
@@ -5242,7 +5246,7 @@ public class EmailBoxService {
       Folder inbox = null;
       try {
         if (updateRemoteStarredStatus) {
-          store = userEmailSettingService.connect(userEmailSetting);
+          store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
           inbox = store.getFolder(INBOX_FOLDER_NAME);
           inbox.open(Folder.READ_WRITE);
         }
@@ -5493,7 +5497,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       source = resolveCachedImapFolder(store, sourceFolder, username, syncState);
       if (source == null) {
         LOG.warn("No {} folder for user {}; {} message(s) could not be moved", sourceFolder, username, mailRemoteIds.size());
@@ -5893,7 +5897,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       // The STRICT lookup, the one the rows were cached by — never the loose
       // findTrashFolder the delete path files into. That one may answer a different
       // folder, and a UID from one folder used against another is how this destroys
@@ -6354,7 +6358,7 @@ public class EmailBoxService {
                                            String pinnedMessageId,
                                            List<String> uploadIds,
                                            String username) throws MessagingException, UnsupportedEncodingException,
-                                                             ConnectorCredentialsException {
+                                                                   ConnectorCredentialsException {
     // The address the message is sent AS, which is the provider's to name and not
     // the setting's: Personal answers the stored address, so nothing changes for
     // it, but a provider authenticating as a technical account sends for someone
@@ -6638,7 +6642,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       Folder sentFolder = resolveSentFolder(store, syncState);
       if (sentFolder == null) {
         LOG.debug("Mailbox of user {} exposes no Sent folder; nothing to refresh after their send", username);
@@ -7551,12 +7555,13 @@ public class EmailBoxService {
                                     UserEmailSetting userEmailSetting,
                                     String folderName,
                                     long mailRemoteId,
-                                    String username) throws MessagingException {
+                                    String username) throws MessagingException,
+                                                            ConnectorCredentialsException {
     if (source.attempted) {
       return source.message;
     }
     source.attempted = true;
-    source.store = userEmailSettingService.connect(userEmailSetting);
+    source.store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
     source.folder = resolveCachedFolder(source.store, folderName, username);
     if (source.folder == null) {
       return null;
@@ -7834,7 +7839,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       draftsFolder = resolveDraftsFolder(store, syncState);
       if (draftsFolder == null) {
         LOG.warn("No Drafts folder for user {}; the files of draft {} cannot be brought over", username, draftLocalId);
@@ -8181,7 +8186,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       draftsFolder = resolveDraftsFolder(store, syncState);
       if (draftsFolder == null) {
         // Not an error, and deliberately not a folder we create. The account simply has
@@ -8427,7 +8432,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       draftsFolder = resolveDraftsFolder(store, syncState);
       if (draftsFolder == null) {
         // No Drafts folder means no copy up there to disagree with the local row.
@@ -9724,11 +9729,12 @@ public class EmailBoxService {
                                          UserEmailSetting userEmailSetting,
                                          List<String> missingIds,
                                          Set<String> cachedOwnIds,
-                                         Set<String> knownIds) throws MessagingException, IllegalAccessException {
+                                         Set<String> knownIds) throws MessagingException, IllegalAccessException,
+                                                                      ConnectorCredentialsException {
     Store store = null;
     IMAPFolder allMail = null;
     try {
-      store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
+      store = (IMAPStore) userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       allMail = findAllMailFolder(store);
       if (allMail == null) {
         // Non-Gmail: archived mail lives in a real \Archive folder already synced by 4B.
@@ -10074,7 +10080,7 @@ public class EmailBoxService {
     Store store = null;
     Folder remoteFolder = null;
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       remoteFolder = resolveSearchFolder(store, folder, username);
       if (remoteFolder == null) {
         // The mailbox has no such folder (e.g. no Sent yet): nothing to search.
@@ -10231,7 +10237,7 @@ public class EmailBoxService {
       if (cached != null) {
         return cached;
       }
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       remoteFolder = resolveSearchFolder(store, folder, username);
       if (remoteFolder == null) {
         return null;
@@ -10253,7 +10259,7 @@ public class EmailBoxService {
       createEmails(uidFolder, new Message[] { message }, username, folder, Map.of(), Map.of(), null);
       trimSearchFedFolderCache(store, username, folder, mailRemoteId);
       return getEmailByMailRemoteIdAndUserId(mailRemoteId, username, folder, true, true, true, false);
-    } catch (MessagingException | RuntimeException e) {
+    } catch (MessagingException | ConnectorCredentialsException | RuntimeException e) {
       LOG.error("Error fetching searched email {} of folder {} for user {}", mailRemoteId, folder, username, e);
       throw new IllegalStateException(String.format("Error when fetching searched email for user %s", username));
     } finally {
@@ -11151,7 +11157,7 @@ public class EmailBoxService {
     MailboxSyncState syncState = loadMailboxSyncState(username);
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
-      store = userEmailSettingService.connect(userEmailSetting);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       draftsFolder = resolveDraftsFolder(store, syncState);
       if (draftsFolder == null) {
         return 0;
@@ -11826,7 +11832,7 @@ public class EmailBoxService {
     Store store = null;
     IMAPFolder sentFolder = null;
     try {
-      store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
+      store = (IMAPStore) userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
       // The remembered name when there is one, a classified walk when there is not; a
       // read, so the walk's findings are not saved (the next scheduled sync keeps them).
       sentFolder = resolveSentFolder(store, loadMailboxSyncState(username));
