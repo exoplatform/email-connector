@@ -177,6 +177,7 @@ import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.category.service.CategoryService;
 import io.meeds.social.util.JsonUtils;
 import lombok.SneakyThrows;
+import org.exoplatform.services.scheduler.JobSchedulerService;
 
 @SpringBootTest(classes = { EmailBoxService.class, EmailFolderService.class })
 @ExtendWith(MockitoExtension.class)
