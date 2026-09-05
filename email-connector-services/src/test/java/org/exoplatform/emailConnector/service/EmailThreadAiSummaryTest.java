@@ -66,6 +66,7 @@ import org.exoplatform.upload.UploadService;
 import io.meeds.social.category.service.CategoryLinkService;
 import io.meeds.social.category.service.CategoryService;
 import lombok.SneakyThrows;
+import org.exoplatform.services.scheduler.JobSchedulerService;
 
 /**
  * The conversation-summary cache, from the mail rows up: real messages in a real
