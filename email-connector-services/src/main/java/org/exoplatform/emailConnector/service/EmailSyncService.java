@@ -37,6 +37,9 @@ import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
 import io.meeds.common.ContainerTransactional;
 import jakarta.annotation.PreDestroy;
 
@@ -166,6 +169,58 @@ public class EmailSyncService {
       LOG.debug("Dispatched {} of {} due mailbox(es) on node {}", dispatched, due.size(), node);
     }
     return dispatched;
+  }
+
+  /**
+   * Claims one named mailbox and hands it to the executor at once, instead of
+   * leaving it to the next tick.
+   * <p>
+   * This is the "fire now" half of the per-user Quartz job the executor rework
+   * replaced: {@code addPeriodJob} was given a null start time, which the scheduler
+   * reads as now, so connecting a mailbox started fetching immediately and repeated
+   * every period after that. The row-and-tick design kept the repeat and dropped the
+   * first fire, leaving the owner watching an empty drawer for up to a whole tick
+   * (EXO-90060).
+   * <p>
+   * It takes the same cluster-wide claim as the tick, so an immediate sync and a
+   * dispatched one can never run the same mailbox twice; if the claim is already
+   * held, the mailbox is being synchronized right now and there is nothing to do.
+   * A full executor is not an error either -- the mailbox stays due and the next
+   * tick takes it, which is exactly what happened before this method existed.
+   * <p>
+   * {@code REQUIRES_NEW} because the only caller is the {@code AFTER_COMMIT}
+   * listener, whose transaction has committed by the time it runs: the claim is a
+   * database write and needs one of its own, for the same reason
+   * {@code EmailBoxService.registerMailboxForSync} does (EXO-90059).
+   *
+   * @param userId the mailbox owner
+   * @return whether the mailbox was claimed and handed to the executor
+   */
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  public boolean dispatchNow(String userId) {
+    Date now = new Date();
+    String node = EmailConnectorUtils.getSyncNodeName();
+    if (freeSlots() <= 0) {
+      LOG.debug("Mailbox sync executor is full on node {}; the mailbox of user {} stays due for the next tick",
+                node,
+                userId);
+      return false;
+    }
+    Date staleBefore = EmailConnectorUtils.getSyncClaimStaleBefore(now);
+    try {
+      if (!emailSyncStateStorage.claim(userId, now, node, staleBefore)) {
+        LOG.debug("The mailbox of user {} is already being synchronized; no immediate sync dispatched", userId);
+        return false;
+      }
+      executor.execute(() -> runClaimed(userId, now));
+      LOG.debug("Dispatched an immediate synchronization of the mailbox of user {} on node {}", userId, node);
+      return true;
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The mailbox of user {} could not be synchronized immediately; it stays due for the next tick",
+               userId,
+               e);
+      return false;
+    }
   }
 
   /**
