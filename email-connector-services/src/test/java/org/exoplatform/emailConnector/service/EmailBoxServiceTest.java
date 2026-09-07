@@ -1933,25 +1933,70 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, times(1)).getEmails(user, MailFolder.INBOX);
   }
 
+  /**
+   * The mailbox's first paint costs the FIRST slice, not the whole download: a slice takes
+   * about its size times the per-message fetch time. Equal slices of 20 made a 72-message
+   * inbox four slices over eight workers -- all starting together, all finishing together --
+   * so the drawer stayed empty for the entire download and then filled in one jump. The
+   * leading slice must stay small whatever the mailbox's size (EXO-90062).
+   */
   @Test
-  void partitionUidsBalancesContiguousChunks() {
-    List<Long> uids = List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L);
-    List<long[]> chunks = EmailBoxService.partitionUids(uids, 3);
-    assertEquals(3, chunks.size());
-    // Balanced sizes, and the concatenation preserves the mailbox order exactly.
-    assertArrayEquals(new long[] { 1L, 2L, 3L, 4L }, chunks.get(0));
-    assertArrayEquals(new long[] { 5L, 6L, 7L }, chunks.get(1));
-    assertArrayEquals(new long[] { 8L, 9L, 10L }, chunks.get(2));
+  void theFirstSliceStaysSmallSoTheMailboxPaintsEarly() {
+    List<Long> uids = new ArrayList<>();
+    for (long uid = 1; uid <= 72; uid++) {
+      uids.add(uid);
+    }
+
+    List<long[]> slices = EmailBoxService.partitionUidsNewestFirstRamped(uids, 3, 20);
+
+    assertEquals(3, slices.get(0).length, "the first fetched slice is the mailbox's first paint");
+    // Newest first: the leading slice holds the highest UIDs, ascending inside itself so the
+    // worker's FETCH still compresses them into one contiguous range.
+    assertArrayEquals(new long[] { 70L, 71L, 72L }, slices.get(0));
+    assertArrayEquals(new long[] { 64L, 65L, 66L, 67L, 68L, 69L }, slices.get(1));
+    assertEquals(12, slices.get(2).length);
+    // Then the ramp is capped, so the bulk keeps its throughput and its compact UID ranges.
+    assertEquals(20, slices.get(3).length);
   }
 
   @Test
-  void partitionUidsWithFewerUidsThanChunks() {
-    List<long[]> chunks = EmailBoxService.partitionUids(List.of(7L, 9L), 5);
-    assertEquals(2, chunks.size());
-    assertArrayEquals(new long[] { 7L }, chunks.get(0));
-    assertArrayEquals(new long[] { 9L }, chunks.get(1));
-    assertTrue(EmailBoxService.partitionUids(List.of(), 5).isEmpty());
-    assertTrue(EmailBoxService.partitionUids(List.of(1L), 0).isEmpty());
+  void theRampCoversEveryUidExactlyOnceNewestFirst() {
+    List<Long> uids = new ArrayList<>();
+    for (long uid = 1; uid <= 100; uid++) {
+      uids.add(uid);
+    }
+
+    List<long[]> slices = EmailBoxService.partitionUidsNewestFirstRamped(uids, 3, 20);
+
+    List<Long> seen = new ArrayList<>();
+    long previousSliceFirst = Long.MAX_VALUE;
+    for (long[] slice : slices) {
+      for (int i = 1; i < slice.length; i++) {
+        assertTrue(slice[i] > slice[i - 1], "a slice's own UIDs stay ascending");
+      }
+      assertTrue(slice[0] < previousSliceFirst, "each slice is older than the one before it");
+      previousSliceFirst = slice[0];
+      for (long uid : slice) {
+        seen.add(uid);
+      }
+    }
+    assertEquals(100, seen.size());
+    assertEquals(100, Set.copyOf(seen).size(), "no UID is fetched twice or dropped");
+  }
+
+  @Test
+  void theRampHandlesMailboxesSmallerThanItsFirstSlice() {
+    assertTrue(EmailBoxService.partitionUidsNewestFirstRamped(List.of(), 3, 20).isEmpty());
+    assertTrue(EmailBoxService.partitionUidsNewestFirstRamped(null, 3, 20).isEmpty());
+
+    List<long[]> one = EmailBoxService.partitionUidsNewestFirstRamped(List.of(7L), 3, 20);
+    assertEquals(1, one.size());
+    assertArrayEquals(new long[] { 7L }, one.get(0));
+
+    // A nonsensical configuration must still partition every UID rather than loop or drop.
+    List<long[]> degenerate = EmailBoxService.partitionUidsNewestFirstRamped(List.of(1L, 2L, 3L), 0, 0);
+    assertEquals(3, degenerate.size());
+    assertArrayEquals(new long[] { 3L }, degenerate.get(0));
   }
 
   @Test
@@ -2268,11 +2313,11 @@ public class EmailBoxServiceTest {
       return result;
     });
     emailBoxService.synchronize(TEST_USER);
-    // 100 new UIDs cut into slices of 20 = 5 slices, each fetched on its own connection
-    // and every one closed when its worker finished.
-    verify(userEmailSettingService, times(5)).connect(userEmailSetting, emailConnector);
-    verify(workerFolder, times(5)).close(false);
-    verify(workerStore, times(5)).close();
+    // 100 new UIDs on the ramp (3, 6, 12, then 20s from the newest end) = 7 slices, each
+    // fetched on its own connection and every one closed when its worker finished.
+    verify(userEmailSettingService, times(7)).connect(userEmailSetting, emailConnector);
+    verify(workerFolder, times(7)).close(false);
+    verify(workerStore, times(7)).close();
     ArgumentCaptor<Email> emailCaptor = ArgumentCaptor.forClass(Email.class);
     verify(emailBoxStorage, times(100)).createEmail(emailCaptor.capture());
     // Bodies come from the workers. The rows land in slice-COMPLETION order, newest
@@ -2288,18 +2333,24 @@ public class EmailBoxServiceTest {
       assertTrue(cachedUids.add(created.getMailRemoteId()), "every message must be cached exactly once");
     }
     assertEquals(100, cachedUids.size());
-    // The new-emails events stream out during the download, one group every three slices
-    // (3 x 20 = 60, then the remaining 40), so the AI categorization can start on the
-    // first messages while the later ones are still being fetched. Which UIDs land in
-    // which group depends on completion order; together they must cover the whole sync.
+    // The new-emails events stream out during the download so the AI categorization can
+    // start on the first messages while the later ones are still being fetched. The first
+    // drained slice goes out on its own -- it is the ramp's small one, and holding it back
+    // would put the mailbox's first paint most of the download away (EXO-90062) -- and the
+    // six that follow group by three: three broadcasts in total. Which UIDs land in which
+    // group depends on completion order; together they must cover the whole sync exactly.
     @SuppressWarnings({ "unchecked", "rawtypes" })
     ArgumentCaptor<List<Long>> groupCaptor = ArgumentCaptor.forClass((Class) List.class);
-    verify(listenerService, times(2)).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), eq(TEST_USER), groupCaptor.capture());
+    verify(listenerService, times(3)).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), eq(TEST_USER), groupCaptor.capture());
     List<List<Long>> groups = groupCaptor.getAllValues();
-    assertEquals(60, groups.get(0).size());
-    assertEquals(40, groups.get(1).size());
-    Set<Long> broadcastUids = new HashSet<>(groups.get(0));
-    broadcastUids.addAll(groups.get(1));
+    Set<Long> broadcastUids = new HashSet<>();
+    int broadcastCount = 0;
+    for (List<Long> group : groups) {
+      assertFalse(group.isEmpty(), "an empty group would be a wasted broadcast");
+      broadcastUids.addAll(group);
+      broadcastCount += group.size();
+    }
+    assertEquals(100, broadcastCount, "no id is broadcast twice");
     assertEquals(cachedUids, broadcastUids);
     // ...and the completion event closes the run with every id, which is what whole-run
     // consumers (conversation alignment) key off.
@@ -2447,14 +2498,15 @@ public class EmailBoxServiceTest {
     // The incident behind completion-order draining: one message trickling in slowly
     // stalled a whole mailbox for ~4 minutes while four workers sat idle holding
     // finished data, because slices were consumed strictly in sequence. Here the
-    // NEWEST slice (UIDs 81..100, submitted first) blocks until the other eighty
-    // messages have been cached; with a sequential drain that is a deadlock broken
-    // only by the slice timeout, with completion-order draining it just finishes last.
+    // NEWEST slice (UIDs 98..100 on the ramp, submitted first) blocks until the other
+    // ninety-seven messages have been cached; with a sequential drain that is a deadlock
+    // broken only by the slice timeout, with completion-order draining it just finishes
+    // last.
     UserEmailSetting userEmailSetting = userEmailSetting();
     mockInboxForSync(userEmailSetting, 100);
     EmailConnector emailConnector = emailConnector();
     when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector);
-    CountDownLatch othersCached = new CountDownLatch(80);
+    CountDownLatch othersCached = new CountDownLatch(97);
     when(emailBoxStorage.createEmail(any(Email.class))).thenAnswer(invocation -> {
       othersCached.countDown();
       return invocation.getArgument(0);
@@ -2475,8 +2527,8 @@ public class EmailBoxServiceTest {
     List<Email> created = emailCaptor.getAllValues();
     // The blocked slice's messages are exactly the LAST twenty cached: nothing waited
     // for it, and nothing was lost to it.
-    Set<Long> lastTwenty = created.subList(80, 100).stream().map(Email::getMailRemoteId).collect(Collectors.toSet());
-    assertEquals(LongStream.rangeClosed(81, 100).boxed().collect(Collectors.toSet()), lastTwenty);
+    Set<Long> lastSlice = created.subList(97, 100).stream().map(Email::getMailRemoteId).collect(Collectors.toSet());
+    assertEquals(LongStream.rangeClosed(98, 100).boxed().collect(Collectors.toSet()), lastSlice);
   }
 
   @Test
