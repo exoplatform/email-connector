@@ -451,6 +451,14 @@ public class EmailBoxService {
 
   private static final int        BODY_PREFETCH_MIN_MESSAGES                                  = 10;
 
+  // The first slice of the ramp. A slice completes in about its size times the per-message
+  // fetch time (~430 ms/message/connection measured against BlueMind and Gmail), so this is
+  // what the mailbox's first paint costs: three messages, about a second, instead of the
+  // whole download. The ramp doubles from here to BODY_PREFETCH_SLICE_SIZE, so the early
+  // slices buy latency and the later ones keep the bulk throughput and the compact
+  // contiguous-UID FETCH ranges that a uniformly small slice would throw away.
+  private static final int        BODY_PREFETCH_FIRST_SLICE_SIZE                              = 3;
+
   // How many drained slices are grouped into one NEW_EMAILS_SYNCED broadcast, so the AI
   // categorization starts while the rest of the mailbox is still downloading instead of
   // waiting for the whole folder. Three slices of 20 = 60 messages = exactly four of the
@@ -1822,15 +1830,17 @@ public class EmailBoxService {
     for (Message message : serverMessages) {
       messagesByUid.put(uidFolder.getUID(message), message);
     }
-    int sliceCount = (int) Math.ceil((double) newUids.size() / BODY_PREFETCH_SLICE_SIZE);
-    List<long[]> uidSlices = partitionUids(newUids, sliceCount);
-    // Newest mail first: the slices are submitted (hence fetched) in reverse mailbox
-    // order, so a reset fills the inbox from today backwards instead of from weeks ago
-    // forwards -- users watched a reset "stuck at July 9th" while the newest 260
-    // messages were still pending. Only the slice ORDER is reversed: each slice keeps
-    // its own UIDs ascending, so the workers' FETCH commands still compress their
-    // contiguous UID runs into compact ranges.
-    Collections.reverse(uidSlices);
+    // Newest mail first, in slices that start small and grow. Newest first because a reset
+    // must fill the inbox from today backwards instead of from weeks ago forwards -- users
+    // watched a reset "stuck at July 9th" while the newest 260 messages were still pending.
+    // Starting small because equal slices of BODY_PREFETCH_SLICE_SIZE all finish at the same
+    // moment on a normal mailbox (72 messages is 4 slices over 8 workers), which is exactly
+    // the "empty for the whole download, then one jump" this partitioning exists to avoid.
+    // Each slice still keeps its own UIDs ascending, so the workers' FETCH commands compress
+    // their contiguous UID runs into compact ranges.
+    List<long[]> uidSlices = partitionUidsNewestFirstRamped(newUids,
+                                                            BODY_PREFETCH_FIRST_SLICE_SIZE,
+                                                            BODY_PREFETCH_SLICE_SIZE);
     String folderFullName = folder.getFullName();
     // Daemon workers so a hung prefetch can never keep the JVM alive; the pool lives for
     // this one folder and is shut down before returning.
@@ -1872,6 +1882,7 @@ public class EmailBoxService {
       // own threads after this loop has moved on.
       List<Long> broadcastGroup = new ArrayList<>();
       int processedSliceCount = 0;
+      int slicesSinceBroadcast = 0;
       // Slices are drained in COMPLETION order, not submission order: consuming them in
       // sequence once stalled a whole mailbox for ~4 minutes behind one slowly-trickling
       // message while four workers sat idle holding finished data. Out-of-order caching
@@ -1928,11 +1939,19 @@ public class EmailBoxService {
         newEmailIds.addAll(sliceEmailIds);
         if (streamNewEmails) {
           broadcastGroup.addAll(sliceEmailIds);
-          boolean groupComplete = processedSliceCount % BODY_PREFETCH_SLICES_PER_BROADCAST == 0
+          slicesSinceBroadcast++;
+          // The very first drained slice goes out on its own: it is the ramp's small one, and
+          // holding it back for two more would put the mailbox's first paint at the third
+          // slice's completion -- most of the download away, which is the whole complaint.
+          // Everything after it groups by three, so the categorizer keeps receiving the batch
+          // sizes it was tuned for; the cost is one extra small LLM group per folder sync.
+          boolean groupComplete = processedSliceCount == 1
+              || slicesSinceBroadcast >= BODY_PREFETCH_SLICES_PER_BROADCAST
               || pendingSlices.isEmpty();
           if (groupComplete && !broadcastGroup.isEmpty()) {
             broadcastNewEmailsSynced(username, broadcastGroup);
             broadcastGroup = new ArrayList<>();
+            slicesSinceBroadcast = 0;
           }
         }
       }
@@ -2432,36 +2451,49 @@ public class EmailBoxService {
   }
 
   /**
-   * Splits the UIDs into at most {@code chunkCount} contiguous, balanced chunks — one
-   * per worker. Contiguous on purpose: the UIDs arrive in mailbox order, so each chunk
-   * compresses into a compact UID set in the worker's FETCH commands instead of
-   * scattering every worker across the whole folder. Package-visible for tests.
+   * Splits the new UIDs into slices ordered newest first, the earliest slices small and
+   * growing to {@code maxSize}.
+   * <p>
+   * Equal slices do not work on a normal mailbox: at {@code maxSize} 20 and 8 workers a
+   * 72-message inbox is four slices, every one of them starts at once and they all finish
+   * together, so the drawer shows nothing for the whole download and then fills in one jump
+   * (EXO-90062). A slice costs about its size times the per-message fetch time, so a small
+   * first slice is a fast first paint and nothing else: the same messages are fetched over
+   * the same connections, and the total is unchanged.
+   * <p>
+   * The ramp doubles rather than staying small throughout, because small slices cost extra
+   * FETCH round trips and stop compressing into contiguous UID ranges -- latency early,
+   * throughput after.
+   * <p>
+   * Newest first is the slice ORDER only. Inside a slice the UIDs stay ascending, which is
+   * what lets a worker's FETCH compress them into a compact range. Package-visible for tests.
    *
-   * @param uids the UIDs to split, in mailbox order
-   * @param chunkCount the maximum number of chunks (bounded by the number of UIDs)
-   * @return the chunks, whose concatenation is exactly {@code uids}; empty when there
-   *         is nothing to split
+   * @param uids the new UIDs, ascending (oldest first) as the folder listed them
+   * @param firstSize the first slice's size, at least 1
+   * @param maxSize the size the ramp grows to
+   * @return the slices, newest first, each holding ascending UIDs; empty when there is
+   *         nothing to split
    */
-  static List<long[]> partitionUids(List<Long> uids, int chunkCount) {
-    List<long[]> chunks = new ArrayList<>();
-    int total = uids.size();
-    if (total == 0 || chunkCount <= 0) {
-      return chunks;
+  static List<long[]> partitionUidsNewestFirstRamped(List<Long> uids, int firstSize, int maxSize) {
+    List<long[]> slices = new ArrayList<>();
+    if (uids == null || uids.isEmpty()) {
+      return slices;
     }
-    int effectiveChunkCount = Math.min(chunkCount, total);
-    int baseSize = total / effectiveChunkCount;
-    int remainder = total % effectiveChunkCount;
-    int index = 0;
-    for (int i = 0; i < effectiveChunkCount; i++) {
-      long[] chunk = new long[baseSize + (i < remainder ? 1 : 0)];
-      for (int j = 0; j < chunk.length; j++) {
-        chunk[j] = uids.get(index++);
+    int cap = Math.max(1, maxSize);
+    int size = Math.min(cap, Math.max(1, firstSize));
+    int end = uids.size();
+    while (end > 0) {
+      int start = Math.max(0, end - size);
+      long[] slice = new long[end - start];
+      for (int i = 0; i < slice.length; i++) {
+        slice[i] = uids.get(start + i);
       }
-      chunks.add(chunk);
+      slices.add(slice);
+      end = start;
+      size = Math.min(cap, size * 2);
     }
-    return chunks;
+    return slices;
   }
-
   /**
    * How many IMAP connections the body prefetch may open, from the
    * {@value #BODY_PREFETCH_WORKERS_PROPERTY} system property (same convention as the
