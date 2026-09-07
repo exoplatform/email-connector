@@ -23,6 +23,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 
 import org.exoplatform.emailConnector.event.EmailBoxSyncEvent;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.service.EmailSyncService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -41,6 +42,9 @@ public class EmailBoxSyncListener {
   @Autowired
   private EmailBoxService  emailBoxService;
 
+  @Autowired
+  private EmailSyncService emailSyncService;
+
   /**
    * Registers the connected mailbox with the dispatcher, after the settings
    * write that announced it is committed. A failure is logged and swallowed: the
@@ -52,6 +56,12 @@ public class EmailBoxSyncListener {
   public void handleEmailBoxSync(EmailBoxSyncEvent event) {
     try {
       emailBoxService.registerMailboxForSync(event.getUsername());
+      // Registering only makes the mailbox due; without this the owner waits for the
+      // next tick with an empty drawer. Two calls rather than one because each needs
+      // its own transaction (this runs after the connecting one committed), and a
+      // service calling the other would close a bean cycle -- EmailSyncService
+      // already depends on EmailBoxService.
+      emailSyncService.dispatchNow(event.getUsername());
     } catch (Exception e) {
       LOG.warn("Error registering the mailbox of user {} for synchronization", event.getUsername(), e);
     }
