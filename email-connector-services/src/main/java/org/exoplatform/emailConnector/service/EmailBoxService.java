@@ -172,6 +172,7 @@ import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.upload.UploadResource;
 import org.exoplatform.upload.UploadService;
 
+import io.meeds.common.ContainerTransactional;
 import io.meeds.social.category.model.CategoryObject;
 import io.meeds.social.category.model.CategoryWithName;
 import io.meeds.social.category.service.CategoryLinkService;
@@ -866,8 +867,18 @@ public class EmailBoxService {
    * stamped active now. Called when a user connects or rebinds their mailbox; the
    * dispatcher's own boot reconciliation covers everyone connected before it ran.
    *
+   * <p>
+   * <b>{@code @ContainerTransactional}</b>, because the only caller is an
+   * {@code AFTER_COMMIT} listener: the transaction that carried the settings write
+   * is finished by definition when it runs, so the write below would have none of
+   * its own and fail with {@code TransactionRequiredException}. The annotation
+   * establishes the container and runs the request lifecycle around the call --
+   * the same reason {@code EmailSyncDispatcher.tick()} carries it for a scheduler
+   * thread, which is the same situation: nothing bound.
+   *
    * @param username the mailbox owner
    */
+  @ContainerTransactional
   public void registerMailboxForSync(String username) {
     emailSyncStateStorage.upsert(username, null, new Date());
   }
