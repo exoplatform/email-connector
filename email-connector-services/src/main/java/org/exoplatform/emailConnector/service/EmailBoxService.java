@@ -109,6 +109,7 @@ import org.jsoup.nodes.Element;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.sun.mail.imap.AppendUID;
@@ -172,7 +173,6 @@ import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.upload.UploadResource;
 import org.exoplatform.upload.UploadService;
 
-import io.meeds.common.ContainerTransactional;
 import io.meeds.social.category.model.CategoryObject;
 import io.meeds.social.category.model.CategoryWithName;
 import io.meeds.social.category.service.CategoryLinkService;
@@ -876,17 +876,27 @@ public class EmailBoxService {
    * dispatcher's own boot reconciliation covers everyone connected before it ran.
    *
    * <p>
-   * <b>{@code @ContainerTransactional}</b>, because the only caller is an
+   * <b>{@code @Transactional(REQUIRES_NEW)}</b>, because the only caller is an
    * {@code AFTER_COMMIT} listener: the transaction that carried the settings write
-   * is finished by definition when it runs, so the write below would have none of
-   * its own and fail with {@code TransactionRequiredException}. The annotation
-   * establishes the container and runs the request lifecycle around the call --
-   * the same reason {@code EmailSyncDispatcher.tick()} carries it for a scheduler
-   * thread, which is the same situation: nothing bound.
+   * has committed by the time it runs, so the write below needs one of its own or
+   * it fails with {@code TransactionRequiredException}. {@code REQUIRES_NEW} is
+   * what starts that second transaction -- the propagation Spring documents for
+   * writing from an {@code AFTER_COMMIT} callback.
+   * <p>
+   * Not {@code @ContainerTransactional}, which was tried here and does not work:
+   * it establishes the <i>container</i> and the request lifecycle, which is what a
+   * scheduler or executor thread needs ({@code EmailSyncDispatcher.tick()}) but
+   * not what this caller lacks. The listener runs on the request thread, where
+   * {@code PortalTransactionFilter} has already opened the lifecycle; the aspect's
+   * {@code RequestLifeCycle.begin(container)} delegates to
+   * {@code begin(container, false)} and {@code RequestLifeCycleStack} skips a
+   * component it has already started, so no second transaction is begun and the
+   * flush still fails. What is finished at {@code AFTER_COMMIT} is the
+   * transaction, not the container.
    *
    * @param username the mailbox owner
    */
-  @ContainerTransactional
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void registerMailboxForSync(String username) {
     emailSyncStateStorage.upsert(username, null, new Date());
   }
