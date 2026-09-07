@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import java.lang.reflect.UndeclaredThrowableException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -627,6 +628,16 @@ public class UserEmailSettingService {
                        SettingValue.create(JsonUtils.toJsonString(state)));
   }
 
+  /**
+   * Decode a stored password. Every failure yields null rather than propagating:
+   * this method feeds {@link #getUserEmailSetting(String)}, which the drawer, the
+   * badge, the MCP tools and both sync services all read, so an exception here
+   * takes the whole account down instead of one field.
+   *
+   * @param password the stored, encoded password -- may be blank
+   * @return the decoded password, or null if there was none or it could not be
+   *         decoded
+   */
   private String decodePassword(String password) {
     // Nothing to decode is not an error. The mail password always exists, so this
     // never came up until a second, optional password arrived: every user who has
@@ -640,9 +651,30 @@ public class UserEmailSettingService {
     } catch (TokenServiceInitializationException e) {
       LOG.warn("Error when decoding password", e);
       return null;
+    } catch (UndeclaredThrowableException e) {
+      // The same failure shape as the blank password above, one layer down.
+      // JCASymmetricCodec wraps every GeneralSecurityException in this one, and the
+      // one that actually occurs is a BadPaddingException: the ciphertext was
+      // written under a different codec key than the instance now holds -- a
+      // re-unpacked distribution, a lost codeckey.txt, a database restored into
+      // another instance. Nothing can recover that password, so treat it as absent
+      // and let the account present as needing reconnection; propagating instead
+      // makes the settings read fail, and the settings read is what serves the very
+      // form the user would reconnect from.
+      LOG.warn("The stored password of a mail account cannot be decrypted with the current codec key ({}); "
+          + "the account is reported as disconnected and the user has to reconnect it",
+               e.getCause() == null ? e.toString() : e.getCause().toString());
+      return null;
     }
   }
 
+  /**
+   * Encode a password for storage.
+   *
+   * @param password the clear password -- may be blank
+   * @return the encoded password, or null if there was none or it could not be
+   *         encoded
+   */
   private String encodePassword(String password) {
     if (StringUtils.isBlank(password)) {
       return null;
