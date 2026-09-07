@@ -33,11 +33,13 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.UndeclaredThrowableException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
 
+import javax.crypto.BadPaddingException;
 import javax.mail.MessagingException;
 import javax.mail.Session;
 import javax.mail.Store;
@@ -191,6 +193,39 @@ public class UserEmailSettingServiceTest {
     userEmailSettingService.setUserEmailSetting(userEmailSetting, TEST_USER, false);
 
     verify(settingService).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /**
+   * The sibling of the case above, one layer down: the password IS set, and the
+   * codec cannot decrypt it because the instance no longer holds the key it was
+   * written under. {@code JCASymmetricCodec} answers that with an
+   * {@link UndeclaredThrowableException} wrapping a {@link BadPaddingException},
+   * which used to escape the settings read and turn
+   * {@code GET /user-email-setting} into a 500 -- taking with it the drawer, the
+   * badge, the MCP tools and both sync services, all of which read through
+   * {@code getUserEmailSetting}. Worse, the settings read is what serves the form
+   * the user would reconnect from, so the UI offered no way out.
+   *
+   * The account must come back readable, with the unusable password reported as
+   * absent.
+   */
+  @Test
+  @SneakyThrows
+  void aPasswordEncryptedUnderAnotherCodecKeyLeavesTheAccountReadable() {
+    SettingValue userEmailSettingValue = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(userEmailSettingValue);
+    when(userEmailSettingValue.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\","
+        + "\"emailPassword\":\"cipherFromAnotherKey\"}");
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    AbstractCodec codec = mock(AbstractCodec.class);
+    when(codec.decode("cipherFromAnotherKey")).thenThrow(new UndeclaredThrowableException(new BadPaddingException("Given final block not properly padded")));
+    when(codecInitializer.getCodec()).thenReturn(codec);
+
+    UserEmailSetting read = userEmailSettingService.getUserEmailSetting(TEST_USER);
+
+    assertNotNull(read);
+    assertEquals("testEmail", read.getEmailAddress());
+    assertNull(read.getEmailPassword());
   }
 
   /**
