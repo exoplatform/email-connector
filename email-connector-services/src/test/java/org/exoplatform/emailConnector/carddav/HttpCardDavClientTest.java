@@ -23,6 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
@@ -36,6 +39,9 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+
 /**
  * The protocol, exercised against canned answers. No network anywhere: the
  * transport is a mock, which is the only reason these can assert what the client
@@ -45,19 +51,46 @@ public class HttpCardDavClientTest {
 
   private static final String  BASE     = "https://mail.example.com";
 
+  /** What the configured provider answers, for every request of these tests. */
+  private static final String  AUTHORIZATION = "Bearer produced-by-the-provider";
+
+  private static final Long    CONNECTOR_ID  = 7L;
+
+  private static final String  PROVIDER      = "personal";
+
+  private static final String  USERNAME      = "alice";
+
+  /**
+   * Whose address book the calls under test are about. A real account rather than a
+   * mock: this test sits in the account's own package, so it can mint one, and the
+   * assertions can then check the client asks the provider with the very fields the
+   * account carries rather than with whatever it had at hand.
+   */
+  private static final CardDavAccount ACCOUNT = new CardDavAccount(CONNECTOR_ID, PROVIDER, USERNAME);
+
   private static final String  BOOK_URL = "https://mail.example.com/dav/addressbooks/alice/default/";
 
   private HttpClient           transport;
 
   private HttpCardDavClient    client;
 
+  private EmailCredentialsResolver resolver;
+
   private List<HttpRequest>    sent;
 
   @BeforeEach
   void setUp() {
     transport = mock(HttpClient.class);
-    client = new HttpCardDavClient(transport);
+    resolver = mock(EmailCredentialsResolver.class);
+    client = new HttpCardDavClient(transport, resolver);
     sent = new ArrayList<>();
+    try {
+      // Deliberately not Basic, and derivable from no stored pair: a client that went
+      // back to assembling its own header would produce something else.
+      when(resolver.authorization(any(), any(), any())).thenReturn(AUTHORIZATION);
+    } catch (ConnectorCredentialsException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   @Test
@@ -66,7 +99,7 @@ public class HttpCardDavClientTest {
     // well-known discovery working on their server.
     givenAnswers(collectionResponse(BOOK_URL, "Alice's contacts", "ctag-1"));
 
-    AddressBook book = client.discoverAddressBook(BOOK_URL, "alice", "secret");
+    AddressBook book = client.discoverAddressBook(BOOK_URL, ACCOUNT);
 
     assertEquals(BOOK_URL, book.url());
     assertEquals("Alice's contacts", book.displayName());
@@ -82,7 +115,7 @@ public class HttpCardDavClientTest {
                  homeSetResponse("/dav/addressbooks/alice/"),
                  collectionListResponse("/dav/addressbooks/alice/default/", "Contacts", "ctag-7"));
 
-    AddressBook book = client.discoverAddressBook(BASE, "alice", "secret");
+    AddressBook book = client.discoverAddressBook(BASE, ACCOUNT);
 
     assertEquals(BOOK_URL, book.url(), "the href the server answered is resolved to an absolute URL");
     assertEquals("ctag-7", book.ctag());
@@ -91,22 +124,116 @@ public class HttpCardDavClientTest {
   }
 
   @Test
-  void everyRequestCarriesBasicCredentials() throws Exception {
+  void everyRequestCarriesTheHeaderTheProviderProduced() throws Exception {
     givenAnswers(collectionResponse(BOOK_URL, "Contacts", "ctag-1"));
 
-    client.discoverAddressBook(BOOK_URL, "alice", "secret");
+    client.discoverAddressBook(BOOK_URL, ACCOUNT);
 
     String authorization = sent.get(0).headers().firstValue("Authorization").orElse(null);
     // Sent unprompted rather than after a challenge: it is what CardDAV servers
     // expect, and it saves a round trip on every single request.
-    assertEquals("Basic YWxpY2U6c2VjcmV0", authorization);
+    // Passed through verbatim: since EXO-89708 the client assembles nothing, it asks
+    // the configured provider — per request, so that a provider whose header depends
+    // on the method and URI can exist.
+    assertEquals(AUTHORIZATION, authorization);
+  }
+
+  @Test
+  void theConfiguredUrlCarriesThePersonItIsFor() throws Exception {
+    // Google puts the account inside the collection path, so one preset shared by
+    // every user of a provider cannot hold it literally.
+    when(resolver.targetAccount(CONNECTOR_ID, PROVIDER, USERNAME)).thenReturn("alice@example.com");
+
+    String resolved = client.resolveUrl("https://www.googleapis.com/carddav/v1/principals/{email}/lists/default/", ACCOUNT);
+
+    assertEquals("https://www.googleapis.com/carddav/v1/principals/alice@example.com/lists/default/", resolved);
+  }
+
+  @Test
+  void theLocalPartPlaceholderTakesTheAccountUpToTheAtSign() throws Exception {
+    when(resolver.targetAccount(any(), any(), any())).thenReturn("alice@example.com");
+
+    assertEquals("https://mail.example.com/dav/alice/", client.resolveUrl("https://mail.example.com/dav/{localpart}/", ACCOUNT));
+  }
+
+  @Test
+  void whoTheUrlAddressesIsWhoTheProviderNamesNotTheLoginItWasAskedFor() throws Exception {
+    // The whole point of asking the provider: one authenticating as a technical
+    // account says which address book it is acting on, and that is not derivable
+    // from the eXo login the sync runs for.
+    when(resolver.targetAccount(CONNECTOR_ID, PROVIDER, USERNAME)).thenReturn("team-books@example.com");
+
+    String resolved = client.resolveUrl("https://mail.example.com/dav/{email}/", ACCOUNT);
+
+    assertEquals("https://mail.example.com/dav/team-books@example.com/", resolved);
+  }
+
+  @Test
+  void aFixedPathNeverAsksTheProviderWhoItIsFor() {
+    // Nothing to substitute, so nothing to ask: the rest of the hrefs come from
+    // discovery. Asking anyway would fail a provider that serves this connector's
+    // mail channels and names no HTTP account.
+    String resolved = client.resolveUrl("https://mail.example.com/dav/addressbooks/default/", ACCOUNT);
+
+    assertEquals("https://mail.example.com/dav/addressbooks/default/", resolved);
+    verifyNoInteractions(resolver);
+  }
+
+  @Test
+  void aHostTypedWithoutASchemeIsStillAHost() {
+    // What an administrator types is a host. Refusing it produced an error about
+    // our URI parser, which says nothing about what to fix.
+    assertEquals("https://webmail.example.com/dav/", client.resolveUrl("webmail.example.com/dav/", ACCOUNT));
+  }
+
+  @Test
+  void aTemplatedUrlNoProviderCanFillInSaysSo() throws Exception {
+    // Personal always names the address the user entered; a provider that names
+    // none used to leave "{email}" in the path, and the failure surfaced as
+    // "Illegal character in path at index 29" -- about our URI parser, not about
+    // the account that is missing.
+    when(resolver.targetAccount(any(), any(), any())).thenReturn(null);
+
+    CardDavException failure = assertThrows(CardDavException.class,
+                                            () -> client.resolveUrl("https://mail.example.com/dav/{email}/", ACCOUNT));
+
+    assertTrue(failure.getMessage().contains(PROVIDER), "the message names the provider that could not answer");
+  }
+
+  @Test
+  void anAccountThatCannotSitInAPathIsRefusedByItsOwnMessage() throws Exception {
+    // A percent starts an escape the account is not, so the URI parser refuses it
+    // downstream anyway -- here it is refused where the reason is still known.
+    when(resolver.targetAccount(any(), any(), any())).thenReturn("jo%h@example.com");
+
+    CardDavException failure = assertThrows(CardDavException.class,
+                                            () -> client.resolveUrl("https://mail.example.com/dav/{email}/", ACCOUNT));
+
+    assertTrue(failure.getMessage().contains("cannot be part of a URL path"), "the message says what is wrong with it");
+  }
+
+  @Test
+  void theProviderIsAskedOncePerRequestNotOncePerConversation() throws Exception {
+    // The reason the client is handed an account and not a produced header: a Digest
+    // provider hashes the request method and URI, so one value produced for the whole
+    // conversation would be wrong on every request but the first. Discovery is the
+    // multi-request case, so it is where a client that cached the value once shows.
+    givenAnswers(notACollection(),
+                 principalResponse("/dav/principals/alice/"),
+                 homeSetResponse("/dav/addressbooks/alice/"),
+                 collectionListResponse("/dav/addressbooks/alice/default/", "Contacts", "ctag-7"));
+
+    client.discoverAddressBook(BASE, ACCOUNT);
+
+    assertTrue(sent.size() > 1, "the case only bites on a conversation of several requests");
+    verify(resolver, times(sent.size())).authorization(CONNECTOR_ID, PROVIDER, USERNAME);
   }
 
   @Test
   void aServerWithoutCtagSupportSaysSoRatherThanFailing() throws Exception {
     givenAnswers(collectionResponse(BOOK_URL, "Contacts", null));
 
-    String ctag = client.getCtag(new AddressBook(BOOK_URL, "Contacts", "old"), "alice", "secret");
+    String ctag = client.getCtag(new AddressBook(BOOK_URL, "Contacts", "old"), ACCOUNT);
 
     assertNull(ctag, "no ctag means the sync compares entry versions instead, not that the sync fails");
   }
@@ -130,7 +257,7 @@ public class HttpCardDavClientTest {
           </d:response>
         </d:multistatus>""");
 
-    Map<String, String> etags = client.listResourceEtags(new AddressBook(BOOK_URL, "Contacts", null), "alice", "secret");
+    Map<String, String> etags = client.listResourceEtags(new AddressBook(BOOK_URL, "Contacts", null), ACCOUNT);
 
     assertEquals(2, etags.size(), "the collection has no etag of its own and must not be taken for an entry");
     assertEquals("\"v1\"", etags.get("/dav/addressbooks/alice/default/jane.vcf"));
@@ -157,9 +284,7 @@ public class HttpCardDavClientTest {
 
     List<ContactResource> resources = client.multiget(new AddressBook(BOOK_URL, "Contacts", null),
                                                       List.of("/dav/addressbooks/alice/default/jane.vcf",
-                                                              "/dav/addressbooks/alice/default/bob.vcf"),
-                                                      "alice",
-                                                      "secret");
+                                                              "/dav/addressbooks/alice/default/bob.vcf"), ACCOUNT);
 
     assertEquals(1, sent.size(), "two entries, one request — that is the point of multiget");
     assertEquals("REPORT", sent.get(0).method());
@@ -170,7 +295,7 @@ public class HttpCardDavClientTest {
 
   @Test
   void multigetOfNothingDoesNotTouchTheNetwork() {
-    List<ContactResource> resources = client.multiget(new AddressBook(BOOK_URL, "Contacts", null), List.of(), "alice", "secret");
+    List<ContactResource> resources = client.multiget(new AddressBook(BOOK_URL, "Contacts", null), List.of(), ACCOUNT);
 
     assertTrue(resources.isEmpty());
     assertTrue(sent.isEmpty(), "an empty batch is a question worth not asking");
@@ -184,7 +309,7 @@ public class HttpCardDavClientTest {
     });
 
     CardDavException refused = assertThrows(CardDavException.class,
-                                            () -> client.discoverAddressBook(BOOK_URL, "alice", "wrong"));
+                                            () -> client.discoverAddressBook(BOOK_URL, ACCOUNT));
 
     assertTrue(refused.getMessage().contains("401"), "the status belongs in the message: it is what tells creds from outage");
   }
@@ -194,7 +319,7 @@ public class HttpCardDavClientTest {
     when(transport.send(any(HttpRequest.class), any())).thenThrow(new IOException("connection refused"));
 
     CardDavException unreachable = assertThrows(CardDavException.class,
-                                                () -> client.discoverAddressBook(BOOK_URL, "alice", "secret"));
+                                                () -> client.discoverAddressBook(BOOK_URL, ACCOUNT));
 
     assertNotNull(unreachable.getCause());
   }
@@ -210,14 +335,14 @@ public class HttpCardDavClientTest {
           <d:response><d:href>&xxe;</d:href></d:response>
         </d:multistatus>""");
 
-    assertThrows(CardDavException.class, () -> client.listResourceEtags(new AddressBook(BOOK_URL, "C", null), "a", "b"));
+    assertThrows(CardDavException.class, () -> client.listResourceEtags(new AddressBook(BOOK_URL, "C", null), ACCOUNT));
   }
 
   @Test
   void aCreatedCardAnswersItsStatusAndEtag() throws Exception {
     givenPutAnswer(201, "\"etag-42\"");
 
-    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", ACCOUNT);
 
     assertEquals(201, result.status());
     assertEquals("\"etag-42\"", result.etag(), "the etag travels raw, quotes and all, like PROPFIND answers it");
@@ -237,7 +362,7 @@ public class HttpCardDavClientTest {
     // slice 1 bound rows to entries that did not exist.
     givenPutAnswer(201, "\"e\"", "/dav/addressbooks/alice/default/renamed-by-server.vcf");
 
-    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", ACCOUNT);
 
     assertEquals("https://mail.example.com/dav/addressbooks/alice/default/renamed-by-server.vcf",
                  result.location(),
@@ -248,7 +373,7 @@ public class HttpCardDavClientTest {
   void aServerThatKeepsTheUrlAnswersNoLocation() throws Exception {
     givenPutAnswer(201, "\"e\"", null);
 
-    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", ACCOUNT);
 
     assertNull(result.location(), "no Location means the entry lives where it was PUT, and null says exactly that");
   }
@@ -259,7 +384,7 @@ public class HttpCardDavClientTest {
     // caller stores it as unknown and the next sync settles the version.
     givenPutAnswer(204, null);
 
-    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", ACCOUNT);
 
     assertEquals(204, result.status());
     assertNull(result.etag());
@@ -273,7 +398,7 @@ public class HttpCardDavClientTest {
     // failure.
     givenPutAnswer(412, null);
 
-    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret");
+    PutResult result = client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", ACCOUNT);
 
     assertTrue(result.preconditionFailed());
   }
@@ -283,7 +408,7 @@ public class HttpCardDavClientTest {
     givenPutAnswer(507, null);
 
     assertThrows(CardDavException.class,
-                 () -> client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", "alice", "secret"));
+                 () -> client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", "*", ACCOUNT));
   }
 
   @Test
@@ -292,7 +417,7 @@ public class HttpCardDavClientTest {
     // precondition means an absent header, not an empty one the server rejects.
     givenPutAnswer(200, null);
 
-    client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", null, "alice", "secret");
+    client.putVCard(BOOK_URL + "abc.vcf", "BEGIN:VCARD\nEND:VCARD\n", null, ACCOUNT);
 
     assertTrue(sent.get(0).headers().firstValue("If-None-Match").isEmpty());
   }
@@ -459,7 +584,7 @@ public class HttpCardDavClientTest {
                  entriesResponse(1),
                  entriesResponse(400));
 
-    AddressBook book = client.discoverAddressBook(BASE, "alice", "secret");
+    AddressBook book = client.discoverAddressBook(BASE, ACCOUNT);
 
     assertEquals(BOOK_URL, book.url());
     assertEquals("Contacts", book.displayName());
@@ -476,7 +601,7 @@ public class HttpCardDavClientTest {
                                      "/dav/addressbooks/alice/default/", "Contacts"),
                  entriesResponse(12));
 
-    AddressBook book = client.discoverAddressBook(BASE, "alice", "secret");
+    AddressBook book = client.discoverAddressBook(BASE, ACCOUNT);
 
     assertEquals(BOOK_URL, book.url(), "the directory is set aside before sizes are even compared");
   }
@@ -489,7 +614,7 @@ public class HttpCardDavClientTest {
                  collectionListResponse("/dav/addressbooks/alice/addressbook:Directory_acme/", "Company directory", "ctag-9"),
                  entriesResponse(3));
 
-    AddressBook book = client.discoverAddressBook(BASE, "alice", "secret");
+    AddressBook book = client.discoverAddressBook(BASE, ACCOUNT);
 
     assertEquals("Company directory", book.displayName(), "setting it aside must not leave the user with nothing");
   }
