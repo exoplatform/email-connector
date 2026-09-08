@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -43,6 +44,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import org.exoplatform.emailConnector.carddav.CardDavAccount;
 import org.exoplatform.emailConnector.carddav.CardDavClient;
 import org.exoplatform.emailConnector.carddav.CardDavException;
 import org.exoplatform.emailConnector.carddav.CardDavPublishQueuedException;
@@ -76,6 +78,12 @@ public class EmailContactPublishQueueTest {
   private static final String            BOOK_URL     = "https://mail.example.com/dav/alice/default/";
 
   private static final long              CONTACT_ID   = 5L;
+
+  /**
+   * The account the client mints for this conversation. Opaque to the service — it
+   * only has to travel unchanged from {@code accountOf} down to every call.
+   */
+  private static final CardDavAccount   ACCOUNT      = mock(CardDavAccount.class);
 
   @MockitoBean
   private EmailContactStorage            emailContactStorage;
@@ -134,7 +142,7 @@ public class EmailContactPublishQueueTest {
     state.setConfiguredUrl("https://mail.example.com");
     state.setCtag("ctag-1");
     lenient().when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
-    lenient().when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-1");
+    lenient().when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenReturn("ctag-1");
 
     queue = new ContactPublishQueue();
     lenient().when(userEmailSettingService.getContactPublishQueue(USERNAME)).thenReturn(queue);
@@ -144,9 +152,24 @@ public class EmailContactPublishQueueTest {
     lenient().when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
   }
 
+  /**
+   * The account the client mints for every operation. Unstubbed it answers null, and
+   * a null account matches no argument matcher — the service would look as if it had
+   * never called the client at all.
+   */
+  @BeforeEach
+  void theClientMintsAnAccountAndResolvesTheUrl() {
+    lenient().when(cardDavClient.accountOf(any(), any(), any())).thenReturn(ACCOUNT);
+    // Identity, which is what the real client answers for a URL carrying no
+    // placeholder — the fixture's. Unstubbed it answers null, and a null URL
+    // matches no argument matcher, so the service would look as if it had never
+    // called the client at all.
+    lenient().when(cardDavClient.resolveUrl(any(), any())).thenAnswer(call -> call.getArgument(0));
+  }
+
   @Test
   void aPublishTheServerCannotTakeIsQueuedNotLost() {
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenThrow(new CardDavException("connection refused"));
 
     // The queued exception, not the plain one: the REST layer answers it 202,
@@ -183,7 +206,7 @@ public class EmailContactPublishQueueTest {
     for (long id = 100; id < 600; id++) {
       queue.getEntries().add(entry(id, 0, false));
     }
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenThrow(new CardDavException("connection refused"));
 
     // A plain CardDavException, NOT the queued subtype: promising a retry the
@@ -199,7 +222,7 @@ public class EmailContactPublishQueueTest {
     // Parked included: the contact's own publish button is the retry that
     // un-parks, and a retry that lands owes the queue nothing.
     queue.getEntries().add(entry(CONTACT_ID, 3, true));
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(201, "\"etag-9\"", null));
 
     assertNotNull(syncService.publishContact(USERNAME, CONTACT_ID));
@@ -212,14 +235,14 @@ public class EmailContactPublishQueueTest {
   @Test
   void aSuccessfulRunDrainsTheQueue() {
     queue.getEntries().add(entry(CONTACT_ID, 0, false));
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(201, "\"etag-9\"", null));
 
     syncService.syncAddressBook(USERNAME);
 
     // The publish went out for real -- through the same doPublish the click
     // uses, book verified, creates-only -- and the entry left the queue.
-    verify(cardDavClient).putVCard(anyString(), anyString(), eq("*"), eq("alice@example.com"), eq("secret"));
+    verify(cardDavClient).putVCard(anyString(), anyString(), eq("*"), any(CardDavAccount.class));
     verify(emailContactStorage).bindPublishedCard(eq(CONTACT_ID), eq(CONNECTOR_ID), anyString(), eq("\"etag-9\""), anyString());
     verify(userEmailSettingService).setContactPublishQueue(any(), eq(USERNAME));
     assertTrue(queue.getEntries().isEmpty());
@@ -230,11 +253,11 @@ public class EmailContactPublishQueueTest {
     // The precondition is a run that SUCCEEDED: a failed one proved the server
     // unreachable, and pushing writes at it anyway would be the hot loop.
     queue.getEntries().add(entry(CONTACT_ID, 0, false));
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenThrow(new CardDavException("unreachable"));
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenThrow(new CardDavException("unreachable"));
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
   }
 
@@ -244,12 +267,12 @@ public class EmailContactPublishQueueTest {
     // backs off with it, and the entries just wait.
     queue.getEntries().add(entry(CONTACT_ID, 0, false));
     state.setFailedAttempts(2);
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenThrow(new CardDavException("unreachable"));
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenThrow(new CardDavException("unreachable"));
 
     syncService.syncAddressBook(USERNAME, true);
 
     assertEquals(SyncStatus.BLOCKED, state.getStatus());
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     assertFalse(queue.getEntries().get(0).isParked());
     assertEquals(0, queue.getEntries().get(0).getAttempts());
   }
@@ -257,7 +280,7 @@ public class EmailContactPublishQueueTest {
   @Test
   void aFailingDrainCountsAgainstTheEntryNeverTheSync() {
     queue.getEntries().add(entry(CONTACT_ID, 0, false));
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenThrow(new CardDavException("boom"));
 
     syncService.syncAddressBook(USERNAME);
@@ -276,7 +299,7 @@ public class EmailContactPublishQueueTest {
   @Test
   void retriesExhaustedParkTheEntryWithItsReason() {
     queue.getEntries().add(entry(CONTACT_ID, 2, false));
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenThrow(new CardDavException("boom"));
 
     syncService.syncAddressBook(USERNAME);
@@ -295,7 +318,7 @@ public class EmailContactPublishQueueTest {
 
     // Parked means parked: no attempt, no counter movement, until a person
     // retries it through the contact's own publish action.
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
   }
 
@@ -306,12 +329,12 @@ public class EmailContactPublishQueueTest {
     queue.getEntries().add(entry(CONTACT_ID, 0, false));
     queue.getEntries().add(entry(6L, 0, false));
     lenient().when(emailContactService.getContact(6L, USERNAME)).thenReturn(ownContact(6L, EmailContactSource.MANUAL));
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenThrow(new CardDavException("boom"));
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, times(1)).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, times(1)).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     assertEquals(1, queue.getEntries().get(0).getAttempts());
     assertEquals(0, queue.getEntries().get(1).getAttempts());
   }
@@ -329,7 +352,7 @@ public class EmailContactPublishQueueTest {
     ContactPublishQueueEntry entry = queue.getEntries().get(0);
     assertTrue(entry.isParked());
     assertEquals(EmailContactCardDavSyncService.PUBLISH_SOURCE_NOT_ALLOWED, entry.getParkedReason());
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -375,7 +398,7 @@ public class EmailContactPublishQueueTest {
     syncService.syncAddressBook(USERNAME);
 
     assertTrue(queue.getEntries().isEmpty());
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   // -------------------------------------------------------------------------
@@ -396,7 +419,7 @@ public class EmailContactPublishQueueTest {
 
     assertEquals(2, stored.getEntries().size());
     assertTrue(stored.getEntries().stream().noneMatch(ContactPublishQueueEntry::isParked));
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -501,7 +524,7 @@ public class EmailContactPublishQueueTest {
 
     // The card on the server is the assertion. What the queue holds afterwards
     // is the drain's business, pinned by its own tests above.
-    verify(cardDavClient).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   /**
