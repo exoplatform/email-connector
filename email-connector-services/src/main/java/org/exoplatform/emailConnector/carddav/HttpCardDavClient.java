@@ -28,10 +28,10 @@ import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
@@ -39,12 +39,15 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -102,6 +105,34 @@ public class HttpCardDavClient implements CardDavClient {
   private final HttpClient      httpClient;
 
   /**
+   * The resolver every request asks its Authorization header of.
+   * <p>
+   * required = false, same reason as the mail services' own guard: it needs
+   * ConnectorCredentialsService, a bean of another WAR, so it is undefined in this
+   * addon's own Spring test contexts. Field-injected rather than constructor-
+   * injected because Spring builds this client through its no-arg constructor.
+   */
+  @Autowired(required = false)
+  private EmailCredentialsResolver emailCredentialsResolver;
+
+  /** The placeholders an administrator may write into a configured CardDAV URL. */
+  private static final String      EMAIL_PLACEHOLDER     = "{email}";
+
+  private static final String      LOCALPART_PLACEHOLDER = "{localpart}";
+
+  /**
+   * An account that can sit in a URL path segment. Everything refused here either
+   * changes what the path addresses (a separator), starts an escape the account is
+   * not (a percent), or is illegal in a URI outright (a brace, a space) — and a
+   * brace is exactly what an unsubstituted placeholder leaves behind, which used to
+   * surface as "Illegal character in path at index 29" instead of saying that no
+   * account was named. An address book's account is routinely an email address, so
+   * the at-sign and the dot are deliberately allowed: both travel a path segment
+   * unencoded.
+   */
+  private static final Pattern     PATH_SEGMENT_SAFE     = Pattern.compile("[^/\\\\%;{}\\s?#\\[\\]]+");
+
+  /**
    * The client Spring builds. Redirects are followed because well-known
    * discovery is defined as a redirect to the real endpoint.
    */
@@ -119,8 +150,107 @@ public class HttpCardDavClient implements CardDavClient {
     this.httpClient = httpClient;
   }
 
+  /**
+   * The seam a test uses to hand in both the transport and the resolver, the second
+   * being a field-injected bean the constructor cannot otherwise reach.
+   *
+   * @param httpClient the transport to send on
+   * @param emailCredentialsResolver the resolver every request asks its header of
+   */
+  HttpCardDavClient(HttpClient httpClient, EmailCredentialsResolver emailCredentialsResolver) {
+    this.httpClient = httpClient;
+    this.emailCredentialsResolver = emailCredentialsResolver;
+  }
+
+  /**
+   * {@inheritDoc}
+   */
   @Override
-  public AddressBook discoverAddressBook(String baseUrl, String username, String password) {
+  public CardDavAccount accountOf(Long connectorId, String providerName, String username) {
+    return new CardDavAccount(connectorId, providerName, username);
+  }
+
+  /**
+   * The header this request carries, asked of the configured provider now rather
+   * than once for the conversation.
+   * <p>
+   * Per request on purpose: a Digest provider hashes the method and the URI into
+   * its header, and neither is known before here. Personal answers the same Basic
+   * value every time, so nothing changes for it today — the seam is what lets a
+   * request-dependent provider exist at all.
+   *
+   * @param account whose address book this is
+   * @return the Authorization header value
+   * @throws CardDavException when the configured provider cannot produce material
+   */
+  private String authorization(CardDavAccount account) {
+    if (emailCredentialsResolver == null) {
+      throw new CardDavException("The connector credentials contract is not available; no address book can be authenticated");
+    }
+    try {
+      return emailCredentialsResolver.authorization(account.getConnectorId(), account.getProviderName(), account.getUsername());
+    } catch (ConnectorCredentialsException e) {
+      throw new CardDavException("The credentials provider " + account.getProviderName()
+          + " could not produce credentials for this address book", e);
+    }
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public String resolveUrl(String configuredUrl, CardDavAccount account) {
+    if (StringUtils.isBlank(configuredUrl)) {
+      // Left to discoverAddressBook to refuse, so that "no CardDAV URL is
+      // configured" stays one message coming from one place.
+      return configuredUrl;
+    }
+    String resolved = configuredUrl;
+    if (StringUtils.containsAny(configuredUrl, EMAIL_PLACEHOLDER, LOCALPART_PLACEHOLDER)) {
+      // Only a templated URL needs an account to name, and only then is the
+      // provider worth asking: a fixed path gets the rest of its hrefs from
+      // discovery, so there is nothing here to substitute.
+      String target = targetAccount(account);
+      if (StringUtils.isBlank(target)) {
+        throw new CardDavException("The credentials provider " + account.getProviderName()
+            + " named no account to put in the address book URL");
+      }
+      if (!PATH_SEGMENT_SAFE.matcher(target).matches()) {
+        throw new CardDavException("The account named for this address book cannot be part of a URL path: " + target);
+      }
+      resolved = resolved.replace(EMAIL_PLACEHOLDER, target)
+                         .replace(LOCALPART_PLACEHOLDER, StringUtils.substringBefore(target, "@"));
+    }
+    // Administrators type a host, not a URI. Left alone this reaches uri() as a
+    // string with no scheme, which fails as "URI with undefined scheme" -- an
+    // error about our parser rather than about what was typed. Address books are
+    // served over TLS; assuming so beats refusing.
+    return StringUtils.startsWithAny(resolved, "http://", "https://") ? resolved : "https://" + resolved;
+  }
+
+  /**
+   * The account the configured provider names for this conversation.
+   *
+   * @param account whose address book this is
+   * @return the account to place in the URL, or null when the provider names none
+   * @throws CardDavException when the configured provider cannot answer
+   */
+  private String targetAccount(CardDavAccount account) {
+    if (emailCredentialsResolver == null) {
+      throw new CardDavException("The connector credentials contract is not available; no address book can be addressed");
+    }
+    try {
+      return emailCredentialsResolver.targetAccount(account.getConnectorId(),
+                                                    account.getProviderName(),
+                                                    account.getUsername());
+    } catch (ConnectorCredentialsException e) {
+      throw new CardDavException("The credentials provider " + account.getProviderName()
+          + " could not name the account of this address book", e);
+    }
+  }
+
+  @Override
+  public AddressBook discoverAddressBook(String baseUrl, CardDavAccount account) {
     if (StringUtils.isBlank(baseUrl)) {
       throw new CardDavException("No CardDAV URL is configured");
     }
@@ -132,31 +262,31 @@ public class HttpCardDavClient implements CardDavClient {
     // Asked with the URL EXACTLY as configured: a WebDAV collection's trailing
     // slash is part of its identity, and trimming it here made every later request
     // address something the server does not consider a collection.
-    AddressBook direct = readCollection(configured, username, password);
+    AddressBook direct = readCollection(configured, account);
     if (direct != null) {
       return direct;
     }
     // Discovery, on the other hand, appends a path, so here the trailing slash
     // would only produce a doubled one.
     String base = StringUtils.removeEnd(configured, "/");
-    String principal = discoverPrincipal(base, username, password);
-    String home = discoverHomeSet(resolve(base, principal), username, password);
-    List<AddressBook> books = findAddressBooks(resolve(base, home), username, password);
+    String principal = discoverPrincipal(base, account);
+    String home = discoverHomeSet(resolve(base, principal), account);
+    List<AddressBook> books = findAddressBooks(resolve(base, home), account);
     if (books.isEmpty()) {
       throw new CardDavException("The server exposes no address book under " + home);
     }
-    return chooseAddressBook(books, username, password);
+    return chooseAddressBook(books, account);
   }
 
   @Override
-  public String getCtag(AddressBook addressBook, String username, String password) {
-    Element response = firstResponse(propfind(addressBook.url(), PROPFIND_COLLECTION, "0", username, password));
+  public String getCtag(AddressBook addressBook, CardDavAccount account) {
+    Element response = firstResponse(propfind(addressBook.url(), PROPFIND_COLLECTION, "0", account));
     return response == null ? null : textOf(response, CALENDARSERVER_NS, CTAG_PROPERTY);
   }
 
   @Override
-  public Map<String, String> listResourceEtags(AddressBook addressBook, String username, String password) {
-    Element multistatus = propfind(addressBook.url(), PROPFIND_ETAGS, "1", username, password);
+  public Map<String, String> listResourceEtags(AddressBook addressBook, CardDavAccount account) {
+    Element multistatus = propfind(addressBook.url(), PROPFIND_ETAGS, "1", account);
     Map<String, String> etags = new LinkedHashMap<>();
     for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       String href = textOf(response, DAV_NS, "href");
@@ -172,7 +302,7 @@ public class HttpCardDavClient implements CardDavClient {
   }
 
   @Override
-  public List<ContactResource> multiget(AddressBook addressBook, List<String> hrefs, String username, String password) {
+  public List<ContactResource> multiget(AddressBook addressBook, List<String> hrefs, CardDavAccount account) {
     if (hrefs == null || hrefs.isEmpty()) {
       return List.of();
     }
@@ -184,7 +314,7 @@ public class HttpCardDavClient implements CardDavClient {
     hrefs.forEach(href -> body.append("  <d:href>").append(escape(href)).append("</d:href>\n"));
     body.append("</card:addressbook-multiget>");
 
-    Element multistatus = parse(send(request(addressBook.url(), "REPORT", body.toString(), username, password).header("Depth",
+    Element multistatus = parse(send(request(addressBook.url(), "REPORT", body.toString(), account).header("Depth",
                                                                                                                      "1")
                                                                                                               .build()),
                                 addressBook.url());
@@ -200,10 +330,10 @@ public class HttpCardDavClient implements CardDavClient {
   }
 
   @Override
-  public ContactResource fetchVCard(String url, String username, String password) {
+  public ContactResource fetchVCard(String url, CardDavAccount account) {
     HttpRequest request = HttpRequest.newBuilder(uri(url))
                                      .timeout(REQUEST_TIMEOUT)
-                                     .header("Authorization", basicAuth(username, password))
+                                     .header("Authorization", authorization(account))
                                      .GET()
                                      .build();
     try {
@@ -237,13 +367,13 @@ public class HttpCardDavClient implements CardDavClient {
   }
 
   @Override
-  public PutResult putVCard(String url, String vcard, String ifNoneMatch, String username, String password) {
-    return put(url, vcard, "If-None-Match", ifNoneMatch, username, password);
+  public PutResult putVCard(String url, String vcard, String ifNoneMatch, CardDavAccount account) {
+    return put(url, vcard, "If-None-Match", ifNoneMatch, account);
   }
 
   @Override
-  public PutResult updateVCard(String url, String vcard, String ifMatch, String username, String password) {
-    return put(url, vcard, "If-Match", ifMatch, username, password);
+  public PutResult updateVCard(String url, String vcard, String ifMatch, CardDavAccount account) {
+    return put(url, vcard, "If-Match", ifMatch, account);
   }
 
   /**
@@ -255,23 +385,22 @@ public class HttpCardDavClient implements CardDavClient {
    * @param vcard the card text to store
    * @param preconditionHeader which precondition header to send
    * @param preconditionValue its value, blank to send no precondition
-   * @param username the account to authenticate as
-   * @param password that account's password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the status and the stored card's etag when the server sent one
    */
   private PutResult put(String url,
                         String vcard,
                         String preconditionHeader,
                         String preconditionValue,
-                        String username,
-                        String password) {
+                        CardDavAccount account) {
     HttpRequest.Builder builder = HttpRequest.newBuilder(uri(url))
                                              .timeout(REQUEST_TIMEOUT)
                                              // A card, not DAV XML: request() is not reused here because its
                                              // Content-Type belongs to PROPFIND/REPORT bodies, and a server
                                              // told a vCard is application/xml may refuse or misfile it.
                                              .header("Content-Type", "text/vcard; charset=utf-8")
-                                             .header("Authorization", basicAuth(username, password))
+                                             .header("Authorization", authorization(account))
                                              .method("PUT", BodyPublishers.ofString(vcard, StandardCharsets.UTF_8));
     if (StringUtils.isNotBlank(preconditionValue)) {
       builder.header(preconditionHeader, preconditionValue);
@@ -325,13 +454,13 @@ public class HttpCardDavClient implements CardDavClient {
    * is not one — used to accept a configured collection URL directly.
    *
    * @param url the URL to test
-   * @param username the account to authenticate as
-   * @param password that account's password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the address book, or null when this URL is not one
    */
-  private AddressBook readCollection(String url, String username, String password) {
+  private AddressBook readCollection(String url, CardDavAccount account) {
     try {
-      Element response = firstResponse(propfind(url, PROPFIND_COLLECTION, "0", username, password));
+      Element response = firstResponse(propfind(url, PROPFIND_COLLECTION, "0", account));
       if (response == null || !isAddressBook(response)) {
         return null;
       }
@@ -348,17 +477,17 @@ public class HttpCardDavClient implements CardDavClient {
    * The well-known discovery step: asks who the authenticated user is.
    *
    * @param base the server base URL
-   * @param username the account to authenticate as
-   * @param password that account's password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the principal's path
    */
-  private String discoverPrincipal(String base, String username, String password) {
+  private String discoverPrincipal(String base, CardDavAccount account) {
     // Resolved from the server ROOT, not appended to what was configured. A
     // configured collection URL already carries a path, and gluing the well-known
     // path onto the end of it asks for something no server has -- which is what a
     // 404 on ".../lists/default/.well-known/carddav" looks like in the log.
     String wellKnown = uri(base).resolve("/.well-known/carddav").toString();
-    Element response = firstResponse(propfind(wellKnown, PROPFIND_PRINCIPAL, "0", username, password));
+    Element response = firstResponse(propfind(wellKnown, PROPFIND_PRINCIPAL, "0", account));
     String principal = response == null ? null : hrefWithin(response, DAV_NS, "current-user-principal");
     if (StringUtils.isBlank(principal)) {
       throw new CardDavException("The server did not say who the current user is");
@@ -370,12 +499,12 @@ public class HttpCardDavClient implements CardDavClient {
    * Asks the principal where its address books live.
    *
    * @param principalUrl the absolute principal URL
-   * @param username the account to authenticate as
-   * @param password that account's password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the address-book home path
    */
-  private String discoverHomeSet(String principalUrl, String username, String password) {
-    Element response = firstResponse(propfind(principalUrl, PROPFIND_HOME, "0", username, password));
+  private String discoverHomeSet(String principalUrl, CardDavAccount account) {
+    Element response = firstResponse(propfind(principalUrl, PROPFIND_HOME, "0", account));
     String home = response == null ? null : hrefWithin(response, CARDDAV_NS, "addressbook-home-set");
     if (StringUtils.isBlank(home)) {
       throw new CardDavException("The server did not say where the address books are");
@@ -389,12 +518,12 @@ public class HttpCardDavClient implements CardDavClient {
    * product decision nobody has made yet.
    *
    * @param homeUrl the absolute home URL
-   * @param username the account to authenticate as
-   * @param password that account's password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the address book, or null when the home holds none
    */
-  private List<AddressBook> findAddressBooks(String homeUrl, String username, String password) {
-    Element multistatus = propfind(homeUrl, PROPFIND_COLLECTION, "1", username, password);
+  private List<AddressBook> findAddressBooks(String homeUrl, CardDavAccount account) {
+    Element multistatus = propfind(homeUrl, PROPFIND_COLLECTION, "1", account);
     List<AddressBook> books = new ArrayList<>();
     for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       if (isAddressBook(response)) {
@@ -423,11 +552,11 @@ public class HttpCardDavClient implements CardDavClient {
    * knows.
    *
    * @param books the published books, never empty
-   * @param username the account
-   * @param password its password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the book to sync
    */
-  private AddressBook chooseAddressBook(List<AddressBook> books, String username, String password) {
+  private AddressBook chooseAddressBook(List<AddressBook> books, CardDavAccount account) {
     List<AddressBook> candidates = books.stream().filter(book -> !isDirectory(book)).toList();
     if (candidates.isEmpty()) {
       candidates = books;
@@ -437,7 +566,7 @@ public class HttpCardDavClient implements CardDavClient {
     for (AddressBook book : candidates) {
       // Counted rather than guessed from the name, which is localised and differs
       // per provider. One listing per book, and only while discovering.
-      int size = countEntries(book, username, password);
+      int size = countEntries(book, account);
       LOG.info("Address book published by the server: '{}' ({} entries) at {}", book.displayName(), size, book.url());
       if (size > chosenSize) {
         chosen = book;
@@ -452,13 +581,13 @@ public class HttpCardDavClient implements CardDavClient {
    * How many entries a book holds, or 0 when it cannot be listed.
    *
    * @param book the book
-   * @param username the account
-   * @param password its password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the entry count
    */
-  private int countEntries(AddressBook book, String username, String password) {
+  private int countEntries(AddressBook book, CardDavAccount account) {
     try {
-      return listResourceEtags(book, username, password).size();
+      return listResourceEtags(book, account).size();
     } catch (CardDavException e) {
       // A book that will not be listed cannot be synced either, so it loses the
       // comparison rather than failing the discovery of the others.
@@ -495,12 +624,12 @@ public class HttpCardDavClient implements CardDavClient {
    * @param url the target URL
    * @param body the request body
    * @param depth the Depth header value
-   * @param username the account to authenticate as
-   * @param password that account's password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the multistatus element
    */
-  private Element propfind(String url, String body, String depth, String username, String password) {
-    return parse(send(request(url, "PROPFIND", body, username, password).header("Depth", depth).build()), url);
+  private Element propfind(String url, String body, String depth, CardDavAccount account) {
+    return parse(send(request(url, "PROPFIND", body, account).header("Depth", depth).build()), url);
   }
 
   /**
@@ -509,15 +638,15 @@ public class HttpCardDavClient implements CardDavClient {
    * @param url the target URL
    * @param method PROPFIND or REPORT
    * @param body the XML body
-   * @param username the account to authenticate as
-   * @param password that account's password
+   * @param account whose address book this is; every request asks the provider
+   *          through it
    * @return the builder, so the caller can add its Depth
    */
-  private HttpRequest.Builder request(String url, String method, String body, String username, String password) {
+  private HttpRequest.Builder request(String url, String method, String body, CardDavAccount account) {
     return HttpRequest.newBuilder(uri(url))
                       .timeout(REQUEST_TIMEOUT)
                       .header("Content-Type", "application/xml; charset=utf-8")
-                      .header("Authorization", basicAuth(username, password))
+                      .header("Authorization", authorization(account))
                       .method(method, BodyPublishers.ofString(body, StandardCharsets.UTF_8));
   }
 
@@ -685,19 +814,6 @@ public class HttpCardDavClient implements CardDavClient {
     } catch (URISyntaxException e) {
       throw new CardDavException("Not a usable CardDAV URL: " + url, e);
     }
-  }
-
-  /**
-   * The Basic credentials header. Sent on every request rather than waiting to be
-   * challenged, which is what CardDAV servers expect and saves a round trip.
-   *
-   * @param username the account
-   * @param password its password
-   * @return the header value
-   */
-  private String basicAuth(String username, String password) {
-    String pair = StringUtils.defaultString(username) + ":" + StringUtils.defaultString(password);
-    return "Basic " + Base64.getEncoder().encodeToString(pair.getBytes(StandardCharsets.UTF_8));
   }
 
   /**
