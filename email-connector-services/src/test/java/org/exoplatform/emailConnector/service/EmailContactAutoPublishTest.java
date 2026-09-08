@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -40,6 +41,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import org.exoplatform.emailConnector.carddav.CardDavAccount;
 import org.exoplatform.emailConnector.carddav.CardDavClient;
 import org.exoplatform.emailConnector.carddav.CardDavException;
 import org.exoplatform.emailConnector.carddav.PutResult;
@@ -73,6 +75,12 @@ public class EmailContactAutoPublishTest {
   private static final String            BOOK_URL     = "https://mail.example.com/dav/alice/default/";
 
   private static final long              CONTACT_ID   = 5L;
+
+  /**
+   * The account the client mints for this conversation. Opaque to the service — it
+   * only has to travel unchanged from {@code accountOf} down to every call.
+   */
+  private static final CardDavAccount   ACCOUNT      = mock(CardDavAccount.class);
 
   @MockitoBean
   private EmailContactStorage            emailContactStorage;
@@ -142,6 +150,21 @@ public class EmailContactAutoPublishTest {
 
   // ---------------------------------------------------------------- the two switches
 
+  /**
+   * The account the client mints for every operation. Unstubbed it answers null, and
+   * a null account matches no argument matcher — the service would look as if it had
+   * never called the client at all.
+   */
+  @BeforeEach
+  void theClientMintsAnAccountAndResolvesTheUrl() {
+    lenient().when(cardDavClient.accountOf(any(), any(), any())).thenReturn(ACCOUNT);
+    // Identity, which is what the real client answers for a URL carrying no
+    // placeholder — the fixture's. Unstubbed it answers null, and a null URL
+    // matches no argument matcher, so the service would look as if it had never
+    // called the client at all.
+    lenient().when(cardDavClient.resolveUrl(any(), any())).thenAnswer(call -> call.getArgument(0));
+  }
+
   @Test
   void aUserWhoNeverAskedPublishesNothing() {
     // The upgrade case, and the default: the stored setting says nothing about
@@ -163,14 +186,14 @@ public class EmailContactAutoPublishTest {
   @Test
   void anAuthoredContactReachesTheAddressBookWhenBothSwitchesAreOn() {
     setting.setCarddavAutoPublish(true);
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(201, "\"etag-9\"", null));
 
     syncService.autoPublishContact(USERNAME, CONTACT_ID);
 
     // Through the click's own path, which is the point: creates-only under
     // If-None-Match, and the row bound to the entry it just became.
-    verify(cardDavClient).putVCard(anyString(), anyString(), eq("*"), eq("alice@example.com"), eq("secret"));
+    verify(cardDavClient).putVCard(anyString(), anyString(), eq("*"), any(CardDavAccount.class));
     verify(emailContactStorage).bindPublishedCard(eq(CONTACT_ID), eq(CONNECTOR_ID), anyString(), eq("\"etag-9\""), anyString());
   }
 
@@ -205,7 +228,7 @@ public class EmailContactAutoPublishTest {
   @Test
   void anUnreachableServerParksTheCardInsteadOfFailingTheSave() {
     setting.setCarddavAutoPublish(true);
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenThrow(new CardDavException("connection refused"));
 
     // The contact is already stored; a push that could not happen must not
@@ -232,7 +255,7 @@ public class EmailContactAutoPublishTest {
 
     assertDoesNotThrow(() -> syncService.autoPublishContact(USERNAME, CONTACT_ID));
 
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
   }
 
@@ -247,7 +270,7 @@ public class EmailContactAutoPublishTest {
 
     assertDoesNotThrow(() -> syncService.autoPublishContact(USERNAME, CONTACT_ID));
 
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
   }
 
@@ -312,7 +335,7 @@ public class EmailContactAutoPublishTest {
    * entry queued to write one later.
    */
   private void verifyNothingLeft() {
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     verify(userEmailSettingService, never()).setContactPublishQueue(any(), anyString());
     verify(emailContactStorage, never()).bindPublishedCard(anyLong(), anyLong(), anyString(), any(), anyString());
   }

@@ -24,6 +24,7 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsChanne
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
+import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 import org.exoplatform.services.connector.credentials.MailConnectorCredentials;
 
 /**
@@ -82,6 +83,58 @@ public class EmailCredentialsResolver {
                                      ConnectorCredentialsChannel channel) throws ConnectorCredentialsException {
     ConnectorCredentialsContext context = context(connectorId, providerName, username, channel);
     return ((MailConnectorCredentials) connectorCredentialsService.produce(context)).getAuthenticator();
+  }
+
+  /**
+   * The {@code Authorization} header value a CardDAV conversation carries, from the
+   * provider the connector preset is configured with.
+   * <p>
+   * The cast holds for the same reason the mail one does: the resolution service
+   * refuses a provider that does not declare the requested channel, so an
+   * HTTP-declaring provider answers HTTP material. A provider that supports this
+   * connector's mail channels but not HTTP therefore fails here as a named
+   * refusal rather than as a silently skipped contact sync.
+   *
+   * @param connectorId the connector preset the account is bound to
+   * @param providerName provider the preset is configured with
+   * @param username the eXo login the material is resolved for
+   * @return the header value to send on every request of that conversation
+   * @throws ConnectorCredentialsException when no provider of that name can
+   *           produce HTTP material for this account
+   */
+  public String authorization(Long connectorId,
+                              String providerName,
+                              String username) throws ConnectorCredentialsException {
+    ConnectorCredentialsContext context = context(connectorId, providerName, username, ConnectorCredentialsChannel.HTTP);
+    return ((HttpConnectorCredentials) connectorCredentialsService.produce(context)).getAuthorizationHeaderValue();
+  }
+
+  /**
+   * The account an address-book URL addresses, as the configured provider names it
+   * — the user's own for Personal, someone else's for a provider that
+   * authenticates as a technical account.
+   * <p>
+   * Asked on the HTTP channel, like {@link #authorization(Long, String, String)}:
+   * it is the same conversation, and a provider that does not serve HTTP has no
+   * address book to name an account in.
+   * <p>
+   * Answering null is a legitimate answer and not a failure — the caller decides
+   * whether it can build its URL without one.
+   *
+   * @param connectorId the connector preset the account is bound to
+   * @param providerName provider the preset is configured with
+   * @param username the eXo login the target is resolved for
+   * @return the account to place in the URL, or null when the provider names none
+   * @throws ConnectorCredentialsException when no provider of that name can
+   *           answer
+   */
+  public String targetAccount(Long connectorId,
+                              String providerName,
+                              String username) throws ConnectorCredentialsException {
+    return connectorCredentialsService.resolveTargetIdentity(context(connectorId,
+                                                                     providerName,
+                                                                     username,
+                                                                     ConnectorCredentialsChannel.HTTP));
   }
 
   /**

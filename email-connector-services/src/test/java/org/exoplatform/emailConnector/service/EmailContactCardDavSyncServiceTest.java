@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -49,6 +50,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import org.exoplatform.emailConnector.carddav.CardDavAccount;
 import org.exoplatform.emailConnector.carddav.AddressBook;
 import org.exoplatform.emailConnector.carddav.CardDavClient;
 import org.exoplatform.emailConnector.carddav.CardDavException;
@@ -81,7 +83,20 @@ public class EmailContactCardDavSyncServiceTest {
 
   private static final long                  CONNECTOR_ID = 7L;
 
+  /**
+   * The provider that connector preset is configured with. Deliberately not
+   * "personal": that name is also the storage default, so a service that hard-coded
+   * it instead of reading the row would pass against it.
+   */
+  private static final String                PROVIDER     = "bluemind-sudo";
+
   private static final String                BOOK_URL     = "https://mail.example.com/dav/alice/default/";
+
+  /**
+   * The account the client mints for this conversation. Opaque to the service — it
+   * only has to travel unchanged from {@code accountOf} down to every call.
+   */
+  private static final CardDavAccount   ACCOUNT      = mock(CardDavAccount.class);
 
   @MockitoBean
   private EmailContactStorage                emailContactStorage;
@@ -122,13 +137,29 @@ public class EmailContactCardDavSyncServiceTest {
     EmailConnector connector = new EmailConnector();
     connector.setId(CONNECTOR_ID);
     connector.setCarddavUrl("https://mail.example.com");
+    connector.setAuthProviderName(PROVIDER);
     lenient().when(emailConnectorService.getEmailConnector(CONNECTOR_ID)).thenReturn(connector);
     lenient().when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(new ContactSyncState());
     // Empty and shared across calls, like the real accessor's never-null answer:
     // the publish and drain paths consult it even when nothing was ever queued.
     lenient().when(userEmailSettingService.getContactPublishQueue(USERNAME)).thenReturn(new ContactPublishQueue());
-    lenient().when(cardDavClient.discoverAddressBook(anyString(), anyString(), anyString()))
+    lenient().when(cardDavClient.discoverAddressBook(anyString(), any(CardDavAccount.class)))
              .thenReturn(new AddressBook(BOOK_URL, "Contacts", "ctag-1"));
+  }
+
+  /**
+   * The account the client mints for every operation. Unstubbed it answers null, and
+   * a null account matches no argument matcher — the service would look as if it had
+   * never called the client at all.
+   */
+  @BeforeEach
+  void theClientMintsAnAccountAndResolvesTheUrl() {
+    lenient().when(cardDavClient.accountOf(any(), any(), any())).thenReturn(ACCOUNT);
+    // Identity, which is what the real client answers for a URL carrying no
+    // placeholder — the fixture's. Unstubbed it answers null, and a null URL
+    // matches no argument matcher, so the service would look as if it had never
+    // called the client at all.
+    lenient().when(cardDavClient.resolveUrl(any(), any())).thenAnswer(call -> call.getArgument(0));
   }
 
   @Test
@@ -139,12 +170,12 @@ public class EmailContactCardDavSyncServiceTest {
     state.setAddressBookHref(BOOK_URL);
     state.setCtag("ctag-1");
     when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-1");
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenReturn("ctag-1");
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, never()).listResourceEtags(any(), anyString(), anyString());
-    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+    verify(cardDavClient, never()).listResourceEtags(any(), any(CardDavAccount.class));
+    verify(cardDavClient, never()).multiget(any(), any(), any(CardDavAccount.class));
   }
 
   @Test
@@ -157,12 +188,25 @@ public class EmailContactCardDavSyncServiceTest {
     state.setConfiguredUrl("https://mail.example.com");
     state.setCtag("ctag-1");
     when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-1");
-    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenReturn("ctag-1");
+    when(cardDavClient.listResourceEtags(any(), any(CardDavAccount.class))).thenReturn(Map.of());
 
     syncService.syncAddressBook(USERNAME, true);
 
-    verify(cardDavClient).listResourceEtags(any(), anyString(), anyString());
+    verify(cardDavClient).listResourceEtags(any(), any(CardDavAccount.class));
+  }
+
+  @Test
+  void theAccountIsMintedFromTheConnectorsProviderAndTheSyncedUser() {
+    // What the service still owns after EXO-89708: naming whose credentials the
+    // conversation authenticates with. It reads the provider off the connector row
+    // and the login off the sync it was asked for — nothing from the stored password,
+    // which is why a provider that holds no password at all works here.
+    givenServerHas(Map.of());
+
+    syncService.syncAddressBook(USERNAME);
+
+    verify(cardDavClient).accountOf(CONNECTOR_ID, PROVIDER, USERNAME);
   }
 
   @Test
@@ -180,7 +224,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+    verify(cardDavClient, never()).multiget(any(), any(), any(CardDavAccount.class));
   }
 
   // -------------------------------------------------------------------------
@@ -202,7 +246,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+    verify(cardDavClient, never()).multiget(any(), any(), any(CardDavAccount.class));
   }
 
   @Test
@@ -214,7 +258,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+    verify(cardDavClient, never()).multiget(any(), any(), any(CardDavAccount.class));
   }
 
   @Test
@@ -224,7 +268,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+    verify(cardDavClient, never()).multiget(any(), any(), any(CardDavAccount.class));
   }
 
   @Test
@@ -239,7 +283,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), anyString(), anyString());
+    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), any(CardDavAccount.class));
   }
 
   @Test
@@ -250,7 +294,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), anyString(), anyString());
+    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), any(CardDavAccount.class));
   }
 
   @Test
@@ -262,7 +306,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), anyString(), anyString());
+    verify(cardDavClient).multiget(any(), eq(List.of("/dav/jane.vcf")), any(CardDavAccount.class));
   }
 
   @Test
@@ -317,7 +361,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, never()).multiget(any(), any(), anyString(), anyString());
+    verify(cardDavClient, never()).multiget(any(), any(), any(CardDavAccount.class));
     verify(emailContactStorage, never()).saveCardDavContact(anyString(),
                                                             any(),
                                                             anyLong(),
@@ -642,10 +686,10 @@ public class EmailContactCardDavSyncServiceTest {
     state.setCtag("ctag-old");
     state.setAddressBookHref(BOOK_URL);
     when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-new");
-    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of("/dav/jane.vcf", "\"v1\""));
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenReturn("ctag-new");
+    when(cardDavClient.listResourceEtags(any(), any(CardDavAccount.class))).thenReturn(Map.of("/dav/jane.vcf", "\"v1\""));
     when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
-    when(cardDavClient.multiget(any(), any(), anyString(), anyString())).thenThrow(new CardDavException("boom"));
+    when(cardDavClient.multiget(any(), any(), any(CardDavAccount.class))).thenThrow(new CardDavException("boom"));
 
     syncService.syncAddressBook(USERNAME);
 
@@ -662,7 +706,7 @@ public class EmailContactCardDavSyncServiceTest {
     state.setFailedAttempts(2);
     state.setAddressBookHref(BOOK_URL);
     when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenThrow(new CardDavException("401"));
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenThrow(new CardDavException("401"));
 
     syncService.syncAddressBook(USERNAME);
 
@@ -683,7 +727,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient, never()).getCtag(any(), anyString(), anyString());
+    verify(cardDavClient, never()).getCtag(any(), any(CardDavAccount.class));
   }
 
   @Test
@@ -714,21 +758,24 @@ public class EmailContactCardDavSyncServiceTest {
   }
 
   @Test
-  void theConfiguredUrlCarriesThePersonItIsFor() {
+  void theConfiguredUrlIsResolvedByTheClientNotHere() {
     // Google puts the account inside the collection path, so one preset shared by
-    // every user of a provider cannot hold it literally.
+    // every user of a provider cannot hold it literally. Filling it in needs the
+    // provider, which this service deliberately has no seam onto: it hands the
+    // client the URL as the administrator wrote it and talks to what comes back.
     EmailConnector connector = new EmailConnector();
     connector.setId(CONNECTOR_ID);
     connector.setCarddavUrl("https://www.googleapis.com/carddav/v1/principals/{email}/lists/default/");
     when(emailConnectorService.getEmailConnector(CONNECTOR_ID)).thenReturn(connector);
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-2");
-    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+    when(cardDavClient.resolveUrl("https://www.googleapis.com/carddav/v1/principals/{email}/lists/default/", ACCOUNT))
+                                                                                                                  .thenReturn("https://www.googleapis.com/carddav/v1/principals/alice@example.com/lists/default/");
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenReturn("ctag-2");
+    when(cardDavClient.listResourceEtags(any(), any(CardDavAccount.class))).thenReturn(Map.of());
 
     syncService.syncAddressBook(USERNAME);
 
     verify(cardDavClient).discoverAddressBook(eq("https://www.googleapis.com/carddav/v1/principals/alice@example.com/lists/default/"),
-                                              anyString(),
-                                              anyString());
+                                              any(CardDavAccount.class));
   }
 
   @Test
@@ -738,12 +785,12 @@ public class EmailContactCardDavSyncServiceTest {
     state.setConfiguredUrl("https://old.example.com");
     state.setCtag("ctag-old");
     when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(state);
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-2");
-    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenReturn("ctag-2");
+    when(cardDavClient.listResourceEtags(any(), any(CardDavAccount.class))).thenReturn(Map.of());
 
     syncService.syncAddressBook(USERNAME);
 
-    verify(cardDavClient).discoverAddressBook(eq("https://mail.example.com"), anyString(), anyString());
+    verify(cardDavClient).discoverAddressBook(eq("https://mail.example.com"), any(CardDavAccount.class));
   }
 
   /**
@@ -752,8 +799,8 @@ public class EmailContactCardDavSyncServiceTest {
    * @param etags entry path to entry version
    */
   private void givenServerHas(Map<String, String> etags) {
-    when(cardDavClient.getCtag(any(), anyString(), anyString())).thenReturn("ctag-2");
-    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(etags);
+    when(cardDavClient.getCtag(any(), any(CardDavAccount.class))).thenReturn("ctag-2");
+    when(cardDavClient.listResourceEtags(any(), any(CardDavAccount.class))).thenReturn(etags);
     lenient().when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
   }
 
@@ -764,7 +811,7 @@ public class EmailContactCardDavSyncServiceTest {
    * @param card what the parser makes of it
    */
   private void givenServerReturns(ContactResource resource, ParsedVCard card) {
-    when(cardDavClient.multiget(any(), any(), anyString(), anyString())).thenReturn(List.of(resource));
+    when(cardDavClient.multiget(any(), any(), any(CardDavAccount.class))).thenReturn(List.of(resource));
     when(vCardParser.parse(resource.vcard())).thenReturn(card);
   }
 
@@ -867,27 +914,11 @@ public class EmailContactCardDavSyncServiceTest {
   }
 
   @Test
-  void aHostTypedWithoutASchemeIsStillAHost() {
-    EmailConnector bare = new EmailConnector();
-    bare.setId(CONNECTOR_ID);
-    bare.setCarddavUrl("webmail.example.com/dav/");
-    when(emailConnectorService.getEmailConnector(CONNECTOR_ID)).thenReturn(bare);
-    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
-    when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
-
-    syncService.syncAddressBook(USERNAME, true);
-
-    // What an administrator types is a host. Refusing it produced an error about
-    // our URI parser, which says nothing about what to fix.
-    verify(cardDavClient).discoverAddressBook(eq("https://webmail.example.com/dav/"), anyString(), anyString());
-  }
-
-  @Test
   void aFailureThatIsNotTheServersIsStillRecorded() {
     // An exception thrown before any request used to be logged and forgotten,
     // leaving the stored status at whatever the last good run wrote -- so the page
     // reported a sync that never ran.
-    when(cardDavClient.discoverAddressBook(anyString(), anyString(), anyString()))
+    when(cardDavClient.discoverAddressBook(anyString(), any(CardDavAccount.class)))
                                                                                   .thenThrow(new IllegalArgumentException("URI with undefined scheme"));
 
     syncService.syncAddressBook(USERNAME, true);
@@ -909,7 +940,7 @@ public class EmailContactCardDavSyncServiceTest {
 
     syncService.syncAddressBookIfDue(USERNAME);
 
-    verify(cardDavClient, never()).discoverAddressBook(anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).discoverAddressBook(anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -917,23 +948,23 @@ public class EmailContactCardDavSyncServiceTest {
     ContactSyncState old = new ContactSyncState();
     old.setLastSyncStartDate(System.currentTimeMillis() - 7L * 3600_000L);
     when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(old);
-    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+    when(cardDavClient.listResourceEtags(any(), any(CardDavAccount.class))).thenReturn(Map.of());
     when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
 
     syncService.syncAddressBookIfDue(USERNAME);
 
-    verify(cardDavClient).discoverAddressBook(anyString(), anyString(), anyString());
+    verify(cardDavClient).discoverAddressBook(anyString(), any(CardDavAccount.class));
   }
 
   @Test
   void anAddressBookThatHasNeverSyncedRunsAtTheFirstOpportunity() {
     when(userEmailSettingService.getContactSyncState(USERNAME)).thenReturn(new ContactSyncState());
-    when(cardDavClient.listResourceEtags(any(), anyString(), anyString())).thenReturn(Map.of());
+    when(cardDavClient.listResourceEtags(any(), any(CardDavAccount.class))).thenReturn(Map.of());
     when(emailContactStorage.getCardDavRows(USERNAME, CONNECTOR_ID)).thenReturn(List.of());
 
     syncService.syncAddressBookIfDue(USERNAME);
 
-    verify(cardDavClient).discoverAddressBook(anyString(), anyString(), anyString());
+    verify(cardDavClient).discoverAddressBook(anyString(), any(CardDavAccount.class));
   }
 
   /**
@@ -976,7 +1007,7 @@ public class EmailContactCardDavSyncServiceTest {
                                        assertThrows(IllegalArgumentException.class,
                                                     () -> syncService.publishContact(USERNAME, 5L));
       assertEquals(EmailContactCardDavSyncService.PUBLISH_DISABLED, refusal.getMessage());
-      verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+      verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     } finally {
       System.clearProperty(EmailContactCardDavSyncService.PUBLISH_ENABLED_PROPERTY);
     }
@@ -990,7 +1021,7 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(null);
 
     assertNull(syncService.publishContact(USERNAME, 5L));
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -1002,7 +1033,7 @@ public class EmailContactCardDavSyncServiceTest {
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
                                                     () -> syncService.publishContact(USERNAME, 5L));
     assertEquals(EmailContactCardDavSyncService.PUBLISH_SOURCE_NOT_ALLOWED, refusal.getMessage());
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -1012,7 +1043,7 @@ public class EmailContactCardDavSyncServiceTest {
     IllegalStateException refusal = assertThrows(IllegalStateException.class,
                                                  () -> syncService.publishContact(USERNAME, 5L));
     assertEquals(EmailContactCardDavSyncService.PUBLISH_ALREADY_PUBLISHED, refusal.getMessage());
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -1023,7 +1054,7 @@ public class EmailContactCardDavSyncServiceTest {
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
                                                     () -> syncService.publishContact(USERNAME, 5L));
     assertEquals(EmailContactCardDavSyncService.PUBLISH_NO_ADDRESS_BOOK, refusal.getMessage());
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -1038,8 +1069,8 @@ public class EmailContactCardDavSyncServiceTest {
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
                                                     () -> syncService.publishContact(USERNAME, 5L));
     assertEquals(EmailContactCardDavSyncService.PUBLISH_NOT_DISCOVERED, refusal.getMessage());
-    verify(cardDavClient, never()).discoverAddressBook(anyString(), anyString(), anyString());
-    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).discoverAddressBook(anyString(), any(CardDavAccount.class));
+    verify(cardDavClient, never()).putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -1047,7 +1078,7 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
     givenADiscoveredBook();
     when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(201, "\"etag-9\"", null));
 
     EmailContact published = syncService.publishContact(USERNAME, 5L);
@@ -1055,7 +1086,7 @@ public class EmailContactCardDavSyncServiceTest {
     assertNotNull(published);
     ArgumentCaptor<String> href = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<String> condition = ArgumentCaptor.forClass(String.class);
-    verify(cardDavClient).putVCard(href.capture(), anyString(), condition.capture(), eq("alice@example.com"), eq("secret"));
+    verify(cardDavClient).putVCard(href.capture(), anyString(), condition.capture(), any(CardDavAccount.class));
     assertTrue(href.getValue().startsWith(BOOK_URL), "the card goes into the book discovery verified, nowhere else");
     assertTrue(href.getValue().endsWith(".vcf"));
     assertEquals("*", condition.getValue(), "creates-only: the server is told to refuse an existing entry");
@@ -1084,7 +1115,7 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
     givenADiscoveredBook();
     when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(201,
                                                 "\"etag-9\"",
                                                 "https://mail.example.com/dav/alice/default/server-chosen.vcf"));
@@ -1103,7 +1134,7 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.COLLECTED));
     givenADiscoveredBook();
     when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(412, null, null));
 
     IllegalStateException refusal = assertThrows(IllegalStateException.class,
@@ -1120,7 +1151,7 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.MANUAL));
     givenADiscoveredBook();
     when(emailContactVCardService.getPublishVCard(any(), anyString())).thenReturn("BEGIN:VCARD\nEND:VCARD\n");
-    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.putVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(204, null, null));
 
     syncService.publishContact(USERNAME, 5L);
@@ -1157,7 +1188,7 @@ public class EmailContactCardDavSyncServiceTest {
                                        assertThrows(IllegalArgumentException.class,
                                                     () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
       assertEquals(EmailContactCardDavSyncService.PUBLISH_DISABLED, refusal.getMessage());
-      verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+      verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     } finally {
       System.clearProperty(EmailContactCardDavSyncService.PUBLISH_ENABLED_PROPERTY);
     }
@@ -1171,7 +1202,7 @@ public class EmailContactCardDavSyncServiceTest {
                                      assertThrows(IllegalArgumentException.class,
                                                   () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
     assertEquals(EmailContactCardDavSyncService.UPDATE_NOT_ADDRESS_BOOK, refusal.getMessage());
-    verify(cardDavClient, never()).fetchVCard(anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).fetchVCard(anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -1193,7 +1224,7 @@ public class EmailContactCardDavSyncServiceTest {
     IllegalStateException refusal = assertThrows(IllegalStateException.class,
                                                  () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
     assertEquals(EmailContactCardDavSyncService.UPDATE_NO_SERVER_ENTRY, refusal.getMessage());
-    verify(cardDavClient, never()).fetchVCard(anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).fetchVCard(anyString(), any(CardDavAccount.class));
     verify(emailContactStorage, never()).saveCardDavContact(anyString(), any(), any(), any(), any(), any(), any(), anyBoolean());
   }
 
@@ -1218,7 +1249,7 @@ public class EmailContactCardDavSyncServiceTest {
     IllegalStateException refusal = assertThrows(IllegalStateException.class,
                                                  () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
     assertEquals(EmailContactService.CONTACT_ALREADY_EXISTS, refusal.getMessage());
-    verify(cardDavClient, never()).fetchVCard(anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).fetchVCard(anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -1226,12 +1257,12 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
     givenADiscoveredBook();
     givenABoundRow();
-    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString())).thenReturn(null);
+    when(cardDavClient.fetchVCard(anyString(), any(CardDavAccount.class))).thenReturn(null);
 
     IllegalStateException refusal = assertThrows(IllegalStateException.class,
                                                  () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
     assertEquals(EmailContactCardDavSyncService.UPDATE_ENTRY_GONE, refusal.getMessage());
-    verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
   }
 
   @Test
@@ -1243,21 +1274,19 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
     givenADiscoveredBook();
     givenABoundRow();
-    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+    when(cardDavClient.fetchVCard(anyString(), any(CardDavAccount.class)))
                       .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"fresh\"", "RAW-CARD"));
     when(vCardParser.merge(eq("RAW-CARD"), any())).thenReturn("MERGED-CARD");
-    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(204, "\"after\"", null));
     when(vCardParser.parse("MERGED-CARD")).thenReturn(card("Bobby", "bob@example.org"));
 
     syncService.updateAddressBookContact(USERNAME, 5L, editedBody());
 
-    verify(cardDavClient).fetchVCard(eq(BOOK_URL + "bob.vcf"), eq("alice@example.com"), eq("secret"));
+    verify(cardDavClient).fetchVCard(eq(BOOK_URL + "bob.vcf"), any(CardDavAccount.class));
     verify(cardDavClient).updateVCard(eq(BOOK_URL + "bob.vcf"),
                                       eq("MERGED-CARD"),
-                                      eq("\"fresh\""),
-                                      eq("alice@example.com"),
-                                      eq("secret"));
+                                      eq("\"fresh\""), any(CardDavAccount.class));
     // The local row becomes the merged card AS PUSHED, through the inbound
     // sync's own write, at the version the PUT answered -- photo untouched.
     verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
@@ -1281,17 +1310,17 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
     givenADiscoveredBook();
     givenABoundRow();
-    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+    when(cardDavClient.fetchVCard(anyString(), any(CardDavAccount.class)))
                       .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "W/\"weak one\"", "RAW-CARD"));
     when(vCardParser.merge(eq("RAW-CARD"), any())).thenReturn("MERGED-CARD");
-    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(204, "W/\"weak two\"", null));
     when(vCardParser.parse("MERGED-CARD")).thenReturn(card("Bobby", "bob@example.org"));
 
     syncService.updateAddressBookContact(USERNAME, 5L, editedBody());
 
     // Weak marker, quotes and inner space, all of it, exactly as received.
-    verify(cardDavClient).updateVCard(anyString(), anyString(), eq("W/\"weak one\""), anyString(), anyString());
+    verify(cardDavClient).updateVCard(anyString(), anyString(), eq("W/\"weak one\""), any(CardDavAccount.class));
     // And the row records what the PUT answered, equally untouched: the version
     // the sync compares is normalised WHEN COMPARED, never when stored.
     verify(emailContactStorage).saveCardDavContact(eq(USERNAME),
@@ -1312,10 +1341,10 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
     givenADiscoveredBook();
     givenABoundRow();
-    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+    when(cardDavClient.fetchVCard(anyString(), any(CardDavAccount.class)))
                       .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"fresh\"", "RAW-CARD"));
     when(vCardParser.merge(eq("RAW-CARD"), any())).thenReturn("MERGED-CARD");
-    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(204, null, null));
     when(vCardParser.parse("MERGED-CARD")).thenReturn(card("Bobby", "bob@example.org"));
 
@@ -1341,11 +1370,11 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
     givenADiscoveredBook();
     givenABoundRow();
-    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+    when(cardDavClient.fetchVCard(anyString(), any(CardDavAccount.class)))
                       .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"fresh\"", "RAW-CARD"))
                       .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"theirs\"", "THEIR-CARD"));
     when(vCardParser.merge(eq("RAW-CARD"), any())).thenReturn("MERGED-CARD");
-    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(cardDavClient.updateVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class)))
                       .thenReturn(new PutResult(412, null, null));
     when(vCardParser.parse("THEIR-CARD")).thenReturn(card("Their Bob", "bob@example.org"));
 
@@ -1373,12 +1402,12 @@ public class EmailContactCardDavSyncServiceTest {
     when(emailContactService.getContact(5L, USERNAME)).thenReturn(ownContact(5L, EmailContactSource.CARDDAV));
     givenADiscoveredBook();
     givenABoundRow();
-    when(cardDavClient.fetchVCard(anyString(), anyString(), anyString()))
+    when(cardDavClient.fetchVCard(anyString(), any(CardDavAccount.class)))
                       .thenReturn(new ContactResource(BOOK_URL + "bob.vcf", "\"fresh\"", "GARBAGE"));
     when(vCardParser.merge(eq("GARBAGE"), any())).thenReturn(null);
 
     assertThrows(CardDavException.class, () -> syncService.updateAddressBookContact(USERNAME, 5L, editedBody()));
-    verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(cardDavClient, never()).updateVCard(anyString(), anyString(), anyString(), any(CardDavAccount.class));
     verify(emailContactStorage, never()).saveCardDavContact(anyString(), any(), any(), any(), any(), any(), any(), anyBoolean());
   }
 
