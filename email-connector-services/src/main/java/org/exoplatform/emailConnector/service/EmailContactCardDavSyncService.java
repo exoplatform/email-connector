@@ -35,6 +35,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.emailConnector.carddav.AddressBook;
+import org.exoplatform.emailConnector.carddav.CardDavAccount;
 import org.exoplatform.emailConnector.carddav.CardDavClient;
 import org.exoplatform.emailConnector.carddav.CardDavException;
 import org.exoplatform.emailConnector.carddav.CardDavPublishQueuedException;
@@ -569,6 +570,24 @@ public class EmailContactCardDavSyncService {
   }
 
   /**
+   * Whose address book an operation is about, built once from the connector row it
+   * belongs to and handed to every request of that operation.
+   * <p>
+   * It carries no material. The header is asked of the provider inside the client,
+   * once per request, because a Digest provider hashes the request method and URI
+   * into it — neither is known here. Personal answers the same value every time, so
+   * nothing changes for it today; what changes is that a request-dependent provider
+   * becomes possible at all.
+   *
+   * @param connector the connector preset the account is bound to
+   * @param username the eXo login the material will be resolved for
+   * @return the account to hand to every request of one operation
+   */
+  private CardDavAccount accountFor(EmailConnector connector, String username) {
+    return cardDavClient.accountOf(connector.getId(), connector.getAuthProviderName(), username);
+  }
+
+  /**
    * The publish itself, exactly as slices 1 and 2 built it — every guard, the
    * creates-only PUT, the binding of the row to the server's own name for the
    * entry. Kept free of any queue knowledge so the drain can call it per entry
@@ -618,8 +637,9 @@ public class EmailContactCardDavSyncService {
     // the same book. With discovery already done this answers from stored state;
     // it only goes back to the network when an administrator repointed the
     // connector -- and then it verifies the NEW book before anything is written.
+    CardDavAccount account = accountFor(connector, username);
     String previousHref = state.getAddressBookHref();
-    AddressBook addressBook = resolveAddressBook(setting, connector, state);
+    AddressBook addressBook = resolveAddressBook(connector, state, account);
     if (!StringUtils.equals(previousHref, addressBook.url())) {
       // Discovery ran and found a different book: remembered, as a sync run
       // would have remembered it, so the next publish or sync starts there.
@@ -628,7 +648,7 @@ public class EmailContactCardDavSyncService {
     String uid = UUID.randomUUID().toString();
     String putUrl = StringUtils.removeEnd(addressBook.url(), "/") + "/" + uid + ".vcf";
     String vcard = emailContactVCardService.getPublishVCard(contact, uid);
-    PutResult result = cardDavClient.putVCard(putUrl, vcard, "*", setting.getEmailAddress(), setting.getEmailPassword());
+    PutResult result = cardDavClient.putVCard(putUrl, vcard, "*", account);
     if (result.preconditionFailed()) {
       // The server refusing to create is it keeping the only promise that makes
       // this slice safe. A UUID colliding is not the likely story here -- a
@@ -1056,13 +1076,14 @@ public class EmailContactCardDavSyncService {
     // Everything refusable about the edit itself is refused HERE, before any
     // network: past this point the only refusals left are the server's own.
     ParsedVCard editedCard = toEditedCard(contact, edited, username, contactId);
+    CardDavAccount account = accountFor(connector, username);
     String previousHref = state.getAddressBookHref();
-    AddressBook addressBook = resolveAddressBook(setting, connector, state);
+    AddressBook addressBook = resolveAddressBook(connector, state, account);
     if (!StringUtils.equals(previousHref, addressBook.url())) {
       userEmailSettingService.setContactSyncState(state, username);
     }
     String entryUrl = entryUrlOf(addressBook, row.href());
-    ContactResource fetched = cardDavClient.fetchVCard(entryUrl, setting.getEmailAddress(), setting.getEmailPassword());
+    ContactResource fetched = cardDavClient.fetchVCard(entryUrl, account);
     if (fetched == null) {
       // The entry is gone from the server; the next sync will demote or delete
       // the row, and editing it further would recreate what somebody deleted.
@@ -1086,13 +1107,12 @@ public class EmailContactCardDavSyncService {
     PutResult result = cardDavClient.updateVCard(entryUrl,
                                                  merged,
                                                  fetched.etag(),
-                                                 setting.getEmailAddress(),
-                                                 setting.getEmailPassword());
+                                                 account);
     if (result.preconditionFailed()) {
       // Somebody changed the entry between this code's fetch and its PUT, and
       // their change stays: the server's card becomes the local baseline, and
       // the refusal travels to the form still holding the user's words.
-      adoptServerCard(username, row, connector.getId(), entryUrl, setting, fetched);
+      adoptServerCard(username, row, connector.getId(), entryUrl, setting, fetched, account);
       throw new IllegalStateException(UPDATE_CONFLICT);
     }
     applyCard(username, row, connector.getId(), merged, result.etag());
@@ -1244,10 +1264,11 @@ public class EmailContactCardDavSyncService {
                                Long connectorId,
                                String entryUrl,
                                UserEmailSetting setting,
-                               ContactResource fetchedAtSave) {
+                               ContactResource fetchedAtSave,
+                               CardDavAccount account) {
     ContactResource latest = fetchedAtSave;
     try {
-      latest = cardDavClient.fetchVCard(entryUrl, setting.getEmailAddress(), setting.getEmailPassword());
+      latest = cardDavClient.fetchVCard(entryUrl, account);
     } catch (CardDavException e) {
       LOG.debug("The conflicting card at {} could not be re-read; the save-time copy stands in", entryUrl, e);
     }
@@ -1346,12 +1367,13 @@ public class EmailContactCardDavSyncService {
     state.setLastSyncStartDate(new Date().getTime());
     userEmailSettingService.setContactSyncState(state, username);
     try {
+      CardDavAccount account = accountFor(connector, username);
       String previousBook = state.getAddressBookHref();
-      AddressBook addressBook = resolveAddressBook(setting, connector, state);
+      AddressBook addressBook = resolveAddressBook(connector, state, account);
       // An administrator repointing the connector is not 500 people being deleted,
       // and must not be treated as one.
       boolean bookChanged = previousBook != null && !previousBook.equals(addressBook.url());
-      String currentCtag = cardDavClient.getCtag(addressBook, setting.getEmailAddress(), setting.getEmailPassword());
+      String currentCtag = cardDavClient.getCtag(addressBook, account);
       // The cheap check is skipped for a run somebody asked for. It makes the
       // scheduled job nearly free, but it also means an address book that has not
       // changed is never looked at again -- so after the rules for reading it
@@ -1362,7 +1384,7 @@ public class EmailContactCardDavSyncService {
         // why the job can run often without costing anything.
         succeed(username, state, state.getCtag());
       } else {
-        boolean complete = reconcile(username, setting, connector, addressBook, bookChanged);
+        boolean complete = reconcile(username, setting, connector, addressBook, bookChanged, account);
         // The version is only recorded when the run saw everything. Recording it
         // after a partial run would make the next run's cheap check skip exactly
         // the entries this one missed, permanently and without a trace.
@@ -1384,53 +1406,30 @@ public class EmailContactCardDavSyncService {
 
   /**
    * The address book to talk to, discovered once and remembered.
+   * <p>
+   * The URL is resolved by the client, which is where the configured provider is
+   * asked whose account the path addresses — this service holds no credentials
+   * seam of its own.
    *
-   * @param setting the user's mail binding
    * @param connector the provider preset
    * @param state where the last run got to
+   * @param account whose address book this is
    * @return the address book
    */
-  private AddressBook resolveAddressBook(UserEmailSetting setting, EmailConnector connector, ContactSyncState state) {
-    String configured = resolveConfiguredUrl(connector.getCarddavUrl(), setting.getEmailAddress());
+  private AddressBook resolveAddressBook(EmailConnector connector,
+                                         ContactSyncState state,
+                                         CardDavAccount account) {
+    String configured = cardDavClient.resolveUrl(connector.getCarddavUrl(), account);
     if (StringUtils.isNotBlank(state.getAddressBookHref()) && StringUtils.equals(configured, state.getConfiguredUrl())) {
       return new AddressBook(state.getAddressBookHref(), null, state.getCtag());
     }
     // Either nothing was discovered yet, or an administrator repointed the
     // connector somewhere else. The second case must not reuse the old book.
     AddressBook discovered = cardDavClient.discoverAddressBook(configured,
-                                                               setting.getEmailAddress(),
-                                                               setting.getEmailPassword());
+                                                               account);
     state.setAddressBookHref(discovered.url());
     state.setConfiguredUrl(configured);
     return discovered;
-  }
-
-  /**
-   * Fills the per-user placeholders an administrator may have written into the
-   * connector's CardDAV URL.
-   * <p>
-   * Some providers put the account inside the collection path — Google's is
-   * {@code /carddav/v1/principals/somebody@gmail.com/lists/default/} — which a
-   * single preset shared by every user of that provider cannot hold literally.
-   * Discovery would normally spare us this, but Google does not serve
-   * {@code /.well-known/carddav} at all. So the preset carries the shape and each
-   * run fills in whose account it is.
-   *
-   * @param configuredUrl the URL as the administrator wrote it
-   * @param emailAddress the user's own mailbox address
-   * @return the URL for this user
-   */
-  private String resolveConfiguredUrl(String configuredUrl, String emailAddress) {
-    if (StringUtils.isBlank(configuredUrl) || StringUtils.isBlank(emailAddress)) {
-      return configuredUrl;
-    }
-    String localPart = StringUtils.substringBefore(emailAddress, "@");
-    String resolved = configuredUrl.replace("{email}", emailAddress).replace("{localpart}", localPart);
-    // Administrators type a host, not a URI. Left alone this reaches the client as
-    // a string with no scheme, which fails as "URI with undefined scheme" -- an
-    // error about our parser rather than about what was typed. Address books are
-    // served over TLS; assuming so beats refusing.
-    return StringUtils.startsWithAny(resolved, "http://", "https://") ? resolved : "https://" + resolved;
   }
 
   /**
@@ -1446,10 +1445,10 @@ public class EmailContactCardDavSyncService {
                             UserEmailSetting setting,
                             EmailConnector connector,
                             AddressBook addressBook,
-                            boolean bookChanged) {
+                            boolean bookChanged,
+                            CardDavAccount account) {
     Map<String, String> serverEtags = cardDavClient.listResourceEtags(addressBook,
-                                                                      setting.getEmailAddress(),
-                                                                      setting.getEmailPassword());
+                                                                      account);
     List<CardDavRow> storedRows = emailContactStorage.getCardDavRows(username, connector.getId());
     Map<String, CardDavRow> storedByHref = new java.util.HashMap<>();
     storedRows.forEach(row -> storedByHref.put(row.href(), row));
@@ -1486,8 +1485,7 @@ public class EmailContactCardDavSyncService {
       try {
         for (ContactResource resource : cardDavClient.multiget(addressBook,
                                                                batch,
-                                                               setting.getEmailAddress(),
-                                                               setting.getEmailPassword())) {
+                                                               account)) {
           // The version RECORDED is the one the listing answered, not the one
           // that came back with the card. They are the same string on most
           // servers, and deliberately the listing's when they are not: the only
