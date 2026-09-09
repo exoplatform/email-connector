@@ -30,7 +30,7 @@ import org.exoplatform.services.connector.credentials.RawCredentials;
 
 /**
  * Exposes the email connector's own stored personal credentials
- * ({@link UserEmailSetting#getEmailAddress()}/{@link UserEmailSetting#getEmailPassword()})
+ * ({@code getEmailAddress()}/{@code getEmailPassword()} of {@link UserEmailSetting})
  * to the generic {@link org.exoplatform.services.connector.credentials.PersonalCredentialsProvider}.
  * <p>
  * Announces itself to {@link PersonalCredentialsProvider} from its own
