@@ -101,7 +101,7 @@ public class EmailConnectorRestTest {
   @MockitoBean
   private EmailConnectorService emailConnectorService;
 
-  @MockBean
+  @MockitoBean
   private EmailSyncService      emailSyncService;
 
   @Autowired

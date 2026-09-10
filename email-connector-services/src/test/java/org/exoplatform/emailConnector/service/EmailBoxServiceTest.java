@@ -292,7 +292,7 @@ public class EmailBoxServiceTest {
    * directly rather than the {@code System.setProperty} this class used before
    * that switch moved to {@code SettingService} — {@code EmailFolderService} is
    * the REAL bean here (it is in {@code @SpringBootTest}'s classes, not a
-   * {@code @MockBean}), and its {@code isCustomFoldersEnabled()} now delegates to
+   * {@code @MockitoBean}), and its {@code isCustomFoldersEnabled()} now delegates to
    * the mocked {@code EmailConnectorService} rather than reading the JVM property
    * itself.
    */
