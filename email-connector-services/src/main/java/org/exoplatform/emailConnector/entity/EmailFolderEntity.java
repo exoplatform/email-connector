@@ -20,12 +20,11 @@ import java.util.Date;
 
 import org.hibernate.annotations.DynamicUpdate;
 
+import io.meeds.common.persistence.PortableSequence;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import lombok.AllArgsConstructor;
@@ -64,8 +63,7 @@ import lombok.NoArgsConstructor;
 public class EmailFolderEntity {
 
   @Id
-  @SequenceGenerator(name = "SEQ_EMAIL_FOLDER_ID", sequenceName = "SEQ_EMAIL_FOLDER_ID", allocationSize = 1)
-  @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_EMAIL_FOLDER_ID")
+  @PortableSequence(name = "SEQ_EMAIL_FOLDER_ID")
   @Column(name = "ID")
   private Long    id;
 
