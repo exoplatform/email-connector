@@ -21,6 +21,8 @@ import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.InputStreamResource;
+import java.util.Map;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -446,6 +448,25 @@ public class EmailConnectorRest {
                                      boolean isEmailConnectorActive) {
     try {
       emailConnectorService.activateEmailConnector(emailConnectorId, isEmailConnectorActive, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  @GetMapping(path = "/{emailConnectorId}/provider-config")
+  @Secured("administrators")
+  @Operation(summary = "Retrieves the provider configuration of an email connector", method = "GET", description = "This will return the stored provider configuration of an email connector, without any secret value")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public Map<String, String> getProviderConfig(HttpServletRequest request,
+                                               @Parameter(description = "Email connector technical id", required = true)
+                                               @PathVariable("emailConnectorId")
+                                               Long emailConnectorId) {
+    try {
+      return emailConnectorService.getProviderConfig(emailConnectorId, request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
