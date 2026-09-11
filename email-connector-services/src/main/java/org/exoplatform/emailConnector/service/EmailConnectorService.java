@@ -20,7 +20,9 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
+import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
@@ -37,7 +39,11 @@ import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.log.ExoLogger;
@@ -192,6 +198,11 @@ public class EmailConnectorService {
 
   @Autowired
   private ExoFeatureService         featureService;
+
+  // required = false, same reason as EmailBoxService's own guard: the storage is a bean
+  // of another WAR, so it is undefined in this addon's own Spring test contexts.
+  @Autowired(required = false)
+  private ConnectorProviderConfigStorage providerConfigStorage;
 
   @Autowired
   private EmailConnectorStorage     emailConnectorStorage;
@@ -633,7 +644,13 @@ public class EmailConnectorService {
                                                      username,
                                                      emailConnector.getName()));
     }
+    // Before the insert, not after: a setting key carries the connector id, so the
+    // configuration can only be written once the connector exists - and a refusal then
+    // would leave a connector created with nothing configured, which an administrator
+    // answers by creating a second one.
+    validateProviderConfig(emailConnector);
     EmailConnector storedEmailConnector = emailConnectorStorage.createEmailConnector(emailConnector);
+    storeProviderConfig(storedEmailConnector, emailConnector.getProviderConfig());
     activateEmailApp();
     return storedEmailConnector;
 
@@ -656,7 +673,71 @@ public class EmailConnectorService {
                                                      username,
                                                      emailConnector.getName()));
     }
+    // Before the row is written, for the reason the create path already carries: the
+    // connector and its configuration are two writes, and a refusal on the second
+    // would otherwise leave the connector on a provider whose configuration was never
+    // stored - an authentication nothing can perform, that no screen shows as broken.
+    validateProviderConfig(emailConnector);
+    // The id is nullable on this path - the storage resolves the connector by name when
+    // it is - so the previous state is only read when there is an id to read it by.
+    EmailConnector previousEmailConnector = emailConnector.getId() == null ? null
+                                                                          : emailConnectorStorage.getEmailConnector(emailConnector.getId());
     emailConnectorStorage.updateEmailConnector(emailConnector);
+    discardConfigOfProviderBeingLeft(previousEmailConnector, emailConnector);
+    storeProviderConfig(emailConnector, emailConnector.getProviderConfig());
+  }
+
+  /**
+   * The provider configuration of a connector, as an administration screen may see it:
+   * every field except the secret ones, which are never read back on this path.
+   *
+   * @param emailConnectorId the connector whose configuration is read
+   * @param username the user asking, checked against the administration ACL - reading a
+   *          technical account is an administration act
+   * @return the stored values without any secret, empty when nothing is stored or when
+   *         the storage is not deployed
+   * @throws IllegalAccessException if the user may not administer email connectors
+   */
+  public Map<String, String> getProviderConfig(Long emailConnectorId, String username) throws IllegalAccessException {
+    if (emailConnectorId == null) {
+      throw new IllegalArgumentException(EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE);
+    }
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_EMAIL_CONNECTOR_MESSAGE,
+                                                     username,
+                                                     emailConnectorId));
+    }
+    EmailConnector storedEmailConnector = emailConnectorStorage.getEmailConnector(emailConnectorId);
+    if (providerConfigStorage == null || storedEmailConnector == null
+        || StringUtils.isBlank(storedEmailConnector.getAuthProviderName())) {
+      return Map.of();
+    }
+    return providerConfigStorage.readWithoutSecrets(providerConfigContext(emailConnectorId,
+                                                                         storedEmailConnector.getAuthProviderName()));
+  }
+
+  /**
+   * Removes the configuration of the provider a connector is being moved away from.
+   * <p>
+   * Left alone it would stay under its own key: invisible in every screen, yet a
+   * technical login and secret still stored, and back in use the day someone selects
+   * that provider again. Nothing administers a credential nobody can see.
+   * <p>
+   * The comparison is on the effective names, not the posted ones: the storage keeps the
+   * stored provider when the payload leaves it blank, so a blank payload is not a move.
+   *
+   * @param previousEmailConnector the connector as it was stored, possibly null
+   * @param emailConnector the connector as posted
+   */
+  private void discardConfigOfProviderBeingLeft(EmailConnector previousEmailConnector, EmailConnector emailConnector) {
+    if (providerConfigStorage == null || previousEmailConnector == null) {
+      return;
+    }
+    String previousProvider = previousEmailConnector.getAuthProviderName();
+    String newProvider = StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(), previousProvider);
+    if (StringUtils.isNotBlank(previousProvider) && !StringUtils.equals(previousProvider, newProvider)) {
+      providerConfigStorage.delete(providerConfigContext(previousEmailConnector.getId(), previousProvider));
+    }
   }
 
   /**
@@ -712,9 +793,101 @@ public class EmailConnectorService {
                                                      username,
                                                      storedEmailConnector.getName()));
     }
+    // The configuration first, the connector second. The two writes do not share a
+    // transaction - the connector goes under Spring's @Transactional, the settings under
+    // the kernel's own RequestLifeCycle - so the order is the guarantee: a failure here
+    // leaves the connector intact, which an administrator sees and can retry. The other
+    // way round it would leave a technical secret with no connector to reach it from.
+    if (providerConfigStorage != null && StringUtils.isNotBlank(storedEmailConnector.getAuthProviderName())) {
+      providerConfigStorage.delete(providerConfigContext(emailConnectorId, storedEmailConnector.getAuthProviderName()));
+    }
     emailConnectorStorage.deleteEmailConnector(emailConnectorId);
     activateEmailApp();
     eventPublisher.publishEvent(new UserEmailSettingCleanupEvent(emailConnectorId));
+  }
+
+  /**
+   * Writes the provider configuration an administrator just posted, under the connector
+   * it belongs to.
+   * <p>
+   * The connector relays the map without reading it: the keys belong to the provider's
+   * descriptor, and the generic storage is what validates them and encrypts the secret
+   * ones. A blank map is not an erasure - it is a save that carried no configuration,
+   * typically an edit of the connector's own fields - so nothing is written for it.
+   *
+   * @param emailConnector the connector as stored, for its id and provider name
+   * @param values what the drawer posted, possibly null
+   * @throws IllegalArgumentException carrying the storage's message code when the
+   *           configuration does not match the provider's descriptor
+   */
+  private void storeProviderConfig(EmailConnector emailConnector, Map<String, String> values) {
+    if (providerConfigStorage == null || MapUtils.isEmpty(values)) {
+      return;
+    }
+    try {
+      providerConfigStorage.store(providerConfigContext(emailConnector.getId(), emailConnector.getAuthProviderName()),
+                                  values);
+    } catch (ConnectorCredentialsException e) {
+      logProviderConfigRefusal(emailConnector, values, e);
+      throw new IllegalArgumentException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Checks the posted configuration against its provider's descriptor, without writing.
+   *
+   * @param emailConnector the connector as posted, for its provider name and values
+   * @throws IllegalArgumentException carrying the storage's message code on a refusal
+   */
+  private void validateProviderConfig(EmailConnector emailConnector) {
+    if (providerConfigStorage == null || MapUtils.isEmpty(emailConnector.getProviderConfig())) {
+      return;
+    }
+    try {
+      providerConfigStorage.validate(providerConfigContext(emailConnector.getId(), emailConnector.getAuthProviderName()),
+                                     emailConnector.getProviderConfig());
+    } catch (ConnectorCredentialsException e) {
+      logProviderConfigRefusal(emailConnector, emailConnector.getProviderConfig(), e);
+      throw new IllegalArgumentException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Says what was refused, and enough to act on it.
+   * <p>
+   * Logged because the refusal reaches the browser as a bare 400 whose message code
+   * the error body does not carry, which left an administrator - and whoever reads the
+   * server afterwards - with nothing at all to go on. The keys are named, never the
+   * values: one of them is a password.
+   *
+   * @param emailConnector the connector whose configuration was refused
+   * @param values what was submitted, for its keys
+   * @param e the refusal, carrying its message code
+   */
+  private void logProviderConfigRefusal(EmailConnector emailConnector, Map<String, String> values,
+                                        ConnectorCredentialsException e) {
+    LOG.warn("Provider configuration refused for email connector {} on provider '{}': {} (submitted keys: {})",
+             emailConnector.getId(),
+             emailConnector.getAuthProviderName(),
+             e.getMessage(),
+             values == null ? "none" : values.keySet());
+  }
+
+  /**
+   * The context a configuration is stored under. No username - a connector's
+   * configuration is not a user's - and no channel: one configuration serves every
+   * channel the connector speaks, and naming one would misstate its reach.
+   *
+   * @param connectorId the connector the configuration belongs to
+   * @param providerName the provider whose descriptor the values answer
+   * @return the context to hand to the storage
+   */
+  private ConnectorCredentialsContext providerConfigContext(Long connectorId, String providerName) {
+    return new ConnectorCredentialsContext(connectorId == null ? 0L : connectorId,
+                                           providerName,
+                                           null,
+                                           null,
+                                           EmailCredentialsResolver.CONNECTOR_KIND);
   }
 
   /**

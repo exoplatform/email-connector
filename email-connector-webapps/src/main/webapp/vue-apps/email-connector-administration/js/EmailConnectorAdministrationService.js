@@ -15,6 +15,26 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
  
+/**
+ * Turns a refused response into an Error carrying what the server said.
+ *
+ * The provider configuration is validated server-side and refused with a message
+ * code - a missing required field, a value outside a field's options. Thrown as a
+ * bare sentence that code never reaches the screen, and the administrator is told
+ * "error" about a form they can in fact correct.
+ *
+ * @param {Response} resp the refused response
+ * @param {string} fallback message to use when the body carries nothing
+ * @returns {Promise} a promise rejecting with the Error to throw
+ */
+function refusal(resp, fallback) {
+  return resp.text().then(body => {
+    const error = new Error(body || fallback);
+    error.messageCode = body || null;
+    throw error;
+  });
+}
+
 export function activateEmailFeature(emailFeatureActive) {
   return fetch(`/email-connector/rest/connectors/feature/activation?active=${emailFeatureActive}`, {
     headers: {
@@ -41,7 +61,7 @@ export function createEmailConnector(emailConnector) {
     if (resp?.ok) {
       return resp.json();
     } else {
-      throw new Error('Error when creating email connector');
+      return refusal(resp, 'Error when creating email connector');
     }
   });
 }
@@ -56,7 +76,7 @@ export function updateEmailConnector(emailConnector) {
     method: 'PUT'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when updating email connector');
+      return refusal(resp, 'Error when updating email connector');
     }
   });
 }
@@ -433,5 +453,26 @@ export function deleteEmailConnector(emailConnectorId) {
     if (!resp?.ok) {
       throw new Error('Error when deleting email connector');
     }
+  });
+}
+
+/**
+ * Reads back the provider configuration stored for a connector.
+ *
+ * Secret values are never in the answer: the endpoint omits them, so a secret
+ * field opens empty and an unrelated save leaves the stored one untouched.
+ *
+ * @param {number} emailConnectorId technical id of the connector
+ * @returns {Promise} the stored values, keyed by descriptor field
+ */
+export function getProviderConfig(emailConnectorId) {
+  return fetch(`/email-connector/rest/connectors/${emailConnectorId}/provider-config`, {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when retrieving the provider configuration');
+    }
+    return resp.json();
   });
 }
