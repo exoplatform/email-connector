@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.model;
 
+import java.util.Map;
+
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -70,6 +72,20 @@ public class EmailConnector {
    * the same reason as carddavUrl above.
    */
   private String  authProviderName;
+
+  /**
+   * The values the connector's provider asked for through its configuration
+   * descriptor - a technical login, a secret, a target login field. The connector
+   * relays this map without inspecting it: the keys are the provider's vocabulary,
+   * not the connector's, and the generic storage is what validates and encrypts them.
+   * <p>
+   * Travels inbound only. It carries what an administrator just typed; it is never
+   * filled on the way out, because the secret must not leave the server - the drawer
+   * reads back what it may see through the dedicated provider-config endpoint.
+   * <p>
+   * Declared LAST for the same reason as the two fields above.
+   */
+  private Map<String, String> providerConfig;
 
   public EmailConnector(Long id,
                         String name,

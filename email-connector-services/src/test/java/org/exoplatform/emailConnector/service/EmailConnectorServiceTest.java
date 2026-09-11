@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -24,16 +25,20 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -52,6 +57,9 @@ import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
 
 import io.meeds.appcenter.model.ApplicationList;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
+
 import io.meeds.appcenter.service.ApplicationCenterService;
 import io.meeds.social.translation.service.TranslationService;
 
@@ -83,6 +91,9 @@ public class EmailConnectorServiceTest {
 
   @MockitoBean
   private SettingService           settingService;
+
+  @MockitoBean
+  private ConnectorProviderConfigStorage providerConfigStorage;
 
   @Autowired
   private EmailConnectorService    emailConnectorService;
@@ -587,6 +598,291 @@ public class EmailConnectorServiceTest {
                               false,
                               true,
                               "testUploadId",
-                              "", null, null);
+                              "", null, null, null);
+  }
+
+  /**
+   * The configuration can only be written once the connector has an id - it is part of
+   * the setting key - so it is stored after the create, against the id the storage just
+   * attributed, never against the null one the drawer posted.
+   */
+  @Test
+  @SneakyThrows
+  void createStoresTheProviderConfigurationUnderTheNewConnectorId() {
+    grantAdministration();
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.createEmailConnector(posted)).thenReturn(stored);
+
+    emailConnectorService.createEmailConnector(posted, TEST_USER);
+
+    verify(providerConfigStorage).store(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())
+        && "email".equals(context.getConnectorKind())),
+                                        eq(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret")));
+  }
+
+  /** The same write on the update path, against the id the drawer already knows. */
+  @Test
+  @SneakyThrows
+  void updateStoresTheProviderConfiguration() {
+    grantAdministration();
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(posted);
+
+    emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+    verify(providerConfigStorage).store(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())),
+                                        eq(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret")));
+  }
+
+  /**
+   * Switching a connector back to the personal provider leaves the technical account of
+   * the previous one stored under its own key: invisible in every screen, yet a login
+   * and a secret still in the database, and they would come silently back into use the
+   * day someone selects that provider again. So the configuration of the provider being
+   * left is removed.
+   */
+  @Test
+  @SneakyThrows
+  void updateRemovesTheConfigurationOfTheProviderBeingLeft() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("personal");
+
+    emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+    verify(providerConfigStorage).delete(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())));
+  }
+
+  /** The provider unchanged, nothing is removed - the update is not a reset. */
+  @Test
+  @SneakyThrows
+  void updateKeepsTheConfigurationWhenTheProviderIsUnchanged() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+
+    emailConnectorService.updateEmailConnector(posted, TEST_USER);
+
+    verify(providerConfigStorage, never()).delete(any());
+  }
+
+  /**
+   * Deleting the connector takes its provider configuration with it. A technical secret
+   * outliving the connector it authenticated is a credential with no owner and no screen.
+   */
+  @Test
+  @SneakyThrows
+  void deleteRemovesTheProviderConfiguration() {
+    grantAdministration();
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+
+    emailConnectorService.deleteEmailConnector(7L, TEST_USER);
+
+    verify(providerConfigStorage).delete(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())));
+  }
+
+  /**
+   * A save that carries no configuration - an edit of the connector's own fields, a
+   * provider that asks for nothing - writes nothing. Taking an absent map for an empty
+   * one would erase a working technical account on every unrelated edit.
+   */
+  @Test
+  @SneakyThrows
+  void aSaveWithoutConfigurationWritesNothing() {
+    grantAdministration();
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("personal");
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    when(emailConnectorStorage.createEmailConnector(posted)).thenReturn(stored);
+
+    emailConnectorService.createEmailConnector(posted, TEST_USER);
+
+    verify(providerConfigStorage, never()).store(any(), any());
+  }
+
+  /**
+   * The storage refuses a configuration its descriptor does not admit. Its message is a
+   * code the drawer displays, so it must reach REST as an IllegalArgumentException -
+   * which the controller already answers 400 with the code as the body.
+   */
+  @Test
+  @SneakyThrows
+  void aRefusedConfigurationBecomesABadRequestCarryingTheCode() {
+    grantAdministration();
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc"));
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.createEmailConnector(posted)).thenReturn(stored);
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .store(any(), any());
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailConnectorService.createEmailConnector(posted, TEST_USER));
+
+    assertEquals("connector.credentials.missingConfigurationField", thrown.getMessage());
+  }
+
+  /**
+   * What the drawer reads back to repopulate its fields: everything but the secret, and
+   * on a path that never decrypts one. A value the screen cannot receive is a value that
+   * cannot leak through it.
+   */
+  @Test
+  @SneakyThrows
+  void providerConfigIsReadWithoutTheSecret() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    when(providerConfigStorage.readWithoutSecrets(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName()))))
+                                                                                   .thenReturn(Map.of("technicalLogin",
+                                                                                                      "svc",
+                                                                                                      "targetLoginField",
+                                                                                                      "email"));
+
+    assertEquals(Map.of("technicalLogin", "svc", "targetLoginField", "email"),
+                 emailConnectorService.getProviderConfig(7L, TEST_USER));
+    verify(providerConfigStorage, never()).readDecrypted(any());
+  }
+
+  /** Reading a technical account is an administration act, ACL-checked like the writes. */
+  @Test
+  void providerConfigIsRefusedToANonAdministrator() {
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(mock(Identity.class));
+
+    assertThrows(IllegalAccessException.class, () -> emailConnectorService.getProviderConfig(7L, TEST_USER));
+  }
+
+  /**
+   * The configuration goes first, the connector second - and this order is the whole
+   * guarantee, because the two writes do not share a transaction: the connector is
+   * removed under Spring's @Transactional while the settings are written under the
+   * kernel's own RequestLifeCycle, so a rollback on one does not replay the other. Taken
+   * in this order a failure leaves the connector intact, which an administrator sees and
+   * can retry; taken the other way it leaves a technical secret behind with no connector
+   * and no screen to reach it from.
+   */
+  @Test
+  @SneakyThrows
+  void theProviderConfigurationIsRemovedBeforeTheConnectorItself() {
+    grantAdministration();
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+
+    emailConnectorService.deleteEmailConnector(7L, TEST_USER);
+
+    InOrder order = inOrder(providerConfigStorage, emailConnectorStorage);
+    order.verify(providerConfigStorage).delete(any());
+    order.verify(emailConnectorStorage).deleteEmailConnector(7L);
+  }
+
+  /**
+   * The configuration is checked before the connector is inserted, so a refused value
+   * leaves nothing behind. Otherwise the administrator gets a 400 on a connector that
+   * was in fact created, and answers it by creating a second one.
+   */
+  @Test
+  @SneakyThrows
+  void aRefusedConfigurationCreatesNoConnectorAtAll() {
+    grantAdministration();
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc"));
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .validate(any(), any());
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailConnectorService.createEmailConnector(posted, TEST_USER));
+
+    assertEquals("connector.credentials.missingConfigurationField", thrown.getMessage());
+    verify(emailConnectorStorage, never()).createEmailConnector(any());
+    verify(providerConfigStorage, never()).store(any(), any());
+  }
+
+  /** And the accepted case validates first, inserts second, writes third. */
+  @Test
+  @SneakyThrows
+  void createValidatesBeforeInserting() {
+    grantAdministration();
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(mock(ApplicationList.class));
+    EmailConnector posted = emailConnector();
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.createEmailConnector(posted)).thenReturn(stored);
+
+    emailConnectorService.createEmailConnector(posted, TEST_USER);
+
+    InOrder order = inOrder(providerConfigStorage, emailConnectorStorage);
+    order.verify(providerConfigStorage).validate(any(), any());
+    order.verify(emailConnectorStorage).createEmailConnector(posted);
+    order.verify(providerConfigStorage).store(any(), any());
+  }
+
+  /**
+   * Same guarantee on the update path as on the create one: a refused configuration
+   * leaves the connector untouched. Written first and validated after, the connector
+   * kept a provider whose configuration was never stored.
+   */
+  @Test
+  @SneakyThrows
+  void aRefusedConfigurationLeavesTheConnectorUntouchedOnUpdate() {
+    grantAdministration();
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("personal");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    EmailConnector posted = emailConnector();
+    posted.setId(7L);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "svc"));
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .validate(any(), any());
+
+    assertThrows(IllegalArgumentException.class, () -> emailConnectorService.updateEmailConnector(posted, TEST_USER));
+
+    verify(emailConnectorStorage, never()).updateEmailConnector(any());
+    verify(providerConfigStorage, never()).store(any(), any());
+    verify(providerConfigStorage, never()).delete(any());
   }
 }
