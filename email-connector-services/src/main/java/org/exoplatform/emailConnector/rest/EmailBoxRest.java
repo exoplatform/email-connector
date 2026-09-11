@@ -52,6 +52,8 @@ import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
+import org.exoplatform.emailConnector.model.MailFolderList;
+import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.service.EmailBoxService;
@@ -73,14 +75,14 @@ public class EmailBoxRest {
 
   @GetMapping()
   @Secured("users")
-  @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE / DRAFTS / TRASH / JUNK for the in-app folder switch), optionally restricted to the starred ones")
+  @Operation(summary = "Gets user emails", method = "GET", description = "Gets the user's emails for a folder (INBOX by default, or SENT / ARCHIVE / DRAFTS / TRASH / JUNK for the in-app folder switch, or CUSTOM:<id> for one of the user's own mirrored folders), optionally restricted to the starred ones")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Conflict"), })
   public EmailBox getEmailBox(HttpServletRequest request,
-                              @Parameter(description = "Folder to list: INBOX, SENT, ARCHIVE, DRAFTS, TRASH or JUNK")
+                              @Parameter(description = "Folder to list: INBOX, SENT, ARCHIVE, DRAFTS, TRASH, JUNK or CUSTOM:<id>")
                               @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                               String folder,
                               @Parameter(description = "When true, only the starred emails (IMAP \\Flagged) are returned")
@@ -88,6 +90,217 @@ public class EmailBoxRest {
                               boolean starred) {
     try {
       return emailBoxService.getEmailBox(request.getRemoteUser(), folder, starred);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * The user's folder list, built-in and custom in one shape, optionally after a walk
+   * of the mailbox's folder list.
+   *
+   * @param request the caller
+   * @param refresh whether to walk the mailbox first
+   * @return the list, with the cap and the window, and whether the walk ran
+   */
+  @GetMapping("/folders")
+  @Secured("users")
+  @Operation(summary = "Lists the user's mail folders", method = "GET",
+             description = "The built-in folders this mailbox has and every custom folder the user's mailbox holds, with its mirror opt-in; with refresh=true the mailbox's folder list is walked first")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public MailFolderList getFolders(HttpServletRequest request,
+                                   @Parameter(description = "Whether to walk the mailbox's folder list before answering")
+                                   @RequestParam(value = "refresh", required = false, defaultValue = "false")
+                                   boolean refresh) {
+    try {
+      return emailBoxService.getFolders(request.getRemoteUser(), refresh);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
+  /**
+   * Mirrors or stops mirroring one custom folder; opting out deletes the mirrored copy.
+   *
+   * @param request the caller
+   * @param id the folder's registry id
+   * @param sync whether the folder is mirrored
+   * @return the folder as it now stands
+   */
+  @PatchMapping("/folders/{id}")
+  @Secured("users")
+  @Operation(summary = "Mirrors or stops mirroring one custom folder", method = "PATCH",
+             description = "Opts one of the user's own folders in or out of the mirror. Opting out deletes the mirrored copy. Answers 400 emailConnector.folder.tooMany when the cap is reached, 400 emailConnector.folder.unknown for a folder that is not the caller's")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public MailFolderView setFolderSync(HttpServletRequest request,
+                                      @Parameter(description = "The folder's registry id", required = true)
+                                      @PathVariable("id")
+                                      long id,
+                                      @Parameter(description = "Whether the folder is mirrored", required = true)
+                                      @RequestParam("sync")
+                                      boolean sync) {
+    try {
+      return emailBoxService.setCustomFolderSync(request.getRemoteUser(), id, sync);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Creates one of the user's own folders on the mail server.
+   *
+   * @param request the caller
+   * @param name the folder name, as typed
+   * @return the folder as registered
+   */
+  @PostMapping("/folders")
+  @Secured("users")
+  @Operation(summary = "Creates one of the user's own folders", method = "POST",
+             description = "Creates a top-level folder on the mail server and registers it. Auto-mirrors it unless the cap (emailConnector.folder.tooMany) is already reached, in which case the folder is created but left unmirrored. Answers 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.createFailed when the server refuses")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public MailFolderView createFolder(HttpServletRequest request,
+                                     @Parameter(description = "The folder name, as typed", required = true)
+                                     @RequestParam("name")
+                                     String name) {
+    try {
+      return emailBoxService.createCustomFolder(request.getRemoteUser(), name);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Renames one of the user's own folders, on the server and in the registry.
+   *
+   * @param request the caller
+   * @param id the folder's registry id
+   * @param name the new name, as typed
+   * @return the folder as it now stands
+   */
+  @PatchMapping("/folders/{id}/name")
+  @Secured("users")
+  @Operation(summary = "Renames one of the user's own folders", method = "PATCH",
+             description = "Renames the folder on the mail server and updates the registry row in place, so its mirrored messages keep their place. Only the folder's own name changes, never its parent. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.name.blank / .tooLong / .nested / .reserved for an invalid name, 400 emailConnector.folder.name.duplicate for a name already used, 400 emailConnector.folder.renameFailed when the server refuses")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public MailFolderView renameFolder(HttpServletRequest request,
+                                     @Parameter(description = "The folder's registry id", required = true)
+                                     @PathVariable("id")
+                                     long id,
+                                     @Parameter(description = "The new name, as typed", required = true)
+                                     @RequestParam("name")
+                                     String name) {
+    try {
+      return emailBoxService.renameCustomFolder(request.getRemoteUser(), id, name);
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Deletes one of the user's own folders, on the server and in the registry.
+   * Irreversible, and refused while the folder still holds mail.
+   *
+   * @param request the caller
+   * @param id the folder's registry id
+   * @return 200 once the folder and its mirror are gone
+   */
+  @DeleteMapping("/folders/{id}")
+  @Secured("users")
+  @Operation(summary = "Deletes one of the user's own folders", method = "DELETE",
+             description = "Deletes the folder on the mail server, permanently, and drops its mirror. Refused with 400 emailConnector.folder.notEmpty while the server still lists mail in it -- empty it first. Answers 400 emailConnector.folder.unknown for a folder that is not the caller's, 400 emailConnector.folder.deleteFailed when the server refuses")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public ResponseEntity<String> deleteFolder(HttpServletRequest request,
+                                             @Parameter(description = "The folder's registry id", required = true)
+                                             @PathVariable("id")
+                                             long id) {
+    try {
+      emailBoxService.deleteCustomFolder(request.getRemoteUser(), id);
+      return ResponseEntity.ok().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Refreshes one mirrored custom folder on this request.
+   *
+   * @param request the caller
+   * @param id the folder's registry id
+   * @return 200 when the check ran (or yielded to a running sync)
+   */
+  @PostMapping("/folders/{id}/synchronization")
+  @Secured("users")
+  @Operation(summary = "Refreshes one custom folder now", method = "POST",
+             description = "Checks one of the user's mirrored folders against the server and syncs it when it changed, on this request. A no-op while a mailbox synchronization is running")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public ResponseEntity<String> synchronizeFolder(HttpServletRequest request,
+                                                  @Parameter(description = "The folder's registry id", required = true)
+                                                  @PathVariable("id")
+                                                  long id) {
+    try {
+      emailBoxService.synchronizeCustomFolder(request.getRemoteUser(), id);
+      return ResponseEntity.ok().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Moves messages into one of the user's mirrored custom folders.
+   *
+   * @param request the caller
+   * @param mailRemoteIds the IMAP UIDs, within the source folder
+   * @param folder the source folder; INBOX when omitted
+   * @param target the destination's {@code CUSTOM:<id>} key
+   * @return how many could not be moved, as {@code failedMoves}
+   */
+  @PostMapping("/move")
+  @Secured("users")
+  @Operation(summary = "Moves emails into one of the user's own folders", method = "POST",
+             description = "Moves the given emails (IMAP UIDs numbered within the source folder) into the custom folder named by target. Answers 400 emailConnector.folder.unknown for a target that is not one of the caller's folders, 400 emailConnector.folder.notMirrored for one they do not mirror, 400 emailConnector.folder.sameAsSource when target is the source. Returns how many could not be moved")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"), })
+  public Map<String, Integer> moveEmails(HttpServletRequest request,
+                                         @Parameter(description = "The IMAP UIDs to move, numbered within the source folder", required = true)
+                                         @RequestBody
+                                         List<Long> mailRemoteIds,
+                                         @Parameter(description = "The folder the UIDs are numbered in; INBOX when omitted")
+                                         @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                         String folder,
+                                         @Parameter(description = "The destination: a CUSTOM:<id> key", required = true)
+                                         @RequestParam("target")
+                                         String target) {
+    if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+    try {
+      int failedMoves = emailBoxService.moveToFolder(mailRemoteIds, request.getRemoteUser(), folder, target);
+      return Map.of("failedMoves", failedMoves);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {

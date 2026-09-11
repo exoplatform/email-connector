@@ -15,31 +15,41 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list class="pa-0">
-    <!-- Folders: browse the inbox, your sent mail, or archived mail. -->
-    <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+  <v-list dense>
+    <!-- Folders: browse the inbox, your sent mail, or archived mail. Bounded to its
+         own scroll once the user's own folders push the section past a handful, so
+         CATEGORIES and ACTIONS below stay reachable at a fixed scroll position rather
+         than sliding further down every time one more folder is mirrored. Benjamin's
+         call: contained scrolling (no search field -- overkill at the ten-folder cap;
+         no recency reordering -- a navigation menu wants a stable, memorisable
+         position; no persistent folder rail -- a layout redesign this drawer was not
+         built for), triggered at more than 5 of the user's OWN folders, built-ins
+         never counted toward it since their number is fixed by the mailbox itself. -->
+    <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
     </div>
-    <v-list-item
-      v-for="folder in visibleFolders"
-      :key="folder.id"
-      class="ps-2 pe-3 height-auto"
-      @click="switchFolder(folder.id)">
-      <v-sheet
-        class="d-flex"
-        width="28"
-        height="36">
-        <v-icon
-          class="mx-auto"
-          :class="folder.id === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
-          size="16">
-          {{ folder.icon }}
-        </v-icon>
-      </v-sheet>
-      <span :class="{ 'primary--text font-weight-bold': folder.id === currentFolder && !categoryViewId }">
-        {{ $t(folder.label) }}
-      </span>
-    </v-list-item>
+    <div :class="{ 'overflow-y-auto': foldersScrollable }" :style="foldersScrollable ? { maxHeight: FOLDERS_MAX_HEIGHT } : null">
+      <v-list-item
+        v-for="folder in visibleFolders"
+        :key="folder.key"
+        class="height-auto"
+        @click="switchFolder(folder.key)">
+        <v-sheet
+          class="d-flex me-2"
+          width="28"
+          height="36">
+          <v-icon
+            class="mx-auto"
+            :class="folder.key === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
+            size="16">
+            {{ folder.icon }}
+          </v-icon>
+        </v-sheet>
+        <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
+          {{ folder.label }}
+        </span>
+      </v-list-item>
+    </div>
     <!-- Categories: the complete list, Important included — its quick chip
          above the list is a shortcut to the same view this entry opens, so the
          two can never disagree. Each category is a VIEW like the folders above
@@ -48,16 +58,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          leaves the view. -->
     <template v-if="categories.length">
       <v-divider class="my-1" />
-      <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+      <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
         {{ $t('emailConnector.mailBox.list.drawer.menu.categories') }}
       </div>
       <v-list-item
         v-for="category in categories"
         :key="category.id"
-        class="ps-2 pe-3 height-auto"
+        class="height-auto"
         @click="openCategoryView(category.id)">
         <v-sheet
-          class="d-flex"
+          class="d-flex me-2"
           width="28"
           height="36">
           <v-icon
@@ -74,16 +84,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <v-divider class="my-1" />
     <!-- Actions on the mailbox itself. -->
-    <div class="ps-2 pe-3 pt-2 pb-1 text-sub-title text-uppercase caption">
+    <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.actions') }}
     </div>
     <!-- Synchronize now (progress is shown by the header spinner while it runs). -->
     <v-list-item
-      class="ps-2 pe-3 height-auto"
+      class="height-auto"
       :disabled="syncInProgress"
       @click="synchronize()">
       <v-sheet
-        class="d-flex"
+        class="d-flex me-2"
         width="28"
         height="36">
         <v-icon
@@ -98,10 +108,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </v-list-item>
     <!-- Select mode: multi-select rows to read/archive/delete in bulk. -->
     <v-list-item
-      class="ps-2 pe-3 height-auto"
+      class="height-auto"
       @click="enterSelectMode()">
       <v-sheet
-        class="d-flex"
+        class="d-flex me-2"
         width="28"
         height="36">
         <v-icon
@@ -114,6 +124,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.menu.selectSeveral') }}
       </span>
     </v-list-item>
+    <!-- The AI entry is contributed by the enterprise AI addon, which renders a complete
+         v-list-item of its own. Its alignment with the rows around it is therefore that
+         addon's to set, not this menu's: padding applied here would sit OUTSIDE its row
+         and shrink its hover box instead of moving its content. Leave the wrapper
+         layout-neutral. -->
     <extension-registry-components
       ref="emailListToolbarExtension"
       :params="{ hasWebmailAccess: true }"
@@ -124,10 +139,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       class="my-auto" />
     <v-list-item
       v-if="hasWebmailAccess"
-      class="ps-2 pe-3 height-auto"
+      class="height-auto"
       @click="openWebmail()">
       <v-sheet
-        class="d-flex"
+        class="d-flex me-2"
         width="28"
         height="36">
         <v-icon
@@ -144,6 +159,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// The folder list scrolls inside its own pane once it is longer than seven rows,
+// built-ins counted with the rest: what makes the menu a wall is its total length, not
+// how many of the folders happen to be the user's own, and a rule that counted only
+// custom folders let a mailbox with six built-ins and five custom ones grow to eleven
+// rows without ever tripping.
+//
+// One number does both jobs -- how many rows are visible, and when scrolling starts --
+// so the two cannot drift apart. An earlier version set them separately, at a height
+// that happened to equal the shortest list that tripped the threshold: it switched on
+// and nothing scrolled. Below the threshold the pane is not bounded at all.
+const FOLDER_ROW_HEIGHT_PX = 36;
+
+const FOLDERS_VISIBLE_ROWS = 7;
+
+const FOLDERS_MAX_HEIGHT = `${FOLDER_ROW_HEIGHT_PX * FOLDERS_VISIBLE_ROWS}px`;
+
 export default {
   props: {
     // The folder currently listed, highlighted in the menu.
@@ -155,10 +186,11 @@ export default {
       type: Boolean,
       default: false,
     },
-    // Folders that actually hold mail (INBOX plus any of SENT/ARCHIVE/DRAFTS/JUNK/TRASH with messages).
+    // The folders to offer, as the server listed them ({key, type, displayName, ...}):
+    // the built-ins this mailbox has, and the user's own mirrored ones.
     availableFolders: {
       type: Array,
-      default: () => ['INBOX'],
+      default: () => [{ key: 'INBOX', type: 'BUILT_IN' }],
     },
     // The categories offered as views ({id, name, icon}) — the add-on's full
     // set, Important included (its chip above the list is a shortcut to the
@@ -180,29 +212,46 @@ export default {
   },
   data() {
     return {
-      folders: [
-        { id: 'INBOX', label: 'emailConnector.mailBox.list.drawer.folder.inbox', icon: 'fa-inbox' },
-        { id: 'SENT', label: 'emailConnector.mailBox.list.drawer.folder.sent', icon: 'fa-paper-plane' },
-        { id: 'ARCHIVE', label: 'emailConnector.mailBox.list.drawer.folder.archive', icon: 'fa-archive' },
-        { id: 'DRAFTS', label: 'emailConnector.mailBox.list.drawer.folder.drafts', icon: 'fa-file-alt' },
-        // The two hidden folders last, Spam before Trash the way every mail client
-        // orders them, and each offered only once the mailbox has such a folder holding
-        // something (see availableFolders). What they open is a listing on which the
-        // ordinary mail actions are withheld in favour of their own — see
-        // isReadOnlyFolder, hasJunkActions and hasTrashActions in the mailbox service.
-        { id: 'JUNK', label: 'emailConnector.mailBox.list.drawer.folder.junk', icon: 'fa-ban' },
-        { id: 'TRASH', label: 'emailConnector.mailBox.list.drawer.folder.trash', icon: 'fa-trash' },
-      ],
+      // The icon of each built-in; a folder of the user's own gets the plain folder.
+      // The ORDER of the list is the server's: inbox, Sent, Archive, Drafts, then the
+      // two hidden folders (Spam before Trash the way every mail client orders them),
+      // then the user's own -- see EmailBoxService#buildFolderViews.
+      icons: {
+        INBOX: 'fa-inbox',
+        SENT: 'fa-paper-plane',
+        ARCHIVE: 'fa-archive',
+        DRAFTS: 'fa-file-alt',
+        JUNK: 'fa-ban',
+        TRASH: 'fa-trash',
+      },
+      FOLDERS_MAX_HEIGHT,
     };
   },
   computed: {
     /**
-     * Only offer folders that have mail; the inbox is always listed.
+     * The folders to display, each with its icon and its label. The label comes from
+     * the one labelling function: a built-in through the bundle, a custom folder as
+     * the user wrote it -- never through $t.
      *
      * @returns {Array} the folder descriptors to display
      */
     visibleFolders() {
-      return this.folders.filter(folder => folder.id === 'INBOX' || this.availableFolders.includes(folder.id));
+      return this.availableFolders.map(folder => ({
+        key: folder.key,
+        icon: folder.type === 'CUSTOM' ? 'fa-folder' : (this.icons[folder.key] || 'fa-folder'),
+        label: this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
+      }));
+    },
+    /**
+     * Whether the FOLDERS section scrolls in its own bounded pane -- Benjamin's
+     * explicit threshold, more than 5 of the user's OWN folders. Built-ins are never
+     * counted: their number is fixed by what the mailbox actually has (at most six),
+     * never grows with use, and is never the reason this section gets long.
+     *
+     * @returns {Boolean} true past five custom folders
+     */
+    foldersScrollable() {
+      return this.availableFolders.length > FOLDERS_VISIBLE_ROWS;
     },
   },
   methods: {
@@ -211,7 +260,7 @@ export default {
      * listed: inside a category view, re-picking the current folder is the way
      * back to its plain view.
      *
-     * @param {String} folder the folder id (INBOX / SENT / ARCHIVE / DRAFTS / JUNK / TRASH)
+     * @param {String} folder the folder key (a built-in, or CUSTOM:<id>)
      * @returns {void}
      */
     switchFolder(folder) {

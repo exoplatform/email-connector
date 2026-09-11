@@ -200,6 +200,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-action>
         </v-list-item>
         <v-divider class="mx-4" />
+        <!-- The user's own mail folders, and which of them are mirrored here: the
+             discovered list with a switch each, in the settings rather than in the
+             mailbox's menu, because choosing what to mirror is a preference set once,
+             not an action taken on mail. Its own component, so this screen does not
+             grow a second REST client and a second set of states. -->
+        <email-connector-user-setting-folders />
+        <v-divider class="mx-4" />
         <!-- The signature: one switch and an editor behind a drawer, following
              the address-book rows' shape. The switch and the Edit button write
              the same stored document, so the switch sends the stored markup

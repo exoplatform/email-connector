@@ -19,10 +19,19 @@ package org.exoplatform.emailConnector.upgrade;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
+import java.io.StringWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 
@@ -33,7 +42,11 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
+import liquibase.ChecksumVersion;
+import liquibase.Contexts;
 import liquibase.Liquibase;
+import liquibase.changelog.ChangeSet;
+import liquibase.database.Database;
 import liquibase.database.DatabaseFactory;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.resource.ClassLoaderResourceAccessor;
@@ -72,6 +85,189 @@ public class MasterChangelogTest {
         liquibase.update("");
       }
     }, "every changeset of " + CHANGELOG + " must apply to an empty database");
+  }
+
+  /**
+   * The custom-folder registry's three changesets (1.0.0-53 to 1.0.0-55) apply, roll
+   * back, and apply again. Rolled back with the platform's own Liquibase rather than
+   * by hand, because the org rule this pins is that a changeset's rollback is proven
+   * before it ships -- an {@code update} or a {@code dropIndex} has no automatic
+   * rollback and an empty {@code rollback} element silences a whole changeset's, and
+   * neither mistake is visible in an apply-only run. The re-apply afterwards is what
+   * shows the rollback left nothing behind (a surviving sequence or index would fail
+   * the second CREATE).
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theFolderRegistryChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = new Liquibase(CHANGELOG,
+                                          new ClassLoaderResourceAccessor(),
+                                          DatabaseFactory.getInstance()
+                                                         .findCorrectDatabaseImplementation(new JdbcConnection(connection)));
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_FOLDER"), "1.0.0-53 creates EMAIL_FOLDER");
+      liquibase.rollback(3, "");
+      assertTrue(!tableExists(connection, "EMAIL_FOLDER"), "rolling back the last three changesets drops EMAIL_FOLDER");
+      assertTrue(tableExists(connection, "EMAIL_THREAD_AI_SUMMARY"), "and nothing before them");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_FOLDER"), "the changesets apply again after their rollback");
+    }
+  }
+
+  /**
+   * On MySQL, and only there, the registry's REMOTE_NAME keeps its case: generated
+   * through Liquibase's own MySQL dialect (an offline connection, no server), the
+   * CREATE TABLE of 1.0.0-53 carries a binary collation on that one column, while the
+   * table keeps the file's accent-insensitive one. An IMAP folder name is
+   * case-sensitive and a Gmail label is; under the table's collation "Projets" and
+   * "projets" would be one row, and the lookup by name would answer the wrong folder.
+   * The HSQLDB runs of this suite are case-sensitive and can never see that, which is
+   * why this is asserted on the dialect's SQL rather than on a round trip.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theRegistryNameKeepsItsCaseOnMySql() throws Exception {
+    // An offline connection keeps its "already ran" ledger in a CSV; a fresh one means
+    // every changeset is generated, which is what makes 1.0.0-53's CREATE TABLE appear.
+    Path ledger = Files.createTempFile("email-connector-mysql", ".csv");
+    Files.delete(ledger);
+    StringWriter sql = new StringWriter();
+    try {
+      Database mysql = DatabaseFactory.getInstance()
+                                      .openDatabase("offline:mysql?version=8.0.17&changeLogFile=" + ledger,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    new ClassLoaderResourceAccessor());
+      new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), mysql).update(new Contexts(), sql);
+    } finally {
+      Files.deleteIfExists(ledger);
+    }
+    // The statement itself, not a split on semicolons: the changeset's comment above it
+    // carries semicolons of its own.
+    String generated = sql.toString();
+    Matcher createFolder = Pattern.compile("CREATE TABLE EMAIL_FOLDER \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(generated);
+    assertTrue(createFolder.find(), "no CREATE TABLE EMAIL_FOLDER in the MySQL SQL");
+    assertTrue(!createFolder.group().contains("COLLATE"), "the CREATE carries no modifySql of its own: " + createFolder.group());
+    assertTrue(generated.contains("ALTER TABLE EMAIL_FOLDER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"),
+               "the table options of 1.0.0-56");
+    assertTrue(generated.contains("ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"),
+               "the binary collation on the identifier, and on it only");
+  }
+
+  // The changesets whose checksum already depends on where it is computed: every one
+  // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
+  // -48); 1.0.0-1, -2 and -27 are not, and have survived every restart so far only
+  // because every evaluation of a running platform computed them the same way. They
+  // are listed, not fixed: a validCheckSum for an id that already ran everywhere is a
+  // decision about every deployment's recorded value, not this branch's. Nothing may
+  // be ADDED to this list.
+  // The changesets this branch adds. They are the ones a second evaluation computes
+  // ahead of the update in the pin below, and nothing on this list may ever drift.
+  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56");
+
+  private static final Set<String> KNOWN_SCOPE_DEPENDENT_CHECKSUMS =
+                                                                   Set.of("1.0.0-1", "1.0.0-2", "1.0.0-5", "1.0.0-27", "1.0.0-46", "1.0.0-48");
+
+  /**
+   * A changeset's checksum must not depend on where it is computed. The shape of the
+   * failure this pins: the platform started this add-on's Spring context twice in one
+   * boot; the first applied the registry table and recorded the checksum it computed while
+   * executing it, the second computed the same changeset outside that execution,
+   * got another number, and refused the whole changelog, taking the portal down.
+   * Liquibase serialises a changeset's modifySql visitors through a filter that reads
+   * the checksum version off the current Scope, and a ChangeSet keeps the first value
+   * it computed, so any modifySql changeset has two checksums: the one recorded by
+   * the update that ran it and the one anything else computes.
+   * <p>
+   * So: apply the changelog, then compute every changeset's checksum from a fresh
+   * parse OUTSIDE any update, and compare with what the update recorded; every
+   * difference must be one of the pre-existing, listed ones. Then run the update
+   * again on the same connection with those checksums already computed (which is
+   * what a second context does) and require it to validate. A single-pass apply
+   * cannot see any of this, which is why the rig saw it first.
+   *
+   * @throws Exception when the changelog cannot be applied or read back
+   */
+  @Test
+  void aChecksumIsTheSameWhereverItIsComputed() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:twice" + System.nanoTime(), "sa", "")) {
+      Database database = DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection));
+      new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database).update("");
+      Map<String, String> recorded = new TreeMap<>();
+      try (ResultSet rows = connection.createStatement().executeQuery("SELECT ID, MD5SUM FROM DATABASECHANGELOG")) {
+        while (rows.next()) {
+          recorded.put(rows.getString(1), rows.getString(2));
+        }
+      }
+      Liquibase second = new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database);
+      Map<String, String> drifting = new TreeMap<>();
+      for (ChangeSet changeSet : second.getDatabaseChangeLog().getChangeSets()) {
+        String outside = changeSet.generateCheckSum(ChecksumVersion.latest()).toString();
+        String stored = recorded.get(changeSet.getId());
+        if (stored != null && !stored.equals(outside)) {
+          drifting.put(changeSet.getId(), stored + " recorded, " + outside + " computed outside the update");
+        }
+      }
+      drifting.keySet().removeAll(KNOWN_SCOPE_DEPENDENT_CHECKSUMS);
+      assertTrue(drifting.isEmpty(),
+                 () -> "these changesets have a checksum that depends on where it is computed; a second context, or the next restart,"
+                     + " refuses the whole changelog: " + drifting);
+      // The second evaluation, as the rig ran it: the changesets this branch adds have
+      // their checksum computed before the update runs (a fresh parse, so the values
+      // above are not carried over), then the update validates them against what the
+      // first evaluation recorded. The pre-existing changesets are left to the update
+      // itself, the way every real evaluation so far has computed them.
+      Liquibase third = new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database);
+      for (ChangeSet changeSet : third.getDatabaseChangeLog().getChangeSets()) {
+        if (BRANCH_CHANGESETS.contains(changeSet.getId())) {
+          changeSet.generateCheckSum(ChecksumVersion.latest());
+        }
+      }
+      assertDoesNotThrow(() -> third.update(""), "the second evaluation, with the checksums already computed, must validate");
+    }
+  }
+
+  /**
+   * 1.0.0-52 is burned and must never be reused: the index that is 1.0.0-24 today
+   * carried that id on feature/ai-contribution between 20 and 23 August 2026, and the
+   * databases that ran the branch then hold a 1.0.0-52 row for it. A changeset's
+   * identity is filename plus id plus author, so a new 1.0.0-52 collides with that row
+   * on every one of them -- which is how the registry's first deploy took the rig
+   * down. Renumbering was right THIS time because the new changesets had run nowhere;
+   * it is never right for an id that has.
+   *
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  @Test
+  void theBurnedIdIsNeverReused() throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder().parse(changelog).getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        assertTrue(!"1.0.0-52".equals(((Element) changeSets.item(i)).getAttribute("id")),
+                   "1.0.0-52 was recorded on every database that ran feature/ai-contribution between 20 and 23 August 2026"
+                       + " (as the index now at 1.0.0-24); a changeset under that id collides with all of them");
+      }
+    }
+  }
+
+  /**
+   * Whether a table exists, asked of the JDBC metadata.
+   *
+   * @param connection the database
+   * @param tableName the table, as created
+   * @return true when the table is there
+   * @throws Exception when the metadata cannot be read
+   */
+  private boolean tableExists(Connection connection, String tableName) throws Exception {
+    try (ResultSet tables = connection.getMetaData().getTables(null, null, tableName, null)) {
+      return tables.next();
+    }
   }
 
   /**

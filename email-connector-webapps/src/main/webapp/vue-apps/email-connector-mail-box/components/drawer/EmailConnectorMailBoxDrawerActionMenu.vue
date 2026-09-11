@@ -16,6 +16,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-list-item-action class="ma-0">
+    <!-- The menu keeps no-min-width and sizes to its widest entry. A fixed floor was
+         tried and is wrong in both directions: it pads out a menu of short built-in
+         labels, and it is still too narrow for a long folder name. What was missing was
+         breathing room rather than width -- the entries sat tight against the right
+         edge, which is what read as cramped -- so the rows carry it as padding. -->
     <v-menu
       :nudge-top="-1"
       content-class="no-min-width border-radius z-index-modal overflow-hidden"
@@ -56,9 +61,10 @@ export default {
       type: String,
       default: 'INBOX',
     },
+    // The folders to offer, as the server listed them.
     availableFolders: {
       type: Array,
-      default: () => ['INBOX'],
+      default: () => [{ key: 'INBOX', type: 'BUILT_IN' }],
     },
     // The categories offered as views (the add-on's full set, Important included).
     categories: {

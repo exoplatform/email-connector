@@ -940,5 +940,138 @@
       <column name="THREAD_ID"/>
     </createIndex>
   </changeSet>
+  <!-- 1.0.0-52 is not used, and must never be. The changeset that is 1.0.0-24 today
+       (the IDX_EMAIL_BOX_USER_FOLDER_DATE index) carried id 1.0.0-52 on
+       feature/ai-contribution between 20 and 23 August 2026 (commit fba51f4b, kept on
+       the branch feature/ai-contribution_backup_20_08); every database that ran the
+       branch in those days recorded a 1.0.0-52 row for it, and a changeset's identity
+       is filename plus id plus author. This add-on's registry therefore starts at 53.
+       Ids 53 to 56 were never used on any branch. -->
+  <changeSet author="email-connector" id="1.0.0-53">
+    <comment>
+      The registry of a user's own mail folders: the ones they made in their mailbox
+      ("Factures", "Customers/Acme", a Gmail label), discovered by walking their IMAP
+      folder list and mirrored here only once they have opted in.
+
+      Its ID is the whole point of the table. EMAIL_BOX.FOLDER stays the opaque
+      VARCHAR(50) key it has always been and the third leg of (USER_ID, FOLDER,
+      MAIL_REMOTE_ID); a custom folder's messages carry "CUSTOM:" plus this id. The
+      remote name could not have been that key: it would not fit the column, a rename
+      on the server would orphan every row, and a folder the user named "SENT" would
+      collide with a constant. Nothing is added to EMAIL_BOX, no row of it is
+      touched, and the existing (USER_ID, FOLDER, RECEIVED_DATE) index serves a
+      CUSTOM key exactly as it serves ARCHIVE.
+
+      Three writers share a row, and the columns say which. DISPLAY_NAME, DELIMITER,
+      MISSING and LAST_SEEN_DATE are discovery's. SYNC_ENABLED and ENABLED_DATE are the
+      user's opt-in, from the settings screen. The five snapshot columns (UID_VALIDITY,
+      UID_NEXT, MESSAGE_COUNT, HIGHEST_MODSEQ, WINDOW_SIZE) and LAST_SYNC_DATE are the
+      sync job's: the folder's own change memory, kept here rather than in the JSON
+      sync state so the least-recently-synced rotation and the skip-if-unchanged check
+      read one row. The entity is DynamicUpdate for the same reason.
+
+      REMOTE_NAME is VARCHAR(500) rather than longer because it is half of a UNIQUE
+      index beside a VARCHAR(250) USER_ID: on MySQL with utf8mb4 that pair is already
+      3000 of the 3072 bytes InnoDB allows a key, and an IMAP path of five hundred
+      characters is not a folder anyone made by hand.
+
+      This table carries NO modifySql, unlike every table before it, and that is a
+      decision and not an omission. Liquibase computes a changeset's checksum from
+      its changes AND from its modifySql visitors, and a visitor is serialised
+      through a filter that reads the checksum version off the CURRENT SCOPE, so the
+      value depends on where it is computed: inside the update that executes the
+      changeset it is one number, computed by anything that touched the parsed
+      changelog earlier or elsewhere (a second Spring context on the same JVM) it is
+      another, and the first computed value is the one a changeset remembers. That
+      is how this very changeset, with a replace and an append on it, was recorded
+      by one context and refused by the next in a single boot. Every earlier
+      changeset that carries a modifySql has the same exposure; 1.0.0-5, -46 and -48
+      hide it behind validCheckSum ANY. So the MySQL table options and the collation
+      this table needs live in 1.0.0-56, as literal SQL on a MySQL-only changeset,
+      which is checksummed on its text and nothing else.
+    </comment>
+    <createTable tableName="EMAIL_FOLDER">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_FOLDER"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="REMOTE_NAME" type="VARCHAR(500)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DISPLAY_NAME" type="VARCHAR(255)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DELIMITER" type="VARCHAR(1)"/>
+      <column name="TYPE" type="VARCHAR(20)" defaultValue="CUSTOM">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SYNC_ENABLED" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ENABLED_DATE" type="TIMESTAMP"/>
+      <column name="MISSING" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DISCOVERED_DATE" type="TIMESTAMP"/>
+      <column name="LAST_SEEN_DATE" type="TIMESTAMP"/>
+      <column name="LAST_SYNC_DATE" type="TIMESTAMP"/>
+      <column name="UID_VALIDITY" type="BIGINT"/>
+      <column name="UID_NEXT" type="BIGINT"/>
+      <column name="MESSAGE_COUNT" type="BIGINT"/>
+      <column name="HIGHEST_MODSEQ" type="BIGINT"/>
+      <column name="WINDOW_SIZE" type="INT"/>
+    </createTable>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-54">
+    <comment>
+      EMAIL_FOLDER's unique index on (USER_ID, REMOTE_NAME), apart from its table for
+      the reason 1.0.0-50 sets out. The uniqueness is what makes a discovery walk an
+      upsert: the same folder seen again finds its row, and the id the mirrored rows
+      carry stays the same. Both columns ascending: this index serves equality
+      lookups only, and the per-user listing it also prefixes is ordered in memory
+      over a list bounded by the mailbox's folder count.
+    </comment>
+    <createIndex tableName="EMAIL_FOLDER" indexName="UQ_EMAIL_FOLDER_USER_NAME" unique="true">
+      <column name="USER_ID"/>
+      <column name="REMOTE_NAME"/>
+    </createIndex>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-55" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The registry's sequence, on the vendors that have sequences, created in the
+      same breath as its table: the lesson 1.0.0-43 paid for, repeated by 1.0.0-47
+      and 1.0.0-49.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_FOLDER_ID" startValue="1"/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-56" dbms="mysql">
+    <comment>
+      What 1.0.0-53 would have said through a modifySql, said as SQL instead, for the
+      reason 1.0.0-53's comment gives: literal SQL is checksummed on its text.
+
+      First the table options every table of this file gets on MySQL (InnoDB,
+      utf8mb4, the accent-insensitive 0900 collation), applied after the fact.
+      Then the one column that must NOT take that collation. REMOTE_NAME is an IMAP
+      folder name, and an IMAP folder name is case-sensitive (RFC 3501 makes only
+      INBOX an exception), as a Gmail label is: "Projets" and "projets" are two
+      folders the unique index of 1.0.0-54 must keep apart. Under the accent- and
+      case-insensitive collation the second would fail the index and, worse, the
+      lookup by name would answer the FIRST folder's row, which the discovery walk
+      would then keep renaming. utf8mb4_0900_bin rather than utf8mb4_bin because the
+      older one is PAD SPACE (two names differing by a trailing space compare equal)
+      while the 0900 family the table relies on is NO PAD; it needs MySQL 8.0.17.
+
+      Rolled back explicitly, because sql has no automatic rollback: the column goes
+      back to the table's collation. The table options are not undone, they are what
+      the server would have chosen anyway.
+    </comment>
+    <sql>ALTER TABLE EMAIL_FOLDER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <sql>ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
+    <rollback>
+      <sql>ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) NOT NULL</sql>
+    </rollback>
+  </changeSet>
 
 </databaseChangeLog>

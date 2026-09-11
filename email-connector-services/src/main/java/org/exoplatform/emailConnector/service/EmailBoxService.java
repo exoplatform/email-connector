@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -53,10 +54,13 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.lang.ref.WeakReference;
+import java.util.function.Consumer;
 
 import javax.activation.DataHandler;
 import javax.activation.DataSource;
@@ -129,10 +133,14 @@ import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.emailConnector.job.EmailBoxSyncJob;
+import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailFolderList;
+import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -140,6 +148,7 @@ import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
@@ -279,6 +288,15 @@ public class EmailBoxService {
    */
   private static final int        JUNK_FOLDER_SYNC_LIMIT                                      = 30;
 
+  /**
+   * The built-in folders "Move to..." may target. Inbox because filing must be
+   * reversible, Archive because filing and archiving are the same gesture to a user.
+   * Deliberately not Drafts (authored here, not mirrored), Trash or Junk (their own
+   * actions carry their own meaning and their own confirmations), nor ALL_MAIL (a
+   * thread-completion cache, not a place mail lives).
+   */
+  private static final List<String>      MOVE_BUILT_IN_TARGETS   = List.of(MailFolder.INBOX, MailFolder.ARCHIVE);
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
@@ -310,89 +328,6 @@ public class EmailBoxService {
   // Caps the OR-of-Message-ID search when completing a thread from the archive on
   // open, so an unusually long conversation can't build a giant IMAP SEARCH.
   private static final int        ARCHIVE_COMPLETION_SEARCH_LIMIT                             = 50;
-
-  // The RFC 6154 SPECIAL-USE attribute that names a mailbox's Drafts folder. The
-  // server saying so beats any name we could guess, which is why it is tried first.
-  private static final String     DRAFTS_SPECIAL_USE_ATTRIBUTE                                = "\\Drafts";
-
-  // The well-known Drafts folder names, for the servers that never learned
-  // SPECIAL-USE, in the locales the product ships plus the few its users' other
-  // clients create. Matched on the folder's last path segment, for equality — see
-  // findDraftsFolder for why this list is not applied as a "contains".
-  private static final Set<String> DRAFTS_FOLDER_NAMES                                        =
-                                                                                              Set.of("drafts",
-                                                                                                     "draft",
-                                                                                                     "brouillons",
-                                                                                                     "brouillon",
-                                                                                                     "entwürfe",
-                                                                                                     "entwuerfe",
-                                                                                                     "bozze",
-                                                                                                     "borradores",
-                                                                                                     "rascunhos",
-                                                                                                     "concepten",
-                                                                                                     "utkast",
-                                                                                                     "kladde",
-                                                                                                     "luonnokset");
-
-  // The RFC 6154 SPECIAL-USE attribute that names a mailbox's Trash folder. As with
-  // Drafts, the server saying so beats any name we could guess, so it is tried first.
-  private static final String     TRASH_SPECIAL_USE_ATTRIBUTE                                 = "\\Trash";
-
-  // The well-known Trash folder names, for the servers that never learned SPECIAL-USE,
-  // in the same spread of locales as DRAFTS_FOLDER_NAMES plus the "Deleted ..." names
-  // Exchange and its clients create. Matched on the folder's last path segment, for
-  // equality —
-  // see findSyncableTrashFolder for why this list is not applied as a "contains", and
-  // why the loose findTrashFolder next to it keeps being loose.
-  private static final Set<String> TRASH_FOLDER_NAMES                                         =
-                                                                                              Set.of("trash",
-                                                                                                     "deleted",
-                                                                                                     "deleted items",
-                                                                                                     "deleted messages",
-                                                                                                     "corbeille",
-                                                                                                     "papierkorb",
-                                                                                                     "cestino",
-                                                                                                     "papelera",
-                                                                                                     "lixeira",
-                                                                                                     "prullenbak",
-                                                                                                     "papperskorg",
-                                                                                                     "papirkurv",
-                                                                                                     "roskakori");
-
-  // The RFC 6154 SPECIAL-USE attribute that names a mailbox's Junk folder. As with
-  // Drafts and Trash, the server saying so beats any name we could guess, so it is
-  // tried first. Gmail's [Gmail]/Spam carries it; so does Dovecot's and Cyrus's Junk.
-  private static final String     JUNK_SPECIAL_USE_ATTRIBUTE                                  = "\\Junk";
-
-  // The well-known Junk folder names, for the servers that never learned SPECIAL-USE,
-  // in the same spread of locales as TRASH_FOLDER_NAMES plus the "Spam" / "Bulk" names
-  // the big providers and their clients create. Matched on the folder's last path
-  // segment, for equality — see findSyncableJunkFolder for why this list is not
-  // applied as a "contains", and why there is no loose variant beside it.
-  private static final Set<String> JUNK_FOLDER_NAMES                                          =
-                                                                                              Set.of("junk",
-                                                                                                     "junk e-mail",
-                                                                                                     "junk-e-mail",
-                                                                                                     "junk email",
-                                                                                                     "junk mail",
-                                                                                                     "spam",
-                                                                                                     "спам",
-                                                                                                     "bulk mail",
-                                                                                                     "courrier indésirable",
-                                                                                                     "indésirables",
-                                                                                                     "pourriel",
-                                                                                                     "spamverdacht",
-                                                                                                     "unerwünscht",
-                                                                                                     "posta indesiderata",
-                                                                                                     "correo no deseado",
-                                                                                                     "no deseado",
-                                                                                                     "lixo eletrônico",
-                                                                                                     "lixo eletronico",
-                                                                                                     "ongewenste e-mail",
-                                                                                                     "skräppost",
-                                                                                                     "roskaposti",
-                                                                                                     "uønsket e-post",
-                                                                                                     "søppelpost");
 
   // Human names for the two folders the by-UID removal mechanic is pointed at, used
   // only in its log lines. The mechanic itself (removeMessageByUid / closeFolderQuietly)
@@ -609,6 +544,12 @@ public class EmailBoxService {
   private static final String     USER_NOT_ALLOWED_FOR_NOT_JUNK_EMAIL_MESSAGE                 =
                                                                              "User %s is not allowed to mark email as not spam";
 
+  private static final String     USER_NOT_ALLOWED_FOR_MOVE_EMAIL_MESSAGE                     =
+                                                                             "User %s is not allowed to move email";
+
+  private static final String     USER_NOT_ALLOWED_FOR_FOLDERS_MESSAGE                        =
+                                                                             "User %s is not allowed to manage mail folders";
+
   /**
    * The administrator's kill switch for the server-side half of drafts, in the
    * style of {@code email.connector.contacts.publish.enabled}: a JVM property read
@@ -619,6 +560,11 @@ public class EmailBoxService {
    * administrator might want to withdraw in a hurry, and the reason the switch
    * exists at all: an APPEND loop against a misbehaving server is the one failure
    * mode here that is visible outside this application.
+   * <p>
+   * Since the administration settings drawer shipped, this JVM property is only the
+   * default — the live switch is {@link EmailConnectorService#isServerDraftsEnabled()},
+   * a {@code SettingService} value an administrator can flip from the drawer, which
+   * falls back to this property when nothing is stored.
    */
   public static final String      DRAFTS_SERVER_ENABLED_PROPERTY                              =
                                                                                               "email.connector.drafts.server.enabled";
@@ -642,6 +588,11 @@ public class EmailBoxService {
    * listing on every sync of every user, and an administrator meeting that on a
    * provider that rate-limits has to be able to take this off the sync loop without
    * waiting for a release.
+   * <p>
+   * Since the administration settings drawer shipped, this JVM property is only the
+   * default — the live switch is {@link EmailConnectorService#isTrashSyncEnabled()},
+   * a {@code SettingService} value an administrator can flip from the drawer, which
+   * falls back to this property when nothing is stored.
    */
   public static final String      TRASH_SYNC_ENABLED_PROPERTY                                 =
                                                                                               "email.connector.trash.sync.enabled";
@@ -653,6 +604,11 @@ public class EmailBoxService {
    * nothing else. Spam is the folder whose size is least the user's doing, so it is
    * the one an administrator on a rate-limiting provider is most likely to need to
    * take off the loop. Default ON.
+   * <p>
+   * Since the administration settings drawer shipped, this JVM property is only the
+   * default — the live switch is {@link EmailConnectorService#isJunkSyncEnabled()},
+   * a {@code SettingService} value an administrator can flip from the drawer, which
+   * falls back to this property when nothing is stored.
    */
   public static final String      JUNK_SYNC_ENABLED_PROPERTY                                  =
                                                                                               "email.connector.junk.sync.enabled";
@@ -708,6 +664,26 @@ public class EmailBoxService {
 
   @Autowired
   private EmailFavoriteService    emailFavoriteService;
+
+  @Autowired
+  private EmailFolderService      emailFolderService;
+
+  // One classified walk per connection. A Store is one sync, one move, one read; the
+  // folder list does not change within it, and the five built-in resolvers ask for it
+  // one after the other. Memoised on the connection rather than passed around, because
+  // the resolvers are reached from a dozen call sites with a dozen signatures, and a
+  // weak key so the memo dies with the connection it describes. This is what makes
+  // "one walk per rediscovery" literally true: before it, a mailbox missing four of
+  // the five folders paid four LIST pairs per sync, one per resolver.
+  //
+  // The VALUE must never reach the key, or the weak key is never collected: a
+  // WeakHashMap holds its values strongly, and an IMAPFolder holds its Store. So the
+  // memo keeps names and attributes (the classifier's records) and only WEAK handles
+  // to the listed folders (see FolderWalk) -- a handle collected between the walk and
+  // its use is re-obtained from the store by name, which costs no round-trip -- and
+  // the entry is dropped explicitly wherever a store is closed, so the memo's life is
+  // the connection's even before the collector looks.
+  private final Map<Store, Rediscovery>          rediscoveries         = Collections.synchronizedMap(new WeakHashMap<>());
 
   // Mailboxes with a synchronization running right now, so two can never overlap and cache
   // the same message twice.
@@ -947,6 +923,17 @@ public class EmailBoxService {
       syncFolderIfChanged(store, store.getFolder(INBOX_FOLDER_NAME), MailFolder.INBOX, username, userEmailSetting, emailBoxCacheSize, true, syncState);
       if (!inboxOnly) {
         int nonInboxWindow = Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
+        // The folder list, walked in full once a day (and on the first sync of a
+        // mailbox) rather than once a period: it is what registers the folders the
+        // user made elsewhere, and it also refreshes the remembered built-in names in
+        // one pass, so the five resolvers below find theirs cached instead of each
+        // paying a walk of its own on a miss. Best-effort, like every folder step: a
+        // failed walk costs the user a day's delay on a new folder, not their mail.
+        try {
+          walkFoldersIfDue(store, username, syncState);
+        } catch (Exception e) {
+          LOG.warn("Could not walk the folder list of user {}", username, e);
+        }
         try {
           syncFolderIfChanged(store, resolveSentFolder(store, syncState), MailFolder.SENT, username, userEmailSetting, nonInboxWindow, false, syncState);
         } catch (Exception e) {
@@ -1002,6 +989,19 @@ public class EmailBoxService {
         } catch (Exception e) {
           LOG.warn("Could not sync the Junk folder for user {}", username, e);
         }
+        // The user's own folders last of all, and bounded four ways over -- opt-in,
+        // cap, window and a per-cycle budget with rotation (see EmailFolderService for
+        // each rule and why): this loop touches at most the budget's worth of folders,
+        // each for two round-trips when unchanged, so a mailbox that opted in ten
+        // folders costs a cycle what the six built-ins already do. Each folder is its
+        // own try/catch inside; the one here is for the registry read.
+        try {
+          if (emailFolderService.isCustomFoldersEnabled()) {
+            syncCustomFolders(store, username, userEmailSetting);
+          }
+        } catch (Exception e) {
+          LOG.warn("Could not sync the custom folders of user {}", username, e);
+        }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
       if (countUnreadEmails(username) != unreadCountBeforeSync) {
@@ -1027,6 +1027,9 @@ public class EmailBoxService {
       // Null when the load itself failed -- there is then nothing to persist.
       if (syncState != null) {
         saveMailboxSyncState(username, syncState, originalSyncStateJson);
+      }
+      if (store != null) {
+        rediscoveries.remove(store);
       }
       try {
         if (store != null && store.isConnected()) {
@@ -1074,7 +1077,7 @@ public class EmailBoxService {
     // stuck sync) is allowed through, since recovering from it is the point of a reset.
     if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
       long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate()
-          + EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
+          + getEffectiveSyncPeriod(userEmailSetting) * 60000L;
       if (System.currentTimeMillis() <= nextAllowedSync) {
         throw new IllegalStateException("emailConnector.reset.syncInProgress");
       }
@@ -1236,7 +1239,8 @@ public class EmailBoxService {
       long cleanupStart = System.currentTimeMillis();
       cleanupObsoleteEmails(uidFolder, folderEmails, serverMessages, username, emailBoxCacheSize);
       long cleanupEnd = System.currentTimeMillis();
-      LOG.info("Synchronized folder {} of user {}: {} message(s) on the server, {} already known, {} newly cached, {} flag update(s)"
+      logSyncOutcome(!newEmailIds.isEmpty() || flagUpdates > 0,
+                     "Synchronized folder {} of user {}: {} message(s) on the server, {} already known, {} newly cached, {} flag update(s)"
           + " | open {} ms, window fetch {} ms, cache load {} ms, reconcile {} ms, download+create {} ms, cleanup {} ms"
           + " | {} MIME part(s) fetched for {} new message(s) [{}]",
                folderKey,
@@ -1350,15 +1354,164 @@ public class EmailBoxService {
                                    int windowSize,
                                    boolean notify,
                                    MailboxSyncState syncState) throws MessagingException, IllegalAccessException {
+    syncFolderIfChanged(store,
+                        folder,
+                        folderKey,
+                        username,
+                        userEmailSetting,
+                        windowSize,
+                        notify,
+                        syncState.getSnapshot(folderKey),
+                        snapshot -> syncState.setSnapshot(folderKey, snapshot));
+  }
+
+  /**
+   * {@link #syncFolderIfChanged(Store, Folder, String, String, UserEmailSetting, int, boolean, MailboxSyncState)}
+   * with the snapshot store abstracted away: the built-in folders keep theirs in the
+   * mailbox's JSON sync state, a custom folder keeps its own on its registry row, and
+   * the skip check and the sync do not care which. The previous snapshot comes in, the
+   * captured one goes out through the consumer -- only when one was captured, so a
+   * skipped folder keeps the snapshot it had.
+   *
+   * @param store the connected store, for the CONDSTORE capability check
+   * @param folder the remote folder (may be {@code null} when not discovered)
+   * @param folderKey the {@link MailFolder} discriminator
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param windowSize the number of most recent messages to keep
+   * @param notify whether to fire the new-mail notification (INBOX only)
+   * @param previousSnapshot what the last full sync saw, may be null
+   * @param capturedSnapshot where a freshly captured snapshot goes
+   * @throws MessagingException if the folder cannot be read
+   * @throws IllegalAccessException if the user is not allowed to cache messages
+   */
+  private void syncFolderIfChanged(Store store,
+                                   Folder folder,
+                                   String folderKey,
+                                   String username,
+                                   UserEmailSetting userEmailSetting,
+                                   int windowSize,
+                                   boolean notify,
+                                   FolderSyncSnapshot previousSnapshot,
+                                   Consumer<FolderSyncSnapshot> capturedSnapshot) throws MessagingException,
+                                                                                  IllegalAccessException {
     if (folder == null) {
       return;
     }
-    if (canSkipFolderSync(store, folder, folderKey, syncState.getSnapshot(folderKey), windowSize, username)) {
+    if (canSkipFolderSync(store, folder, folderKey, previousSnapshot, windowSize, username)) {
       return;
     }
     FolderSyncSnapshot folderSnapshot = syncFolder(folder, folderKey, username, userEmailSetting, windowSize, notify);
     if (folderSnapshot != null) {
-      syncState.setSnapshot(folderKey, folderSnapshot);
+      capturedSnapshot.accept(folderSnapshot);
+    }
+  }
+
+  /**
+   * One cycle's share of the user's custom folders: the folders
+   * {@link EmailFolderService#pickFoldersToSync} hands back, each opened by its
+   * remembered remote name, checked against its own snapshot and synced with the custom
+   * window when it changed. Every folder is stamped as checked whether it was skipped or
+   * synced -- a skip is a successful check, and the stamp is what rotates it to the back
+   * of the queue. A folder the server no longer has is marked missing rather than
+   * failed, so the next walk's grace rule takes it from there.
+   *
+   * @param store the connected store
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   */
+  private void syncCustomFolders(Store store, String username, UserEmailSetting userEmailSetting) {
+    for (EmailFolder customFolder : emailFolderService.pickFoldersToSync(username)) {
+      try {
+        syncCustomFolder(store, customFolder, username, userEmailSetting);
+      } catch (Exception e) {
+        // A failed check is a check: stamped, so the folder rotates to the back and
+        // the next cycle's budget goes to the others rather than to the one folder
+        // that keeps failing. Its snapshot is untouched, so when it works again it
+        // takes the full path if it must.
+        LOG.warn("Could not sync folder '{}' of user {}", customFolder.getRemoteName(), username, e);
+        emailFolderService.recordSync(username, customFolder.getId(), null);
+      }
+    }
+  }
+
+  /**
+   * Checks, and when changed syncs, one custom folder -- the body of the loop above,
+   * and of the on-open refresh, so the two cannot drift apart.
+   *
+   * @param store the connected store
+   * @param customFolder the registered folder
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @throws MessagingException if the folder cannot be read
+   * @throws IllegalAccessException if the user is not allowed to cache messages
+   */
+  private void syncCustomFolder(Store store,
+                                EmailFolder customFolder,
+                                String username,
+                                UserEmailSetting userEmailSetting) throws MessagingException, IllegalAccessException {
+    Folder remote = store.getFolder(customFolder.getRemoteName());
+    // Whether the folder is still there: answered by the walk when this connection
+    // made one (the daily walk, or the first sync), else by one LIST probe -- the
+    // third round-trip of an unchanged folder, paid so a folder deleted on the server
+    // is marked missing rather than thrown at, picked first and thrown at again.
+    Rediscovery walked = rediscoveries.get(store);
+    boolean present = walked != null ? walked.lists(customFolder.getRemoteName()) : remote.exists();
+    if (!(remote instanceof IMAPFolder) || !present) {
+      LOG.info("Folder '{}' of user {} is no longer on the server; marking it missing", customFolder.getRemoteName(), username);
+      emailFolderService.markMissing(username, customFolder.getId());
+      return;
+    }
+    FolderSyncSnapshot[] captured = new FolderSyncSnapshot[1];
+    syncFolderIfChanged(store,
+                        remote,
+                        customFolder.getKey(),
+                        username,
+                        userEmailSetting,
+                        Math.min(emailConnectorService.getEmailBoxCacheSize(), emailFolderService.getWindowSize()),
+                        false,
+                        customFolder.getSnapshot(),
+                        snapshot -> captured[0] = snapshot);
+    // The opt-out takes no sync guard (a preference must not wait on a sync), so it can
+    // land WHILE this folder is being synced: its rows deleted, its memory cleared, and
+    // then the sync above re-inserting a window of rows nobody asked for -- resurfaced
+    // in conversations and search, and never cleaned, since a disabled folder is never
+    // synced again. So the opt-in is re-read after the sync, and a folder opted out in
+    // the meantime loses what the sync wrote. The registry's own sync writes carry the
+    // same guard in their WHERE clause, so the memory cannot be re-planted either.
+    EmailFolder current;
+    try {
+      current = emailFolderService.getFolder(username, customFolder.getId());
+    } catch (IllegalArgumentException gone) {
+      current = null;
+    }
+    if (current == null || !current.isSyncEnabled()) {
+      LOG.info("Folder '{}' of user {} was opted out while it was being synced; dropping what the sync wrote",
+               customFolder.getRemoteName(),
+               username);
+      deleteUserEmails(username, customFolder.getKey());
+      return;
+    }
+    emailFolderService.recordSync(username, customFolder.getId(), captured[0]);
+  }
+
+  /**
+   * Writes a folder-sync outcome line at INFO when the sync actually changed
+   * something, and at DEBUG otherwise. The periodic sync runs over every folder of
+   * every connected mailbox, and a pass that finds nothing new is the normal case:
+   * logged at INFO it drowns the platform log (measured at ~17 lines per mailbox
+   * pass, ~4.9 million lines a day at 1,000 users on a 5-minute period). The line
+   * itself is unchanged, so raising the class to DEBUG restores the full trace.
+   *
+   * @param eventful whether the sync cached, updated or removed anything
+   * @param message the log message, with {@code {}} placeholders
+   * @param args the placeholder values
+   */
+  private void logSyncOutcome(boolean eventful, String message, Object... args) {
+    if (eventful) {
+      LOG.info(message, args);
+    } else {
+      LOG.debug(message, args);
     }
   }
 
@@ -1425,7 +1578,7 @@ public class EmailBoxService {
         // and skipping would leave them stale forever. Checked FIRST (before any
         // STATUS is issued, and before the snapshot's own fields) so the log
         // separates "this server cannot do it" from "the capture came back short".
-        LOG.info("Folder {} of user {} cheap change check: no CONDSTORE on this server -> full sync", folderKey, username);
+        LOG.debug("Folder {} of user {} cheap change check: no CONDSTORE on this server -> full sync", folderKey, username);
         return false;
       }
       if (snapshot.getWindowSize() != windowSize) {
@@ -1443,7 +1596,7 @@ public class EmailBoxService {
         // CONDSTORE but only sends mod-sequences when asked, which the sync now does
         // at open). If it still fires persistently, the folder's SELECT is coming
         // back without the signal even when requested.
-        LOG.info("Folder {} of user {} cheap change check: snapshot incomplete (uidValidity {}, uidNext {}, {} message(s),"
+        LOG.debug("Folder {} of user {} cheap change check: snapshot incomplete (uidValidity {}, uidNext {}, {} message(s),"
             + " highestModSeq {}) -> full sync",
                  folderKey,
                  username,
@@ -1461,7 +1614,7 @@ public class EmailBoxService {
           && uidNext > 0 && uidNext == snapshot.getUidNext()
           && messageCount > 0 && messageCount == snapshot.getMessageCount()
           && highestModSeq > 0 && highestModSeq == snapshot.getHighestModSeq();
-      LOG.info("Folder {} of user {} cheap change check: server (uidValidity {}, uidNext {}, {} message(s), highestModSeq {})"
+      LOG.debug("Folder {} of user {} cheap change check: server (uidValidity {}, uidNext {}, {} message(s), highestModSeq {})"
           + " vs last sync ({}, {}, {}, {}) -> {}",
                folderKey,
                username,
@@ -1517,11 +1670,12 @@ public class EmailBoxService {
 
   /**
    * The Sent folder, from the name remembered in the sync state when possible —
-   * discovery walks the WHOLE subscribed folder list ({@code LIST *}) to find one
-   * folder that never moves, on every sync of every user. The cached name is
-   * verified with a single-folder {@code exists()} probe; a name that no longer
-   * resolves (folder renamed or deleted) falls back to a full rediscovery, whose
-   * result replaces the remembered name.
+   * discovery walks the WHOLE folder list ({@code LIST *}) to find one folder that
+   * never moves, on every sync of every user. The cached name is verified with a
+   * single-folder {@code exists()} probe; a name that no longer resolves (folder
+   * renamed or deleted) falls back to a full rediscovery, whose result replaces the
+   * remembered name — of this folder AND of the other four, since one walk classifies
+   * them all.
    *
    * @param store the connected store
    * @param syncState the mailbox's sync memory, updated in place on rediscovery
@@ -1529,20 +1683,16 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder resolveSentFolder(Store store, MailboxSyncState syncState) throws MessagingException {
-    if (StringUtils.isNotBlank(syncState.getSentFolderName())) {
-      Folder cached = store.getFolder(syncState.getSentFolderName());
-      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
-        return imapFolder;
-      }
-    }
-    IMAPFolder sentFolder = findSentFolder(store);
-    syncState.setSentFolderName(sentFolder != null ? sentFolder.getFullName() : null);
-    return sentFolder;
+    return resolveRememberedFolder(store, syncState, MailFolder.SENT, syncState.getSentFolderName());
   }
 
   /**
    * The syncable Archive folder, from the name remembered in the sync state when
-   * possible — same reasoning and same fallback as {@link #resolveSentFolder}.
+   * possible — same reasoning and same fallback as {@link #resolveSentFolder}. The
+   * classification hands back the dedicated {@code \Archive} folder only, never
+   * Gmail's "All Mail" superset (see {@link EmailFolderService#classify}); the archive
+   * DESTINATION still goes through the loose {@link #findArchiveFolder} so archiving
+   * keeps working on Gmail.
    *
    * @param store the connected store
    * @param syncState the mailbox's sync memory, updated in place on rediscovery
@@ -1550,15 +1700,7 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder resolveArchiveFolder(Store store, MailboxSyncState syncState) throws MessagingException {
-    if (StringUtils.isNotBlank(syncState.getArchiveFolderName())) {
-      Folder cached = store.getFolder(syncState.getArchiveFolderName());
-      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
-        return imapFolder;
-      }
-    }
-    IMAPFolder archiveFolder = findSyncableArchiveFolder(store);
-    syncState.setArchiveFolderName(archiveFolder != null ? archiveFolder.getFullName() : null);
-    return archiveFolder;
+    return resolveRememberedFolder(store, syncState, MailFolder.ARCHIVE, syncState.getArchiveFolderName());
   }
 
   /**
@@ -1570,8 +1712,11 @@ public class EmailBoxService {
    * *}) to re-find a folder that never moves would sit in front of each of those.
    * <p>
    * A mailbox with no Drafts folder resolves to null and STAYS null-resolving: we
-   * deliberately never create one (see {@link #findDraftsFolder}), so the caller's
-   * only correct reaction is to keep the draft local and say so.
+   * deliberately never create one (creating folders in someone's mailbox is a
+   * visible, permanent change to a store the user shares with every other client
+   * they own, and not ours to make on the strength of two words typed into a compose
+   * window), so the caller's only correct reaction is to keep the draft local and say
+   * so.
    *
    * @param store the connected store
    * @param syncState the mailbox's sync memory, updated in place on rediscovery
@@ -1579,26 +1724,23 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder resolveDraftsFolder(Store store, MailboxSyncState syncState) throws MessagingException {
-    if (StringUtils.isNotBlank(syncState.getDraftsFolderName())) {
-      Folder cached = store.getFolder(syncState.getDraftsFolderName());
-      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
-        return imapFolder;
-      }
-    }
-    IMAPFolder draftsFolder = findDraftsFolder(store);
-    syncState.setDraftsFolderName(draftsFolder != null ? draftsFolder.getFullName() : null);
-    return draftsFolder;
+    return resolveRememberedFolder(store, syncState, MailFolder.DRAFTS, syncState.getDraftsFolderName());
   }
 
   /**
    * The syncable Trash folder, from the name remembered in the sync state when
    * possible — same reasoning and same fallback as {@link #resolveSentFolder}.
    * <p>
-   * It resolves through {@link #findSyncableTrashFolder}, the STRICT lookup, and not
-   * through {@link #findTrashFolder}, the loose one the delete path files into. The
-   * two answer different questions and the split is the same one the archive already
-   * makes ({@link #findArchiveFolder} for the destination,
-   * {@link #findSyncableArchiveFolder} for the sync source).
+   * It resolves through the STRICT classification (a {@code \Trash} attribute, or a
+   * last-segment name match — see {@link EmailFolderService#classify}), and not
+   * through {@link #findTrashFolder}, the loose lookup the delete path files into.
+   * The two answer different questions and the cost of getting them wrong is not the
+   * same: guessing loosely where to FILE a deletion is survivable (the mail lands in a
+   * folder of the user's own, one message at a time, and they can see it), while
+   * guessing loosely what to BULK-IMPORT is not — a user's "Trash drafts" folder
+   * matching on {@code contains} would have its entire recent contents cached as
+   * deleted mail, hidden from every read and shown back to them as things they had
+   * thrown away.
    *
    * @param store the connected store
    * @param syncState the mailbox's sync memory, updated in place on rediscovery
@@ -1606,26 +1748,21 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder resolveTrashFolder(Store store, MailboxSyncState syncState) throws MessagingException {
-    if (StringUtils.isNotBlank(syncState.getTrashFolderName())) {
-      Folder cached = store.getFolder(syncState.getTrashFolderName());
-      if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
-        return imapFolder;
-      }
-    }
-    IMAPFolder trashFolder = findSyncableTrashFolder(store);
-    syncState.setTrashFolderName(trashFolder != null ? trashFolder.getFullName() : null);
-    return trashFolder;
+    return resolveRememberedFolder(store, syncState, MailFolder.TRASH, syncState.getTrashFolderName());
   }
 
   /**
    * The syncable Junk folder, from the name remembered in the sync state when
    * possible — same reasoning and same fallback as {@link #resolveTrashFolder}, and
-   * through the same kind of STRICT lookup ({@link #findSyncableJunkFolder}).
+   * through the same kind of STRICT classification.
    * <p>
    * Unlike Trash, this is the ONLY resolver Junk has: "Mark as spam" files into the
-   * folder resolved here, not into a loose destination guessed by name. See
-   * {@link #findSyncableJunkFolder} for why a loose variant would be the wrong tool
-   * on this folder in particular.
+   * folder resolved here, not into a loose destination guessed by name. The loose
+   * Trash lookup is survivable because a message filed loosely lands somewhere the
+   * user can see it; Junk is hidden from every read but its own listing, so a message
+   * filed into a folder that merely CONTAINS "spam" — a user's "Spam reports" folder,
+   * say — would vanish from every screen into a folder the sync never opens. One
+   * resolver, one answer, and both the sync and the move ask it.
    *
    * @param store the connected store
    * @param syncState the mailbox's sync memory, updated in place on rediscovery
@@ -1633,15 +1770,256 @@ public class EmailBoxService {
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder resolveJunkFolder(Store store, MailboxSyncState syncState) throws MessagingException {
-    if (StringUtils.isNotBlank(syncState.getJunkFolderName())) {
-      Folder cached = store.getFolder(syncState.getJunkFolderName());
+    return resolveRememberedFolder(store, syncState, MailFolder.JUNK, syncState.getJunkFolderName());
+  }
+
+  /**
+   * The one rule behind the five resolvers above: the remembered name, verified with a
+   * single-folder {@code exists()} probe; on a miss, one classified walk of the whole
+   * folder list, whose result replaces every remembered built-in name at once.
+   * <p>
+   * The walk on a miss does NOT reconcile the custom-folder registry (it has no user
+   * to write for -- the resolvers are called from reads that must not write) and does
+   * not count as the routine sync's daily walk, so the registry still gets its walk
+   * when it is due.
+   *
+   * @param store the connected store
+   * @param syncState the mailbox's sync memory, updated in place on rediscovery
+   * @param folderKey the {@link MailFolder} role wanted
+   * @param rememberedName the name the sync state holds for it, possibly blank
+   * @return the folder, or null when the mailbox has none in that role
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private IMAPFolder resolveRememberedFolder(Store store,
+                                             MailboxSyncState syncState,
+                                             String folderKey,
+                                             String rememberedName) throws MessagingException {
+    Rediscovery alreadyWalked = rediscoveries.get(store);
+    if (alreadyWalked != null) {
+      // This connection already walked and classified the whole list: its answer is
+      // fresher than any remembered name, and a probe would only cost a round-trip.
+      return alreadyWalked.folder(store, folderKey);
+    }
+    if (StringUtils.isNotBlank(rememberedName)) {
+      Folder cached = store.getFolder(rememberedName);
       if (cached instanceof IMAPFolder imapFolder && cached.exists()) {
         return imapFolder;
       }
     }
-    IMAPFolder junkFolder = findSyncableJunkFolder(store);
-    syncState.setJunkFolderName(junkFolder != null ? junkFolder.getFullName() : null);
-    return junkFolder;
+    return rediscoverBuiltInFolders(store, syncState).folder(store, folderKey);
+  }
+
+  /**
+   * One walk of the mailbox's folder list, classified. What a walk is: the subscribed
+   * listing and the full listing, merged (a folder in both is one folder, marked
+   * subscribed), each folder reduced to the facts the classifier needs -- name, last
+   * segment, separator, LIST attributes, subscribed, selectable. The {@link IMAPFolder}
+   * handles are kept beside the descriptors, by name, so a caller that wants to OPEN
+   * the folder a role resolved to gets the very object the listing returned rather
+   * than a fresh one.
+   * <p>
+   * Two {@code LIST} commands, on purpose: Drafts, Trash and Junk always needed the
+   * full listing as a fallback (Gmail does not subscribe {@code [Gmail]/Spam} for every
+   * account), and the user's own folders are exactly the ones most likely to be
+   * unsubscribed. Paid once per rediscovery, never per sync -- see
+   * {@link #walkFoldersIfDue}.
+   *
+   * @param store the connected store
+   * @return the walk, never null
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private FolderWalk walkFolders(Store store) throws MessagingException {
+    Folder defaultFolder = store.getDefaultFolder();
+    FolderWalk walk = new FolderWalk(new ArrayList<>(), new IdentityHashMap<>());
+    Set<String> seenNames = new HashSet<>();
+    Folder[] subscribed = defaultFolder.listSubscribed("*");
+    Folder[] all = defaultFolder.list("*");
+    for (Folder folder : subscribed == null ? new Folder[0] : subscribed) {
+      describe(folder, true, walk, seenNames);
+    }
+    for (Folder folder : all == null ? new Folder[0] : all) {
+      describe(folder, false, walk, seenNames);
+    }
+    return walk;
+  }
+
+  /**
+   * Adds one listed folder to a walk, unless a folder of that name was already seen
+   * (the subscribed listing runs first, so a folder in both keeps its subscribed mark).
+   * A folder the server lists without a name is kept too -- it can still be matched by
+   * attribute, which is how the {@code \All} lookup always worked -- but never
+   * registered as the user's, since there is nothing to show for it.
+   * <p>
+   * No {@code exists()} probe: a folder the server listed a moment ago exists, and
+   * JavaMail's probe is one more {@code LIST} per folder -- forty folders, forty
+   * round-trips, twice for the subscribed ones, on every walk. The server that wants
+   * to list a name that cannot be opened says so with {@code \NonExistent} (RFC 5258)
+   * or {@code \Noselect}, and both are read off the attributes the listing already
+   * carried. Everything else read here -- name, attributes, separator -- comes off the
+   * listing too, so a walk is exactly its two {@code LIST} commands.
+   *
+   * @param folder the listed folder
+   * @param subscribed which listing it came from
+   * @param walk the walk, updated in place
+   * @param seenNames the names already described, updated in place
+   * @throws MessagingException if the folder's attributes cannot be read
+   */
+  private void describe(Folder folder, boolean subscribed, FolderWalk walk, Set<String> seenNames) throws MessagingException {
+    if (!(folder instanceof IMAPFolder imapFolder)) {
+      return;
+    }
+    String fullName = imapFolder.getFullName();
+    if (StringUtils.isNotBlank(fullName) && !seenNames.add(fullName)) {
+      return;
+    }
+    String[] attributes = imapFolder.getAttributes();
+    Set<String> attributeSet = attributes == null ? Set.of() : new LinkedHashSet<>(Arrays.asList(attributes));
+    char separator = imapFolder.getSeparator();
+    String delimiter = separator == 0 || separator == Character.MAX_VALUE ? null : String.valueOf(separator);
+    boolean selectable = attributeSet.stream()
+                                     .noneMatch(attribute -> "\\Noselect".equalsIgnoreCase(attribute)
+                                         || "\\NonExistent".equalsIgnoreCase(attribute));
+    DiscoveredFolder descriptor =
+                                new DiscoveredFolder(fullName, imapFolder.getName(), delimiter, attributeSet, subscribed, selectable);
+    walk.descriptors().add(descriptor);
+    walk.handles().put(descriptor, new WeakReference<>(imapFolder));
+  }
+
+  /**
+   * Walks and classifies the folder list, and writes every built-in name the walk
+   * settled into the sync state -- present or absent, so a role the mailbox does not
+   * fill is remembered as blank and not asked again until something else misses.
+   *
+   * @param store the connected store
+   * @param syncState the mailbox's sync memory, updated in place
+   * @return the walk with its classification, never null
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private Rediscovery rediscoverBuiltInFolders(Store store, MailboxSyncState syncState) throws MessagingException {
+    FolderWalk walk = walkFolders(store);
+    FolderClassification classification = emailFolderService.classify(walk.descriptors());
+    Rediscovery rediscovery = new Rediscovery(walk, classification);
+    rediscoveries.put(store, rediscovery);
+    syncState.setSentFolderName(rediscovery.name(MailFolder.SENT));
+    syncState.setArchiveFolderName(rediscovery.name(MailFolder.ARCHIVE));
+    syncState.setDraftsFolderName(rediscovery.name(MailFolder.DRAFTS));
+    syncState.setTrashFolderName(rediscovery.name(MailFolder.TRASH));
+    syncState.setJunkFolderName(rediscovery.name(MailFolder.JUNK));
+    return rediscovery;
+  }
+
+  /**
+   * The routine sync's walk: when it is due ({@link EmailFolderService#isDiscoveryDue}),
+   * one classified walk refreshes the remembered built-in names AND reconciles the
+   * custom-folder registry -- new folders registered, seen ones refreshed, vanished
+   * ones marked missing then, on the walk after, deleted along with what they
+   * mirrored. Skipped entirely when custom folders are switched off: the built-ins
+   * then rediscover on a miss, as they always did.
+   *
+   * @param store the connected store
+   * @param username the mailbox owner
+   * @param syncState the mailbox's sync memory, updated in place
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private void walkFoldersIfDue(Store store, String username, MailboxSyncState syncState) throws MessagingException {
+    if (!emailFolderService.isCustomFoldersEnabled()
+        || !emailFolderService.isDiscoveryDue(syncState.getFoldersDiscoveredAt(), System.currentTimeMillis())) {
+      return;
+    }
+    walkAndReconcileFolders(store, username, syncState);
+  }
+
+  /**
+   * One classified walk, applied to both stores: the built-in names into the sync
+   * state, the custom folders into the registry. The rows a purged folder mirrored are
+   * deleted here, with their category links, because the registry cannot reach them.
+   *
+   * @param store the connected store
+   * @param username the mailbox owner
+   * @param syncState the mailbox's sync memory, updated in place
+   * @return the classification the walk produced
+   * @throws MessagingException if the folder list cannot be read
+   */
+  private FolderClassification walkAndReconcileFolders(Store store,
+                                                       String username,
+                                                       MailboxSyncState syncState) throws MessagingException {
+    Rediscovery rediscovery = rediscoverBuiltInFolders(store, syncState);
+    for (EmailFolder purged : emailFolderService.reconcileDiscovered(username, rediscovery.classification().customs())) {
+      deleteUserEmails(username, purged.getKey());
+    }
+    syncState.setFoldersDiscoveredAt(System.currentTimeMillis());
+    return rediscovery.classification();
+  }
+
+  /**
+   * One walk of the folder list: the classifier's view of it, and the live handles --
+   * held WEAKLY, because this record is the value of a weak-keyed memo whose key is
+   * the very {@link Store} every {@link IMAPFolder} points back to (see
+   * {@code rediscoveries}). A handle the collector took is re-obtained by name.
+   *
+   * @param descriptors what the classifier reads, in listing order
+   * @param handles the {@link IMAPFolder} behind each descriptor (by identity: a
+   *          descriptor is one listed folder, whatever its name)
+   */
+  private record FolderWalk(List<DiscoveredFolder> descriptors, Map<DiscoveredFolder, WeakReference<IMAPFolder>> handles) {
+  }
+
+  /**
+   * A walk with its classification, answering "which live folder plays this role".
+   *
+   * @param walk the walk
+   * @param classification what the classifier made of it
+   */
+  private record Rediscovery(FolderWalk walk, FolderClassification classification) {
+
+    /**
+     * The live folder playing a built-in role: the listing's own handle while it is
+     * still around, else a fresh one from the store by name (no round-trip: a folder
+     * object is created lazily, and the sync opens it itself).
+     *
+     * @param store the connection the walk was made on
+     * @param folderKey the {@link MailFolder} constant
+     * @return the folder, or null when the mailbox has none in that role
+     * @throws MessagingException if the store cannot hand out a folder
+     */
+    IMAPFolder folder(Store store, String folderKey) throws MessagingException {
+      DiscoveredFolder discovered = classification.builtIn(folderKey);
+      if (discovered == null) {
+        return null;
+      }
+      WeakReference<IMAPFolder> handle = walk.handles().get(discovered);
+      IMAPFolder live = handle == null ? null : handle.get();
+      if (live != null) {
+        return live;
+      }
+      if (StringUtils.isBlank(discovered.fullName())) {
+        return null;
+      }
+      Folder byName = store.getFolder(discovered.fullName());
+      return byName instanceof IMAPFolder imapFolder ? imapFolder : null;
+    }
+
+    /**
+     * The full name of the folder playing a built-in role.
+     *
+     * @param folderKey the {@link MailFolder} constant
+     * @return the name, or null when the mailbox has none in that role
+     */
+    String name(String folderKey) {
+      DiscoveredFolder discovered = classification.builtIn(folderKey);
+      return discovered == null ? null : discovered.fullName();
+    }
+
+    /**
+     * Whether the walk listed a folder of that full name at all -- role or not.
+     *
+     * @param fullName the IMAP full name
+     * @return true when the server listed it
+     */
+    boolean lists(String fullName) {
+      return fullName != null
+          && walk.descriptors().stream().anyMatch(folder -> folder.selectable() && fullName.equals(folder.fullName()));
+    }
   }
 
   /**
@@ -2439,6 +2817,9 @@ public class EmailBoxService {
           LOG.warn("Error when closing prefetch folder {} for user {}", folderFullName, username, messagingException);
         }
       }
+      if (store != null) {
+        rediscoveries.remove(store);
+      }
       if (store != null && store.isConnected()) {
         try {
           store.close();
@@ -2533,7 +2914,7 @@ public class EmailBoxService {
       // Traced on purpose: consumers only ever see messages that were *created* by this sync,
       // so "nothing was new" and "the consumer is broken" are otherwise indistinguishable from
       // the outside -- both are complete silence.
-      LOG.info("No new email to broadcast for user {}: this sync created no message, so '{}' consumers (e.g. AI auto-categorization) are not invoked",
+      LOG.debug("No new email to broadcast for user {}: this sync created no message, so '{}' consumers (e.g. AI auto-categorization) are not invoked",
                username,
                EmailConnectorUtils.NEW_EMAILS_SYNCED);
       return;
@@ -2582,7 +2963,8 @@ public class EmailBoxService {
    */
   private void broadcastNewEmailsSyncCompleted(String username, List<Long> newEmailIds) {
     try {
-      LOG.info("Broadcasting '{}' for user {}: the inbox sync ended with {} newly-cached message(s) in total",
+      logSyncOutcome(!newEmailIds.isEmpty(),
+                     "Broadcasting '{}' for user {}: the inbox sync ended with {} newly-cached message(s) in total",
                EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED,
                username,
                newEmailIds.size());
@@ -2651,25 +3033,579 @@ public class EmailBoxService {
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
-    // Only the folders a user can browse as a list; ALL_MAIL is an internal on-demand
-    // completion store, never a browsable list. This list and availableFolders in
-    // EmailConnectorMailBoxDrawer.vue are the same list expressed twice, with no
-    // shared constant between them — change one and the other has to change with it,
-    // or the client offers a folder this refuses (or hides one it would serve).
+    // Only the folders a user can browse as a list, and MailFolder.isBrowsable is the
+    // one spelling of which those are: the client's folder menu is fed from the list
+    // this answer carries rather than from an array of its own, so the two cannot
+    // disagree. ALL_MAIL is an internal on-demand completion store, never a listing.
     // TRASH and JUNK are browsable and nothing more: their rows are served here, and
     // every OTHER read leaves them out (MailFolder.HIDDEN_FOLDERS) — which is the
     // whole meaning of "browsable, not resurfaced".
-    if (!MailFolder.INBOX.equals(folder) && !MailFolder.SENT.equals(folder) && !MailFolder.ARCHIVE.equals(folder)
-        && !MailFolder.DRAFTS.equals(folder) && !MailFolder.TRASH.equals(folder) && !MailFolder.JUNK.equals(folder)) {
+    if (!MailFolder.isBrowsable(folder)) {
       throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
+    if (MailFolder.isCustom(folder)) {
+      // A custom key is browsable by shape; whether THIS user has that folder is the
+      // registry's answer, and a key it does not know is a 400 -- never a listing of
+      // the inbox under another name. A folder nobody has looked at since the last
+      // period is refreshed on this thread first, for this user only (see
+      // refreshCustomFolderIfStale): the complement of the per-cycle budget that keeps
+      // the routine sync from checking every folder every period.
+      refreshCustomFolderIfStale(username, userEmailSetting, emailFolderService.getFolderByKey(username, folder));
     }
     List<Email> emails = starredOnly ? emailBoxStorage.getStarredEmails(username, folder)
                                      : emailBoxStorage.getEmails(username, folder);
+    Map<String, Integer> folderCounts = emailBoxStorage.getFolderMessageCounts(username);
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
                         userEmailSetting.getEmailConnectorWebmailUrl(),
                         emailBoxStorage.getThreadSummaries(username, userEmailSetting.getEmailAddress()),
-                        emailBoxStorage.getFolderMessageCounts(username));
+                        folderCounts,
+                        buildFolderViews(username, loadMailboxSyncState(username), folderCounts));
+  }
+
+  /**
+   * The user's folders as the interface lists them: the built-ins the mailbox HAS
+   * (discovered, whether or not they currently hold cached mail -- Gmail always shows
+   * Spam, and a Trash that appears only once something is thrown away reads as a
+   * missing feature), the inbox unconditionally, and every registered custom folder
+   * with its opt-in, so one call serves the folder menu and the settings screen
+   * alike. With {@code refresh}, the folder list is walked first, on this thread: the
+   * user asked to see what their mailbox holds now.
+   *
+   * @param username the mailbox owner
+   * @param refresh whether to walk the mailbox's folder list before answering
+   * @return the folders, with the cap and the window the settings screen states
+   * @throws IllegalAccessException if the user may not read their mailbox
+   */
+  public MailFolderList getFolders(String username, boolean refresh) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_FOLDERS_MESSAGE, username));
+    }
+    MailboxSyncState syncState = loadMailboxSyncState(username);
+    boolean walked = false;
+    if (refresh && emailFolderService.isCustomFoldersEnabled()) {
+      // A write, and saved as one: the user asked for this walk, and its result -- the
+      // registry rows and the remembered names -- is worth keeping whatever the rest
+      // of the request does. The syncingUsers guard is not taken: a walk reads the
+      // folder LIST and writes registry rows, and neither races a sync's (user, folder,
+      // UID) rows. What it CAN race is the sync's save of the JSON state, so the walk's
+      // findings are merged into the state as it stands at save time rather than
+      // written over it (see saveDiscoveredFolderNames).
+      Store store = null;
+      try {
+        store = userEmailSettingService.connect(userEmailSetting);
+        walkAndReconcileFolders(store, username, syncState);
+        walked = true;
+      } catch (Exception e) {
+        LOG.warn("Could not walk the folder list of user {} on request; answering what is registered", username, e);
+      } finally {
+        if (walked) {
+          saveDiscoveredFolderNames(username, syncState);
+        }
+        closeQuietly(null, store, username);
+      }
+    }
+    Map<String, Integer> folderCounts = emailBoxStorage.getFolderMessageCounts(username);
+    List<MailFolderView> views = buildFolderViews(username, syncState, folderCounts);
+    return new MailFolderList(views,
+                              emailFolderService.getMaxCustomFolders(),
+                              (int) views.stream().filter(view -> view.isCustom() && view.isSyncEnabled()).count(),
+                              emailFolderService.getWindowSize(),
+                              walked,
+                              emailFolderService.isCustomFoldersEnabled());
+  }
+
+  /**
+   * Keeps what a walk found -- the five remembered names and the walk's stamp -- in
+   * the sync state AS IT STANDS NOW, not in the copy the walk started from. A sync may
+   * have saved fresh snapshots in the meantime, and a whole-blob save from this
+   * request's copy would put the old ones back; so the state is re-read at save time
+   * and only the walk's own fields are written into it. The window between the
+   * re-read and the save is the same one {@code applyMoveAction} lives with.
+   *
+   * @param username the mailbox owner
+   * @param walked the state the walk wrote its findings into
+   */
+  private void saveDiscoveredFolderNames(String username, MailboxSyncState walked) {
+    MailboxSyncState current = loadMailboxSyncState(username);
+    String originalJson = JsonUtils.toJsonString(current);
+    current.setSentFolderName(walked.getSentFolderName());
+    current.setArchiveFolderName(walked.getArchiveFolderName());
+    current.setDraftsFolderName(walked.getDraftsFolderName());
+    current.setTrashFolderName(walked.getTrashFolderName());
+    current.setJunkFolderName(walked.getJunkFolderName());
+    current.setFoldersDiscoveredAt(walked.getFoldersDiscoveredAt());
+    saveMailboxSyncState(username, current, originalJson);
+  }
+
+  /**
+   * The user's opt-in for one custom folder. Opting out deletes what the folder
+   * mirrored, category links included, and the registry clears its sync memory in the
+   * same move: the rows are gone, so a surviving snapshot would let a later opt-in skip
+   * "unchanged" over an empty cache and the folder would come up blank and stay blank.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @param enabled the new opt-in
+   * @return the folder as it now stands
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the folder is unknown to this user, or the cap
+   *           is reached ({@code emailConnector.folder.tooMany})
+   */
+  public MailFolderView setCustomFolderSync(String username, long id, boolean enabled) throws IllegalAccessException {
+    checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    EmailFolder customFolder = emailFolderService.setSyncEnabled(username, id, enabled);
+    if (!enabled) {
+      deleteUserEmails(username, customFolder.getKey());
+    }
+    return customFolderView(customFolder, emailBoxStorage.getFolderMessageCounts(username));
+  }
+
+  /**
+   * An on-demand refresh of one custom folder, on the caller's thread -- what opening
+   * a stale folder does implicitly, on request. Quietly a no-op while a sync holds the
+   * mailbox: the background sync is doing the work.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the folder is unknown to this user, or not
+   *           opted in ({@code emailConnector.folder.notMirrored})
+   */
+  public void synchronizeCustomFolder(String username, long id) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    if (!customFolder.isSyncEnabled() || customFolder.isMissing()) {
+      throw new IllegalArgumentException("emailConnector.folder.notMirrored");
+    }
+    refreshCustomFolder(username, userEmailSetting, customFolder);
+  }
+
+  /**
+   * Moves messages into one of the user's own folders -- "Move to...". The target is
+   * validated against the registry BEFORE anything is touched (a key this user does
+   * not own is a 400, never a move into someone else's folder or into the inbox), and
+   * a move into the folder the messages are already in is refused for the reason
+   * archive-from-Archive is: it would cost the message its UID and its row for
+   * nothing.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to move
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * @param targetFolder the {@code CUSTOM:<id>} key of the destination
+   * @return how many of them could NOT be moved
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   * @throws IllegalArgumentException if the target is not one of this user's custom
+   *           folders ({@code emailConnector.folder.unknown}), is not mirrored
+   *           ({@code emailConnector.folder.notMirrored}), or is the source
+   *           ({@code emailConnector.folder.sameAsSource})
+   */
+  public int moveToFolder(List<Long> mailRemoteIds,
+                          String username,
+                          String folder,
+                          String targetFolder) throws IllegalAccessException {
+    checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    String sourceKey = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+    // Inbox and Archive are destinations as much as the user's own folders are: filing a
+    // message has to be reversible, and a move that could only ever go deeper left mail
+    // stranded in a folder it could never leave. They are not registry rows, so they are
+    // resolved here rather than looked up -- the registry only knows custom folders.
+    // Nothing else is admitted: Drafts is authored locally, Trash and Junk have their own
+    // actions with their own meaning, and ALL_MAIL is a thread-completion cache.
+    if (MOVE_BUILT_IN_TARGETS.contains(targetFolder)) {
+      if (sourceKey.equals(targetFolder)) {
+        throw new IllegalArgumentException("emailConnector.folder.sameAsSource");
+      }
+      return applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, targetFolder);
+    }
+    EmailFolder target = emailFolderService.getFolderByKey(username, targetFolder);
+    if (target.isMissing()) {
+      throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+    }
+    if (!target.isSyncEnabled()) {
+      // A folder the user does not mirror is one they never see here: a message moved
+      // into it would leave every screen and come back nowhere. The picker offers the
+      // mirrored ones only, and the server says the same thing.
+      throw new IllegalArgumentException("emailConnector.folder.notMirrored");
+    }
+    if (sourceKey.equals(target.getKey())) {
+      throw new IllegalArgumentException("emailConnector.folder.sameAsSource");
+    }
+    return applyMoveAction(mailRemoteIds, username, sourceKey, MoveAction.MOVE, target.getKey());
+  }
+
+  /**
+   * Creates one of the user's own folders on the mail server -- the explicit act
+   * {@code +} in the folders drawer stands for, and the one this add-on never takes on
+   * its own behalf (contrast {@link #resolveDraftsFolder}'s refusal to create a Drafts
+   * folder as a SIDE EFFECT of a compose window: what makes a write to a store the
+   * user shares with every other client of theirs acceptable here is that the user
+   * asked for exactly this, by name, on this screen).
+   * <p>
+   * Created flat, directly under the account's own root ({@code store.getDefaultFolder()}):
+   * v1 offers no parent picker, so every folder this add-on creates is top-level, and
+   * a name embedding the mailbox's own hierarchy delimiter is refused rather than
+   * silently nested or silently flattened (see
+   * {@link EmailFolderService#FOLDER_NAME_NESTED_MESSAGE}). The row is registered
+   * directly ({@link EmailFolderService#registerCreatedFolder}, never through
+   * {@link #walkAndReconcileFolders}, which would mark every OTHER custom folder of
+   * this user missing) and, cap allowing, opted in on the spot
+   * ({@link EmailFolderService#tryAutoEnable}) -- the folder is usable, as a listing
+   * and as a "Move to..." target, the moment this call returns.
+   *
+   * @param username the mailbox owner
+   * @param name the folder name as typed
+   * @return the folder as registered -- {@code syncEnabled} false only when the cap
+   *         was already reached
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the name is blank, too long, reserved, nests
+   *           (embeds the delimiter), or is already used by another of this user's
+   *           folders ({@link EmailFolderService#FOLDER_NAME_DUPLICATE_MESSAGE}), or the
+   *           server refused the {@code CREATE}
+   *           ({@link EmailFolderService#FOLDER_CREATE_FAILED_MESSAGE})
+   */
+  public MailFolderView createCustomFolder(String username, String name) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    String trimmedName = emailFolderService.validateFolderName(name);
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      Folder defaultFolder = store.getDefaultFolder();
+      String delimiter = defaultNamespaceDelimiter(defaultFolder);
+      emailFolderService.checkNotNested(trimmedName, delimiter);
+      emailFolderService.checkNameAvailable(username, trimmedName, null);
+      Folder toCreate = defaultFolder.getFolder(trimmedName);
+      if (toCreate.exists()) {
+        // A folder the server already has under that name, that our registry does not
+        // know about yet (created from another client since the last walk, say). The
+        // duplicate message is the truthful one; CREATE would only repeat the server's
+        // own refusal in a shape this code cannot translate as cleanly.
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_NAME_DUPLICATE_MESSAGE);
+      }
+      if (!toCreate.create(Folder.HOLDS_MESSAGES) || !(toCreate instanceof IMAPFolder)) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE);
+      }
+      EmailFolder registered = emailFolderService.registerCreatedFolder(username, trimmedName, delimiter);
+      boolean enabled = emailFolderService.tryAutoEnable(username, registered.getId());
+      EmailFolder finalFolder = enabled ? emailFolderService.getFolder(username, registered.getId()) : registered;
+      return customFolderView(finalFolder, emailBoxStorage.getFolderMessageCounts(username));
+    } catch (MessagingException e) {
+      LOG.warn("Could not create folder '{}' for user {}", trimmedName, username, e);
+      throw new IllegalArgumentException(EmailFolderService.FOLDER_CREATE_FAILED_MESSAGE);
+    } finally {
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * The mailbox's own hierarchy delimiter, the way {@link #describe} reads it off a
+   * listed folder -- here read directly off the default (root) folder, before anything
+   * has been created under it, which is the earliest point a create can learn it.
+   *
+   * @param defaultFolder the account's root folder
+   * @return the delimiter, or null on a flat namespace
+   * @throws MessagingException if the server cannot be asked
+   */
+  private static String defaultNamespaceDelimiter(Folder defaultFolder) throws MessagingException {
+    char separator = defaultFolder.getSeparator();
+    return separator == 0 || separator == Character.MAX_VALUE ? null : String.valueOf(separator);
+  }
+
+  /**
+   * Renames one of the user's own folders, on the server and in the registry.
+   * <p>
+   * Only the folder's OWN name changes -- the new name replaces the last segment of
+   * its full path, its parent untouched (v1 offers no parent picker; see
+   * {@link EmailFolderService#FOLDER_NAME_NESTED_MESSAGE}). The registry row is
+   * updated IN PLACE, after the server confirms the rename, never deleted and
+   * re-created: see {@link EmailFolderService#renameFolder} for why that is what keeps
+   * every mirrored row -- addressed by the row's id, never by its remote name (verified
+   * across this module) -- exactly where it was.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @param newName the new name, as typed
+   * @return the folder as it now stands
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the folder is unknown to this user, the new
+   *           name is blank, too long, reserved, nests, or collides with another of
+   *           this user's folders, or the server refused the {@code RENAME}
+   *           ({@link EmailFolderService#FOLDER_RENAME_FAILED_MESSAGE})
+   */
+  public MailFolderView renameCustomFolder(String username, long id, String newName) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    String trimmedName = emailFolderService.validateFolderName(newName);
+    emailFolderService.checkNotNested(trimmedName, customFolder.getDelimiter());
+    String newRemoteName = EmailFolderService.parentPrefix(customFolder.getRemoteName(), customFolder.getDelimiter()) + trimmedName;
+    if (newRemoteName.equals(customFolder.getRemoteName())) {
+      // The name typed back is the name it already has: nothing to change, nothing to
+      // risk on the server for it.
+      return customFolderView(customFolder, emailBoxStorage.getFolderMessageCounts(username));
+    }
+    emailFolderService.checkNameAvailable(username, newRemoteName, id);
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      Folder remote = store.getFolder(customFolder.getRemoteName());
+      if (!(remote instanceof IMAPFolder imapFolder) || !remote.exists()) {
+        throw new IllegalArgumentException(EmailFolderService.UNKNOWN_FOLDER_MESSAGE);
+      }
+      if (imapFolder.isOpen()) {
+        imapFolder.close(false);
+      }
+      Folder target = store.getFolder(newRemoteName);
+      if (target.exists()) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_NAME_DUPLICATE_MESSAGE);
+      }
+      if (!imapFolder.renameTo(target)) {
+        throw new IllegalArgumentException(EmailFolderService.FOLDER_RENAME_FAILED_MESSAGE);
+      }
+    } catch (MessagingException e) {
+      LOG.warn("Could not rename folder '{}' of user {} to '{}'", customFolder.getRemoteName(), username, newRemoteName, e);
+      throw new IllegalArgumentException(EmailFolderService.FOLDER_RENAME_FAILED_MESSAGE);
+    } finally {
+      closeQuietly(null, store, username);
+    }
+    EmailFolder renamed = emailFolderService.renameFolder(username, id, newRemoteName, trimmedName);
+    return customFolderView(renamed, emailBoxStorage.getFolderMessageCounts(username));
+  }
+
+  /**
+   * Deletes one of the user's own folders, on the server and in the registry --
+   * irreversible, and refused outright while the folder still holds mail.
+   * <p>
+   * <b>The sharp edge.</b> A folder deleted here is deleted everywhere the user reads
+   * their mailbox from, permanently. So: a folder the live server still lists any
+   * messages in is refused whole ({@link EmailFolderService#FOLDER_NOT_EMPTY_MESSAGE}) --
+   * the user is told to empty it first, this add-on never cascades a delete into the
+   * messages it would destroy. Only once the server itself says the folder is empty is
+   * the {@code DELETE} issued, non-recursively: a folder that turns out to still have
+   * sub-folders of its own is left to the server's own refusal
+   * ({@link EmailFolderService#FOLDER_DELETE_FAILED_MESSAGE}) rather than this code
+   * choosing whether to take them with it. A folder already gone from the server (the
+   * user deleted it from another client since the last walk) is treated as already
+   * deleted: only the local mirror and registry row are cleared, nothing is sent to a
+   * server that no longer has anything to delete.
+   *
+   * @param username the mailbox owner
+   * @param id the registry id
+   * @throws IllegalAccessException if the user may not manage their mailbox
+   * @throws IllegalArgumentException if the folder is unknown to this user, still
+   *           holds mail on the server, or the server refused the {@code DELETE}
+   */
+  public void deleteCustomFolder(String username, long id) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = checkCanManageFolders(username);
+    checkCustomFoldersEnabled();
+    EmailFolder customFolder = emailFolderService.getFolder(username, id);
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      Folder remote = store.getFolder(customFolder.getRemoteName());
+      if (remote instanceof IMAPFolder imapFolder && remote.exists()) {
+        if (imapFolder.getMessageCount() != 0) {
+          throw new IllegalArgumentException(EmailFolderService.FOLDER_NOT_EMPTY_MESSAGE);
+        }
+        if (imapFolder.isOpen()) {
+          imapFolder.close(false);
+        }
+        if (!imapFolder.delete(false)) {
+          throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+        }
+      } else {
+        LOG.info("Folder '{}' of user {} is already gone from the server; clearing its local mirror",
+                 customFolder.getRemoteName(),
+                 username);
+      }
+    } catch (MessagingException e) {
+      LOG.warn("Could not delete folder '{}' of user {}", customFolder.getRemoteName(), username, e);
+      throw new IllegalArgumentException(EmailFolderService.FOLDER_DELETE_FAILED_MESSAGE);
+    } finally {
+      closeQuietly(null, store, username);
+    }
+    deleteUserEmails(username, customFolder.getKey());
+    emailFolderService.removeFolder(username, id);
+  }
+
+  /**
+   * The master switch, as the request-driven entry points see it. The routine sync and
+   * the listing already read it; without this the switch an administrator flips to
+   * shed IMAP load would keep paying for every opt-in, on-demand refresh and move --
+   * and for the on-open refresh of every drawer left open on a custom folder.
+   *
+   * @throws IllegalArgumentException if custom folders are switched off
+   *           ({@code emailConnector.folder.disabled})
+   */
+  private void checkCustomFoldersEnabled() {
+    if (!emailFolderService.isCustomFoldersEnabled()) {
+      throw new IllegalArgumentException("emailConnector.folder.disabled");
+    }
+  }
+
+  /**
+   * The access check of the folder-management entry points: the same connector
+   * binding every mailbox read requires, with a message of its own.
+   *
+   * @param username the mailbox owner
+   * @return the user's connector binding, for callers that go on to connect
+   * @throws IllegalAccessException if the user has no usable connector
+   */
+  private UserEmailSetting checkCanManageFolders(String username) throws IllegalAccessException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_FOLDERS_MESSAGE, username));
+    }
+    return userEmailSetting;
+  }
+
+  /**
+   * Refreshes a custom folder before it is listed, when -- and only when -- it is
+   * stale ({@link EmailFolderService#isStale}: opted in, present, and not checked
+   * within the last sync period). Everything else about it is
+   * {@link #refreshCustomFolder}'s.
+   *
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param customFolder the registered folder about to be listed
+   */
+  private void refreshCustomFolderIfStale(String username, UserEmailSetting userEmailSetting, EmailFolder customFolder) {
+    // Switched off, the cache is answered as it stands: the switch exists to shed IMAP
+    // load, and a drawer polling a stale folder every two seconds is exactly that load.
+    if (emailFolderService.isCustomFoldersEnabled() && emailFolderService.isStale(customFolder,
+                                   EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting),
+                                   System.currentTimeMillis())) {
+      refreshCustomFolder(username, userEmailSetting, customFolder);
+    }
+  }
+
+  /**
+   * One custom folder, checked and if changed synced, on the calling thread -- the
+   * on-open refresh, and the single-folder precedent {@link #runSentFolderRefresh}
+   * set: under the {@code syncingUsers} guard (a folder sync and a mailbox sync must
+   * never write the same (user, folder, UID) rows at once), and if the guard is taken
+   * the cache is answered as it stands, because the background sync is doing the work.
+   * Never touches the mailbox's sync STATUS, never broadcasts a run's completion, never
+   * the unread count -- one folder is not a run, and the count is the inbox's alone.
+   *
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param customFolder the registered folder to refresh
+   */
+  private void refreshCustomFolder(String username, UserEmailSetting userEmailSetting, EmailFolder customFolder) {
+    if (!syncingUsers.add(username)) {
+      LOG.debug("A synchronization is running for user {}; folder '{}' is answered from the cache",
+                username,
+                customFolder.getRemoteName());
+      return;
+    }
+    Store store = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting);
+      syncCustomFolder(store, customFolder, username, userEmailSetting);
+    } catch (Exception e) {
+      // Stamped as a check even though it failed: the listing asks for a refresh on
+      // every poll of the drawer, two seconds apart for as long as the category watch
+      // runs, and a folder left stale by a failing connection would pay a connect
+      // attempt per poll against a server that is already refusing them. One attempt
+      // per period, then; the routine sync retries on its own schedule.
+      LOG.warn("Could not refresh folder '{}' of user {}; answering the cache as it stands",
+               customFolder.getRemoteName(),
+               username,
+               e);
+      emailFolderService.recordSync(username, customFolder.getId(), null);
+    } finally {
+      syncingUsers.remove(username);
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * The folder list as the interface reads it. Built-ins first, in the order every
+   * mail client shows them, each present when the mailbox HAS it -- a remembered name
+   * from discovery, with the folder's own switch on -- or when the cache holds rows of
+   * it (an ARCHIVE fed by search on a mailbox with no {@code \Archive}, local drafts
+   * with server drafts off); the inbox always. Then every registered custom folder,
+   * opt-in and all, when the feature is on.
+   *
+   * @param username the mailbox owner
+   * @param syncState the mailbox's sync memory, for the remembered names
+   * @param folderCounts the cached row count per folder key
+   * @return the views, never null
+   */
+  private List<MailFolderView> buildFolderViews(String username, MailboxSyncState syncState, Map<String, Integer> folderCounts) {
+    List<MailFolderView> views = new ArrayList<>();
+    views.add(builtInView(MailFolder.INBOX, folderCounts));
+    if (StringUtils.isNotBlank(syncState.getSentFolderName()) || folderCounts.getOrDefault(MailFolder.SENT, 0) > 0) {
+      views.add(builtInView(MailFolder.SENT, folderCounts));
+    }
+    if (StringUtils.isNotBlank(syncState.getArchiveFolderName()) || folderCounts.getOrDefault(MailFolder.ARCHIVE, 0) > 0) {
+      views.add(builtInView(MailFolder.ARCHIVE, folderCounts));
+    }
+    if ((isServerDraftsEnabled() && StringUtils.isNotBlank(syncState.getDraftsFolderName()))
+        || folderCounts.getOrDefault(MailFolder.DRAFTS, 0) > 0) {
+      views.add(builtInView(MailFolder.DRAFTS, folderCounts));
+    }
+    if ((isJunkSyncEnabled() && StringUtils.isNotBlank(syncState.getJunkFolderName()))
+        || folderCounts.getOrDefault(MailFolder.JUNK, 0) > 0) {
+      views.add(builtInView(MailFolder.JUNK, folderCounts));
+    }
+    if ((isTrashSyncEnabled() && StringUtils.isNotBlank(syncState.getTrashFolderName()))
+        || folderCounts.getOrDefault(MailFolder.TRASH, 0) > 0) {
+      views.add(builtInView(MailFolder.TRASH, folderCounts));
+    }
+    if (emailFolderService.isCustomFoldersEnabled()) {
+      for (EmailFolder customFolder : emailFolderService.getFolders(username)) {
+        views.add(customFolderView(customFolder, folderCounts));
+      }
+    }
+    return views;
+  }
+
+  /**
+   * A built-in folder's view: its key and its count, nothing the client cannot name
+   * from its own bundle.
+   *
+   * @param folderKey the {@link MailFolder} constant
+   * @param folderCounts the cached row count per folder key
+   * @return the view
+   */
+  private MailFolderView builtInView(String folderKey, Map<String, Integer> folderCounts) {
+    MailFolderView view = new MailFolderView();
+    view.setKey(folderKey);
+    view.setType(MailFolderView.TYPE_BUILT_IN);
+    view.setSyncEnabled(true);
+    view.setCount(folderCounts.getOrDefault(folderKey, 0));
+    return view;
+  }
+
+  /**
+   * A custom folder's view: the registry row as the interface needs it, the display
+   * name as the user wrote it.
+   *
+   * @param customFolder the registered folder
+   * @param folderCounts the cached row count per folder key
+   * @return the view
+   */
+  private MailFolderView customFolderView(EmailFolder customFolder, Map<String, Integer> folderCounts) {
+    return new MailFolderView(customFolder.getKey(),
+                              MailFolderView.TYPE_CUSTOM,
+                              customFolder.getId(),
+                              customFolder.getDisplayName(),
+                              customFolder.getRemoteName(),
+                              customFolder.getDelimiter(),
+                              customFolder.isSyncEnabled(),
+                              customFolder.isMissing(),
+                              folderCounts.getOrDefault(customFolder.getKey(), 0),
+                              customFolder.getLastSyncDate(),
+                              emailFolderService.getWindowSize());
   }
 
   /**
@@ -2705,6 +3641,14 @@ public class EmailBoxService {
     } catch (Exception e) {
       LOG.warn("Could not clear the sync state of user {}", username, e);
     }
+    // And the folder registry: its rows are this account's folders, and the key each
+    // one minted names this account's mail. The next account bound here walks its own
+    // folder list and mints its own.
+    try {
+      emailFolderService.deleteFolders(username);
+    } catch (Exception e) {
+      LOG.warn("Could not clear the folder registry of user {}", username, e);
+    }
   }
 
   /**
@@ -2735,9 +3679,51 @@ public class EmailBoxService {
     JobInfo emailBoxSyncJobInfo = new JobInfo(emailBoxSyncJobName, EmailConnectorUtils.EMAIL_FEATURE, EmailBoxSyncJob.class);
     // Remove next email box sync job for the user
     jobSchedulerService.removeJob(emailBoxSyncJobInfo);
-    PeriodInfo periodInfo =
-                          new PeriodInfo(null, null, 0, EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000);
+    PeriodInfo periodInfo = new PeriodInfo(null, null, 0, getEffectiveSyncPeriod(userEmailSetting) * 60000);
     jobSchedulerService.addPeriodJob(emailBoxSyncJobInfo, periodInfo);
+  }
+
+  /**
+   * Re-registers every connected user's scheduled mailbox sync job, the same way
+   * {@link #initEmailBoxSyncJob()} does at startup. Triggered when the
+   * administration-wide sync period changes — see
+   * {@link EmailConnectorService#saveEmailBoxSyncPeriod} — because the period is
+   * read only when a user's Quartz job is (re)registered, never per run: without
+   * this, a period change would only reach a user on their next reconnect or the
+   * next platform restart, and the admin drawer would be lying about taking
+   * effect.
+   */
+  public void rescheduleAllSyncJobs() {
+    List<Context> contexts =
+                           settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                  Scope.APPLICATION.getName(),
+                                                                                  EmailConnectorService.EMAIL_CONNECTOR_SCOPE_ID,
+                                                                                  EmailConnectorService.USER_EMAIL_SETTING_KEY,
+                                                                                  0,
+                                                                                  Integer.MAX_VALUE);
+    for (Context context : contexts) {
+      try {
+        scheduleEmailBoxUserSyncJob(context.getId());
+      } catch (Exception e) {
+        LOG.warn("Error rescheduling email box sync for user {}", context.getId(), e);
+      }
+    }
+  }
+
+  /**
+   * The sync period actually applied to a mailbox: the user's own stored
+   * override when there is one, the administration-wide period otherwise. In
+   * practice the per-user override is always null — nothing sets it any more,
+   * see {@code UserEmailSettingService#setUserEmailSetting} — but the ternary is
+   * kept rather than deleted, in case a legitimate per-user override is ever
+   * reintroduced deliberately.
+   *
+   * @param userEmailSetting the mailbox owner's stored setting
+   * @return the sync period to schedule, in minutes
+   */
+  private int getEffectiveSyncPeriod(UserEmailSetting userEmailSetting) {
+    return userEmailSetting.getEmailBoxUserSyncPeriod() != null ? userEmailSetting.getEmailBoxUserSyncPeriod()
+                                                                 : emailConnectorService.getEmailBoxSyncPeriod();
   }
 
   /**
@@ -2825,8 +3811,11 @@ public class EmailBoxService {
         LOG.warn("Error when closing inbox", messagingException);
       }
       try {
-        if (store != null && store.isConnected()) {
-          store.close();
+        if (store != null) {
+          rediscoveries.remove(store);
+          if (store.isConnected()) {
+            store.close();
+          }
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing store", messagingException);
@@ -3317,8 +4306,11 @@ public class EmailBoxService {
           LOG.warn("Error when closing folder {} of user {}", folder, username, e);
         }
         try {
-          if (store != null && store.isConnected()) {
-            store.close();
+          if (store != null) {
+            rediscoveries.remove(store);
+            if (store.isConnected()) {
+              store.close();
+            }
           }
         } catch (MessagingException e) {
           LOG.warn("Error when closing store", e);
@@ -3485,8 +4477,11 @@ public class EmailBoxService {
           LOG.warn(INBOX_CLOSE_ERROR_MESSAGE, e);
         }
         try {
-          if (store != null && store.isConnected()) {
-            store.close();
+          if (store != null) {
+            rediscoveries.remove(store);
+            if (store.isConnected()) {
+              store.close();
+            }
           }
         } catch (MessagingException e) {
           LOG.warn(STORE_CLOSE_ERROR_MESSAGE, e);
@@ -3513,7 +4508,7 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int deleteEmail(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE);
+    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE, null);
   }
 
   /**
@@ -3526,7 +4521,7 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int archiveEmail(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.ARCHIVE);
+    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.ARCHIVE, null);
   }
 
   /**
@@ -3548,14 +4543,16 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int markAsJunk(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK);
+    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK, null);
   }
 
   /**
    * Where {@link #applyMoveAction} is putting the messages it takes out of the folder
-   * they are listed in. The three differ by their destination folder and by nothing
+   * they are listed in. The four differ by their destination folder and by nothing
    * else — same connection, same identity check, same removal, same compensation —
-   * which is the same reason {@link HiddenFolderAction} exists beside them.
+   * which is the same reason {@link HiddenFolderAction} exists beside them. MOVE is
+   * the one whose destination is named by the caller (one of the user's own folders)
+   * rather than by the action.
    */
   private enum MoveAction {
     /** Into the Trash folder. */
@@ -3563,7 +4560,9 @@ public class EmailBoxService {
     /** Into the Archive folder. */
     ARCHIVE,
     /** Into the Junk folder. */
-    JUNK
+    JUNK,
+    /** Into a custom folder the caller names. */
+    MOVE
   }
 
   /**
@@ -3579,6 +4578,7 @@ public class EmailBoxService {
       case DELETE -> USER_NOT_ALLOWED_FOR_DELETE_EMAIL_MESSAGE;
       case ARCHIVE -> USER_NOT_ALLOWED_FOR_ARCHIVE_EMAIL_MESSAGE;
       case JUNK -> USER_NOT_ALLOWED_FOR_JUNK_EMAIL_MESSAGE;
+      case MOVE -> USER_NOT_ALLOWED_FOR_MOVE_EMAIL_MESSAGE;
     };
   }
 
@@ -3593,6 +4593,7 @@ public class EmailBoxService {
       case DELETE -> "deleting";
       case ARCHIVE -> "archiving";
       case JUNK -> "marking as spam";
+      case MOVE -> "moving";
     };
   }
 
@@ -3631,13 +4632,16 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param folder the folder those UIDs come from; blank means INBOX
    * @param action which destination the messages go to
+   * @param targetFolder for {@link MoveAction#MOVE}, the {@code CUSTOM:<id>} key of the
+   *          destination, already validated against the registry; null otherwise
    * @return how many could not be moved
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   private int applyMoveAction(List<Long> mailRemoteIds,
                               String username,
                               String folder,
-                              MoveAction action) throws IllegalAccessException {
+                              MoveAction action,
+                              String targetFolder) throws IllegalAccessException {
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
       return 0;
     }
@@ -3680,7 +4684,7 @@ public class EmailBoxService {
     String originalSyncStateJson = JsonUtils.toJsonString(syncState);
     try {
       store = userEmailSettingService.connect(userEmailSetting);
-      source = resolveCachedImapFolder(store, sourceFolder, syncState);
+      source = resolveCachedImapFolder(store, sourceFolder, username, syncState);
       if (source == null) {
         LOG.warn("No {} folder for user {}; {} message(s) could not be moved", sourceFolder, username, mailRemoteIds.size());
         rows.values().forEach(this::recreateCachedRow);
@@ -3689,28 +4693,40 @@ public class EmailBoxService {
       // The DESTINATION lookups. Trash and Archive are deliberately the loose ones:
       // guessing loosely where to FILE a message is survivable (it lands in a folder of
       // the user's own, one message at a time, and they can see it), while guessing
-      // loosely what to READ is not — see findSyncableTrashFolder. Junk is the one
+      // loosely what to READ is not — see resolveTrashFolder. Junk is the one
       // exception and takes the STRICT resolver, because for Junk the two questions
       // have one answer: whatever this files into is what the Junk sync reads back and
       // what every other read then hides, so a loose guess here would not be a message
       // "landing somewhere the user can see it" — it would be a message hidden from
-      // every screen, in a folder the sync never opens.
+      // every screen, in a folder the sync never opens. A MOVE's destination is the
+      // caller's own folder, resolved through the registry exactly as its rows are read
+      // back, so the folder the message lands in is the folder its mirror will list.
       Folder destination = switch (action) {
         case DELETE -> findTrashFolder(store);
         case ARCHIVE -> findArchiveFolder(store);
         case JUNK -> resolveJunkFolder(store, syncState);
+        case MOVE -> resolveCachedImapFolder(store, targetFolder, username, syncState);
       };
       if (destination == null) {
         if (action != MoveAction.DELETE) {
-          // Nowhere to archive to, or nowhere to file spam. The old archive code
-          // silently did nothing here and answered success; there is no second meaning
-          // of "archive" or of "mark as spam" to fall back on, so every row goes back
+          // Nowhere to archive to, nowhere to file spam, or a folder that vanished
+          // between the pick and the move. The old archive code silently did nothing
+          // here and answered success; there is no second meaning of "archive", of
+          // "mark as spam" or of "move here" to fall back on, so every row goes back
           // and every id counts as failed.
           LOG.warn("No {} folder for user {}; {} message(s) could not be {}",
-                   action == MoveAction.ARCHIVE ? "Archive" : JUNK_FOLDER_LABEL,
+                   switch (action) {
+                     case ARCHIVE -> "Archive";
+                     case JUNK -> JUNK_FOLDER_LABEL;
+                     default -> targetFolder;
+                   },
                    username,
                    mailRemoteIds.size(),
-                   action == MoveAction.ARCHIVE ? "archived" : "marked as spam");
+                   switch (action) {
+                     case ARCHIVE -> "archived";
+                     case JUNK -> "marked as spam";
+                     default -> "moved";
+                   });
           rows.values().forEach(this::recreateCachedRow);
           return mailRemoteIds.size();
         }
@@ -3824,6 +4840,10 @@ public class EmailBoxService {
    * <li><b>Archive from ARCHIVE or ALL_MAIL</b> — copying a message into the folder it
    * is already in and then removing the original is a no-op that costs the message its
    * UID and its mirror row. There is nothing the user could mean by it.</li>
+   * <li><b>Move-to from ALL_MAIL</b> — the completion store is not a place the user
+   * files from; from anywhere else that is writable (the inbox, Sent, Archive, one of
+   * their own folders) a move means what it says. A move into the folder the message
+   * is already in is refused by {@link #moveToFolder} before it gets here.</li>
    * </ul>
    * Refusing is not the same as ignoring: the caller gets these back in the failure
    * count, so a client that offers the button anyway says so on screen.
@@ -3838,6 +4858,9 @@ public class EmailBoxService {
     }
     if (MailFolder.JUNK.equals(folder)) {
       return action == MoveAction.DELETE;
+    }
+    if (action == MoveAction.MOVE) {
+      return !MailFolder.ALL_MAIL.equals(folder);
     }
     return action != MoveAction.ARCHIVE || (!MailFolder.ARCHIVE.equals(folder) && !MailFolder.ALL_MAIL.equals(folder));
   }
@@ -3868,13 +4891,17 @@ public class EmailBoxService {
    *
    * @param store the connected store
    * @param folder the {@link MailFolder} discriminator the rows carry
+   * @param username the mailbox owner, for the registry a custom key resolves through
    * @param syncState the mailbox's sync memory, updated in place on rediscovery
    * @return the remote folder, or null when the mailbox has none (or exposes it under
    *         an implementation this add-on cannot address by UID)
    * @throws MessagingException if the folder list cannot be read
    */
-  private IMAPFolder resolveCachedImapFolder(Store store, String folder, MailboxSyncState syncState) throws MessagingException {
-    Folder resolved = resolveCachedFolder(store, folder, syncState);
+  private IMAPFolder resolveCachedImapFolder(Store store,
+                                             String folder,
+                                             String username,
+                                             MailboxSyncState syncState) throws MessagingException {
+    Folder resolved = resolveCachedFolder(store, folder, username, syncState);
     return resolved instanceof IMAPFolder imapFolder ? imapFolder : null;
   }
 
@@ -4793,8 +5820,11 @@ public class EmailBoxService {
       // rest of the refresh did.
       saveMailboxSyncState(username, syncState, originalSyncStateJson);
       try {
-        if (store != null && store.isConnected()) {
-          store.close();
+        if (store != null) {
+          rediscoveries.remove(store);
+          if (store.isConnected()) {
+            store.close();
+          }
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing the store of the post-send Sent refresh of user {}", username, messagingException);
@@ -6828,13 +7858,15 @@ public class EmailBoxService {
 
   /**
    * Whether the server-side half of drafts is switched on — see
-   * {@link #DRAFTS_SERVER_ENABLED_PROPERTY}. Read on every call rather than cached,
-   * so an administrator can withdraw it without a restart.
+   * {@link #DRAFTS_SERVER_ENABLED_PROPERTY}. Delegates to
+   * {@link EmailConnectorService#isServerDraftsEnabled()}, which reads the
+   * administration-wide setting (falling back to the JVM property) so an
+   * administrator can withdraw it from the settings drawer without a restart.
    *
    * @return true when drafts may be uploaded to the mail server
    */
   private boolean isServerDraftsEnabled() {
-    return Boolean.parseBoolean(System.getProperty(DRAFTS_SERVER_ENABLED_PROPERTY, "true"));
+    return emailConnectorService.isServerDraftsEnabled();
   }
 
   /**
@@ -7910,6 +8942,9 @@ public class EmailBoxService {
           LOG.warn("Error when closing All Mail folder for user {}", username, messagingException);
         }
       }
+      if (store != null) {
+        rediscoveries.remove(store);
+      }
       if (store != null && store.isConnected()) {
         try {
           store.close();
@@ -8545,7 +9580,7 @@ public class EmailBoxService {
    * DESTINATION lookup when the mailbox has no syncable {@code \Archive}. This is a
    * correctness requirement, not a preference: IMAP UIDs are per-folder, and every
    * cached row is keyed {@code (user, folder, UID)}. The rows filed under ARCHIVE are
-   * written with UIDs read from {@link #findSyncableArchiveFolder} ({@code \Archive}
+   * written with UIDs read from {@link #resolveArchiveFolder} ({@code \Archive}
    * only), while the destination lookup {@link #findArchiveFolder} also accepts
    * {@code \All} and any name merely CONTAINING "archive"/"all"/"tous". On a mailbox
    * carrying both — a dedicated Archive folder and an All-Mail-type folder, where
@@ -8560,7 +9595,9 @@ public class EmailBoxService {
    * when a syncable Archive exists, search and sync address the same folder and the
    * keyspace has one owner. When it does not (the Gmail case — {@code \All} only),
    * the fallback still reaches "All Mail" and reach is unchanged, and the ARCHIVE
-   * keyspace is then exclusively search-fed, hence self-consistent.
+   * keyspace is then exclusively search-fed, hence self-consistent. (The sync's own
+   * lookup is the strict classification of {@link EmailFolderService#classify}: a
+   * dedicated {@code \Archive} folder only, never the {@code \All} superset.)
    *
    * @param store the connected store (the search's own, never the sync's)
    * @param folder the {@link MailFolder} key, already validated searchable
@@ -8588,7 +9625,7 @@ public class EmailBoxService {
    * whole point of having this in one place rather than a folder name at each call
    * site: ARCHIVE takes the syncable {@code \Archive} folder, while ALL_MAIL takes
    * Gmail's {@code \All} superset, and the two are deliberately different folders
-   * (see {@link #findSyncableArchiveFolder}). Resolving ARCHIVE through
+   * (see {@link #resolveArchiveFolder}). Resolving ARCHIVE through
    * {@link #findArchiveFolder} instead — which answers {@code \All} on Gmail —
    * would look right and read the wrong mailbox, under UIDs that belong to another
    * one.
@@ -8608,7 +9645,7 @@ public class EmailBoxService {
     if (StringUtils.isBlank(folder) || MailFolder.INBOX.equals(folder)) {
       return store.getFolder(INBOX_FOLDER_NAME);
     }
-    return resolveCachedFolder(store, folder, loadMailboxSyncState(username));
+    return resolveCachedFolder(store, folder, username, loadMailboxSyncState(username));
   }
 
   /**
@@ -8619,11 +9656,15 @@ public class EmailBoxService {
    *
    * @param store the connected store (the caller's own)
    * @param folder the {@link MailFolder} discriminator the row carries
+   * @param username the mailbox owner, for the registry a custom key resolves through
    * @param syncState the mailbox's sync memory, updated in place on rediscovery
    * @return the remote folder, or null when the mailbox has no such folder
    * @throws MessagingException if the folder list cannot be read
    */
-  private Folder resolveCachedFolder(Store store, String folder, MailboxSyncState syncState) throws MessagingException {
+  private Folder resolveCachedFolder(Store store,
+                                     String folder,
+                                     String username,
+                                     MailboxSyncState syncState) throws MessagingException {
     if (StringUtils.isBlank(folder) || MailFolder.INBOX.equals(folder)) {
       return store.getFolder(INBOX_FOLDER_NAME);
     }
@@ -8647,7 +9688,24 @@ public class EmailBoxService {
       return resolveJunkFolder(store, syncState);
     }
     if (MailFolder.ALL_MAIL.equals(folder)) {
+      // Through the memoised lookup, never a rediscovery: this arm is reached by
+      // reads that must not write the state, and a walk this connection already made
+      // answers it for free.
       return findAllMailFolder(store);
+    }
+    if (MailFolder.isCustom(folder)) {
+      // Through the registry, the way the rows were written: the key names a row, the
+      // row names the remote folder. A key this user's registry does not know answers
+      // nothing, like any other folder the mailbox has not got -- the caller counts and
+      // says so -- rather than an inbox read under another name.
+      try {
+        EmailFolder customFolder = emailFolderService.getFolderByKey(username, folder);
+        Folder remote = store.getFolder(customFolder.getRemoteName());
+        return remote instanceof IMAPFolder && remote.exists() ? remote : null;
+      } catch (IllegalArgumentException e) {
+        LOG.warn("Folder key {} is unknown to the registry of user {}", folder, username);
+        return null;
+      }
     }
     // An unknown discriminator is a caller passing something this schema never wrote.
     // Answering INBOX would silently read the wrong mailbox; answering nothing lets
@@ -8671,6 +9729,9 @@ public class EmailBoxService {
         LOG.warn("Error when closing search folder for user {}", username, messagingException);
       }
     }
+    if (store != null) {
+      rediscoveries.remove(store);
+    }
     if (store != null && store.isConnected()) {
       try {
         store.close();
@@ -8683,34 +9744,25 @@ public class EmailBoxService {
   /**
    * The provider's "all mail" superset — Gmail's {@code \All} ("All Mail" / "Tous les
    * messages"). This is the folder bulk sync deliberately skips (see
-   * {@link #findSyncableArchiveFolder}); thread completion targets it on demand.
-   * Returns null when the provider exposes no such superset (most non-Gmail servers),
-   * where archived mail already lives in a synced {@code \Archive} folder instead.
+   * {@link #resolveArchiveFolder}); thread completion targets it on demand. Returns
+   * null when the provider exposes no such superset (most non-Gmail servers), where
+   * archived mail already lives in a synced {@code \Archive} folder instead. One
+   * classified walk per call, as it always was, on a user-triggered action; the walk's
+   * other findings are not written anywhere, because this is a read.
    *
    * @param store an open IMAP store
    * @return the {@code \All} folder, or null
    * @throws MessagingException if the folder list cannot be read
    */
   private IMAPFolder findAllMailFolder(Store store) throws MessagingException {
-    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
-      if (!(folder instanceof IMAPFolder)) {
-        continue;
-      }
-      IMAPFolder imapFolder = (IMAPFolder) folder;
-      if (!imapFolder.exists()) {
-        continue;
-      }
-      for (String attr : imapFolder.getAttributes()) {
-        if (attr.equalsIgnoreCase("\\All")) {
-          return imapFolder;
-        }
-      }
-      String name = imapFolder.getFullName().toLowerCase();
-      if (name.contains("all mail") || name.contains("tous les messages")) {
-        return imapFolder;
-      }
+    Rediscovery alreadyWalked = rediscoveries.get(store);
+    if (alreadyWalked != null) {
+      return alreadyWalked.folder(store, MailFolder.ALL_MAIL);
     }
-    return null;
+    FolderWalk walk = walkFolders(store);
+    Rediscovery rediscovery = new Rediscovery(walk, emailFolderService.classify(walk.descriptors()));
+    rediscoveries.put(store, rediscovery);
+    return rediscovery.folder(store, MailFolder.ALL_MAIL);
   }
 
   /**
@@ -8778,7 +9830,7 @@ public class EmailBoxService {
     }
     if (SyncStatus.IN_PROGRESS.equals(userEmailSetting.getEmailSyncStatus())) {
       long nextAllowedSync = userEmailSetting.getLastEmailSyncStartDate() +
-          EmailConnectorUtils.getEmailBoxUserSyncPeriod(userEmailSetting) * 60000L;
+          getEffectiveSyncPeriod(userEmailSetting) * 60000L;
       return System.currentTimeMillis() > nextAllowedSync;
     }
     return true;
@@ -8844,7 +9896,8 @@ public class EmailBoxService {
     // feature exists to protect (see isProtectedDraft).
     cleanupObsoleteEmails(uidFolder, cachedDrafts, serverMessages, username, windowSize);
     int removedStrays = removeStrayDraftCopies(strayCopies, username, userEmailSetting);
-    LOG.info("Synchronized folder {} of user {}: {} draft(s) on the server, {} written in another client and imported,"
+    logSyncOutcome(imported > 0 || detached > 0 || !strayCopies.isEmpty() || removedStrays > 0,
+                   "Synchronized folder {} of user {}: {} draft(s) on the server, {} written in another client and imported,"
         + " {} kept locally after their server copy vanished, {} stray copy(ies) of already-sent mail found, {} removed",
              MailFolder.DRAFTS,
              username,
@@ -9782,8 +10835,8 @@ public class EmailBoxService {
   /**
    * The folder a DELETE files into: the {@code \Trash} attribute, then anything whose
    * name merely CONTAINS a known token. Deliberately loose, and deliberately left
-   * that way — see {@link #findSyncableTrashFolder}, which is the strict lookup and
-   * the one the bulk sync uses.
+   * that way — see {@link #resolveTrashFolder} for the strict lookup the bulk sync
+   * uses, and for why the two are not one.
    *
    * @param store the connected store
    * @return somewhere to file a deletion, or null when the mailbox offers nowhere
@@ -9813,198 +10866,43 @@ public class EmailBoxService {
   }
 
   /**
-   * The folder to <em>synchronize</em> as TRASH: the SPECIAL-USE {@code \Trash}
-   * attribute (RFC 6154) first, then a name match for the servers that never learned
-   * SPECIAL-USE. If neither finds one, the Trash sync is simply OFF for that account
-   * — we never CREATE a Trash folder, for the reason {@link #findDraftsFolder} gives
-   * about creating folders in a store the user shares with every other client they
-   * own.
-   * <p>
-   * This is the STRICT lookup, and it exists beside the loose {@link #findTrashFolder}
-   * rather than replacing it, the same way {@link #findSyncableArchiveFolder} exists
-   * beside {@link #findArchiveFolder}. The two are asked different questions and the
-   * cost of getting them wrong is not the same. Guessing loosely where to FILE a
-   * deletion is survivable: the mail lands in a folder of the user's own making, in
-   * their own mailbox, one message at a time, and they can see it. Guessing loosely
-   * what to BULK-IMPORT is not: a user's "Trash drafts" or "Deleted contracts" folder
-   * matching on {@code contains} would have its entire recent contents cached as
-   * deleted mail — hidden from the conversation reader, hidden from search, and shown
-   * back to them as things they had thrown away. Slice 4 will offer to empty that
-   * folder permanently.
-   * <p>
-   * So the name test is the one {@link #isDraftsFolderName} uses: LAST path segment,
-   * for EQUALITY, against a known token list. Last-segment equality still catches the
-   * nested layouts that matter — Gmail's {@code [Gmail]/Trash} and Maildir++'s
-   * {@code INBOX.Trash} both end in exactly {@code Trash}.
-   * <p>
-   * Subscribed folders are scanned first, then ALL folders when that found nothing.
-   * The second pass earns its extra {@code LIST *} here for the same reason it does
-   * for Drafts, and for one more: Gmail's {@code [Gmail]/Trash} is not subscribed for
-   * every account, and a mailbox that plainly HAS a Trash folder behaving as though it
-   * had none would be indistinguishable, from the outside, from this feature being
-   * broken.
-   *
-   * @param store the connected store
-   * @return the Trash folder, or null when the mailbox has none to bulk-sync
-   * @throws MessagingException if the folder list cannot be read
-   */
-  private IMAPFolder findSyncableTrashFolder(Store store) throws MessagingException {
-    IMAPFolder subscribed = findSyncableTrashFolderIn(store.getDefaultFolder().listSubscribed("*"));
-    return subscribed != null ? subscribed : findSyncableTrashFolderIn(store.getDefaultFolder().list("*"));
-  }
-
-  /**
-   * Scans one folder listing for the Trash folder — see
-   * {@link #findSyncableTrashFolder} for the matching rules and why they are what they
-   * are. Split out so the subscribed listing and the full listing run the exact same
-   * test.
-   *
-   * @param folders the folder listing to scan
-   * @return the first matching folder, or null when the listing holds none
-   * @throws MessagingException if a folder's attributes cannot be read
-   */
-  private IMAPFolder findSyncableTrashFolderIn(Folder[] folders) throws MessagingException {
-    IMAPFolder nameMatch = null;
-    for (Folder folder : folders) {
-      if (!(folder instanceof IMAPFolder imapFolder) || !imapFolder.exists()) {
-        continue;
-      }
-      for (String attribute : imapFolder.getAttributes()) {
-        if (attribute.equalsIgnoreCase(TRASH_SPECIAL_USE_ATTRIBUTE)) {
-          return imapFolder;
-        }
-      }
-      // Remembered, not returned: a SPECIAL-USE match found later in the listing must
-      // still win over a name match found earlier. The attribute is the server telling
-      // us which folder this is; the name is us guessing.
-      if (nameMatch == null && isTrashFolderName(imapFolder.getFullName())) {
-        nameMatch = imapFolder;
-      }
-    }
-    return nameMatch;
-  }
-
-  /**
-   * Whether a folder's full name is one of the well-known Trash names, judged on its
-   * LAST path segment only and by equality — so {@code [Gmail]/Trash} and
-   * {@code INBOX.Trash} match while a user's own "Trash drafts" does not.
-   *
-   * @param fullName the folder's full name, hierarchy separators included
-   * @return true when the last segment is a known Trash name
-   */
-  private boolean isTrashFolderName(String fullName) {
-    if (StringUtils.isBlank(fullName)) {
-      return false;
-    }
-    // Split on both separators actually seen in the wild ('/' on Gmail and Dovecot's
-    // default, '.' on the Maildir++ layouts) rather than asking the folder for its
-    // own: this is a pure string test, kept free of an IMAP round-trip.
-    String lastSegment = fullName.substring(Math.max(fullName.lastIndexOf('/'), fullName.lastIndexOf('.')) + 1);
-    return TRASH_FOLDER_NAMES.contains(lastSegment.trim().toLowerCase());
-  }
-
-  /**
    * Whether the Trash folder's synchronization is switched on — see
-   * {@link #TRASH_SYNC_ENABLED_PROPERTY}. Read on every sync rather than cached, so
-   * an administrator can withdraw it without a restart.
+   * {@link #TRASH_SYNC_ENABLED_PROPERTY}. Delegates to
+   * {@link EmailConnectorService#isTrashSyncEnabled()}, which reads the
+   * administration-wide setting (falling back to the JVM property) so an
+   * administrator can withdraw it from the settings drawer without a restart.
    *
    * @return true when the Trash folder may be cached
    */
   private boolean isTrashSyncEnabled() {
-    return Boolean.parseBoolean(System.getProperty(TRASH_SYNC_ENABLED_PROPERTY, "true"));
-  }
-
-  /**
-   * The folder to <em>synchronize</em> as JUNK — and, unlike Trash, also the folder
-   * "Mark as spam" files into: the SPECIAL-USE {@code \Junk} attribute (RFC 6154)
-   * first, then a name match for the servers that never learned SPECIAL-USE. If
-   * neither finds one, the Junk sync is simply OFF for that account and "Mark as
-   * spam" refuses — we never CREATE a Junk folder, for the reason
-   * {@link #findDraftsFolder} gives about creating folders in a store the user shares
-   * with every other client they own.
-   * <p>
-   * STRICT, by the rule {@link #findSyncableTrashFolder} states, and with no loose
-   * variant beside it — deliberately, where Trash has {@link #findTrashFolder}. The
-   * loose Trash lookup is survivable because a message filed loosely lands somewhere
-   * the user can see it. Junk is hidden from every read but its own listing, so a
-   * message filed into a folder that merely CONTAINS "spam" — a user's "Spam reports"
-   * folder, say — would vanish from every screen into a folder the sync never opens.
-   * One resolver, one answer, and both the sync and the move ask it.
-   * <p>
-   * The name test is last-segment equality against {@link #JUNK_FOLDER_NAMES}, which
-   * still catches the nested layouts that matter: Gmail's {@code [Gmail]/Spam} and
-   * Maildir++'s {@code INBOX.Junk} both end in a known token. Subscribed folders
-   * first, then all, for the reason Trash gives: {@code [Gmail]/Spam} is not
-   * subscribed on every account.
-   *
-   * @param store the connected store
-   * @return the Junk folder, or null when the mailbox has none to bulk-sync
-   * @throws MessagingException if the folder list cannot be read
-   */
-  private IMAPFolder findSyncableJunkFolder(Store store) throws MessagingException {
-    IMAPFolder subscribed = findSyncableJunkFolderIn(store.getDefaultFolder().listSubscribed("*"));
-    return subscribed != null ? subscribed : findSyncableJunkFolderIn(store.getDefaultFolder().list("*"));
-  }
-
-  /**
-   * Scans one folder listing for the Junk folder — see {@link #findSyncableJunkFolder}
-   * for the matching rules. Split out so the subscribed listing and the full listing
-   * run the exact same test, as {@link #findSyncableTrashFolderIn} is.
-   *
-   * @param folders the folder listing to scan
-   * @return the first matching folder, or null when the listing holds none
-   * @throws MessagingException if a folder's attributes cannot be read
-   */
-  private IMAPFolder findSyncableJunkFolderIn(Folder[] folders) throws MessagingException {
-    IMAPFolder nameMatch = null;
-    for (Folder folder : folders) {
-      if (!(folder instanceof IMAPFolder imapFolder) || !imapFolder.exists()) {
-        continue;
-      }
-      for (String attribute : imapFolder.getAttributes()) {
-        if (attribute.equalsIgnoreCase(JUNK_SPECIAL_USE_ATTRIBUTE)) {
-          return imapFolder;
-        }
-      }
-      // Remembered, not returned: a SPECIAL-USE match found later in the listing must
-      // still win over a name match found earlier. The attribute is the server telling
-      // us which folder this is; the name is us guessing.
-      if (nameMatch == null && isJunkFolderName(imapFolder.getFullName())) {
-        nameMatch = imapFolder;
-      }
-    }
-    return nameMatch;
-  }
-
-  /**
-   * Whether a folder's full name is one of the well-known Junk names, judged on its
-   * LAST path segment only and by equality — so {@code [Gmail]/Spam} and
-   * {@code INBOX.Junk} match while a user's own "Spam reports" does not.
-   *
-   * @param fullName the folder's full name, hierarchy separators included
-   * @return true when the last segment is a known Junk name
-   */
-  private boolean isJunkFolderName(String fullName) {
-    if (StringUtils.isBlank(fullName)) {
-      return false;
-    }
-    // Same split as isTrashFolderName: both separators seen in the wild, as a pure
-    // string test with no IMAP round-trip.
-    String lastSegment = fullName.substring(Math.max(fullName.lastIndexOf('/'), fullName.lastIndexOf('.')) + 1);
-    return JUNK_FOLDER_NAMES.contains(lastSegment.trim().toLowerCase());
+    return emailConnectorService.isTrashSyncEnabled();
   }
 
   /**
    * Whether the Junk folder's synchronization is switched on — see
-   * {@link #JUNK_SYNC_ENABLED_PROPERTY}. Read on every sync rather than cached, so
-   * an administrator can withdraw it without a restart.
+   * {@link #JUNK_SYNC_ENABLED_PROPERTY}. Delegates to
+   * {@link EmailConnectorService#isJunkSyncEnabled()}, which reads the
+   * administration-wide setting (falling back to the JVM property) so an
+   * administrator can withdraw it from the settings drawer without a restart.
    *
    * @return true when the Junk folder may be cached
    */
   private boolean isJunkSyncEnabled() {
-    return Boolean.parseBoolean(System.getProperty(JUNK_SYNC_ENABLED_PROPERTY, "true"));
+    return emailConnectorService.isJunkSyncEnabled();
   }
 
+  /**
+   * The folder an ARCHIVE files into: the {@code \Archive} or {@code \All} attribute,
+   * then anything whose name merely CONTAINS a known token. Deliberately loose, for the
+   * reason {@link #findTrashFolder} gives, and deliberately accepting Gmail's "All
+   * Mail" superset that the sync's own lookup ({@link #resolveArchiveFolder}) refuses:
+   * archiving on Gmail IS removing the inbox label, and All Mail is where that leaves
+   * the message.
+   *
+   * @param store the connected store
+   * @return somewhere to file an archive, or null when the mailbox offers nowhere
+   * @throws MessagingException if the folder list cannot be read
+   */
   private IMAPFolder findArchiveFolder(Store store) throws MessagingException {
     for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
       if (!(folder instanceof IMAPFolder)) {
@@ -10026,143 +10924,6 @@ public class EmailBoxService {
       }
     }
     return null;
-  }
-
-  /**
-   * The folder to <em>synchronize</em> as ARCHIVE: a dedicated {@code \Archive}
-   * folder only. Gmail's "All Mail" ({@code \All}) is deliberately excluded — it
-   * is a superset of the inbox, so caching it would duplicate every received
-   * message inside its conversation. (The archive <em>destination</em> still uses
-   * {@link #findArchiveFolder} so archiving keeps working on Gmail.)
-   */
-  private IMAPFolder findSyncableArchiveFolder(Store store) throws MessagingException {
-    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
-      if (!(folder instanceof IMAPFolder)) {
-        continue;
-      }
-      IMAPFolder imapFolder = (IMAPFolder) folder;
-      if (!imapFolder.exists()) {
-        continue;
-      }
-      for (String attr : imapFolder.getAttributes()) {
-        if (attr.equalsIgnoreCase("\\Archive")) {
-          return imapFolder;
-        }
-      }
-      String name = imapFolder.getFullName().toLowerCase();
-      if (name.equals("archive") || name.equals("archives") || name.equals("archivage")) {
-        return imapFolder;
-      }
-    }
-    return null;
-  }
-
-  private IMAPFolder findSentFolder(Store store) throws MessagingException {
-    for (Folder folder : store.getDefaultFolder().listSubscribed("*")) {
-      if (!(folder instanceof IMAPFolder)) {
-        continue;
-      }
-      IMAPFolder imapFolder = (IMAPFolder) folder;
-      if (!imapFolder.exists()) {
-        continue;
-      }
-      String[] attributes = imapFolder.getAttributes();
-      for (String attr : attributes) {
-        if (attr.equalsIgnoreCase("\\Sent")) {
-          return imapFolder;
-        }
-      }
-      String name = imapFolder.getFullName().toLowerCase();
-      if (name.contains("sent") || name.contains("envoyé") || name.contains("envoye")) {
-        return imapFolder;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * The mailbox's Drafts folder: the SPECIAL-USE {@code \Drafts} attribute
-   * (RFC 6154) first, then a name match for the servers that never learned
-   * SPECIAL-USE. If neither finds one, server-side drafts are simply OFF for that
-   * account — we never CREATE a Drafts folder. Creating folders in someone's
-   * mailbox is a visible, permanent change to a store the user shares with every
-   * other client they own, and it is not ours to make on the strength of them
-   * having typed two words into a compose window.
-   * <p>
-   * The name match is deliberately STRICTER than {@link #findSentFolder}'s: it
-   * compares the last path segment for EQUALITY against a known token list, rather
-   * than asking whether the full name merely {@code contains} one. The two folders
-   * carry different risk. Guessing Sent wrong loses a copy of a mail that was
-   * already delivered; guessing Drafts wrong means we APPEND the user's unsent
-   * words into a folder of their own making — "Draft ideas", "Drafts of the
-   * contract" — and then, once slice 2 lands, delete the previous copy out of it.
-   * Last-segment equality still catches the one nested layout that matters,
-   * Gmail's {@code [Gmail]/Drafts}, because the segment after the separator is
-   * exactly {@code Drafts}.
-   * <p>
-   * Subscribed folders are scanned first (as everywhere else here), then ALL
-   * folders if that found nothing. Sent is auto-subscribed by practically every
-   * client that writes to it; Drafts much less reliably so, and a mailbox that
-   * plainly HAS a Drafts folder silently behaving as though it had none is a worse
-   * outcome than one extra {@code LIST *} on the accounts where the first pass
-   * misses.
-   *
-   * @param store the connected store
-   * @return the Drafts folder, or null when the mailbox has none
-   * @throws MessagingException if the folder list cannot be read
-   */
-  private IMAPFolder findDraftsFolder(Store store) throws MessagingException {
-    IMAPFolder subscribed = findDraftsFolderIn(store.getDefaultFolder().listSubscribed("*"));
-    return subscribed != null ? subscribed : findDraftsFolderIn(store.getDefaultFolder().list("*"));
-  }
-
-  /**
-   * Scans one folder listing for the Drafts folder — see {@link #findDraftsFolder}
-   * for the matching rules and why they are what they are. Split out so the
-   * subscribed listing and the full listing run the exact same test.
-   *
-   * @param folders the folder listing to scan
-   * @return the first matching folder, or null when the listing holds none
-   * @throws MessagingException if a folder's attributes cannot be read
-   */
-  private IMAPFolder findDraftsFolderIn(Folder[] folders) throws MessagingException {
-    IMAPFolder nameMatch = null;
-    for (Folder folder : folders) {
-      if (!(folder instanceof IMAPFolder imapFolder) || !imapFolder.exists()) {
-        continue;
-      }
-      for (String attribute : imapFolder.getAttributes()) {
-        if (attribute.equalsIgnoreCase(DRAFTS_SPECIAL_USE_ATTRIBUTE)) {
-          return imapFolder;
-        }
-      }
-      // Remembered, not returned: a SPECIAL-USE match found later in the listing must
-      // still win over a name match found earlier. The attribute is the server telling
-      // us which folder this is; the name is us guessing.
-      if (nameMatch == null && isDraftsFolderName(imapFolder.getFullName())) {
-        nameMatch = imapFolder;
-      }
-    }
-    return nameMatch;
-  }
-
-  /**
-   * Whether a folder's full name is one of the well-known Drafts names, judged on
-   * its LAST path segment only and by equality — so {@code [Gmail]/Drafts} and
-   * {@code INBOX.Drafts} match while a user's own "Draft ideas" does not.
-   *
-   * @param fullName the folder's full name, hierarchy separators included
-   * @return true when the last segment is a known Drafts name
-   */
-  private boolean isDraftsFolderName(String fullName) {
-    if (StringUtils.isBlank(fullName)) {
-      return false;
-    }
-    // Split on both separators actually seen in the wild ('/' on Gmail and Dovecot's
-    // default, '.' on the Maildir++ layouts) rather than asking the folder for its
-    // own: this is a pure string test, kept free of an IMAP round-trip.
-    String lastSegment = fullName.substring(Math.max(fullName.lastIndexOf('/'), fullName.lastIndexOf('.')) + 1);
-    return DRAFTS_FOLDER_NAMES.contains(lastSegment.trim().toLowerCase());
   }
 
   /**
@@ -10195,7 +10956,9 @@ public class EmailBoxService {
     IMAPFolder sentFolder = null;
     try {
       store = (IMAPStore) userEmailSettingService.connect(userEmailSetting);
-      sentFolder = findSentFolder(store);
+      // The remembered name when there is one, a classified walk when there is not; a
+      // read, so the walk's findings are not saved (the next scheduled sync keeps them).
+      sentFolder = resolveSentFolder(store, loadMailboxSyncState(username));
       if (sentFolder != null) {
         sentFolder.open(Folder.READ_WRITE);
         sentFolder.appendMessages(new Message[] { message });
@@ -10214,8 +10977,11 @@ public class EmailBoxService {
         LOG.warn("Error when closing sent folder", messagingException);
       }
       try {
-        if (store != null && store.isConnected()) {
-          store.close();
+        if (store != null) {
+          rediscoveries.remove(store);
+          if (store.isConnected()) {
+            store.close();
+          }
         }
       } catch (MessagingException messagingException) {
         LOG.warn("Error when closing store", messagingException);

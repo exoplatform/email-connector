@@ -203,6 +203,95 @@ export function canMarkAsJunk(folder) {
 }
 
 /**
+ * The ONE place a folder is turned into words. A built-in folder resolves through the
+ * bundle by its key; a custom folder is shown exactly as the user named it, in whatever
+ * language, and never goes anywhere near a translation lookup. Every screen that names a
+ * folder -- the menu, the title, the move-to picker -- calls this rather than reaching
+ * for $t itself, so a user-authored name can never be handed to the bundle as a key.
+ *
+ * @param {Object} folder the folder as the server lists it ({key, type, displayName, path})
+ * @param {Function} translate the component's $t
+ * @returns {String} what to show for it
+ */
+export function folderLabel(folder, translate) {
+  if (!folder) {
+    return '';
+  }
+  if (folder.type === 'CUSTOM') {
+    return folder.displayName || folder.path || '';
+  }
+  return translate(`emailConnector.mailBox.list.drawer.folder.${(folder.key || 'INBOX').toLowerCase()}`);
+}
+
+/**
+ * A custom folder's full path, readable: the server's hierarchy separator replaced by
+ * a spaced slash ("Customers / Acme"), so a nested folder says where it lives.
+ *
+ * @param {Object} folder the folder as the server lists it
+ * @returns {String} the path, or nothing for a built-in
+ */
+export function folderPath(folder) {
+  if (!folder?.path) {
+    return '';
+  }
+  return folder.delimiter ? folder.path.split(folder.delimiter).join(' / ') : folder.path;
+}
+
+/**
+ * The folders a message may be moved INTO from a given folder: the user's own,
+ * mirrored and present, minus the folder the message is already in.
+ *
+ * @param {Array} folders the folder list as the server sent it
+ * @param {String} sourceFolder the folder the message is listed in; blank means INBOX
+ * @returns {Array} the targets, possibly empty
+ */
+export function moveTargets(folders, sourceFolder) {
+  const source = sourceFolder || 'INBOX';
+  // Inbox and Archive are destinations too, not only the user's own folders: filing a
+  // message must be reversible, and a picker that only ever pointed deeper made "Move
+  // to..." a one-way trip -- a message put in "Invoices" could never come back.
+  // Drafts, Trash, Junk and All Mail are not offered: the first is authored here, the
+  // next two have their own actions with their own meaning (Delete, Mark as spam), and
+  // the last is a thread-completion cache rather than a place mail lives.
+  const builtInTargets = ['INBOX', 'ARCHIVE'];
+  return (folders || []).filter(folder => folder.key !== source
+                                          && !folder.missing
+                                          && (builtInTargets.includes(folder.key)
+                                              || (folder.type === 'CUSTOM' && folder.syncEnabled)));
+}
+
+/**
+ * Moves messages into one of the user's own folders -- "Move to...". One request per
+ * folder the rows are listed in, the way delete and archive are sent, because the UIDs
+ * are numbered within their folder.
+ *
+ * @param {Array<Number>} mailRemoteIds the IMAP UIDs, within `folder`
+ * @param {String} folder the folder those ids are numbered in; INBOX when omitted
+ * @param {String} target the destination's key (CUSTOM:<id>)
+ * @returns {Promise} resolving to {failedMoves}
+ */
+export function moveEmails(mailRemoteIds, folder, target) {
+  const params = new URLSearchParams();
+  if (folder && folder !== 'INBOX') {
+    params.append('folder', folder);
+  }
+  params.append('target', target);
+  return fetch(`/email-connector/rest/email-box/move?${params}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(mailRemoteIds)
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when moving emails');
+    }
+    return resp.json();
+  });
+}
+
+/**
  * Moves messages to the Junk folder — "Mark as spam". One request per folder the
  * rows are listed in, the way delete and archive are sent, because the UIDs are
  * numbered within their folder.
