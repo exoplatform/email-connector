@@ -193,7 +193,10 @@ public class EmailConnectorStorage {
                                                          null,
                                                          emailConnectorEntity.getWebmailUrl(),
                                                          emailConnectorEntity.getCarddavUrl(),
-                                                         emailConnectorEntity.getAuthProviderName());
+                                                         emailConnectorEntity.getAuthProviderName(),
+                                                         // providerConfig is inbound only: it lives in the settings,
+                                                         // and the secret in it must not travel back out.
+                                                         null);
       return emailConnector;
     }
   }
