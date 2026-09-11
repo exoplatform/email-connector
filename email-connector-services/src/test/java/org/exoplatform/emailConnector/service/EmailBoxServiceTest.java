@@ -1691,7 +1691,7 @@ public class EmailBoxServiceTest {
                                                   false,
                                                   true,
                                                   "testUploadId",
-                                                  "", null, PROVIDER_NAME);
+                                                  "", null, PROVIDER_NAME, null);
     when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(connector);
     Authenticator provided = new Authenticator() {
     };
@@ -8119,7 +8119,7 @@ public class EmailBoxServiceTest {
                               false,
                               true,
                               "testUploadId",
-                              "", null, null);
+                              "", null, null, null);
   }
   /**
    * A picture dropped into the text travels inside the message, and the body points
