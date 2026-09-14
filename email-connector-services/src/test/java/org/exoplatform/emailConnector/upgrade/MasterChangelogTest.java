@@ -466,40 +466,6 @@ public class MasterChangelogTest {
   }
 
   /**
-   * Inserts a DATABASECHANGELOG row directly over JDBC, bypassing Liquibase entirely, to
-   * simulate a database that already recorded the given changeset id under different
-   * (unspecified) content — exactly what an id reused across a changelog rewrite leaves
-   * behind. The checksum recorded is deliberately arbitrary: 1.0.0-24 declares
-   * {@code validCheckSum ANY}, so Liquibase must accept it regardless, same as it does on a
-   * real database carrying the pre-14-Aug history.
-   *
-   * @param connection the JDBC connection whose DATABASECHANGELOG table to write into
-   * @param id the changeset id to record as already run
-   * @param description a human-readable note of what the simulated history actually ran
-   * @throws SQLException when the insert fails
-   */
-  private void recordChangeSetAsAlreadyRan(Connection connection, String id, String description) throws SQLException {
-    int nextOrder;
-    try (Statement statement = connection.createStatement();
-         ResultSet result = statement.executeQuery("SELECT MAX(ORDEREXECUTED) FROM DATABASECHANGELOG")) {
-      result.next();
-      nextOrder = result.getInt(1) + 1;
-    }
-    try (PreparedStatement insert = connection.prepareStatement(
-        "INSERT INTO DATABASECHANGELOG "
-            + "(ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED, EXECTYPE, MD5SUM, DESCRIPTION, COMMENTS, LIQUIBASE, DEPLOYMENT_ID) "
-            + "VALUES (?, 'email-connector', ?, CURRENT_TIMESTAMP, ?, 'EXECUTED', '9:simulated', ?, ?, '4.31.1', '9999999999')")) {
-      insert.setString(1, id);
-      insert.setString(2, CHANGELOG);
-      insert.setInt(3, nextOrder);
-      insert.setString(4, description);
-      insert.setString(5, "Recorded directly by " + getClass().getSimpleName()
-          + " to simulate a database that ran an earlier changelog (EXO-89940).");
-      insert.executeUpdate();
-    }
-  }
-
-  /**
    * Whether {@code IDX_EMAIL_BOX_USER_FOLDER_DATE} exists on EMAIL_BOX, read from the JDBC
    * driver's own metadata rather than an HSQLDB-specific system table, so it holds regardless
    * of the HSQLDB version running the test.
