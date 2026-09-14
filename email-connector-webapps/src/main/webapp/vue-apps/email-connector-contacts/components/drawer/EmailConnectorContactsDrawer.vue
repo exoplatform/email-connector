@@ -20,9 +20,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        Every row shown here is the user's own store; the platform directory is
        reached through the "Add from directory" picker, never browsed as a
        list, so the A–Z rail and letter index apply to every view. -->
-  <exo-drawer
+  <pinneable-drawer
     id="emailContactsDrawer"
     ref="emailContactsDrawer"
+    app-name="contacts"
     v-model="contactsDrawer"
     right
     :loading="loading"
@@ -198,7 +199,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :ok-label="$t('emailConnector.contacts.detail.delete')"
       :cancel-label="$t('emailConnector.contacts.form.cancel')"
       @ok="doDeleteSelection" />
-  </exo-drawer>
+  </pinneable-drawer>
 </template>
 
 <script>
