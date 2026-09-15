@@ -16,7 +16,6 @@
  */
 package org.exoplatform.emailConnector.notification.mail;
 
-import java.io.Writer;
 import java.util.Calendar;
 import java.util.Locale;
 
@@ -85,22 +84,5 @@ public class MailTemplateBuilder extends AbstractTemplateBuilder {
     messageInfo.body(TemplateUtils.processGroovy(templateContext));
     notificationContext.setException(templateContext.getException());
     return messageInfo.end();
-  }
-
-  /**
-   * This plugin contributes nothing to the daily/weekly digest mail. A digest
-   * summarizing "you received emails" a day late would say less than the mailbox
-   * itself, so the notification is instant-only. Returning false without writing
-   * to the writer is how a plugin opts out: the digest keeps the lines the other
-   * plugins wrote, and no Notification.digest.* bundle entry is ever resolved for
-   * us - which is why none is defined.
-   *
-   * @param notificationContext the context carrying the notifications to digest
-   * @param writer the shared writer collecting every plugin's digest lines
-   * @return always false, this plugin writes no digest line
-   */
-  @Override
-  protected boolean makeDigest(NotificationContext notificationContext, Writer writer) {
-    return false;
   }
 }
