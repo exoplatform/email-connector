@@ -39,7 +39,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
+import org.exoplatform.emailConnector.service.EmailSyncService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -55,6 +57,9 @@ public class EmailConnectorRest {
 
   @Autowired
   private EmailConnectorService emailConnectorService;
+
+  @Autowired
+  private EmailSyncService      emailSyncService;
 
   @PatchMapping("/feature/activation")
   @Secured("administrators")
@@ -106,18 +111,32 @@ public class EmailConnectorRest {
     }
   }
 
+  /**
+   * The administration-wide sync period of the active mailboxes.
+   *
+   * @param request the HTTP request
+   * @return the period, in minutes
+   */
   @GetMapping("/sync-period")
   @Secured("administrators")
-  @Operation(summary = "Gets the administration-wide mailbox sync period", method = "GET", description = "This will get the number of minutes between two automatic mailbox synchronizations")
+  @Operation(summary = "Gets the administration-wide sync period of the active mailboxes", method = "GET", description = "This will get the number of minutes between two automatic synchronizations of a mailbox whose owner opened it within the activity threshold")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = "Forbidden") })
   public int getEmailBoxSyncPeriod(HttpServletRequest request) {
     return emailConnectorService.getEmailBoxSyncPeriod();
   }
 
+  /**
+   * Updates the administration-wide sync period of the active mailboxes; the
+   * dispatcher reads it at its next tick, and the inactive period is raised to
+   * match when this one overtakes it.
+   *
+   * @param request the HTTP request
+   * @param minutes the period, in minutes
+   */
   @PutMapping("/sync-period")
   @Secured("administrators")
-  @Operation(summary = "Updates the administration-wide mailbox sync period", method = "PUT", description = "This will update the number of minutes between two automatic mailbox synchronizations and reschedule every connected user's sync job")
+  @Operation(summary = "Updates the administration-wide sync period of the active mailboxes", method = "PUT", description = "This will update the number of minutes between two automatic synchronizations of an active mailbox, applied at the next dispatch; the inactive period is raised to match when it would fall below")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
@@ -132,6 +151,144 @@ public class EmailConnectorRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+  }
+
+  /**
+   * The administration-wide sync period of the inactive mailboxes.
+   *
+   * @param request the HTTP request
+   * @return the period, in minutes
+   */
+  @GetMapping("/inactive-sync-period")
+  @Secured("administrators")
+  @Operation(summary = "Gets the administration-wide sync period of the inactive mailboxes", method = "GET", description = "This will get the number of minutes between two automatic synchronizations of a mailbox nobody has opened for the activity threshold")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public int getEmailBoxInactiveSyncPeriod(HttpServletRequest request) {
+    return emailConnectorService.getEmailBoxInactiveSyncPeriod();
+  }
+
+  /**
+   * Updates the administration-wide sync period of the inactive mailboxes; the
+   * dispatcher reads it at its next tick.
+   *
+   * @param request the HTTP request
+   * @param minutes the period, in minutes, at least the active period
+   */
+  @PutMapping("/inactive-sync-period")
+  @Secured("administrators")
+  @Operation(summary = "Updates the administration-wide sync period of the inactive mailboxes", method = "PUT", description = "This will update the number of minutes between two automatic synchronizations of an inactive mailbox, applied at the next dispatch; it cannot be shorter than the active period")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateEmailBoxInactiveSyncPeriod(HttpServletRequest request,
+                                               @Parameter(description = "The sync period of the inactive mailboxes, in minutes", required = true)
+                                               @RequestParam("minutes")
+                                               int minutes) {
+    try {
+      emailConnectorService.saveEmailBoxInactiveSyncPeriod(minutes, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * The administration-wide activity threshold.
+   *
+   * @param request the HTTP request
+   * @return how many days without opening the mailbox make its owner inactive
+   */
+  @GetMapping("/activity-threshold")
+  @Secured("administrators")
+  @Operation(summary = "Gets the administration-wide mailbox activity threshold", method = "GET", description = "This will get the number of days without opening the mailbox after which its owner is inactive and it follows the inactive sync period")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public int getEmailBoxActivityThresholdDays(HttpServletRequest request) {
+    return emailConnectorService.getEmailBoxActivityThresholdDays();
+  }
+
+  /**
+   * Updates the administration-wide activity threshold; the dispatcher reads it
+   * at its next tick.
+   *
+   * @param request the HTTP request
+   * @param days the threshold, in days
+   */
+  @PutMapping("/activity-threshold")
+  @Secured("administrators")
+  @Operation(summary = "Updates the administration-wide mailbox activity threshold", method = "PUT", description = "This will update the number of days without opening the mailbox after which its owner is inactive, applied at the next dispatch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateEmailBoxActivityThresholdDays(HttpServletRequest request,
+                                                  @Parameter(description = "The activity threshold, in days", required = true)
+                                                  @RequestParam("days")
+                                                  int days) {
+    try {
+      emailConnectorService.saveEmailBoxActivityThresholdDays(days, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * The administration-wide size of the mailbox sync executor.
+   *
+   * @param request the HTTP request
+   * @return how many mailboxes each node synchronizes at once
+   */
+  @GetMapping("/sync-threads")
+  @Secured("administrators")
+  @Operation(summary = "Gets the mailbox sync executor size", method = "GET", description = "This will get the number of mailboxes each server node synchronizes at once")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public int getEmailSyncThreads(HttpServletRequest request) {
+    return emailConnectorService.getEmailSyncThreads();
+  }
+
+  /**
+   * Updates the administration-wide size of the mailbox sync executor; the
+   * dispatcher resizes its pool at its next tick.
+   *
+   * @param request the HTTP request
+   * @param threads the executor size, in threads
+   */
+  @PutMapping("/sync-threads")
+  @Secured("administrators")
+  @Operation(summary = "Updates the mailbox sync executor size", method = "PUT", description = "This will update the number of mailboxes each server node synchronizes at once, applied at the next dispatch")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public void updateEmailSyncThreads(HttpServletRequest request,
+                                     @Parameter(description = "The executor size, in threads", required = true)
+                                     @RequestParam("threads")
+                                     int threads) {
+    try {
+      emailConnectorService.saveEmailSyncThreads(threads, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * A snapshot of the mailbox sync dispatcher, for the drawer's status line.
+   *
+   * @param request the HTTP request
+   * @return what this node runs, what the cluster holds, and the backlog
+   */
+  @GetMapping("/sync-status")
+  @Secured("administrators")
+  @Operation(summary = "Gets the mailbox sync dispatcher status", method = "GET", description = "This will get how many mailboxes are being synchronized, waiting, and due")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public EmailSyncExecutorStatus getEmailSyncStatus(HttpServletRequest request) {
+    return emailSyncService.getStatus();
   }
 
   @GetMapping("/trash-sync")

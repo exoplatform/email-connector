@@ -34,7 +34,6 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
-import org.exoplatform.emailConnector.event.EmailBoxSyncPeriodChangedEvent;
 import org.exoplatform.emailConnector.event.UserEmailSettingCleanupEvent;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.plugin.EmailConnectorTranslationPlugin;
@@ -67,6 +66,30 @@ public class EmailConnectorService {
   /** Administration-wide sync period key, in the same {@link #EMAIL_CONNECTOR_SCOPE}. */
   public static final String        EMAIL_BOX_SYNC_PERIOD_KEY                    = "emailBoxSyncPeriod";
 
+  /**
+   * Administration-wide size of the mailbox sync executor, in the same
+   * {@link #EMAIL_CONNECTOR_SCOPE}: how many mailboxes each node synchronizes
+   * at once.
+   */
+  public static final String        EMAIL_SYNC_THREADS_KEY                       = "emailSyncThreads";
+
+  /**
+   * Administration-wide sync period of the INACTIVE mailboxes, in the same
+   * {@link #EMAIL_CONNECTOR_SCOPE}: how long after its last synchronization a
+   * mailbox nobody has opened for {@link #EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS_KEY}
+   * days is due again. {@link #EMAIL_BOX_SYNC_PERIOD_KEY} is the active
+   * mailboxes' period.
+   */
+  public static final String        EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY           = "emailBoxInactiveSyncPeriod";
+
+  /**
+   * Administration-wide activity threshold, in the same
+   * {@link #EMAIL_CONNECTOR_SCOPE}: how many days without opening the mailbox
+   * (or asking for a sync) before its owner is inactive and it moves to the
+   * {@link #EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY} cadence.
+   */
+  public static final String        EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS_KEY        = "emailBoxActivityThresholdDays";
+
   /** Administration-wide Trash-folder sync kill switch key. */
   public static final String        TRASH_SYNC_ENABLED_KEY                       = "trashSyncEnabled";
 
@@ -93,6 +116,37 @@ public class EmailConnectorService {
 
   private static final int          MAX_EMAIL_BOX_SYNC_PERIOD                    = 1440;
 
+  /**
+   * The inactive period's default: an hour, six times the shipped active period.
+   * The floor is not a constant but the active period itself, read when saving
+   * (see {@link #saveEmailBoxInactiveSyncPeriod}); the ceiling is the active
+   * period's, a day.
+   */
+  private static final int          DEFAULT_EMAIL_BOX_INACTIVE_SYNC_PERIOD       = 60;
+
+  private static final int          MIN_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS        = 1;
+
+  private static final int          MAX_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS        = 365;
+
+  /**
+   * The activity threshold's default: two weeks, a holiday's length, so a fortnight
+   * away demotes a mailbox to the inactive cadence and the first open promotes it
+   * back.
+   */
+  private static final int          DEFAULT_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS    = 14;
+
+  private static final int          MIN_EMAIL_SYNC_THREADS                       = 1;
+
+  /**
+   * The ceiling of the sync executor: each thread holds one IMAP connection and
+   * one database connection for the length of a run, on every node, so a value
+   * past this is a mail-server and connection-pool problem before it is a
+   * throughput one.
+   */
+  private static final int          MAX_EMAIL_SYNC_THREADS                       = 64;
+
+  private static final int          DEFAULT_EMAIL_SYNC_THREADS                   = 10;
+
   private static final String       EMAIL_CONNECTOR_IS_MANDATORY_MESSAGE         = "Email connector is mandatory";
 
   private static final String       FEATURE_ACTIVE_IS_MANDATORY_MESSAGE          = "Feature active is mandatory";
@@ -109,6 +163,12 @@ public class EmailConnectorService {
   private static final String       CACHE_SIZE_OUT_OF_RANGE_MESSAGE              = "emailConnector.admin.cacheSize.outOfRange";
 
   private static final String       SYNC_PERIOD_OUT_OF_RANGE_MESSAGE             = "emailConnector.admin.syncSettings.period.outOfRange";
+
+  private static final String       SYNC_THREADS_OUT_OF_RANGE_MESSAGE            = "emailConnector.admin.syncThreads.outOfRange";
+
+  private static final String       INACTIVE_SYNC_PERIOD_OUT_OF_RANGE_MESSAGE    = "emailConnector.admin.inactiveSyncPeriod.outOfRange";
+
+  private static final String       ACTIVITY_THRESHOLD_OUT_OF_RANGE_MESSAGE      = "emailConnector.admin.activityThreshold.outOfRange";
 
   private static final String       USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE   =
                                                                                  "User %s is not allowed to update the email sync settings";
@@ -208,15 +268,18 @@ public class EmailConnectorService {
   }
 
   /**
-   * Get the administration-wide mailbox sync period, in minutes: how often each
-   * connected mailbox's Quartz job is scheduled to run. Read only when a user's
-   * job is (registered or re-registered) — at connect time and at startup — not
-   * on every sync, so a change here only reaches an already-connected mailbox
-   * once its job is rescheduled (see {@link #saveEmailBoxSyncPeriod}). When no
-   * value is stored, falls back to the {@code email.connector.sync.user.minute.period}
-   * JVM property (default 10), the same default the platform has always shipped.
+   * Get the administration-wide sync period of the ACTIVE mailboxes, in minutes:
+   * how long after its last synchronization a mailbox whose owner opened it within
+   * the activity threshold ({@link #getEmailBoxActivityThresholdDays}) is due
+   * again. The other mailboxes follow {@link #getEmailBoxInactiveSyncPeriod}. Read
+   * by the dispatcher at every tick, never captured, so a change here reaches
+   * every connected mailbox at the next tick. When no value is stored, falls back
+   * to the {@code email.connector.sync.user.minute.period} JVM property (default
+   * 10), the same default the platform has always shipped: the value an
+   * administrator set before the tiers existed becomes the active period, which is
+   * what it always was for everyone.
    *
-   * @return the configured sync period, in minutes
+   * @return the configured sync period of the active mailboxes, in minutes
    */
   public int getEmailBoxSyncPeriod() {
     SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_SYNC_PERIOD_KEY);
@@ -231,10 +294,17 @@ public class EmailConnectorService {
   }
 
   /**
-   * Save the administration-wide mailbox sync period and reschedule every
-   * connected user's sync job, so the change actually takes effect rather than
-   * only reaching users who reconnect or the next platform restart.
-   * Administrators only.
+   * Save the administration-wide sync period of the ACTIVE mailboxes. Nothing is
+   * rescheduled: the dispatcher reads the period at each tick, so the value
+   * applies at the next dispatch to every active mailbox. Administrators only.
+   * <p>
+   * The inactive period follows it upwards: an inactive mailbox is, by
+   * definition, one nobody is waiting on, so it can never be checked more often
+   * than an active one. Rather than refuse the save (the administrator asked for a
+   * slower active cadence, and the inactive one was merely never revisited), the
+   * inactive period is raised to the new value when it would otherwise fall
+   * below it. Never the reverse: lowering the active period leaves the inactive
+   * one where it is.
    *
    * @param minutes the sync period, in minutes, between {@value #MIN_EMAIL_BOX_SYNC_PERIOD}
    *          and {@value #MAX_EMAIL_BOX_SYNC_PERIOD}
@@ -250,7 +320,169 @@ public class EmailConnectorService {
       throw new IllegalArgumentException(SYNC_PERIOD_OUT_OF_RANGE_MESSAGE);
     }
     settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_SYNC_PERIOD_KEY, SettingValue.create(String.valueOf(minutes)));
-    eventPublisher.publishEvent(new EmailBoxSyncPeriodChangedEvent());
+    if (minutes > getEmailBoxInactiveSyncPeriod()) {
+      LOG.info("The active mailbox sync period ({} min) now exceeds the inactive one; raising the inactive period to match",
+               minutes);
+      settingService.set(Context.GLOBAL,
+                         EMAIL_CONNECTOR_SCOPE,
+                         EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY,
+                         SettingValue.create(String.valueOf(minutes)));
+    }
+  }
+
+  /**
+   * Get the administration-wide sync period of the INACTIVE mailboxes, in
+   * minutes: how long after its last synchronization a mailbox nobody has opened
+   * for {@link #getEmailBoxActivityThresholdDays} days is due again. Read by the
+   * dispatcher at every tick, never captured. When no value is stored, falls back
+   * to the {@code email.connector.sync.inactive.minute.period} JVM property
+   * (default {@value #DEFAULT_EMAIL_BOX_INACTIVE_SYNC_PERIOD}).
+   * <p>
+   * Never below the active period, and the clamp is on THIS side, the read, not
+   * only in the savers: the invariant "an inactive mailbox is never checked more
+   * often than an active one" has to hold for what the dispatcher selects on, and
+   * an instance upgraded with a stored active period above the inactive default
+   * has never had a saver run to enforce it. The savers keep their range checks
+   * (a 400 on an inactive value below the active one, the raise when the active
+   * one overtakes); this is the floor for the values they never saw.
+   *
+   * @return the configured sync period of the inactive mailboxes, in minutes,
+   *         at least the active period
+   */
+  public int getEmailBoxInactiveSyncPeriod() {
+    return Math.max(getStoredOrDefaultInactiveSyncPeriod(), getEmailBoxSyncPeriod());
+  }
+
+  /**
+   * The inactive period as stored, else the JVM property default: the value
+   * before the read-side floor {@link #getEmailBoxInactiveSyncPeriod} applies.
+   *
+   * @return the stored or default inactive period, in minutes
+   */
+  private int getStoredOrDefaultInactiveSyncPeriod() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      try {
+        return Integer.parseInt(settingValue.getValue().toString());
+      } catch (NumberFormatException e) {
+        LOG.warn("Invalid stored inactive email sync period '{}', falling back to the default", settingValue.getValue());
+      }
+    }
+    return Integer.parseInt(System.getProperty("email.connector.sync.inactive.minute.period",
+                                               String.valueOf(DEFAULT_EMAIL_BOX_INACTIVE_SYNC_PERIOD)));
+  }
+
+  /**
+   * Save the administration-wide sync period of the INACTIVE mailboxes.
+   * Administrators only. The floor is the active period as it stands when saving,
+   * not a constant: an inactive mailbox checked more often than an active one is
+   * a contradiction, and the answer to it is a 400 here (the administrator is
+   * choosing the value) rather than a silent correction.
+   *
+   * @param minutes the sync period, in minutes, between the active period and
+   *          {@value #MAX_EMAIL_BOX_SYNC_PERIOD}
+   * @param username user updating the sync period
+   * @throws IllegalAccessException if the user is not allowed to update the sync
+   *           settings
+   */
+  public void saveEmailBoxInactiveSyncPeriod(int minutes, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    if (minutes < getEmailBoxSyncPeriod() || minutes > MAX_EMAIL_BOX_SYNC_PERIOD) {
+      throw new IllegalArgumentException(INACTIVE_SYNC_PERIOD_OUT_OF_RANGE_MESSAGE);
+    }
+    settingService.set(Context.GLOBAL,
+                       EMAIL_CONNECTOR_SCOPE,
+                       EMAIL_BOX_INACTIVE_SYNC_PERIOD_KEY,
+                       SettingValue.create(String.valueOf(minutes)));
+  }
+
+  /**
+   * Get the administration-wide activity threshold, in days: how long without
+   * opening the mailbox (or asking for a sync) before its owner is inactive and
+   * the mailbox moves to the inactive period. Read by the dispatcher at every
+   * tick, never captured. When no value is stored, falls back to the
+   * {@code email.connector.sync.activity.threshold.days} JVM property (default
+   * {@value #DEFAULT_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS}).
+   *
+   * @return the configured activity threshold, in days
+   */
+  public int getEmailBoxActivityThresholdDays() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      try {
+        return Integer.parseInt(settingValue.getValue().toString());
+      } catch (NumberFormatException e) {
+        LOG.warn("Invalid stored email activity threshold '{}', falling back to the default", settingValue.getValue());
+      }
+    }
+    return Integer.parseInt(System.getProperty("email.connector.sync.activity.threshold.days",
+                                               String.valueOf(DEFAULT_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS)));
+  }
+
+  /**
+   * Save the administration-wide activity threshold. Administrators only.
+   *
+   * @param days the threshold, in days, between {@value #MIN_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS}
+   *          and {@value #MAX_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS}
+   * @param username user updating the threshold
+   * @throws IllegalAccessException if the user is not allowed to update the sync
+   *           settings
+   */
+  public void saveEmailBoxActivityThresholdDays(int days, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    if (days < MIN_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS || days > MAX_EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS) {
+      throw new IllegalArgumentException(ACTIVITY_THRESHOLD_OUT_OF_RANGE_MESSAGE);
+    }
+    settingService.set(Context.GLOBAL,
+                       EMAIL_CONNECTOR_SCOPE,
+                       EMAIL_BOX_ACTIVITY_THRESHOLD_DAYS_KEY,
+                       SettingValue.create(String.valueOf(days)));
+  }
+
+  /**
+   * Get the administration-wide size of the mailbox sync executor: how many
+   * mailboxes each node synchronizes at once. Read by the dispatcher at every
+   * tick, which resizes its pool when the value moved, so a change here takes
+   * effect within a minute and without a restart. When no value is stored, falls
+   * back to the {@code email.connector.sync.threads} JVM property (default
+   * {@value #DEFAULT_EMAIL_SYNC_THREADS}).
+   *
+   * @return the executor size, in threads
+   */
+  public int getEmailSyncThreads() {
+    SettingValue<?> settingValue = settingService.get(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_SYNC_THREADS_KEY);
+    if (settingValue != null && settingValue.getValue() != null) {
+      try {
+        return Integer.parseInt(settingValue.getValue().toString());
+      } catch (NumberFormatException e) {
+        LOG.warn("Invalid stored email sync thread count '{}', falling back to the default", settingValue.getValue());
+      }
+    }
+    return Integer.parseInt(System.getProperty("email.connector.sync.threads", String.valueOf(DEFAULT_EMAIL_SYNC_THREADS)));
+  }
+
+  /**
+   * Save the administration-wide size of the mailbox sync executor.
+   * Administrators only.
+   *
+   * @param threads the executor size, between {@value #MIN_EMAIL_SYNC_THREADS}
+   *          and {@value #MAX_EMAIL_SYNC_THREADS}
+   * @param username user updating the size
+   * @throws IllegalAccessException if the user is not allowed to update the sync
+   *           settings
+   */
+  public void saveEmailSyncThreads(int threads, String username) throws IllegalAccessException {
+    if (!canEdit(username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SYNC_SETTINGS_MESSAGE, username));
+    }
+    if (threads < MIN_EMAIL_SYNC_THREADS || threads > MAX_EMAIL_SYNC_THREADS) {
+      throw new IllegalArgumentException(SYNC_THREADS_OUT_OF_RANGE_MESSAGE);
+    }
+    settingService.set(Context.GLOBAL, EMAIL_CONNECTOR_SCOPE, EMAIL_SYNC_THREADS_KEY, SettingValue.create(String.valueOf(threads)));
   }
 
   /**

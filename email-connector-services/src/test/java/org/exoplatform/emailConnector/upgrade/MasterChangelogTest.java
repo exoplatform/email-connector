@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.upgrade;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
@@ -24,9 +26,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -44,6 +50,7 @@ import org.w3c.dom.NodeList;
 
 import liquibase.ChecksumVersion;
 import liquibase.Contexts;
+import liquibase.LabelExpression;
 import liquibase.Liquibase;
 import liquibase.changelog.ChangeSet;
 import liquibase.database.Database;
@@ -88,14 +95,24 @@ public class MasterChangelogTest {
   }
 
   /**
-   * The custom-folder registry's three changesets (1.0.0-53 to 1.0.0-55) apply, roll
-   * back, and apply again. Rolled back with the platform's own Liquibase rather than
-   * by hand, because the org rule this pins is that a changeset's rollback is proven
+   * The custom-folder registry's changesets (1.0.0-53 to 1.0.0-56) apply, roll back,
+   * and apply again. Rolled back with the platform's own Liquibase rather than by
+   * hand, because the org rule this pins is that a changeset's rollback is proven
    * before it ships -- an {@code update} or a {@code dropIndex} has no automatic
    * rollback and an empty {@code rollback} element silences a whole changeset's, and
    * neither mistake is visible in an apply-only run. The re-apply afterwards is what
    * shows the rollback left nothing behind (a surviving sequence or index would fail
    * the second CREATE).
+   * <p>
+   * Rolled back to a tag placed immediately before 1.0.0-53, not by a changeset
+   * count (EXO-89940): {@code rollback(int, ...)} always undoes the last N changesets
+   * recorded at the time it runs, counting back from whatever the changelog's current
+   * tail happens to be -- a fixed "3" silently rolled back 1.0.0-57, -55 and -54 the
+   * moment 1.0.0-57 became the new tail, leaving EMAIL_FOLDER (1.0.0-53) standing and
+   * this test failing on the opposite of what it meant to prove. A tag names a point
+   * in the applied history rather than an offset from the end of it, so
+   * {@code rollback(tag, ...)} keeps undoing exactly the registry regardless of how
+   * many changesets end up appended after it.
    *
    * @throws Exception when a changeset does not apply or roll back
    */
@@ -106,13 +123,44 @@ public class MasterChangelogTest {
                                           new ClassLoaderResourceAccessor(),
                                           DatabaseFactory.getInstance()
                                                          .findCorrectDatabaseImplementation(new JdbcConnection(connection)));
+      liquibase.update(applicableChangeSetsBefore("1.0.0-53"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-folder-registry");
       liquibase.update("");
       assertTrue(tableExists(connection, "EMAIL_FOLDER"), "1.0.0-53 creates EMAIL_FOLDER");
-      liquibase.rollback(3, "");
-      assertTrue(!tableExists(connection, "EMAIL_FOLDER"), "rolling back the last three changesets drops EMAIL_FOLDER");
+      liquibase.rollback("before-folder-registry", "");
+      assertTrue(!tableExists(connection, "EMAIL_FOLDER"), "rolling back to before the folder registry drops EMAIL_FOLDER");
       assertTrue(tableExists(connection, "EMAIL_THREAD_AI_SUMMARY"), "and nothing before them");
       liquibase.update("");
       assertTrue(tableExists(connection, "EMAIL_FOLDER"), "the changesets apply again after their rollback");
+    }
+  }
+
+  /**
+   * The sync-state table's changesets (1.0.0-58 and 1.0.0-59) apply, roll back and
+   * apply again, to a tag placed immediately before 1.0.0-58 for the reason the test
+   * above gives. The rollback is what a revert of the add-on relies on: the old code
+   * ignores the table, but a table left behind would fail the next install's CREATE.
+   * What is checked after the rollback is that the table is gone AND that the
+   * registry before it still stands -- a rollback that went one changeset too far
+   * would be the opposite of what it means to prove.
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theSyncStateChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback58" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-58"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-sync-state");
+      assertFalse(tableExists(connection, "EMAIL_SYNC_STATE"), "sanity: the table does not exist before 1.0.0-58");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_SYNC_STATE"), "1.0.0-58 creates EMAIL_SYNC_STATE");
+      assertTrue(indexExists(connection, "EMAIL_SYNC_STATE", "IDX_EMAIL_SYNC_STATE_LAST_SYNC"), "and its index");
+      liquibase.rollback("before-sync-state", "");
+      assertFalse(tableExists(connection, "EMAIL_SYNC_STATE"), "rolling back to before the sync state drops EMAIL_SYNC_STATE");
+      assertTrue(tableExists(connection, "EMAIL_FOLDER"), "and nothing before it");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_SYNC_STATE"), "the changesets apply again after their rollback");
     }
   }
 
@@ -156,7 +204,19 @@ public class MasterChangelogTest {
                "the table options of 1.0.0-56");
     assertTrue(generated.contains("ALTER TABLE EMAIL_FOLDER MODIFY REMOTE_NAME VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL"),
                "the binary collation on the identifier, and on it only");
+    // The sync-state table takes the same options through the same device, 1.0.0-59.
+    Matcher createSyncState = Pattern.compile("CREATE TABLE EMAIL_SYNC_STATE \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(generated);
+    assertTrue(createSyncState.find(), "no CREATE TABLE EMAIL_SYNC_STATE in the MySQL SQL");
+    assertTrue(!createSyncState.group().contains("COLLATE"), "the CREATE carries no modifySql of its own: " + createSyncState.group());
+    assertTrue(generated.contains("ALTER TABLE EMAIL_SYNC_STATE ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"),
+               "the table options of 1.0.0-59");
   }
+
+  // The changesets this add-on's branches added since the checksum pin below exists
+  // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
+  // -59). They are the ones a second evaluation computes ahead of the update in the
+  // pin, and nothing on this list may ever drift.
+  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56", "1.0.0-58", "1.0.0-59");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
@@ -165,10 +225,6 @@ public class MasterChangelogTest {
   // are listed, not fixed: a validCheckSum for an id that already ran everywhere is a
   // decision about every deployment's recorded value, not this branch's. Nothing may
   // be ADDED to this list.
-  // The changesets this branch adds. They are the ones a second evaluation computes
-  // ahead of the update in the pin below, and nothing on this list may ever drift.
-  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56");
-
   private static final Set<String> KNOWN_SCOPE_DEPENDENT_CHECKSUMS =
                                                                    Set.of("1.0.0-1", "1.0.0-2", "1.0.0-5", "1.0.0-27", "1.0.0-46", "1.0.0-48");
 
@@ -315,6 +371,153 @@ public class MasterChangelogTest {
                () -> "modifySql is changeset-scoped, so its append also lands on CREATE INDEX, "
                    + "which MySQL rejects (error 1064). Move the index to its own changeset. Offending changesets: "
                    + offenders);
+  }
+
+  /**
+   * The mirror case of {@link #indexIsCreatedWhenTwentyFourWasRecordedAsTheOldAddColumn()}: a
+   * database that recorded 1.0.0-24 carrying today's content (a fresh install, or one that
+   * upgraded after 14 August) already has the index. 1.0.0-57 must not try to create it again
+   * — it must mark itself ran and leave the schema alone.
+   *
+   * @throws Exception when the changelog cannot be read, parsed or applied
+   */
+  @Test
+  void changesetMarksRanWhenTwentyFourAlreadyCreatedTheIndex() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:changelog24new" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+
+      liquibase.update("");
+
+      assertTrue(indexExists(connection), "sanity: a fresh install must already carry the index via 1.0.0-24");
+      assertEquals("MARK_RAN", execType(connection, "1.0.0-57"),
+                   "1.0.0-57 must mark itself ran, not re-create the index 1.0.0-24 already created");
+    }
+  }
+
+  /**
+   * A fresh {@link Liquibase} instance bound to the add-on's changelog and the given
+   * connection.
+   *
+   * @param connection the JDBC connection to apply the changelog against
+   * @return a ready-to-use {@link Liquibase} instance
+   * @throws Exception when the database implementation cannot be resolved
+   */
+  private Liquibase newLiquibase(Connection connection) throws Exception {
+    return new Liquibase(CHANGELOG,
+                          new ClassLoaderResourceAccessor(),
+                          DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection)));
+  }
+
+  /**
+   * How many of the changelog's changesets, in document order and dbms-filtered for hsqldb,
+   * appear strictly before the given id.
+   * <p>
+   * Mirrors Liquibase's own {@code DbmsChangeSetFilter}: a changeset with no {@code dbms}
+   * attribute applies to every database, one that has it applies only when the attribute's
+   * comma-separated list contains {@code hsqldb}. Passing the result to
+   * {@link Liquibase#update(int, Contexts, LabelExpression)} therefore applies exactly the
+   * changesets a real HSQLDB database would already have run by the time it reached
+   * {@code beforeId} — the same count Liquibase's internal {@code CountChangeSetFilter} would
+   * stop at.
+   *
+   * @param beforeId the id to stop counting at (not itself counted)
+   * @return the number of hsqldb-applicable changesets preceding {@code beforeId}
+   * @throws Exception when the changelog cannot be read or parsed
+   */
+  private int applicableChangeSetsBefore(String beforeId) throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    int count = 0;
+    try (InputStream changelog = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      NodeList changeSets = factory.newDocumentBuilder()
+                                   .parse(changelog)
+                                   .getElementsByTagNameNS("*", "changeSet");
+      for (int i = 0; i < changeSets.getLength(); i++) {
+        Element changeSet = (Element) changeSets.item(i);
+        if (beforeId.equals(changeSet.getAttribute("id"))) {
+          break;
+        }
+        if (appliesToHsqldb(changeSet)) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Whether a changeset's {@code dbms} attribute (absent, or containing {@code hsqldb}) lets
+   * it run on HSQLDB.
+   *
+   * @param changeSet the changeset element to inspect
+   * @return true when the changeset applies to hsqldb
+   */
+  private boolean appliesToHsqldb(Element changeSet) {
+    String dbms = changeSet.getAttribute("dbms");
+    if (dbms == null || dbms.isBlank()) {
+      return true;
+    }
+    for (String candidate : dbms.split(",")) {
+      if ("hsqldb".equals(candidate.trim().toLowerCase(Locale.ROOT))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether {@code IDX_EMAIL_BOX_USER_FOLDER_DATE} exists on EMAIL_BOX, read from the JDBC
+   * driver's own metadata rather than an HSQLDB-specific system table, so it holds regardless
+   * of the HSQLDB version running the test.
+   *
+   * @param connection the JDBC connection to inspect
+   * @return true when the index exists
+   * @throws SQLException when the driver metadata cannot be read
+   */
+  private boolean indexExists(Connection connection) throws SQLException {
+    return indexExists(connection, "EMAIL_BOX", "IDX_EMAIL_BOX_USER_FOLDER_DATE");
+  }
+
+  /**
+   * Whether an index exists on a table, read from the JDBC driver's own metadata.
+   *
+   * @param connection the JDBC connection to inspect
+   * @param tableName the table, as created
+   * @param indexName the index, as created
+   * @return true when the index exists
+   * @throws SQLException when the driver metadata cannot be read
+   */
+  private boolean indexExists(Connection connection, String tableName, String indexName) throws SQLException {
+    try (ResultSet indexes = connection.getMetaData().getIndexInfo(null, null, tableName, false, false)) {
+      while (indexes.next()) {
+        if (indexName.equalsIgnoreCase(indexes.getString("INDEX_NAME"))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The {@code EXECTYPE} DATABASECHANGELOG recorded for a changeset id (e.g. {@code EXECUTED}
+   * or {@code MARK_RAN}), asserting there is exactly one such row.
+   *
+   * @param connection the JDBC connection to query
+   * @param id the changeset id to look up
+   * @return the recorded EXECTYPE
+   * @throws SQLException when the query fails or the id has no (or more than one) row
+   */
+  private String execType(Connection connection, String id) throws SQLException {
+    try (PreparedStatement select = connection.prepareStatement(
+        "SELECT EXECTYPE FROM DATABASECHANGELOG WHERE ID = ? AND AUTHOR = 'email-connector'")) {
+      select.setString(1, id);
+      try (ResultSet result = select.executeQuery()) {
+        assertTrue(result.next(), () -> "no DATABASECHANGELOG row recorded for id " + id);
+        String execType = result.getString("EXECTYPE");
+        assertFalse(result.next(), () -> "more than one DATABASECHANGELOG row recorded for id " + id);
+        return execType;
+      }
+    }
   }
 
   /**
