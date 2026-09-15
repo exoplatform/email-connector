@@ -15,9 +15,10 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <exo-drawer
+  <pinneable-drawer
     id="emailBoxDrawer"
     ref="emailBoxDrawer"
+    app-name="email"
     v-model="emailBoxDrawer"
     right
     allow-expand
@@ -204,7 +205,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <email-connector-mail-box-drawer-no-email v-else />
       </template>
     </template>
-  </exo-drawer>
+  </pinneable-drawer>
 </template>
 
 <script>
