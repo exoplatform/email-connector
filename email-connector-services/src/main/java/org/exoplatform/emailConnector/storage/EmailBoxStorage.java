@@ -1167,6 +1167,40 @@ public class EmailBoxStorage {
   }
 
   /**
+   * Where a conversation's real mail sits: its cached messages, grouped by the folder
+   * each row is cached in, as the IMAP UIDs that folder numbers them by.
+   * <p>
+   * Read off the same projection as {@link #getThreadFingerprint} rather than off
+   * {@link #getEmailsByThreadId}, for the same reason: this answers "which folders
+   * must an action on this conversation reach", and dragging every body and every
+   * attachment row through the persistence layer to list a few UIDs is the mistake
+   * that projection was written to undo. And unlike the conversation reader's query,
+   * this one hides no folder: an action on the whole conversation (EXO-89942) has to
+   * see every copy, and it is the caller that decides which folders it may act on.
+   * <p>
+   * Drafts are not in the answer (the projection leaves them out): an unsent reply is
+   * not mail to be filed away, and the caller's per-folder rules would refuse the
+   * Drafts folder anyway.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @return the conversation's UIDs by folder key, in the order the folders were met
+   *         newest-message first; empty when the conversation holds no real mail
+   */
+  public Map<String, List<Long>> getConversationMessageIdsByFolder(String userId, String threadId) {
+    Map<String, List<Long>> idsByFolder = new LinkedHashMap<>();
+    for (Object[] row : emailBoxDao.findThreadFingerprintRows(userId, threadId)) {
+      String folder = (String) row[0];
+      Long mailRemoteId = (Long) row[1];
+      if (folder == null || mailRemoteId == null) {
+        continue;
+      }
+      idsByFolder.computeIfAbsent(folder, key -> new ArrayList<>()).add(mailRemoteId);
+    }
+    return idsByFolder;
+  }
+
+  /**
    * What a conversation's real mail looks like right now: its newest message's
    * identity and how many distinct messages it holds.
    * <p>
@@ -1498,9 +1532,27 @@ public class EmailBoxStorage {
    * @return the conversation's messages in reading order, never null
    */
   public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail) {
+    return getEmailsByThreadId(userId, threadId, userEmail, MailFolder.HIDDEN_FOLDERS);
+  }
+
+  /**
+   * {@link #getEmailsByThreadId(String, String, String)} with the caller's own list of
+   * folders to leave out -- for the reader opened FROM the Trash or the Junk folder
+   * (EXO-89942), which must see the conversation's copies in that folder and hide the
+   * other hidden one only. The default exclusion stays {@link MailFolder#HIDDEN_FOLDERS}
+   * for every other read; the caller never passes an empty list, since the JPQL
+   * {@code NOT IN} needs at least one value.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @param userEmail the owner's own address, for the "me" resolution
+   * @param excludedFolders the folders to leave out, never empty
+   * @return the conversation's messages with their attachments, in reading order
+   */
+  public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail, List<String> excludedFolders) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndThreadIdWithAttachments(userId,
                                                                                                threadId,
-                                                                                               MailFolder.HIDDEN_FOLDERS);
+                                                                                               excludedFolders);
     return EmailThreadingUtils.positionDraftsAfterTheirParent(emailBoxEntities.stream()
                                                                              .map(emailBoxEntity -> fromEntity(emailBoxEntity,
                                                                                                                true,
