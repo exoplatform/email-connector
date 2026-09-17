@@ -24,8 +24,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span>{{ userEmailConnector.name }}</span>
     </v-list-item-content>
     <v-list-item-action class="my-0">
+      <!-- Editing means retyping an address and a password. A connection the
+           platform authenticates has neither: the address is derived and there is
+           no secret to change, so the drawer would open on a form nobody can
+           fill. -->
       <v-btn
-        v-if="userEmailConnector.userConnected"
+        v-if="userEmailConnector.userConnected && requiresUserAction"
         :title="$t('UserSettings.emailConnector.connectors.drawer.connector.button.edit.tooltip')"
         @click="$root.$emit('open-user-setting-drawer', userEmailConnector)"
         icon>
@@ -36,6 +40,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <v-btn
         v-if="userEmailConnector.canConnect"
         class="btn"
+        :loading="connecting"
         @click="connect()">
         {{ connectButtonLabel }}
       </v-btn>
@@ -69,8 +74,29 @@ export default {
       type: Object,
       default: () => null,
     },
+    /**
+     * Whether each provider asks its user for anything, keyed by provider name.
+     */
+    connectionRequirements: {
+      type: Object,
+      default: () => ({}),
+    },
   },
+  data: () => ({
+    connecting: false,
+  }),
   computed: {
+    /**
+     * Whether clicking "connect" opens the credentials form or connects outright.
+     * Read as an explicit false and nothing else: a requirement that could not be
+     * fetched, a connector the registry names no provider for, an older row -
+     * every one of them must show the form, never connect silently.
+     *
+     * @returns {Boolean} true when the user has something to type
+     */
+    requiresUserAction() {
+      return !(this.connectionRequirements[this.userEmailConnector?.authProviderName] === false);
+    },
     connectButtonLabel() {
       return this.userEmailConnector.userConnected
         ? this.$t('UserSettings.emailConnector.connectors.drawer.connector.button.disconnect')
@@ -89,12 +115,31 @@ export default {
      * @returns {void}
      */
     connect() {
-      if (!this.userEmailConnector.userConnected) {
-        this.$root.$emit('open-user-setting-drawer', this.userEmailConnector);
-      }
-      else {
+      if (this.userEmailConnector.userConnected) {
         this.$root.$emit('open-user-setting-disconnect-drawer', this.userEmailConnector);
+        return;
       }
+      // A connector whose provider asks for nothing connects in one click: no
+      // drawer, no form. The platform still opens the mailbox with the service
+      // account's own material, server-side, so a success here means tested just
+      // as it does through the form.
+      if (!this.requiresUserAction) {
+        this.connecting = true;
+        this.$emailConnectorUserSettingService.connectThroughProvider(this.userEmailConnector.id)
+          .then(() => {
+            document.dispatchEvent(new CustomEvent('refresh-active-connectors-list'));
+            document.dispatchEvent(new CustomEvent('refresh-user-email-setting'));
+            this.$root.$emit('alert-message',
+              this.$t('UserSettings.emailConnector.userSetting.drawer.connect.success'),
+              'success');
+          })
+          .catch(() => this.$root.$emit('alert-message',
+            this.$t('UserSettings.emailConnector.userSetting.drawer.connect.error'),
+            'error'))
+          .finally(() => this.connecting = false);
+        return;
+      }
+      this.$root.$emit('open-user-setting-drawer', this.userEmailConnector);
     }
   }
 };

@@ -17,6 +17,10 @@
 package org.exoplatform.emailConnector.provider;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.never;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -32,6 +36,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
@@ -165,4 +170,40 @@ public class EmailCredentialsResolverTest {
     assertEquals(USERNAME, context.getUsername());
   }
 
+
+  /**
+   * Whether a connector asks its user for anything is a property of its provider,
+   * and the people who need the answer are the users themselves - the connect
+   * drawer has to know whether to show a form. They cannot read the provider
+   * registry, whose endpoint is reserved to administrators, so the single bit they
+   * are entitled to is relayed here.
+   */
+  @Test
+  public void tellsWhetherTheConfiguredProviderAsksTheUserForAnything() throws Exception {
+    when(connectorCredentialsService.requiresUserAction("personal")).thenReturn(true);
+    when(connectorCredentialsService.requiresUserAction("bluemind-sudo")).thenReturn(false);
+
+    assertTrue(resolver.requiresUserAction("personal"));
+    assertFalse(resolver.requiresUserAction("bluemind-sudo"));
+  }
+
+  /**
+   * A preset naming no provider - every row predating the registry - asks. Silence
+   * must never become a silent connection.
+   */
+  @Test
+  public void asksTheUserWhenNoProviderIsNamed() throws Exception {
+    assertTrue(resolver.requiresUserAction(null));
+    assertTrue(resolver.requiresUserAction("  "));
+    verify(connectorCredentialsService, never()).requiresUserAction(any());
+  }
+
+  /** An unknown provider is refused, exactly as every other resolution is. */
+  @Test
+  public void refusesToAnswerForAnUnknownProvider() throws Exception {
+    when(connectorCredentialsService.requiresUserAction("nobody"))
+        .thenThrow(new ConnectorCredentialsException("no such provider"));
+
+    assertThrows(ConnectorCredentialsException.class, () -> resolver.requiresUserAction("nobody"));
+  }
 }
