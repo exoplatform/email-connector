@@ -1425,6 +1425,42 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * Opened from the Trash, the conversation includes its Trash copies and hides the
+   * Junk ones only (EXO-89942): a conversation deleted whole otherwise read back as
+   * the one message that was clicked, and Restore from the reader acted on that one.
+   */
+  @Test
+  void getThreadOpenedFromTheTrashIncludesItsTrashCopies() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email trashed = email(TEST_USER);
+    trashed.setFolder(MailFolder.TRASH);
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, "<t@host>", "testEmail", List.of(MailFolder.JUNK))).thenReturn(List.of(trashed));
+
+    List<Email> thread = emailBoxService.getThread("<t@host>", TEST_USER, MailFolder.TRASH);
+
+    assertEquals(List.of(trashed), thread);
+    verify(emailBoxStorage, never()).getEmailsByThreadId(anyString(), anyString(), anyString());
+  }
+
+  /**
+   * Opened from the inbox (or with no folder at all), the read is the one it always
+   * was: Trash and Junk copies hidden, through the storage's own default.
+   */
+  @Test
+  void getThreadOpenedFromTheInboxKeepsHidingTheTrashAndJunkCopies() throws Exception {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    Email cached = email(TEST_USER);
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, "<t@host>", "testEmail")).thenReturn(List.of(cached));
+
+    assertEquals(List.of(cached), emailBoxService.getThread("<t@host>", TEST_USER, MailFolder.INBOX));
+    assertEquals(List.of(cached), emailBoxService.getThread("<t@host>", TEST_USER, null));
+
+    verify(emailBoxStorage, never()).getEmailsByThreadId(anyString(), anyString(), anyString(), anyList());
+  }
+
+  /**
    * The bare id and the bracketed one open the SAME conversation.
    * <p>
    * A thread id is a Message-ID and is stored bracketed, but the AI thread actions carry

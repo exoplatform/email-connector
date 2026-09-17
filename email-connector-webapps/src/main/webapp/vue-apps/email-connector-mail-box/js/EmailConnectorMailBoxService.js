@@ -634,8 +634,28 @@ export function getEmailByRemoteId(mailRemoteId, folder) {
   });
 }
 
-export function getThreadByThreadId(threadId) {
-  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}`, {
+/**
+ * The query naming the folder a conversation is read from, when that matters: opened
+ * from the Trash or the Junk folder, the reader must see the conversation's copies in
+ * that folder (EXO-89942), which every other read hides. Any other folder adds
+ * nothing, so the request stays what it always was.
+ *
+ * @param {String} folder the folder the reader was opened from
+ * @returns {String} the query string, empty unless the folder is a hidden one
+ */
+function openedFromQuery(folder) {
+  return isReadOnlyFolder(folder) && folder ? `?folder=${encodeURIComponent(folder)}` : '';
+}
+
+/**
+ * Reads a cached conversation, as seen from the folder it is opened from.
+ *
+ * @param {String} threadId the conversation id
+ * @param {String} folder the folder the reader was opened from (see openedFromQuery)
+ * @returns {Promise<Array>} the conversation's cached messages
+ */
+export function getThreadByThreadId(threadId, folder) {
+  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}${openedFromQuery(folder)}`, {
     headers: {
       'Content-Type': 'application/json'
     },
@@ -656,10 +676,11 @@ export function getThreadByThreadId(threadId) {
  * calls it in the background after rendering the cached thread.
  *
  * @param {String} threadId the conversation id
+ * @param {String} folder the folder the reader was opened from (see openedFromQuery)
  * @returns {Promise<Array>} the thread including any recovered archived messages
  */
-export function completeThreadByThreadId(threadId) {
-  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}/complete`, {
+export function completeThreadByThreadId(threadId, folder) {
+  return fetch(`/email-connector/rest/email-box/thread/${encodeURIComponent(threadId)}/complete${openedFromQuery(folder)}`, {
     headers: {
       'Content-Type': 'application/json'
     },

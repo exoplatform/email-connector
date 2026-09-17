@@ -27,6 +27,7 @@
 
 import { shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
+import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 
 const FOLDERS = [
@@ -237,5 +238,64 @@ describe('the service names the conversation on the wire (EXO-89942)', () => {
       '/email-connector/rest/email-box?folder=SENT',
       '/email-connector/rest/email-box/junk?conversation=true',
     ]);
+  });
+
+  it('a conversation read names the Trash or Junk folder it is opened from, and no other', async () => {
+    await emailConnectorMailBoxService.getThreadByThreadId('<t@host>', 'TRASH');
+    await emailConnectorMailBoxService.getThreadByThreadId('<t@host>', 'INBOX');
+    await emailConnectorMailBoxService.getThreadByThreadId('<t@host>');
+    await emailConnectorMailBoxService.completeThreadByThreadId('<t@host>', 'JUNK');
+    await emailConnectorMailBoxService.completeThreadByThreadId('<t@host>', 'SENT');
+
+    expect(urls).toEqual([
+      '/email-connector/rest/email-box/thread/%3Ct%40host%3E?folder=TRASH',
+      '/email-connector/rest/email-box/thread/%3Ct%40host%3E',
+      '/email-connector/rest/email-box/thread/%3Ct%40host%3E',
+      '/email-connector/rest/email-box/thread/%3Ct%40host%3E/complete?folder=JUNK',
+      '/email-connector/rest/email-box/thread/%3Ct%40host%3E/complete',
+    ]);
+  });
+});
+
+describe('the reader reads the conversation from the folder it was opened from (EXO-89942)', () => {
+  /**
+   * Mounts the reader on one opened message.
+   *
+   * @param {Object} email the opened message
+   * @returns {Object} {wrapper, service}
+   */
+  function mountReader(email) {
+    const service = serviceStub({
+      getThreadByThreadId: jest.fn(() => Promise.resolve([email])),
+      completeThreadByThreadId: jest.fn(() => Promise.resolve([email])),
+    });
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerThreadContent, {
+      propsData: { email, emails: [email] },
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: service,
+        $vuetify: { breakpoint: {}, rtl: false },
+      },
+    });
+    return { wrapper, service };
+  }
+
+  it('opened from the Trash, both reads name the Trash', async () => {
+    const trashed = { ...row(11, '<theirs@host>', 'TRASH'), threadId: '<t@host>' };
+    const { wrapper, service } = mountReader(trashed);
+    await flush();
+
+    expect(service.getThreadByThreadId).toHaveBeenCalledWith('<t@host>', 'TRASH');
+    expect(service.completeThreadByThreadId).toHaveBeenCalledWith('<t@host>', 'TRASH');
+    wrapper.destroy();
+  });
+
+  it('opened from the inbox, both reads name the inbox, which the service sends as nothing', async () => {
+    const received = { ...row(1, '<a@host>'), threadId: '<t@host>' };
+    const { wrapper, service } = mountReader(received);
+    await flush();
+
+    expect(service.getThreadByThreadId).toHaveBeenCalledWith('<t@host>', 'INBOX');
+    wrapper.destroy();
   });
 });

@@ -315,6 +315,23 @@ public class EmailBoxRestTest {
   }
 
   /**
+   * The folder a conversation is read from travels to the service on both thread
+   * reads (EXO-89942): opened from the Trash, the reader gets the Trash copies. Without
+   * it the service reads the conversation as it always did.
+   */
+  @Test
+  void theThreadReadsCarryTheFolderTheyAreReadFrom() throws Exception {
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1?folder=TRASH").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).getThread("thread-1", SIMPLE_USER, MailFolder.TRASH);
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).getThread("thread-1", SIMPLE_USER, null);
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1/complete?folder=JUNK").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).completeThread("thread-1", SIMPLE_USER, MailFolder.JUNK);
+  }
+
+  /**
    * The same flag on "Mark as spam", with the same two outcomes.
    */
   @Test

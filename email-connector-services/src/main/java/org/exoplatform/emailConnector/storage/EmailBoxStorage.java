@@ -1532,9 +1532,27 @@ public class EmailBoxStorage {
    * @return the conversation's messages in reading order, never null
    */
   public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail) {
+    return getEmailsByThreadId(userId, threadId, userEmail, MailFolder.HIDDEN_FOLDERS);
+  }
+
+  /**
+   * {@link #getEmailsByThreadId(String, String, String)} with the caller's own list of
+   * folders to leave out -- for the reader opened FROM the Trash or the Junk folder
+   * (EXO-89942), which must see the conversation's copies in that folder and hide the
+   * other hidden one only. The default exclusion stays {@link MailFolder#HIDDEN_FOLDERS}
+   * for every other read; the caller never passes an empty list, since the JPQL
+   * {@code NOT IN} needs at least one value.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @param userEmail the owner's own address, for the "me" resolution
+   * @param excludedFolders the folders to leave out, never empty
+   * @return the conversation's messages with their attachments, in reading order
+   */
+  public List<Email> getEmailsByThreadId(String userId, String threadId, String userEmail, List<String> excludedFolders) {
     List<EmailBoxEntity> emailBoxEntities = emailBoxDao.findByUserIdAndThreadIdWithAttachments(userId,
                                                                                                threadId,
-                                                                                               MailFolder.HIDDEN_FOLDERS);
+                                                                                               excludedFolders);
     return EmailThreadingUtils.positionDraftsAfterTheirParent(emailBoxEntities.stream()
                                                                              .map(emailBoxEntity -> fromEntity(emailBoxEntity,
                                                                                                                true,

@@ -566,15 +566,18 @@ public class EmailBoxRest {
 
   @GetMapping("/thread/{threadId}")
   @Secured("users")
-  @Operation(summary = "Gets a conversation across folders", method = "GET", description = "This will get all cached messages of a conversation (INBOX, SENT, ARCHIVE) by thread id")
+  @Operation(summary = "Gets a conversation across folders", method = "GET", description = "This will get all cached messages of a conversation (INBOX, SENT, ARCHIVE, and the user's folders) by thread id. Trash and Junk copies are left out, except those of the folder the reader was opened from (folder=TRASH or folder=JUNK).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
   public List<Email> getThread(HttpServletRequest request,
                                @Parameter(description = "Conversation thread id", required = true)
                                @PathVariable("threadId")
-                               String threadId) {
+                               String threadId,
+                               @Parameter(description = "The folder the conversation is read from; TRASH or JUNK includes that folder's copies, anything else changes nothing")
+                               @RequestParam(value = "folder", required = false)
+                               String folder) {
     try {
-      return emailBoxService.getThread(threadId, request.getRemoteUser());
+      return emailBoxService.getThread(threadId, request.getRemoteUser(), folder);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
@@ -588,9 +591,12 @@ public class EmailBoxRest {
   public List<Email> completeThread(HttpServletRequest request,
                                     @Parameter(description = "Conversation thread id", required = true)
                                     @PathVariable("threadId")
-                                    String threadId) {
+                                    String threadId,
+                                    @Parameter(description = "The folder the conversation is read from; TRASH or JUNK includes that folder's copies, anything else changes nothing")
+                                    @RequestParam(value = "folder", required = false)
+                                    String folder) {
     try {
-      return emailBoxService.completeThread(threadId, request.getRemoteUser());
+      return emailBoxService.completeThread(threadId, request.getRemoteUser(), folder);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }

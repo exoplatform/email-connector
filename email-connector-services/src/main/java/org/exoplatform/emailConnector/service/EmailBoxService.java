@@ -4739,6 +4739,33 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
    */
   public List<Email> getThread(String threadId, String username) throws IllegalAccessException {
+    return getThread(threadId, username, null);
+  }
+
+  /**
+   * {@link #getThread(String, String)} as read from a given folder: opened from the
+   * Trash or the Junk folder, the conversation includes its copies in THAT folder
+   * (EXO-89942), and hides only the other hidden one.
+   * <p>
+   * The Trash and the Junk folder are left out of every conversation read because a
+   * message the user deleted is not part of the conversation they read from the inbox
+   * (see {@code EmailBoxDAO#findMailHeaderIdsByUserIdAndThreadId} for the day that
+   * rule was written). That reasoning holds for a reader opened from the inbox, from
+   * Sent or from the archive, and stops holding the moment the reader is opened from
+   * the Trash itself: there the trashed copies ARE what the user clicked on, and a
+   * conversation deleted whole (the user's own replies along, since EXO-89942) read
+   * back as its one clicked message. So the folder the reader was opened from is the
+   * one hidden folder this read does not hide.
+   *
+   * @param threadId the conversation id (see {@link #computeThreadId}), with or
+   *          without its angle brackets (see {@link #toggleThreadIdBrackets})
+   * @param username the mailbox owner
+   * @param openedFrom the {@link MailFolder} key of the folder the reader was opened
+   *          from; null or any non-hidden folder reads the conversation as before
+   * @return the thread's messages in reading order, each with body and recipients
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public List<Email> getThread(String threadId, String username, String openedFrom) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -4748,7 +4775,7 @@ public class EmailBoxService {
     // one read, the way it always did. The other spelling is only ever asked for once
     // the stored one has answered with nothing -- see toggleThreadIdBrackets for why a
     // bracketless id is a normal arrival rather than a malformed one.
-    List<Email> thread = emailBoxStorage.getEmailsByThreadId(username, threadId, userEmailSetting.getEmailAddress());
+    List<Email> thread = readConversation(username, threadId, userEmailSetting.getEmailAddress(), openedFrom);
     if (!thread.isEmpty()) {
       return thread;
     }
@@ -4756,10 +4783,29 @@ public class EmailBoxService {
     if (alternateThreadId == null) {
       return thread;
     }
-    List<Email> alternateThread = emailBoxStorage.getEmailsByThreadId(username,
-                                                                     alternateThreadId,
-                                                                     userEmailSetting.getEmailAddress());
+    List<Email> alternateThread = readConversation(username, alternateThreadId, userEmailSetting.getEmailAddress(), openedFrom);
     return alternateThread.isEmpty() ? thread : alternateThread;
+  }
+
+  /**
+   * One conversation read, hiding the hidden folders except the one the reader was
+   * opened from. The default read (nothing to un-hide) goes through the storage's own
+   * default so the two paths cannot drift on what "hidden" means.
+   *
+   * @param username the mailbox owner
+   * @param threadId the conversation id, as stored
+   * @param userEmail the owner's own address
+   * @param openedFrom the folder the reader was opened from, possibly null
+   * @return the conversation's messages
+   */
+  private List<Email> readConversation(String username, String threadId, String userEmail, String openedFrom) {
+    // Null-checked before the contains: HIDDEN_FOLDERS is a List.of, which throws on
+    // contains(null), and "no folder" is the ordinary call.
+    if (openedFrom == null || !MailFolder.HIDDEN_FOLDERS.contains(openedFrom)) {
+      return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmail);
+    }
+    List<String> excluded = MailFolder.HIDDEN_FOLDERS.stream().filter(folder -> !folder.equals(openedFrom)).toList();
+    return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmail, excluded);
   }
 
   /**
@@ -4834,6 +4880,24 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user is not allowed to read their mailbox
    */
   public List<Email> completeThread(String threadId, String username) throws IllegalAccessException {
+    return completeThread(threadId, username, null);
+  }
+
+  /**
+   * {@link #completeThread(String, String)} as read from a given folder: the answer
+   * includes the conversation's copies in the Trash or Junk folder the reader was
+   * opened from, exactly as {@link #getThread(String, String, String)} does, so the
+   * background completion cannot take those copies off a screen the cached read put
+   * them on.
+   *
+   * @param threadId the conversation id opened by the user
+   * @param username the mailbox owner
+   * @param openedFrom the {@link MailFolder} key of the folder the reader was opened
+   *          from; null or any non-hidden folder reads the conversation as before
+   * @return the thread's messages including any newly recovered archived ones
+   * @throws IllegalAccessException if the user is not allowed to read their mailbox
+   */
+  public List<Email> completeThread(String threadId, String username, String openedFrom) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
@@ -4846,7 +4910,7 @@ public class EmailBoxService {
     // Completion keeps the opened thread id as the canonical one, so the id the reader
     // (and the already-rendered inbox list) holds stays valid on the next open.
     completeThreadFromArchive(username, resolvedThreadId, userEmailSetting);
-    return emailBoxStorage.getEmailsByThreadId(username, resolvedThreadId, userEmailSetting.getEmailAddress());
+    return readConversation(username, resolvedThreadId, userEmailSetting.getEmailAddress(), openedFrom);
   }
 
   /**
