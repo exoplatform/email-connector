@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mockStatic;
@@ -726,6 +727,114 @@ public class UserEmailSettingServiceTest {
     when(emailConnectorService.getActiveEmailConnectors()).thenReturn(list);
     userEmailSettingService.getUserEmailConnectors(frLocale, TEST_USER);
     verify(translationService).getTranslationLabelOrDefault(anyString(), anyLong(), anyString(), any(Locale.class));
+  }
+
+  /**
+   * The one-click path: nothing is typed, so the mailbox is opened with the
+   * material the <b>provider</b> produces, and the address stored is the one the
+   * provider names. Verified end to end against a live BlueMind 5.7: an IMAP
+   * {@code LOGIN} with the sudo session id answers {@code a OK [...] User logged in.}
+   */
+  @Test
+  @SneakyThrows
+  void connectsThroughTheProviderAndStoresTheAddressItNames() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    EmailConnector connector = providerBackedConnector();
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(connector);
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenReturn(mock(Authenticator.class));
+    when(codecInitializer.getCodec()).thenReturn(mock(AbstractCodec.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      when(store.isConnected()).thenReturn(true);
+
+      userEmailSettingService.connectThroughProvider(1L, TEST_USER);
+
+      // The mailbox was actually opened - answering "connected" without trying would
+      // move a misconfigured technical account's failure to the first synchronisation.
+      verify(store).connect();
+      ArgumentCaptor<SettingValue> stored = ArgumentCaptor.forClass(SettingValue.class);
+      verify(settingService).set(any(Context.class), any(Scope.class), anyString(), stored.capture());
+      String document = String.valueOf(stored.getValue().getValue());
+      assertTrue(document, document.contains("eric@bm.example.org"));
+    }
+  }
+
+  /**
+   * A connector that does expect typed credentials is refused here, and no mailbox
+   * is opened: connecting it with no credentials at all would record an account
+   * nobody proved anything about.
+   */
+  @Test
+  @SneakyThrows
+  void refusesToConnectThroughAProviderThatAsksTheUser() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(true);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    // Le message compte : sans lui, cette assertion passe sur une version qui a
+    // perdu la garde et echoue simplement plus loin, pour une autre raison.
+    assertTrue(refusal.getMessage(), refusal.getMessage().contains("expects the user to supply"));
+
+    // Rien d'ECRIT : canConnect lit le reglage existant, ce qui est legitime.
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /** A provider that cannot name the mailbox has nothing to connect. */
+  @Test
+  @SneakyThrows
+  void refusesToConnectWhenTheProviderNamesNoMailbox() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn(null);
+
+    assertThrows(IllegalArgumentException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+    // Rien d'ECRIT : canConnect lit le reglage existant, ce qui est legitime.
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+  }
+
+  /**
+   * A mailbox that refuses the service account records nothing. A connection that is
+   * stored and does not work is worse than one that was refused: only the first
+   * looks right on screen, and the user finds out through an empty mailbox.
+   */
+  @Test
+  @SneakyThrows
+  void recordsNothingWhenTheMailboxRefusesTheServiceAccount() {
+    when(featureService.isActiveFeature(EmailConnectorUtils.EMAIL_FEATURE)).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(providerBackedConnector());
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+    when(emailCredentialsResolver.targetAccount(1L, "bluemind-sudo", TEST_USER)).thenReturn("eric@bm.example.org");
+    when(emailCredentialsResolver.authenticator(eq(1L), eq("bluemind-sudo"), eq(TEST_USER), any()))
+        .thenReturn(mock(Authenticator.class));
+    Session session = mock(Session.class);
+    try (MockedStatic<Session> mockedSession = mockStatic(Session.class)) {
+      mockedSession.when(() -> Session.getInstance(any(Properties.class), any(Authenticator.class))).thenReturn(session);
+      Store store = mock(Store.class);
+      when(session.getStore()).thenReturn(store);
+      doThrow(new MessagingException("refused")).when(store).connect();
+
+      assertThrows(IllegalStateException.class, () -> userEmailSettingService.connectThroughProvider(1L, TEST_USER));
+
+      verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
+    }
+  }
+
+  private EmailConnector providerBackedConnector() {
+    EmailConnector connector = emailConnector();
+    connector.setId(1L);
+    connector.setAuthProviderName("bluemind-sudo");
+    return connector;
   }
 
   private EmailConnector emailConnector() {

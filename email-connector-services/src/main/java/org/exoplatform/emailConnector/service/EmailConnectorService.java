@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -203,6 +204,12 @@ public class EmailConnectorService {
   // of another WAR, so it is undefined in this addon's own Spring test contexts.
   @Autowired(required = false)
   private ConnectorProviderConfigStorage providerConfigStorage;
+
+  // The seam onto the credentials contract. Like the storage above, it needs
+  // ConnectorCredentialsService, a bean of another WAR, so it is undefined in
+  // this addon's own Spring test contexts.
+  @Autowired(required = false)
+  private EmailCredentialsResolver  emailCredentialsResolver;
 
   @Autowired
   private EmailConnectorStorage     emailConnectorStorage;
@@ -906,6 +913,52 @@ public class EmailConnectorService {
    * @param locale used language to retrieve email connector name
    * @return list of stored {@link EmailConnector} in datasource
    */
+  /**
+   * Whether each declared provider asks its user for anything, keyed by provider
+   * name.
+   * <p>
+   * This is what a browser needs before showing a connect button: a provider that
+   * needs nothing must connect in a click rather than open a form the user cannot
+   * fill. Only the providers the declared connectors actually name are answered - a
+   * user is entitled to know about the connectors offered to them, not about how
+   * the instance configures its providers, whose registry is administrators-only.
+   * <p>
+   * <b>Silence means ask.</b> A connector naming no provider contributes nothing,
+   * and a seam that is absent answers true: a list that cannot tell must send the
+   * user to a form, never connect on its own.
+   *
+   * @return one entry per declared provider name, true when the user must supply
+   *         something
+   */
+  public Map<String, Boolean> connectionRequirements() {
+    return emailConnectorStorage.getEmailConnectors()
+                                .stream()
+                                .map(EmailConnector::getAuthProviderName)
+                                .filter(StringUtils::isNotBlank)
+                                .distinct()
+                                .collect(Collectors.toMap(name -> name, this::asksTheUser));
+  }
+
+  /**
+   * Whether that provider asks, answering true whenever nobody can tell.
+   *
+   * @param providerName the provider to ask about
+   * @return true when the user must supply something
+   */
+  private boolean asksTheUser(String providerName) {
+    if (emailCredentialsResolver == null) {
+      return true;
+    }
+    try {
+      return emailCredentialsResolver.requiresUserAction(providerName);
+    } catch (ConnectorCredentialsException e) {
+      // A provider nobody can ask about is not one a user may be connected to in a
+      // click. The form is the safe answer, and the administrator sees the cause.
+      LOG.warn("Cannot tell whether the provider {} asks the user for credentials", providerName, e);
+      return true;
+    }
+  }
+
   public List<EmailConnector> getEmailConnectors(Locale locale) {
     List<EmailConnector> emailConnectors = emailConnectorStorage.getEmailConnectors();
     emailConnectors = emailConnectors.stream().map(emailConnector -> {

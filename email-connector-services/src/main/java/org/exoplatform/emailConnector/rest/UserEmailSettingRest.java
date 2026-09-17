@@ -31,6 +31,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -69,6 +70,38 @@ public class UserEmailSettingRest {
 
   @Autowired
   private EmailSignatureService   emailSignatureService;
+
+  /**
+   * Connects the caller to a connector whose provider asks them for nothing - the
+   * one-click path. The mailbox is still opened first, with the provider's own
+   * material, and nothing is recorded unless it answered.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param emailConnectorId the connector preset to connect to
+   */
+  @PostMapping("/connect")
+  @Secured("users")
+  @Operation(summary = "Connects to an email connector that requires no user action", method = "POST",
+      description = "Opens the mailbox with the material the configured provider produces, and records the connection "
+          + "only when it answered. Refuses a provider that expects the user to type credentials.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Connected"),
+      @ApiResponse(responseCode = "400", description = "The provider expects the user to supply something"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "500", description = "The mailbox refused the service account") })
+  public void connectThroughProvider(HttpServletRequest request,
+                                     @Parameter(description = "Email connector to connect to", required = true)
+                                     @RequestParam(name = "emailConnectorId")
+                                     long emailConnectorId) {
+    try {
+      userEmailSettingService.connectThroughProvider(emailConnectorId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
 
   @PutMapping()
   @Secured("users")

@@ -172,6 +172,69 @@ public class UserEmailSettingService {
   }
 
   /**
+   * Connects a user to a connector whose provider asks them for nothing, and
+   * records it.
+   * <p>
+   * The mailbox is still opened first - with <b>the service account's own
+   * material</b>, which is what this connection will use for every later
+   * synchronisation. Answering "connected" without trying would move the failure of
+   * a misconfigured technical account to the first sync, where the user sees an
+   * empty mailbox and nobody is told why.
+   * <p>
+   * The address recorded is the one the provider <i>names</i>
+   * ({@code resolveTargetIdentity} through the resolver), never one the caller
+   * supplied: the mailbox that is opened and the address that is stored must be the
+   * same, or the connector would sync one account under another's name. No password
+   * is stored, because there is none - the material is produced per request.
+   *
+   * @param emailConnectorId the connector preset to connect to
+   * @param username the eXo login connecting
+   * @throws IllegalAccessException when the user may not connect this connector
+   * @throws IllegalArgumentException when the provider expects the user to supply
+   *           something, or names no mailbox
+   * @throws IllegalStateException when the mailbox refuses the service account
+   */
+  @Transactional
+  public void connectThroughProvider(long emailConnectorId, String username) throws IllegalAccessException {
+    if (!canConnect(emailConnectorId, username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_CONNECT_EMAIL_SETTING_MESSAGE, username));
+    }
+    EmailConnector emailConnector = emailConnectorService.getEmailConnector(emailConnectorId);
+    String providerName = emailConnector == null ? null : emailConnector.getAuthProviderName();
+    Store store = null;
+    try {
+      // This path exists for the connectors that ask nothing. One that does ask is
+      // refused here rather than connected with no credentials at all.
+      if (emailCredentialsResolver == null || emailCredentialsResolver.requiresUserAction(providerName)) {
+        throw new IllegalArgumentException("The provider of this connector expects the user to supply credentials");
+      }
+      String address = emailCredentialsResolver.targetAccount(emailConnectorId, providerName, username);
+      if (StringUtils.isBlank(address)) {
+        throw new IllegalArgumentException("The provider of this connector names no mailbox for this user");
+      }
+      store = connect(emailConnector, authenticatorFor(emailConnector, username));
+      UserEmailSetting connected = new UserEmailSetting();
+      connected.setEmailConnectorId(String.valueOf(emailConnectorId));
+      connected.setEmailAddress(address);
+      setUserEmailSetting(connected, username, true);
+      eventPublisher.publishEvent(new EmailBoxSyncEvent(username));
+    } catch (IllegalArgumentException e) {
+      throw e;
+    } catch (Exception e) {
+      LOG.error("Error when connecting store for user {} through its provider", username, e);
+      throw new IllegalStateException(String.format("Error when connecting store for user %s", username));
+    } finally {
+      try {
+        if (store != null && store.isConnected()) {
+          store.close();
+        }
+      } catch (MessagingException messagingException) {
+        LOG.warn("Error when closing store", messagingException);
+      }
+    }
+  }
+
+  /**
    * Set user email setting.
    * <p>
    * The per-user sync period is deliberately NOT copied from the caller: it is a
