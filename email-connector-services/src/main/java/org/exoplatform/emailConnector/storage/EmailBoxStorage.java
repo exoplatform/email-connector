@@ -1167,6 +1167,40 @@ public class EmailBoxStorage {
   }
 
   /**
+   * Where a conversation's real mail sits: its cached messages, grouped by the folder
+   * each row is cached in, as the IMAP UIDs that folder numbers them by.
+   * <p>
+   * Read off the same projection as {@link #getThreadFingerprint} rather than off
+   * {@link #getEmailsByThreadId}, for the same reason: this answers "which folders
+   * must an action on this conversation reach", and dragging every body and every
+   * attachment row through the persistence layer to list a few UIDs is the mistake
+   * that projection was written to undo. And unlike the conversation reader's query,
+   * this one hides no folder: an action on the whole conversation (EXO-89942) has to
+   * see every copy, and it is the caller that decides which folders it may act on.
+   * <p>
+   * Drafts are not in the answer (the projection leaves them out): an unsent reply is
+   * not mail to be filed away, and the caller's per-folder rules would refuse the
+   * Drafts folder anyway.
+   *
+   * @param userId the mailbox owner
+   * @param threadId the conversation id
+   * @return the conversation's UIDs by folder key, in the order the folders were met
+   *         newest-message first; empty when the conversation holds no real mail
+   */
+  public Map<String, List<Long>> getConversationMessageIdsByFolder(String userId, String threadId) {
+    Map<String, List<Long>> idsByFolder = new LinkedHashMap<>();
+    for (Object[] row : emailBoxDao.findThreadFingerprintRows(userId, threadId)) {
+      String folder = (String) row[0];
+      Long mailRemoteId = (Long) row[1];
+      if (folder == null || mailRemoteId == null) {
+        continue;
+      }
+      idsByFolder.computeIfAbsent(folder, key -> new ArrayList<>()).add(mailRemoteId);
+    }
+    return idsByFolder;
+  }
+
+  /**
    * What a conversation's real mail looks like right now: its newest message's
    * identity and how many distinct messages it holds.
    * <p>

@@ -55,6 +55,7 @@ import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
@@ -738,7 +739,7 @@ public class EmailBoxRest {
    */
   @DeleteMapping()
   @Secured("users")
-  @Operation(summary = "Deletes email", method = "DELETE", description = "Moves the given messages, out of the folder they are listed in, to the Trash folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder, so the same id names a different message in INBOX and in SENT.")
+  @Operation(summary = "Deletes email", method = "DELETE", description = "Moves the given messages, out of the folder they are listed in, to the Trash folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder, so the same id names a different message in INBOX and in SENT. With conversation=true, every other message of those messages' conversations goes along, wherever it is cached (inbox, Sent, archive, the user's folders): the result Gmail gives when a conversation is deleted there.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -750,13 +751,17 @@ public class EmailBoxRest {
                                           List<Long> mailRemoteIds,
                                           @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, ALL_MAIL, JUNK); INBOX when omitted")
                                           @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
-                                          String folder) {
+                                          String folder,
+                                          @Parameter(description = "Whether the ids name whole conversations: their other messages, in every folder, are deleted too. False when omitted")
+                                          @RequestParam(value = "conversation", required = false, defaultValue = "false")
+                                          boolean conversation) {
 
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedEmailDeletions = emailBoxService.deleteEmail(mailRemoteIds, request.getRemoteUser(), folder);
+      int failedEmailDeletions = conversation ? emailBoxService.deleteConversations(mailRemoteIds, request.getRemoteUser(), folder)
+                                              : emailBoxService.deleteEmail(mailRemoteIds, request.getRemoteUser(), folder);
       Map<String, Integer> response = new HashMap<>();
       response.put("failedDeletions", failedEmailDeletions);
       return response;
@@ -815,25 +820,28 @@ public class EmailBoxRest {
    *
    * @param request the caller's request, for the acting user
    * @param mailRemoteIds the IMAP UIDs, within the Trash folder, to put back
-   * @return {@code failedRestores}: how many could not be restored
+   * @return {@code failedRestores}: how many could not be restored;
+   *         {@code restoredToSent}: the ids that went back to Sent rather than to the
+   *         inbox (the user's own messages, EXO-89942)
    */
   @PostMapping("/trash/restore")
   @Secured("users")
-  @Operation(summary = "Restores trashed emails", method = "POST", description = "Moves the given messages out of the Trash folder and back into the inbox")
+  @Operation(summary = "Restores trashed emails", method = "POST", description = "Moves the given messages out of the Trash folder and back where they came from: the user's own messages to Sent, the others to the inbox. The answer lists which ids went to Sent.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
-  public Map<String, Integer> restoreEmail(HttpServletRequest request,
-                                           @Parameter(description = "Email remote ids", required = true)
-                                           @RequestBody
-                                           List<Long> mailRemoteIds) {
+  public Map<String, Object> restoreEmail(HttpServletRequest request,
+                                          @Parameter(description = "Email remote ids", required = true)
+                                          @RequestBody
+                                          List<Long> mailRemoteIds) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedRestores = emailBoxService.restoreEmail(mailRemoteIds, request.getRemoteUser());
-      Map<String, Integer> response = new HashMap<>();
-      response.put("failedRestores", failedRestores);
+      RestoreOutcome outcome = emailBoxService.restore(mailRemoteIds, request.getRemoteUser(), MailFolder.TRASH);
+      Map<String, Object> response = new HashMap<>();
+      response.put("failedRestores", outcome.failures());
+      response.put("restoredToSent", outcome.restoredToSent());
       return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
@@ -900,7 +908,7 @@ public class EmailBoxRest {
    */
   @PostMapping("/junk")
   @Secured("users")
-  @Operation(summary = "Marks emails as spam", method = "POST", description = "Moves the given messages, out of the folder they are listed in, to the Junk folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder. Refused, and counted as failed, from Trash, Drafts and Junk itself, and when the mailbox has no Junk folder.")
+  @Operation(summary = "Marks emails as spam", method = "POST", description = "Moves the given messages, out of the folder they are listed in, to the Junk folder. The folder is part of the address, not a filter: IMAP UIDs are numbered per folder. Refused, and counted as failed, from Trash, Drafts and Junk itself, and when the mailbox has no Junk folder. With conversation=true, every other message of those messages' conversations goes along, wherever it is cached (inbox, Sent, archive, the user's folders).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
@@ -910,12 +918,16 @@ public class EmailBoxRest {
                                          List<Long> mailRemoteIds,
                                          @Parameter(description = "The folder those ids are numbered in (INBOX, SENT, ARCHIVE, ALL_MAIL); INBOX when omitted")
                                          @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
-                                         String folder) {
+                                         String folder,
+                                         @Parameter(description = "Whether the ids name whole conversations: their other messages, in every folder, are marked too. False when omitted")
+                                         @RequestParam(value = "conversation", required = false, defaultValue = "false")
+                                         boolean conversation) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedJunkMoves = emailBoxService.markAsJunk(mailRemoteIds, request.getRemoteUser(), folder);
+      int failedJunkMoves = conversation ? emailBoxService.markConversationsAsJunk(mailRemoteIds, request.getRemoteUser(), folder)
+                                         : emailBoxService.markAsJunk(mailRemoteIds, request.getRemoteUser(), folder);
       Map<String, Integer> response = new HashMap<>();
       response.put("failedJunkMoves", failedJunkMoves);
       return response;
@@ -936,25 +948,28 @@ public class EmailBoxRest {
    *
    * @param request the caller's request, for the acting user
    * @param mailRemoteIds the IMAP UIDs, within the Junk folder, to put back
-   * @return {@code failedJunkRestores}: how many could not be restored
+   * @return {@code failedJunkRestores}: how many could not be restored;
+   *         {@code restoredToSent}: the ids that went back to Sent rather than to the
+   *         inbox (the user's own messages, EXO-89942)
    */
   @PostMapping("/junk/restore")
   @Secured("users")
-  @Operation(summary = "Marks quarantined emails as not spam", method = "POST", description = "Moves the given messages out of the Junk folder and back into the inbox")
+  @Operation(summary = "Marks quarantined emails as not spam", method = "POST", description = "Moves the given messages out of the Junk folder and back where they came from: the user's own messages to Sent, the others to the inbox. The answer lists which ids went to Sent.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"), })
-  public Map<String, Integer> restoreFromJunk(HttpServletRequest request,
-                                              @Parameter(description = "Email remote ids", required = true)
-                                              @RequestBody
-                                              List<Long> mailRemoteIds) {
+  public Map<String, Object> restoreFromJunk(HttpServletRequest request,
+                                             @Parameter(description = "Email remote ids", required = true)
+                                             @RequestBody
+                                             List<Long> mailRemoteIds) {
     try {
       if (mailRemoteIds == null || mailRemoteIds.isEmpty()) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
-      int failedJunkRestores = emailBoxService.restoreFromJunk(mailRemoteIds, request.getRemoteUser());
-      Map<String, Integer> response = new HashMap<>();
-      response.put("failedJunkRestores", failedJunkRestores);
+      RestoreOutcome outcome = emailBoxService.restore(mailRemoteIds, request.getRemoteUser(), MailFolder.JUNK);
+      Map<String, Object> response = new HashMap<>();
+      response.put("failedJunkRestores", outcome.failures());
+      response.put("restoredToSent", outcome.restoredToSent());
       return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);

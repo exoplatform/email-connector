@@ -59,6 +59,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -146,6 +147,7 @@ import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
@@ -3764,6 +3766,351 @@ public class EmailBoxServiceTest {
     inOrder.verify(message).setFlag(Flags.Flag.DELETED, true);
     verify(emailBoxStorage).deleteEmailsByIds(anyList());
     verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  // ---------------------------------------------------------------------------------
+  // EXO-89942: an action on a conversation from eXo leaves the mailbox as the same
+  // action done in Gmail would. Delete and "Mark as spam" take the user's own replies
+  // along; the Trash and Junk folders are re-read right after; a restore puts each
+  // message back where it came from and re-reads the inbox and Sent right after.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The rule itself: a conversation deleted from the inbox takes its Sent half along.
+   * The inbox copy and the Sent copy are each copied into the Trash and flagged out of
+   * their own folder — two folders, one action, zero failures.
+   */
+  @Test
+  @SneakyThrows
+  void deletingAConversationTakesTheSentReplyAlong() {
+    ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
+
+    int failed = emailBoxService.deleteConversations(List.of(1212L), TEST_USER, MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(fixture.inbox()).copyMessages(new Message[] { fixture.received() }, fixture.trash());
+    verify(fixture.sent()).copyMessages(new Message[] { fixture.reply() }, fixture.trash());
+    verify(fixture.received()).setFlag(Flags.Flag.DELETED, true);
+    verify(fixture.reply()).setFlag(Flags.Flag.DELETED, true);
+  }
+
+  /**
+   * The single-message delete is untouched by the rule: the same inbox message, deleted
+   * without the conversation flag, leaves its Sent reply where it is. The MCP tool and
+   * every other caller of the plain delete keep the meaning they had.
+   */
+  @Test
+  @SneakyThrows
+  void deletingOneMessageLeavesItsSentReplyWhereItIs() {
+    ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(fixture.inbox()).copyMessages(new Message[] { fixture.received() }, fixture.trash());
+    verify(fixture.sent(), never()).copyMessages(any(), any());
+    verify(fixture.reply(), never()).setFlag(any(Flags.Flag.class), anyBoolean());
+  }
+
+  /**
+   * The widening reaches the folders a conversation's mail lives in and no other: a
+   * copy already in the Trash or the Junk folder is not filed again, a draft is not
+   * mail to be filed, and ALL_MAIL is a completion cache whose UIDs the actions do not
+   * act on. None of those folders is even asked for its rows.
+   */
+  @Test
+  @SneakyThrows
+  void deletingAConversationLeavesItsHiddenDraftAndAllMailCopiesAlone() {
+    ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
+    Map<String, List<Long>> everywhere = new LinkedHashMap<>();
+    everywhere.put(MailFolder.INBOX, List.of(1212L));
+    everywhere.put(MailFolder.SENT, List.of(77L));
+    everywhere.put(MailFolder.TRASH, List.of(5L));
+    everywhere.put(MailFolder.JUNK, List.of(6L));
+    everywhere.put(MailFolder.DRAFTS, List.of(8L));
+    everywhere.put(MailFolder.ALL_MAIL, List.of(9L));
+    when(emailBoxStorage.getConversationMessageIdsByFolder(TEST_USER, "<thread@host>")).thenReturn(everywhere);
+
+    int failed = emailBoxService.deleteConversations(List.of(1212L), TEST_USER, MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(fixture.sent()).copyMessages(new Message[] { fixture.reply() }, fixture.trash());
+    for (String untouched : List.of(MailFolder.TRASH, MailFolder.JUNK, MailFolder.DRAFTS, MailFolder.ALL_MAIL)) {
+      verify(emailBoxStorage, never()).getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                                       anyString(),
+                                                                       any(),
+                                                                       eq(untouched),
+                                                                       anyBoolean(),
+                                                                       anyBoolean(),
+                                                                       anyBoolean());
+    }
+  }
+
+  /**
+   * The failures add up across the folders reached: a Sent copy the server no longer
+   * holds at its UID counts as one failure of the conversation's delete, the inbox
+   * half having moved notwithstanding. A count that only looked at the acting folder
+   * would report the conversation deleted while half of it stayed behind.
+   */
+  @Test
+  @SneakyThrows
+  void aConversationWhoseSentCopyIsGoneCountsThatCopyAsFailed() {
+    ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
+    when(fixture.sent().getMessageByUID(77L)).thenReturn(null);
+
+    int failed = emailBoxService.deleteConversations(List.of(1212L), TEST_USER, MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(fixture.inbox()).copyMessages(new Message[] { fixture.received() }, fixture.trash());
+  }
+
+  /**
+   * "I see nothing in the Trash": the Trash is re-read one second after a delete, on
+   * the background refresh a "Move to..." already uses, coalesced under the Trash key.
+   * The delete answers on the COPY and never reads the Trash on the request thread.
+   */
+  @Test
+  @SneakyThrows
+  void aDeleteQueuesTheRefreshOfTheTrash() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(scheduler).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    verify(fixture.trash(), never()).open(anyInt());
+    assertTrue(pendingFolderRefreshes().containsKey(TEST_USER + "/" + MailFolder.TRASH),
+               "the queued refresh is coalesced under the Trash it re-reads");
+  }
+
+  /**
+   * A delete that moved nothing re-reads nothing: the Trash has nothing new to list.
+   */
+  @Test
+  @SneakyThrows
+  void aDeleteThatMovedNothingQueuesNoRefresh() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
+    when(fixture.inbox().getMessageByUID(1212L)).thenReturn(null);
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.INBOX);
+
+    assertEquals(1, failed);
+    verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+    assertTrue(pendingFolderRefreshes().isEmpty());
+  }
+
+  /**
+   * "Mark as spam" follows the same two rules as the delete: the conversation's Sent
+   * half goes into the Junk folder with the inbox half, and the Junk folder is re-read
+   * right after, under its own key.
+   */
+  @Test
+  @SneakyThrows
+  void markingAConversationAsSpamTakesTheSentReplyAlongAndRefreshesTheJunk() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
+
+    int failed = emailBoxService.markConversationsAsJunk(List.of(1212L), TEST_USER, MailFolder.INBOX);
+
+    assertEquals(0, failed);
+    verify(fixture.inbox()).copyMessages(new Message[] { fixture.received() }, fixture.junk());
+    verify(fixture.sent()).copyMessages(new Message[] { fixture.reply() }, fixture.junk());
+    verify(scheduler).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    assertTrue(pendingFolderRefreshes().containsKey(TEST_USER + "/" + MailFolder.JUNK));
+  }
+
+  /**
+   * The restore is the delete read backwards: a trashed message the user sent goes
+   * back to Sent, the one they received goes back to the inbox, the answer says which
+   * went where, and both destinations are queued for a re-read. Restoring the user's
+   * own reply into their inbox would show them, in their inbox, a mail they wrote.
+   */
+  @Test
+  @SneakyThrows
+  void restoreSendsTheUsersOwnMessageBackToSentAndTheOtherToTheInbox() {
+    ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
+    IMAPFolder sent = aHiddenFolder(new String[] { "\\Sent" }, "Sent");
+    IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    givenAMailboxListing(sent, trash);
+    givenTheMailboxOwnsTheAddress("Me@Example.org");
+    Message received = givenATrashedMessageFrom(trash, 1212L, "<received@host>", "them@example.org");
+    Message reply = givenATrashedMessageFrom(trash, 1313L, "<reply@host>", "me@example.org");
+    Folder inbox = trashStore().getFolder("INBOX");
+
+    RestoreOutcome outcome = emailBoxService.restore(List.of(1212L, 1313L), TEST_USER, MailFolder.TRASH);
+
+    assertEquals(0, outcome.failures());
+    assertEquals(List.of(1313L), outcome.restoredToSent());
+    verify(trash).copyMessages(new Message[] { received }, inbox);
+    verify(trash).copyMessages(new Message[] { reply }, sent);
+    verify(scheduler, times(2)).schedule(any(Runnable.class), eq(1000L), eq(TimeUnit.MILLISECONDS));
+    assertEquals(Set.of(TEST_USER + "/" + MailFolder.INBOX, TEST_USER + "/" + MailFolder.SENT),
+                 pendingFolderRefreshes().keySet());
+  }
+
+  /**
+   * A mailbox with no Sent folder to be found sends the user's own message back to the
+   * inbox rather than nowhere, and says so in the answer: nothing went to Sent.
+   */
+  @Test
+  @SneakyThrows
+  void restoreFallsBackToTheInboxWhenTheMailboxHasNoSentFolder() {
+    mockFolderRefreshScheduler();
+    IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    givenAMailboxListing(trash);
+    givenTheMailboxOwnsTheAddress("me@example.org");
+    Message reply = givenATrashedMessageFrom(trash, 1313L, "<reply@host>", "me@example.org");
+    Folder inbox = trashStore().getFolder("INBOX");
+
+    RestoreOutcome outcome = emailBoxService.restore(List.of(1313L), TEST_USER, MailFolder.TRASH);
+
+    assertEquals(0, outcome.failures());
+    assertTrue(outcome.restoredToSent().isEmpty());
+    verify(trash).copyMessages(new Message[] { reply }, inbox);
+    assertEquals(Set.of(TEST_USER + "/" + MailFolder.INBOX), pendingFolderRefreshes().keySet());
+  }
+
+  /**
+   * The Trash refresh reads the Trash's OWN window (30), not the hundred the other
+   * non-inbox folders read: the scheduled sync trims the cache to the window it read
+   * and stores the size, so a refresh over a hundred would cache seventy rows the next
+   * sync deletes again.
+   */
+  @Test
+  @SneakyThrows
+  void theTrashRefreshReadsTheTrashWindow() {
+    IMAPFolder trash = givenASubscribedTrashFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    lenient().when(emailConnectorService.isTrashSyncEnabled()).thenReturn(true);
+    when(trash.getMessageCount()).thenReturn(100);
+
+    emailBoxService.refreshFolder(TEST_USER, MailFolder.TRASH, EmailBoxService.FolderRefreshCause.DELETE);
+
+    verify(trash).getMessages(71, 100);
+  }
+
+  /**
+   * An administrator who withdrew the Trash cache withdrew its refresh with it: the
+   * refresh does not even connect, since rows it wrote would be rows no sync maintains.
+   */
+  @Test
+  @SneakyThrows
+  void theTrashRefreshObeysTheTrashCacheKillSwitch() {
+    // No folder listing stubbed on purpose: the refresh must stop before it needs one.
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.isTrashSyncEnabled()).thenReturn(false);
+
+    emailBoxService.refreshFolder(TEST_USER, MailFolder.TRASH, EmailBoxService.FolderRefreshCause.DELETE);
+
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * The Trash refresh is one of the causes the Trash kill switch governs, and so are
+   * the Junk and the restore ones; the move's and the undo's are not. Pinned so a
+   * later re-grouping of the causes cannot silently move one under another switch.
+   */
+  @Test
+  void theTrashRefreshCausesShareTheTrashSwitch() {
+    System.setProperty(EmailBoxService.TRASH_REFRESH_ENABLED_PROPERTY, "false");
+    System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "true");
+    try {
+      assertFalse(EmailBoxService.FolderRefreshCause.DELETE.isEnabled());
+      assertFalse(EmailBoxService.FolderRefreshCause.JUNK.isEnabled());
+      assertFalse(EmailBoxService.FolderRefreshCause.RESTORE.isEnabled());
+      assertTrue(EmailBoxService.FolderRefreshCause.MOVE.isEnabled());
+    } finally {
+      System.clearProperty(EmailBoxService.TRASH_REFRESH_ENABLED_PROPERTY);
+    }
+  }
+
+  /**
+   * A connected mailbox holding one conversation across two folders: a received
+   * message at inbox UID 1212 and the user's reply at Sent UID 77, both cached under
+   * the thread {@code <thread@host>}, with a Trash and a Junk folder to file into.
+   * The inbox is an {@link IMAPFolder} here, unlike {@link #givenAMailboxListing}'s,
+   * because the move actions address the inbox by UID.
+   */
+  private record ConversationFixture(IMAPFolder inbox, IMAPFolder sent, IMAPFolder trash, IMAPFolder junk, Message received,
+                                     Message reply) {
+  }
+
+  @SneakyThrows
+  private ConversationFixture givenAConversationAcrossInboxAndSent() {
+    IMAPFolder sent = aHiddenFolder(new String[] { "\\Sent" }, "Sent");
+    IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "[Gmail]/Trash");
+    IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
+    givenAMailboxListing(sent, trash, junk);
+    IMAPStore store = (IMAPStore) trashStore();
+    IMAPFolder inbox = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "INBOX");
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    Message received = givenAMessageInFolderAt(inbox, 1212L, "<received@host>");
+    Message reply = givenAMessageInFolderAt(sent, 77L, "<reply@host>");
+    givenACachedRowOfThread(MailFolder.INBOX, 1212L, "<received@host>", "<thread@host>");
+    givenACachedRowOfThread(MailFolder.SENT, 77L, "<reply@host>", "<thread@host>");
+    Map<String, List<Long>> idsByFolder = new LinkedHashMap<>();
+    idsByFolder.put(MailFolder.INBOX, List.of(1212L));
+    idsByFolder.put(MailFolder.SENT, List.of(77L));
+    lenient().when(emailBoxStorage.getConversationMessageIdsByFolder(TEST_USER, "<thread@host>")).thenReturn(idsByFolder);
+    return new ConversationFixture(inbox, sent, trash, junk, received, reply);
+  }
+
+  /**
+   * {@link #givenACachedRow} with the row's conversation id set, which the widening
+   * to the whole conversation reads.
+   */
+  private void givenACachedRowOfThread(String folder, long uid, String messageId, String threadId) {
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder(folder);
+    row.setMailHeaderId(messageId);
+    row.setThreadId(threadId);
+    lenient().when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(uid),
+                                                                   eq(TEST_USER),
+                                                                   any(),
+                                                                   eq(folder),
+                                                                   anyBoolean(),
+                                                                   anyBoolean(),
+                                                                   anyBoolean()))
+             .thenReturn(row);
+  }
+
+  /**
+   * The mailbox's own address, as the restore reads it to tell the user's messages
+   * from the others. Re-stubbed after {@link #givenAMailboxListing}, whose setting
+   * carries a placeholder that is not an address.
+   */
+  private void givenTheMailboxOwnsTheAddress(String address) {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    userEmailSetting.setEmailAddress(address);
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+  }
+
+  /**
+   * One trashed message with a sender: a cached TRASH row at the given uid whose From
+   * address is {@code senderAddress}, and the server's message at that uid carrying
+   * the same Message-ID.
+   */
+  @SneakyThrows
+  private Message givenATrashedMessageFrom(IMAPFolder trash, long uid, String messageId, String senderAddress) {
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder(MailFolder.TRASH);
+    row.setMailHeaderId(messageId);
+    row.setSender(new EmailSender("Someone", senderAddress, null, null));
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(uid),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.TRASH),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(row);
+    Message message = mock(Message.class);
+    lenient().when(trash.getMessageByUID(uid)).thenReturn(message);
+    lenient().when(message.getHeader("Message-ID")).thenReturn(new String[] { messageId });
+    return message;
   }
 
   /**

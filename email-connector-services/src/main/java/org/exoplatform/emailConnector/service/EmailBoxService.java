@@ -156,6 +156,7 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
+import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
@@ -164,6 +165,7 @@ import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
+import org.exoplatform.emailConnector.utils.EmailContactUtils;
 import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
@@ -652,6 +654,22 @@ public class EmailBoxService {
    */
   public static final String      MOVE_REFRESH_ENABLED_PROPERTY                               =
                                                                 "email.connector.move.refresh.enabled";
+
+  /**
+   * The administrator's kill switch for the refreshes that follow the Trash and Junk
+   * actions ({@link #scheduleFolderRefresh}, causes {@link FolderRefreshCause#DELETE},
+   * {@link FolderRefreshCause#JUNK} and {@link FolderRefreshCause#RESTORE}): the
+   * Trash or the Junk folder re-read right after a message is filed into it, and the
+   * inbox and Sent re-read right after a message is taken back out. One switch for
+   * the three, because they are one feature seen from both sides -- the local Trash
+   * showing what was just deleted, and no longer showing what was just restored --
+   * and a provider that rate-limits logins loses or keeps that feature whole. Default
+   * ON. Off, the messages still move (the actions themselves are untouched) and their
+   * rows surface at the folder's next scheduled check, which is what every deployment
+   * had before EXO-89942.
+   */
+  public static final String      TRASH_REFRESH_ENABLED_PROPERTY                              =
+                                                                "email.connector.trash.refresh.enabled";
 
   // How long a send waits before its Sent folder is re-read. Short enough that the
   // copy is there by the time the user looks, long enough to be a coalescing window:
@@ -3782,7 +3800,16 @@ public class EmailBoxService {
      * ({@link EmailBoxService#applyUndoMove}) -- on the undo's switch, as the undo's
      * other re-read is.
      */
-    UNDO_OUT(UNDO_REFRESH_ENABLED_PROPERTY, "moving message(s) back out of it while it was being re-read");
+    UNDO_OUT(UNDO_REFRESH_ENABLED_PROPERTY, "moving message(s) back out of it while it was being re-read"),
+    /** A delete filed messages into the Trash ({@link EmailBoxService#deleteEmail}). */
+    DELETE(TRASH_REFRESH_ENABLED_PROPERTY, "deleting message(s) into it"),
+    /** "Mark as spam" filed messages into the Junk folder ({@link EmailBoxService#markAsJunk}). */
+    JUNK(TRASH_REFRESH_ENABLED_PROPERTY, "marking message(s) as spam into it"),
+    /**
+     * A restore, or "Not spam", put messages back into the folder -- the inbox, or
+     * Sent for the user's own messages ({@link EmailBoxService#restore}).
+     */
+    RESTORE(TRASH_REFRESH_ENABLED_PROPERTY, "restoring message(s) into it");
 
     private final String property;
 
@@ -4026,6 +4053,13 @@ public class EmailBoxService {
                 cause.phrase());
       return;
     }
+    if ((MailFolder.TRASH.equals(folderKey) && !isTrashSyncEnabled())
+        || (MailFolder.JUNK.equals(folderKey) && !isJunkSyncEnabled())) {
+      // The administrator withdrew the folder's cache altogether: a refresh would
+      // write rows the scheduled sync never maintains and never trims.
+      LOG.debug("The {} folder of user {} is not cached; skipping its refresh after {}", folderKey, username, cause.phrase());
+      return;
+    }
     boolean inbox = MailFolder.INBOX.equals(folderKey);
     Store store = null;
     MailboxSyncState syncState = loadMailboxSyncState(username);
@@ -4052,7 +4086,7 @@ public class EmailBoxService {
           return;
         }
         int emailBoxCacheSize = emailConnectorService.getEmailBoxCacheSize();
-        int window = inbox ? emailBoxCacheSize : Math.min(emailBoxCacheSize, NON_INBOX_FOLDER_SYNC_LIMIT);
+        int window = inbox ? emailBoxCacheSize : Math.min(emailBoxCacheSize, folderSyncLimit(folderKey));
         syncFolderIfChanged(store, target, folderKey, username, userEmailSetting, window, inbox, syncState);
       }
     } catch (Exception e) {
@@ -5292,7 +5326,37 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int deleteEmail(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE, null);
+    int failures = applyMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE, null);
+    scheduleHiddenFolderRefresh(username, MailFolder.TRASH, FolderRefreshCause.DELETE, failures, mailRemoteIds);
+    return failures;
+  }
+
+  /**
+   * Deletes whole conversations: the messages given, and with them every other
+   * message of their conversations wherever it is cached -- the received ones in the
+   * inbox, the user's own replies in Sent, the ones filed into the archive or into one
+   * of the user's folders. The rule is EXO-89942's: an action on a conversation from
+   * eXo leaves the mailbox as the same action done in Gmail would, and Gmail's delete
+   * of a conversation takes the sent messages along.
+   * <p>
+   * One {@link #applyMoveAction} per folder, the acting folder first: a UID numbers a
+   * message within one folder, so the conversation's messages can only be addressed
+   * folder by folder, and each folder keeps the identity check, the compensation and
+   * the counting the single-folder delete has. The count this answers is the sum: a
+   * conversation whose Sent half stayed behind was not deleted, whatever happened to
+   * its inbox half.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, of the messages whose
+   *          conversations are deleted
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * @return how many messages, across every folder reached, could NOT be deleted
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int deleteConversations(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
+    int failures = applyConversationMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE);
+    scheduleHiddenFolderRefresh(username, MailFolder.TRASH, FolderRefreshCause.DELETE, failures, mailRemoteIds);
+    return failures;
   }
 
   /**
@@ -5327,7 +5391,178 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int markAsJunk(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    return applyMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK, null);
+    int failures = applyMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK, null);
+    scheduleHiddenFolderRefresh(username, MailFolder.JUNK, FolderRefreshCause.JUNK, failures, mailRemoteIds);
+    return failures;
+  }
+
+  /**
+   * Marks whole conversations as spam -- {@link #deleteConversations} pointed at the
+   * Junk folder, for the same rule (EXO-89942): the user's own replies in Sent go into
+   * the Junk folder with the mail they answered, as they would had the conversation
+   * been reported from Gmail.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, of the messages whose
+   *          conversations are reported
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * @return how many messages, across every folder reached, could NOT be marked
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public int markConversationsAsJunk(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
+    int failures = applyConversationMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK);
+    scheduleHiddenFolderRefresh(username, MailFolder.JUNK, FolderRefreshCause.JUNK, failures, mailRemoteIds);
+    return failures;
+  }
+
+  /**
+   * The shared body of {@link #deleteConversations} and
+   * {@link #markConversationsAsJunk}: widens the given messages to their whole
+   * conversations, then runs {@link #applyMoveAction} once per folder those
+   * conversations are cached in.
+   * <p>
+   * The folders widened INTO are the ones a conversation's mail can live in and a
+   * move may take mail out of: the inbox, Sent, the archive and the user's own
+   * mirrored folders. Not the Trash nor the Junk folder -- what is already filed away
+   * is not filed again, and a delete from the Junk folder stays a delete of what the
+   * Junk folder lists; not Drafts, which an unsent reply's own operation handles; and
+   * not {@code ALL_MAIL}, which is a thread-completion cache whose rows duplicate the
+   * other folders' and whose UIDs the move actions do not act on. The acting folder
+   * itself keeps exactly the ids the caller gave: the widening adds the OTHER folders'
+   * copies, it never second-guesses what the caller listed.
+   * <p>
+   * The widening is read off the mirror, not off the server: it names the messages
+   * this add-on knows to be in the conversation, which is what the user was shown, and
+   * {@link #applyMoveAction}'s own "no cached row, refusing to act" guard holds for
+   * every id it is handed.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs are numbered in; blank means INBOX
+   * @param action {@link MoveAction#DELETE} or {@link MoveAction#JUNK}
+   * @return how many messages, across every folder reached, could NOT be moved
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  private int applyConversationMoveAction(List<Long> mailRemoteIds,
+                                          String username,
+                                          String folder,
+                                          MoveAction action) throws IllegalAccessException {
+    if (CollectionUtils.isEmpty(mailRemoteIds)) {
+      return 0;
+    }
+    String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+    if (!canMoveOutOf(action, sourceFolder) || !isConversationFolder(sourceFolder)) {
+      // A folder the action has no meaning on, or one whose listing is not a
+      // conversation's home (the Junk folder, ALL_MAIL): the single-folder path
+      // answers exactly as it always has, refusal and count included.
+      return applyMoveAction(mailRemoteIds, username, sourceFolder, action, null);
+    }
+    Map<String, Set<Long>> idsByFolder = new LinkedHashMap<>();
+    idsByFolder.put(sourceFolder, new LinkedHashSet<>(mailRemoteIds));
+    Set<String> threadIds = new LinkedHashSet<>();
+    for (Long mailRemoteId : mailRemoteIds) {
+      try {
+        Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, sourceFolder, false, false, false, false);
+        if (email != null && StringUtils.isNotBlank(email.getThreadId())) {
+          threadIds.add(email.getThreadId());
+        }
+      } catch (Exception e) {
+        LOG.error("Error getting email {} of folder {} for user {}", mailRemoteId, sourceFolder, username, e);
+      }
+    }
+    for (String threadId : threadIds) {
+      emailBoxStorage.getConversationMessageIdsByFolder(username, threadId).forEach((rowFolder, ids) -> {
+        if (isConversationFolder(rowFolder) && canMoveOutOf(action, rowFolder)) {
+          idsByFolder.computeIfAbsent(rowFolder, key -> new LinkedHashSet<>()).addAll(ids);
+        }
+      });
+    }
+    int failures = 0;
+    for (Map.Entry<String, Set<Long>> entry : idsByFolder.entrySet()) {
+      failures += applyMoveAction(new ArrayList<>(entry.getValue()), username, entry.getKey(), action, null);
+    }
+    return failures;
+  }
+
+  /**
+   * Whether a folder is one a conversation's own mail is listed in, and so one an
+   * action on the whole conversation reaches: the inbox, Sent, the archive, and the
+   * user's own folders. See {@link #applyConversationMoveAction} for the ones left
+   * out and why.
+   *
+   * @param folderKey the {@link MailFolder} key a row carries
+   * @return true when an action on a conversation may reach that folder's copies
+   */
+  private static boolean isConversationFolder(String folderKey) {
+    return MailFolder.INBOX.equals(folderKey) || MailFolder.SENT.equals(folderKey) || MailFolder.ARCHIVE.equals(folderKey)
+        || MailFolder.isCustom(folderKey);
+  }
+
+  /**
+   * Whether a cached message is one the user sent: its From address is the mailbox's
+   * own, both read through {@link EmailContactUtils#normalizeAddress} so case and
+   * surrounding blanks do not make two spellings of one address. A mailbox whose own
+   * address is not usable as a key (blank, no {@code @}) owns nothing, so a restore
+   * on it sends everything to the inbox -- the pre-EXO-89942 behaviour, and the safe
+   * one: a received mail landing in Sent would be the worse misplacement.
+   *
+   * @param email the cached row
+   * @param userEmailSetting the mailbox, for its own address
+   * @return true when the message's sender is the mailbox owner
+   */
+  private static boolean isSentByUser(Email email, UserEmailSetting userEmailSetting) {
+    String ownAddress = EmailContactUtils.normalizeAddress(userEmailSetting == null ? null : userEmailSetting.getEmailAddress());
+    if (ownAddress == null || email == null || email.getSender() == null) {
+      return false;
+    }
+    return ownAddress.equals(EmailContactUtils.normalizeAddress(email.getSender().getAddress()));
+  }
+
+  /**
+   * The window a non-inbox folder is read over when it is refreshed outside the
+   * scheduled sync -- the SAME window that sync reads, which is the point: the sync
+   * trims the cache to the window it read and stores the size in the snapshot, so a
+   * refresh over a different window would either delete rows the sync will
+   * re-download or cache rows the sync will trim. The Trash and the Junk folder have
+   * a window of their own ({@link #TRASH_FOLDER_SYNC_LIMIT},
+   * {@link #JUNK_FOLDER_SYNC_LIMIT}); every other folder reads
+   * {@link #NON_INBOX_FOLDER_SYNC_LIMIT}.
+   *
+   * @param folderKey the {@link MailFolder} key of the folder being refreshed
+   * @return the folder's own window, before the cache-size cap
+   */
+  private static int folderSyncLimit(String folderKey) {
+    if (MailFolder.TRASH.equals(folderKey)) {
+      return TRASH_FOLDER_SYNC_LIMIT;
+    }
+    if (MailFolder.JUNK.equals(folderKey)) {
+      return JUNK_FOLDER_SYNC_LIMIT;
+    }
+    return NON_INBOX_FOLDER_SYNC_LIMIT;
+  }
+
+  /**
+   * Queues the re-read of the Trash or the Junk folder a delete or a "Mark as spam"
+   * just filed messages into -- so the local folder lists them seconds after the
+   * action, not at its next scheduled check (EXO-89942: "I see nothing in the Trash").
+   * {@link #moveToFolder}'s decision for its destination, made the same way: only
+   * when at least one message moved, since a refresh after nothing moved would read
+   * the folder to find nothing new.
+   *
+   * @param username the mailbox owner
+   * @param hiddenFolderKey {@link MailFolder#TRASH} or {@link MailFolder#JUNK}
+   * @param cause {@link FolderRefreshCause#DELETE} or {@link FolderRefreshCause#JUNK}
+   * @param failures how many of the requested messages did not move
+   * @param mailRemoteIds the requested messages
+   */
+  private void scheduleHiddenFolderRefresh(String username,
+                                           String hiddenFolderKey,
+                                           FolderRefreshCause cause,
+                                           int failures,
+                                           List<Long> mailRemoteIds) {
+    if (failures < CollectionUtils.size(mailRemoteIds)) {
+      scheduleFolderRefresh(username, hiddenFolderKey, cause);
+    }
   }
 
   /**
@@ -5722,7 +5957,55 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int restoreEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
-    return applyHiddenFolderAction(mailRemoteIds, username, MailFolder.TRASH, HiddenFolderAction.RESTORE);
+    return restore(mailRemoteIds, username, MailFolder.TRASH).failures();
+  }
+
+  /**
+   * Puts messages back out of the Trash or the Junk folder, each one where it came
+   * from: a message the user sent goes back to Sent, every other one to the inbox --
+   * the mirror image of {@link #deleteConversations}, which is what puts the user's
+   * own replies into the Trash in the first place. A restore that put a sent message
+   * into the inbox would show the user, in their inbox, a mail they wrote.
+   * <p>
+   * "The user sent it" is read off the message's From address against the mailbox's
+   * own, both normalized by {@link EmailContactUtils#normalizeAddress}: the one
+   * identity a message keeps across every folder and every client, where the folder
+   * it sat in before the delete is not remembered by anything. That is also Gmail's
+   * answer -- restoring a conversation there puts the received mail back in the inbox
+   * and the sent mail back in Sent, whatever folder either was in -- so a message that
+   * sat in the archive or in one of the user's folders comes back to the inbox here
+   * as it does there. A mailbox with no Sent folder to be found sends everything to
+   * the inbox, said in the log once per call.
+   * <p>
+   * Everything {@link #restoreEmail} says of a restore holds: the hidden rows go
+   * first, every remote failure puts its own row back, and the destination UID is not
+   * chased. What is new is that the destinations are re-read right after, through the
+   * same background refresh a "Move to..." uses ({@link #scheduleFolderRefresh}, cause
+   * {@link FolderRefreshCause#RESTORE}), so the inbox and Sent list the message
+   * seconds after the click and not a whole sync period later.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code hiddenFolderKey}, to put back
+   * @param username the mailbox owner
+   * @param hiddenFolderKey {@link MailFolder#TRASH} or {@link MailFolder#JUNK}
+   * @return how many could not be restored, and which ones went back to Sent
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  public RestoreOutcome restore(List<Long> mailRemoteIds, String username, String hiddenFolderKey) throws IllegalAccessException {
+    List<Long> restoredToSent = new ArrayList<>();
+    List<Long> restoredToInbox = new ArrayList<>();
+    int failures = applyHiddenFolderAction(mailRemoteIds,
+                                           username,
+                                           hiddenFolderKey,
+                                           HiddenFolderAction.RESTORE,
+                                           restoredToSent,
+                                           restoredToInbox);
+    if (!restoredToInbox.isEmpty()) {
+      scheduleFolderRefresh(username, MailFolder.INBOX, FolderRefreshCause.RESTORE);
+    }
+    if (!restoredToSent.isEmpty()) {
+      scheduleFolderRefresh(username, MailFolder.SENT, FolderRefreshCause.RESTORE);
+    }
+    return new RestoreOutcome(failures, restoredToSent);
   }
 
   /**
@@ -5744,7 +6027,7 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int restoreFromJunk(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
-    return applyHiddenFolderAction(mailRemoteIds, username, MailFolder.JUNK, HiddenFolderAction.RESTORE);
+    return restore(mailRemoteIds, username, MailFolder.JUNK).failures();
   }
 
   /**
@@ -5775,7 +6058,7 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int purgeEmail(List<Long> mailRemoteIds, String username) throws IllegalAccessException {
-    return applyHiddenFolderAction(mailRemoteIds, username, MailFolder.TRASH, HiddenFolderAction.PURGE);
+    return applyHiddenFolderAction(mailRemoteIds, username, MailFolder.TRASH, HiddenFolderAction.PURGE, null, null);
   }
 
   /**
@@ -5789,7 +6072,11 @@ public class EmailBoxService {
    * identity check is wrong is one copy too many.
    */
   private enum HiddenFolderAction {
-    /** Copy back to the INBOX, then remove the hidden folder's copy. */
+    /**
+     * Copy back to where the message came from -- Sent for the user's own, the INBOX
+     * for the rest ({@link EmailBoxService#restore}) -- then remove the hidden
+     * folder's copy.
+     */
     RESTORE,
     /** Remove the hidden folder's copy, and nothing else. */
     PURGE
@@ -5826,18 +6113,30 @@ public class EmailBoxService {
    * the next syncs reconcile beats a message that exists nowhere — and it is why the
    * copy comes first.
    *
+   * A RESTORE has two destinations since EXO-89942 (see {@link #restore}): the
+   * user's own messages go back to Sent, the others to the inbox, each decided per
+   * message by {@link #isSentByUser}. The two out-parameters collect which went where,
+   * for the caller to re-read the right folders and to tell the client; a PURGE
+   * passes null for both.
+   *
    * @param mailRemoteIds the IMAP UIDs within {@code folderKey}
    * @param username the mailbox owner
    * @param folderKey which hidden folder the UIDs are numbered in:
    *          {@link MailFolder#TRASH} or {@link MailFolder#JUNK}
    * @param action what to do with them
+   * @param restoredToSent filled with the UIDs a RESTORE copied back to Sent; null
+   *          for a PURGE
+   * @param restoredToInbox filled with the UIDs a RESTORE copied back to the inbox;
+   *          null for a PURGE
    * @return how many could not be dealt with
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   private int applyHiddenFolderAction(List<Long> mailRemoteIds,
                                       String username,
                                       String folderKey,
-                                      HiddenFolderAction action) throws IllegalAccessException {
+                                      HiddenFolderAction action,
+                                      List<Long> restoredToSent,
+                                      List<Long> restoredToInbox) throws IllegalAccessException {
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
       return 0;
     }
@@ -5890,6 +6189,12 @@ public class EmailBoxService {
       // by the command, and opening the inbox here would only invite the read-status and
       // expunge semantics of an open folder into a path that wants none of them.
       Folder inbox = action == HiddenFolderAction.RESTORE ? store.getFolder(INBOX_FOLDER_NAME) : null;
+      // Sent is resolved once, and only when a restored message turns out to be the
+      // user's own: the resolver may walk the folder list, and a restore of received
+      // mail alone must not pay for a folder it never copies into. A mailbox with no
+      // Sent folder sends everything to the inbox, said once.
+      Folder sent = null;
+      boolean sentResolved = false;
       for (Long mailRemoteId : mailRemoteIds) {
         Email hiddenRow = hiddenRows.get(mailRemoteId);
         try {
@@ -5915,7 +6220,25 @@ public class EmailBoxService {
             continue;
           }
           if (action == HiddenFolderAction.RESTORE) {
-            hidden.copyMessages(new Message[] { message }, inbox);
+            boolean toSent = isSentByUser(hiddenRow, userEmailSetting);
+            if (toSent && !sentResolved) {
+              sentResolved = true;
+              sent = resolveCachedFolder(store, MailFolder.SENT, username, syncState);
+              if (sent == null) {
+                LOG.warn("Mailbox of user {} exposes no Sent folder; their own messages restored from the {} go to the inbox",
+                         username,
+                         folderLabel);
+              }
+            }
+            Folder destination = toSent && sent != null ? sent : inbox;
+            hidden.copyMessages(new Message[] { message }, destination);
+            if (destination == sent) {
+              if (restoredToSent != null) {
+                restoredToSent.add(mailRemoteId);
+              }
+            } else if (restoredToInbox != null) {
+              restoredToInbox.add(mailRemoteId);
+            }
           }
           // Gmail's move, in mirror image of the delete path: [Gmail]/Trash and
           // [Gmail]/Spam are each exclusive with every label, so copying OUT of one IS
