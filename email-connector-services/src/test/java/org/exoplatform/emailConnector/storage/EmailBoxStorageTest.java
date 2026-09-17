@@ -576,6 +576,24 @@ public class EmailBoxStorageTest {
    * {@code EmailBoxThreadSummaryDAOTest}, not here — a mocked DAO can only be asked
    * whether three columns are read in the right order, which is all this asserts.
    */
+  /**
+   * The conversation read hides the folders it is told to and no other: the default
+   * read hides both hidden folders, the read opened from the Trash hides the Junk
+   * folder only (EXO-89942). The list reaches the DAO untouched, so what the reader
+   * shows is exactly what the caller decided.
+   */
+  @Test
+  void getEmailsByThreadIdLeavesOutTheGivenFoldersOnly() {
+    when(emailBoxDAO.findByUserIdAndThreadIdWithAttachments("root", "<t@host>", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.of());
+    when(emailBoxDAO.findByUserIdAndThreadIdWithAttachments("root", "<t@host>", List.of(MailFolder.JUNK))).thenReturn(List.of());
+
+    emailBoxStorage.getEmailsByThreadId("root", "<t@host>", OWNER_ADDRESS);
+    emailBoxStorage.getEmailsByThreadId("root", "<t@host>", OWNER_ADDRESS, List.of(MailFolder.JUNK));
+
+    verify(emailBoxDAO).findByUserIdAndThreadIdWithAttachments("root", "<t@host>", MailFolder.HIDDEN_FOLDERS);
+    verify(emailBoxDAO).findByUserIdAndThreadIdWithAttachments("root", "<t@host>", List.of(MailFolder.JUNK));
+  }
+
   @Test
   void getThreadSummariesReadsTheCountAndTheDraftOutOfOneRow() {
     when(emailBoxDAO.summarizeThreadsByUserId("root", MailFolder.HIDDEN_FOLDERS)).thenReturn(List.<Object[]>of(new Object[] { "thread-with-draft", 3L, 1L },
