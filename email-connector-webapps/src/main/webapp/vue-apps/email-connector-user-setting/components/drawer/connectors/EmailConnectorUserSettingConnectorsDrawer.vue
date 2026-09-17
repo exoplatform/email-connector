@@ -29,7 +29,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-user-setting-connectors-drawer-list
         v-if="hasActiveConnectors"
         class="ma-5 py-0"
-        :user-email-connectors="userEmailConnectors" />
+        :user-email-connectors="userEmailConnectors"
+        :connection-requirements="connectionRequirements" />
       <v-list-item v-else class="full-height align-center">
         <v-list-item-content>
           <v-list-item-title class="text-wrap">
@@ -47,6 +48,7 @@ export default {
     featureName: 'email',
     userSettingConnectorsDrawer: false,
     userEmailConnectors: [],
+    connectionRequirements: {},
   }),
   computed: {
     hasActiveConnectors() {
@@ -74,12 +76,30 @@ export default {
     getUserEmailConnectors() {
       this.$emailConnectorUserSettingService.getUserEmailConnectors()
         .then(connectors => this.userEmailConnectors = connectors);
+      this.getConnectionRequirements();
+    },
+    /**
+     * Which connectors ask their user for anything. Read by BOTH paths that fill
+     * the list - this one and hideUserSetting(), which runs on created() and is
+     * therefore the one serving the first render. Instrumenting a single path left
+     * the map empty on opening, and every connector then showed its form.
+     * <p>
+     * Fails to an empty map on purpose: a requirement nobody could read must leave
+     * every button opening its form, never connect silently.
+     *
+     * @returns {Promise} resolves once the requirements are known, or given up on
+     */
+    getConnectionRequirements() {
+      return this.$emailConnectorUserSettingService.getConnectionRequirements()
+        .then(requirements => this.connectionRequirements = requirements || {})
+        .catch(() => this.connectionRequirements = {});
     },
     async hideUserSetting() {
       const enabled = await this.$featureService.isFeatureEnabled(this.featureName);
       const appEl = document.getElementById('emailConnectorUserSetting');
       const portletContainer = appEl?.closest('.layout-application');
       this.userEmailConnectors = await this.$emailConnectorUserSettingService.getUserEmailConnectors();
+      await this.getConnectionRequirements();
       if (portletContainer && (!enabled || this.userEmailConnectors?.length === 0)) {
         portletContainer.style.display = 'none';
       }

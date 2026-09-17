@@ -31,6 +31,46 @@ export function getUserEmailConnectors() {
   });
 }
 
+/**
+ * Whether each declared provider asks the user for anything, keyed by provider
+ * name. A provider answering false connects in one click: the platform holds
+ * what it takes, and there is no form to show.
+ *
+ * @returns {Promise<Object>} provider name to boolean
+ */
+export function getConnectionRequirements() {
+  return fetch('/email-connector/rest/connectors/connection-requirements', {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting connection requirements');
+    }
+  });
+}
+
+/**
+ * Connects to a connector whose provider asks the user for nothing. The server
+ * opens the mailbox with the service account's own material and records the
+ * connection only if that worked, so a resolved promise means tested — the same
+ * promise the typed form makes.
+ *
+ * @param {Number} emailConnectorId the connector to connect to
+ * @returns {Promise} resolves once connected
+ */
+export function connectThroughProvider(emailConnectorId) {
+  return fetch(`/email-connector/rest/user-email-setting/connect?emailConnectorId=${emailConnectorId}`, {
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when connecting through the configured provider');
+    }
+  });
+}
+
 export function setUserEmailSetting(userEmailSetting, broadcast) {
   return fetch(`/email-connector/rest/user-email-setting?broadcast=${broadcast}`, {
     headers: {
