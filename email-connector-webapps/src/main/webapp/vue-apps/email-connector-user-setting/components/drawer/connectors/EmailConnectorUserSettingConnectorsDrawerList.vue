@@ -21,6 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-for="userEmailConnector in userEmailConnectors"
       :key="userEmailConnector.id"
       :user-email-connector="userEmailConnector"
+      :connection-requirements="connectionRequirements"
       class="mb-8 px-0" />
   </v-list>
 </template>
@@ -31,6 +32,14 @@ export default {
     userEmailConnectors: {
       type: Array,
       default: () => [],
+    },
+    /**
+     * Whether each provider asks its user for anything, keyed by provider name.
+     * Anything but an explicit false means ask.
+     */
+    connectionRequirements: {
+      type: Object,
+      default: () => ({}),
     },
   }
 };
