@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 
+import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
@@ -51,6 +53,7 @@ import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.commons.file.services.FileStorageException;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailConnectorStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.portal.config.UserACL;
@@ -94,6 +97,9 @@ public class EmailConnectorServiceTest {
 
   @MockitoBean
   private ConnectorProviderConfigStorage providerConfigStorage;
+
+  @MockitoBean
+  private EmailCredentialsResolver emailCredentialsResolver;
 
   @Autowired
   private EmailConnectorService    emailConnectorService;
@@ -884,5 +890,58 @@ public class EmailConnectorServiceTest {
     verify(emailConnectorStorage, never()).updateEmailConnector(any());
     verify(providerConfigStorage, never()).store(any(), any());
     verify(providerConfigStorage, never()).delete(any());
+  }
+
+  /**
+   * What a browser needs to decide whether its connect button shows a form or
+   * connects outright: one answer per provider the declared connectors name.
+   * <p>
+   * Only the declared providers, never the registry of providers: a user is
+   * entitled to know about the connectors offered to them, not about how the
+   * instance is configured - that endpoint is administrators-only.
+   */
+  @Test
+  @SneakyThrows
+  public void tellsWhichDeclaredProvidersAskTheUserForSomething() {
+    when(emailConnectorStorage.getEmailConnectors()).thenReturn(List.of(connectorWithProvider(1L, "personal"),
+                                                                        connectorWithProvider(2L, "bluemind-sudo")));
+    when(emailCredentialsResolver.requiresUserAction("personal")).thenReturn(true);
+    when(emailCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+
+    Map<String, Boolean> requirements = emailConnectorService.connectionRequirements();
+
+    assertEquals(Boolean.TRUE, requirements.get("personal"));
+    assertEquals(Boolean.FALSE, requirements.get("bluemind-sudo"));
+  }
+
+  /**
+   * A connector naming no provider contributes nothing, and a seam that is absent
+   * answers true: a list that cannot tell must send the user to the form, never
+   * connect them silently.
+   */
+  @Test
+  @SneakyThrows
+  public void asksTheUserWhenNothingCanSayOtherwise() {
+    when(emailConnectorStorage.getEmailConnectors()).thenReturn(List.of(connectorWithProvider(3L, null),
+                                                                        connectorWithProvider(2L, "bluemind-sudo")));
+    // Le contexte Spring est partage par toute la classe : un champ mis a null ici
+    // le resterait pour les tests suivants, qui verraient une couture absente sans
+    // l'avoir demande. D'ou la restauration, quoi qu'il arrive.
+    ReflectionTestUtils.setField(emailConnectorService, "emailCredentialsResolver", null);
+    try {
+      Map<String, Boolean> requirements = emailConnectorService.connectionRequirements();
+
+      assertFalse(requirements.containsKey(null));
+      assertEquals(Boolean.TRUE, requirements.get("bluemind-sudo"));
+    } finally {
+      ReflectionTestUtils.setField(emailConnectorService, "emailCredentialsResolver", emailCredentialsResolver);
+    }
+  }
+
+  private EmailConnector connectorWithProvider(long id, String providerName) {
+    EmailConnector connector = new EmailConnector();
+    connector.setId(id);
+    connector.setAuthProviderName(providerName);
+    return connector;
   }
 }

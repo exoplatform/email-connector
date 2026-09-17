@@ -20,6 +20,8 @@ import javax.mail.Authenticator;
 
 import org.springframework.stereotype.Component;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -107,6 +109,32 @@ public class EmailCredentialsResolver {
                               String username) throws ConnectorCredentialsException {
     ConnectorCredentialsContext context = context(connectorId, providerName, username, ConnectorCredentialsChannel.HTTP);
     return ((HttpConnectorCredentials) connectorCredentialsService.produce(context)).getAuthorizationHeaderValue();
+  }
+
+  /**
+   * Whether the configured provider needs anything from the user before this
+   * connector can be used - a password to type today, an authorization to grant
+   * tomorrow.
+   * <p>
+   * The connect drawer is the one asking: a provider that needs nothing must
+   * connect in a click rather than show a form nobody can fill. Answered here
+   * rather than read from the provider registry, whose REST endpoint is reserved
+   * to administrators - a user is told about their own connector, not about how
+   * the instance is configured.
+   * <p>
+   * An unconfigured preset answers <b>true</b>: every connector that predates the
+   * registry is served by typed credentials, and a missing configuration must
+   * never turn into a silent connection.
+   *
+   * @param providerName provider the preset is configured with, possibly blank
+   * @return true when the user has something to supply
+   * @throws ConnectorCredentialsException when no provider of that name is registered
+   */
+  public boolean requiresUserAction(String providerName) throws ConnectorCredentialsException {
+    if (StringUtils.isBlank(providerName)) {
+      return true;
+    }
+    return connectorCredentialsService.requiresUserAction(providerName);
   }
 
   /**
