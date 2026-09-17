@@ -81,6 +81,7 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 
@@ -273,14 +274,77 @@ public class EmailBoxRestTest {
                                                                      .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isNotFound());
     List<Long> emailIds = List.of(123L, 456L);
+    when(emailBoxService.restore(emailIds, SIMPLE_USER, MailFolder.TRASH)).thenReturn(new RestoreOutcome(0, List.of(456L)));
     response = mockMvc.perform(post(EMAIL_BOX_PATH + "/trash/restore").with(testSimpleUser())
                                                                      .content(asJsonString(emailIds))
                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                      .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isOk());
-    verify(emailBoxService).restoreEmail(emailIds, SIMPLE_USER);
+    response.andExpect(status().isOk())
+            .andExpect(jsonPath("$.failedRestores").value(0))
+            // The answer says which ids went back to Sent rather than to the inbox
+            // (EXO-89942): the client shows them there before the server lists them.
+            .andExpect(jsonPath("$.restoredToSent[0]").value(456));
+    verify(emailBoxService).restore(emailIds, SIMPLE_USER, MailFolder.TRASH);
     // A restore must never reach the permanent delete, whatever else changes here.
     verify(emailBoxService, never()).purgeEmail(anyList(), anyString());
+  }
+
+  /**
+   * The conversation flag is what turns a delete of the listed ids into a delete of
+   * their whole conversations, Sent half included (EXO-89942). Off, or omitted, the
+   * endpoint reaches the single-message delete every earlier client meant.
+   */
+  @Test
+  void deleteEmailWithTheConversationFlagReachesTheConversationDelete() throws Exception {
+    List<Long> emailIds = List.of(123L);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "?conversation=true").with(testSimpleUser())
+                                                                .content(asJsonString(emailIds))
+                                                                .contentType(MediaType.APPLICATION_JSON)
+                                                                .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).deleteConversations(emailIds, SIMPLE_USER, MailFolder.INBOX);
+    verify(emailBoxService, never()).deleteEmail(anyList(), anyString(), anyString());
+
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "?folder=SENT&conversation=false").with(testSimpleUser())
+                                                                             .content(asJsonString(emailIds))
+                                                                             .contentType(MediaType.APPLICATION_JSON)
+                                                                             .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).deleteEmail(emailIds, SIMPLE_USER, MailFolder.SENT);
+    verify(emailBoxService, never()).deleteConversations(anyList(), anyString(), eq(MailFolder.SENT));
+  }
+
+  /**
+   * The folder a conversation is read from travels to the service on both thread
+   * reads (EXO-89942): opened from the Trash, the reader gets the Trash copies. Without
+   * it the service reads the conversation as it always did.
+   */
+  @Test
+  void theThreadReadsCarryTheFolderTheyAreReadFrom() throws Exception {
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1?folder=TRASH").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).getThread("thread-1", SIMPLE_USER, MailFolder.TRASH);
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).getThread("thread-1", SIMPLE_USER, null);
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/thread-1/complete?folder=JUNK").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).completeThread("thread-1", SIMPLE_USER, MailFolder.JUNK);
+  }
+
+  /**
+   * The same flag on "Mark as spam", with the same two outcomes.
+   */
+  @Test
+  void markAsJunkWithTheConversationFlagReachesTheConversationJunk() throws Exception {
+    List<Long> emailIds = List.of(123L);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/junk").with(testSimpleUser())
+                                                  .param("conversation", "true")
+                                                  .content(asJsonString(emailIds))
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .accept(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailBoxService).markConversationsAsJunk(emailIds, SIMPLE_USER, MailFolder.INBOX);
+    verify(emailBoxService, never()).markAsJunk(anyList(), anyString(), anyString());
   }
 
   @Test
@@ -354,13 +418,16 @@ public class EmailBoxRestTest {
                                                                      .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isNotFound());
     List<Long> emailIds = List.of(123L, 456L);
+    when(emailBoxService.restore(emailIds, SIMPLE_USER, MailFolder.JUNK)).thenReturn(new RestoreOutcome(1, List.of()));
     response = mockMvc.perform(post(EMAIL_BOX_PATH + "/junk/restore").with(testSimpleUser())
                                                                      .content(asJsonString(emailIds))
                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                      .accept(MediaType.APPLICATION_JSON));
-    response.andExpect(status().isOk());
-    verify(emailBoxService).restoreFromJunk(emailIds, SIMPLE_USER);
-    verify(emailBoxService, never()).restoreEmail(anyList(), anyString());
+    response.andExpect(status().isOk())
+            .andExpect(jsonPath("$.failedJunkRestores").value(1))
+            .andExpect(jsonPath("$.restoredToSent").isEmpty());
+    verify(emailBoxService).restore(emailIds, SIMPLE_USER, MailFolder.JUNK);
+    verify(emailBoxService, never()).restore(anyList(), anyString(), eq(MailFolder.TRASH));
     verify(emailBoxService, never()).purgeEmail(anyList(), anyString());
   }
 
