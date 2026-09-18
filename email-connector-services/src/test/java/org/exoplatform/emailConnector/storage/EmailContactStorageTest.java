@@ -230,8 +230,8 @@ public class EmailContactStorageTest {
 
     ArgumentCaptor<EmailContactEntity> saved = ArgumentCaptor.forClass(EmailContactEntity.class);
     verify(emailContactDAO).save(saved.capture());
-    assertEquals("ERWIN MULLER", saved.getValue().getSortName());
-    assertEquals(4, saved.getValue().getSortBucket());
+    assertEquals("MULLER ERWIN", saved.getValue().getSortName());
+    assertEquals(12, saved.getValue().getSortBucket());
     assertNull(saved.getValue().getId());
     assertTrue(saved.getValue().getCreatedDate() != null && saved.getValue().getUpdatedDate() != null);
   }
