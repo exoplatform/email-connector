@@ -559,7 +559,10 @@ export default {
      * <p>
      * So when the halves are missing they are read from the whole name: the
      * first word leads, the rest follows, which is the convention this form's
-     * own layout already assumes. Stored halves are never second-guessed -- if
+     * own layout already assumes, and a comma ("Doe, John") states the order
+     * itself, family first. The server derives the stored sort key from the
+     * same reading (EmailContactUtils.computeSortName), so a contact files
+     * where an edit would leave it. Stored halves are never second-guessed -- if
      * the source gave them, they are what the card says, and re-deriving them
      * would overwrite a real answer with a guess.
      *
@@ -575,6 +578,13 @@ export default {
       // is not a name: splitting it would put half a mailbox in each field.
       if (!whole || whole.includes('@')) {
         return {givenName: '', familyName: ''};
+      }
+      const comma = whole.indexOf(',');
+      if (comma > 0) {
+        return {
+          givenName: whole.slice(comma + 1).trim(),
+          familyName: whole.slice(0, comma).trim(),
+        };
       }
       const words = whole.split(/\s+/);
       return {

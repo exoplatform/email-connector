@@ -18,12 +18,17 @@ package org.exoplatform.emailConnector.upgrade;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
+
+import java.util.ArrayList;
 
 import java.util.List;
 
@@ -33,7 +38,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 
 import org.exoplatform.commons.api.settings.SettingService;
@@ -46,11 +50,13 @@ import org.exoplatform.emailConnector.entity.EmailContactEntity;
 @ExtendWith(MockitoExtension.class)
 public class ContactSortNameBackfillTest {
 
-  @Mock
-  private EmailContactDAO        emailContactDAO;
+  private static final String     DONE_KEY = "emailContactSortNameBackfillDone";
 
   @Mock
-  private SettingService         settingService;
+  private EmailContactDAO         emailContactDAO;
+
+  @Mock
+  private SettingService          settingService;
 
   @InjectMocks
   private ContactSortNameBackfill backfill;
@@ -62,46 +68,60 @@ public class ContactSortNameBackfillTest {
     EmailContactEntity alreadyRight = contact(3L, null, null, "exo-support", "EXO-SUPPORT", 4);
     EmailContactEntity address = contact(4L, null, null, "ci@exoplatform.com", "CI@EXOPLATFORM.COM", 2);
     EmailContactEntity nameless = contact(5L, null, null, null, "JANE.DOE", 9);
+    when(emailContactDAO.updateSortKey(anyLong(), anyString(), anyInt())).thenReturn(1);
 
     int rewritten = backfill.recomputeSortNames(List.of(structured, synced, alreadyRight, address, nameless));
 
     assertEquals(1, rewritten);
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<List<EmailContactEntity>> saved = ArgumentCaptor.forClass(List.class);
-    verify(emailContactDAO).saveAll(saved.capture());
-    assertEquals(List.of(synced), saved.getValue());
-    assertEquals("DUCREUX ALEXANDRE", synced.getSortName());
-    assertEquals(3, synced.getSortBucket());
-    assertEquals("DOE JOHN", structured.getSortName());
-    assertEquals("JANE.DOE", nameless.getSortName());
+    verify(emailContactDAO).updateSortKey(2L, "DUCREUX ALEXANDRE", 3);
+    verify(emailContactDAO, times(1)).updateSortKey(anyLong(), anyString(), anyInt());
   }
 
   @Test
-  void nothingIsSavedWhenNoKeyChanges() {
+  void nothingIsWrittenWhenNoKeyChanges() {
     EmailContactEntity structured = contact(1L, "John", "Doe", "Doe John", "DOE JOHN", 3);
 
     assertEquals(0, backfill.recomputeSortNames(List.of(structured)));
-    verify(emailContactDAO, never()).saveAll(anyList());
+    verify(emailContactDAO, never()).updateSortKey(anyLong(), anyString(), anyInt());
   }
 
   @Test
-  void recomputeWalksEveryPageAndMarksTheRunDone() {
-    EmailContactEntity synced = contact(2L, null, null, "John Doe", "JOHN DOE", 9);
-    when(emailContactDAO.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of(synced)));
+  void backfillWalksThePagesByCursorUntilAShortPageAndMarksTheRunDone() {
+    List<EmailContactEntity> fullPage = new ArrayList<>();
+    for (long id = 1; id <= 200; id++) {
+      fullPage.add(contact(id, null, null, "John Doe", "JOHN DOE", 9));
+    }
+    List<EmailContactEntity> lastPage = List.of(contact(201L, null, null, "Jane Roe", "JANE ROE", 9));
+    when(emailContactDAO.findWithoutStructuredNamesAfter(eq(0L), any(Pageable.class))).thenReturn(fullPage);
+    when(emailContactDAO.findWithoutStructuredNamesAfter(eq(200L), any(Pageable.class))).thenReturn(lastPage);
+    when(emailContactDAO.updateSortKey(anyLong(), anyString(), anyInt())).thenReturn(1);
 
     backfill.backfill();
 
-    assertEquals("DOE JOHN", synced.getSortName());
-    verify(settingService).set(eq(Context.GLOBAL), any(Scope.class), eq("emailContactSortNameBackfillDone"), any(SettingValue.class));
+    ArgumentCaptor<Long> cursors = ArgumentCaptor.forClass(Long.class);
+    verify(emailContactDAO, times(2)).findWithoutStructuredNamesAfter(cursors.capture(), any(Pageable.class));
+    assertEquals(List.of(0L, 200L), cursors.getAllValues());
+    verify(emailContactDAO, times(201)).updateSortKey(anyLong(), anyString(), anyInt());
+    verify(emailContactDAO).updateSortKey(201L, "ROE JANE", 17);
+    verify(settingService).set(eq(Context.GLOBAL), any(Scope.class), eq(DONE_KEY), any(SettingValue.class));
+  }
+
+  @Test
+  void aRunThatFailsIsNotMarkedDone() {
+    when(emailContactDAO.findWithoutStructuredNamesAfter(anyLong(), any(Pageable.class))).thenThrow(new IllegalStateException("database away"));
+
+    backfill.backfill();
+
+    verify(settingService, never()).set(any(Context.class), any(Scope.class), anyString(), any(SettingValue.class));
   }
 
   @Test
   void aCompletedRunIsNotRepeated() {
-    doReturn(SettingValue.create("true")).when(settingService).get(eq(Context.GLOBAL), any(Scope.class), eq("emailContactSortNameBackfillDone"));
+    doReturn(SettingValue.create("true")).when(settingService).get(eq(Context.GLOBAL), any(Scope.class), eq(DONE_KEY));
 
     backfill.backfill();
 
-    verify(emailContactDAO, never()).findAll(any(Pageable.class));
+    verify(emailContactDAO, never()).findWithoutStructuredNamesAfter(anyLong(), any(Pageable.class));
   }
 
   private static EmailContactEntity contact(long id, String given, String family, String displayName, String sortName, int bucket) {
