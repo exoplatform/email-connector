@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -29,6 +30,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -497,6 +499,64 @@ public class EmailContactStorageTest {
     entity.setPrimaryEmail(primaryEmail);
     entity.setDisplayName(displayName);
     entity.setSortBucket(sortBucket);
+    return entity;
+  }
+
+  @Test
+  void recomputeSortNamesRefilesOnlyTheContactsWithoutStructuredNamesWhoseKeyChanges() {
+    EmailContactEntity structured = sortKeyRow(1L, "John", "Doe", "Doe John", "DOE JOHN", 3);
+    EmailContactEntity synced = sortKeyRow(2L, null, null, "Alexandre Ducreux", "ALEXANDRE DUCREUX", 0);
+    EmailContactEntity alreadyRight = sortKeyRow(3L, null, null, "exo-support", "EXO-SUPPORT", 4);
+    EmailContactEntity address = sortKeyRow(4L, null, null, "ci@exoplatform.com", "CI@EXOPLATFORM.COM", 2);
+    EmailContactEntity nameless = sortKeyRow(5L, null, null, null, "JANE.DOE", 9);
+    when(emailContactDAO.updateSortKey(anyLong(), anyString(), anyInt())).thenReturn(1);
+
+    int rewritten = emailContactStorage.recomputeSortNames(List.of(structured, synced, alreadyRight, address, nameless));
+
+    assertEquals(1, rewritten);
+    verify(emailContactDAO).updateSortKey(2L, "DUCREUX ALEXANDRE", 3);
+    verify(emailContactDAO, times(1)).updateSortKey(anyLong(), anyString(), anyInt());
+  }
+
+  @Test
+  void recomputeSortNamesWritesNothingWhenNoKeyChanges() {
+    EmailContactEntity structured = sortKeyRow(1L, "John", "Doe", "Doe John", "DOE JOHN", 3);
+
+    assertEquals(0, emailContactStorage.recomputeSortNames(List.of(structured)));
+    verify(emailContactDAO, never()).updateSortKey(anyLong(), anyString(), anyInt());
+  }
+
+  @Test
+  void recomputeSortNamesWalksThePagesByCursorUntilAShortPage() {
+    List<EmailContactEntity> fullPage = new ArrayList<>();
+    for (long id = 1; id <= 200; id++) {
+      fullPage.add(sortKeyRow(id, null, null, "John Doe", "JOHN DOE", 9));
+    }
+    List<EmailContactEntity> lastPage = List.of(sortKeyRow(201L, null, null, "Jane Roe", "JANE ROE", 9));
+    when(emailContactDAO.findWithoutStructuredNamesAfter(eq(0L), any(Pageable.class))).thenReturn(fullPage);
+    when(emailContactDAO.findWithoutStructuredNamesAfter(eq(200L), any(Pageable.class))).thenReturn(lastPage);
+    when(emailContactDAO.updateSortKey(anyLong(), anyString(), anyInt())).thenReturn(1);
+
+    int rewritten = emailContactStorage.recomputeSortNames();
+
+    assertEquals(201, rewritten);
+    ArgumentCaptor<Long> cursors = ArgumentCaptor.forClass(Long.class);
+    verify(emailContactDAO, times(2)).findWithoutStructuredNamesAfter(cursors.capture(), any(Pageable.class));
+    assertEquals(List.of(0L, 200L), cursors.getAllValues());
+    verify(emailContactDAO, times(201)).updateSortKey(anyLong(), anyString(), anyInt());
+    verify(emailContactDAO).updateSortKey(201L, "ROE JANE", 17);
+  }
+
+  private static EmailContactEntity sortKeyRow(long id, String given, String family, String displayName, String sortName, int bucket) {
+    EmailContactEntity entity = new EmailContactEntity();
+    entity.setId(id);
+    entity.setUserId("john");
+    entity.setPrimaryEmail("jane.doe@example.com");
+    entity.setGivenName(given);
+    entity.setFamilyName(family);
+    entity.setDisplayName(displayName);
+    entity.setSortName(sortName);
+    entity.setSortBucket(bucket);
     return entity;
   }
 }

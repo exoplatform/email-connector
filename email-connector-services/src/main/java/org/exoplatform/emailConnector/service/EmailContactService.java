@@ -1035,6 +1035,18 @@ public class EmailContactService {
   }
 
   /**
+   * Recomputes the stored sort key of the contacts that carry no structured
+   * names, for every user. Meant for a data upgrade after a change of the
+   * key derivation; safe to run again, a row whose key is already right is
+   * left untouched.
+   *
+   * @return the number of contacts refiled
+   */
+  public int recomputeContactSortNames() {
+    return emailContactStorage.recomputeSortNames();
+  }
+
+  /**
    * Imports a platform colleague into the caller's contact store — the "Add to
    * my contacts" action on a people profile, and the one writer of
    * {@link EmailContactSource#DIRECTORY} rows. What is stored is a LINK (the
