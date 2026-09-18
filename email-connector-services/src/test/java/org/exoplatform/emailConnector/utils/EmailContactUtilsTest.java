@@ -86,14 +86,27 @@ public class EmailContactUtilsTest {
   @Test
   void sortNamePrefersFamilyGivenThenDisplayNameThenLocalPart() {
     assertEquals("DOE JANE", EmailContactUtils.computeSortName("Jane", "Doe", "whatever", "jane@example.com"));
-    assertEquals("JANE DOE", EmailContactUtils.computeSortName(null, null, "Jane Doe", "jane@example.com"));
+    assertEquals("DOE JANE", EmailContactUtils.computeSortName(null, null, "Jane Doe", "jane@example.com"));
     assertEquals("JANE.DOE", EmailContactUtils.computeSortName(null, null, null, "jane.doe@example.com"));
   }
 
   @Test
   void sortNameStripsDiacriticsSoMuellerFilesUnderM() {
     assertEquals("MULLER ERWIN", EmailContactUtils.computeSortName("Erwin", "Müller", null, "em@example.com"));
-    assertEquals("EMILE ZOLA", EmailContactUtils.computeSortName(null, null, "Émile Zola", "ez@example.com"));
+    assertEquals("ZOLA EMILE", EmailContactUtils.computeSortName(null, null, "Émile Zola", "ez@example.com"));
+  }
+
+  @Test
+  void sortNameReadsADisplayNameLikeTheContactForm() {
+    // The form splits a display name into first word = given, rest = family; the
+    // sort key follows the same split so a synced contact files where an edited one does.
+    assertEquals("DOE JOHN", EmailContactUtils.computeSortName(null, null, "John Doe", "jd@example.com"));
+    assertEquals("AS SIGMA SEBASTIEN", EmailContactUtils.computeSortName(null, null, "Sébastien AS Sigma", "s@example.com"));
+    assertEquals("DOE JOHN", EmailContactUtils.computeSortName(null, null, "Doe, John", "jd@example.com"));
+    assertEquals("EXO-SUPPORT", EmailContactUtils.computeSortName(null, null, "exo-support", "support@example.com"));
+    assertEquals("CI@EXOPLATFORM.COM", EmailContactUtils.computeSortName(null, null, "ci@exoplatform.com", "ci@exoplatform.com"));
+    assertEquals("DOE JOHN", EmailContactUtils.computeSortName(null, null, "  John   Doe  ", "jd@example.com"));
+    assertEquals(3, EmailContactUtils.sortBucketOf(EmailContactUtils.computeSortName(null, null, "John Doe", "jd@example.com")));
   }
 
   @Test
