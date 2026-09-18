@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -310,6 +311,52 @@ public class EmailContactDAOTest {
     entity.setLastSeenDate(lastSeenDate);
     entityManager.persist(entity);
     entityManager.flush();
+  }
+
+  @Test
+  void findWithoutStructuredNamesAfterWalksOnlyDisplayNameOnlyRowsInIdOrder() {
+    long displayOnly = persistContact("a@example.com", "John Doe", "JOHN DOE", 9, false, null);
+    EmailContactEntity structured = new EmailContactEntity();
+    structured.setUserId(USERNAME);
+    structured.setSource(EmailContactSource.CARDDAV);
+    structured.setPrimaryEmail("b@example.com");
+    structured.setDisplayName("Jane Roe");
+    structured.setGivenName("Jane");
+    structured.setFamilyName("Roe");
+    structured.setSortName("ROE JANE");
+    structured.setSortBucket(17);
+    entityManager.persist(structured);
+    long blankGiven = persistContact("c@example.com", "Ann Lee", "ANN LEE", 0, false, null);
+    entityManager.find(EmailContactEntity.class, blankGiven).setGivenName("  ");
+    long nameless = persistContact("d@example.com", null, "D", 3, false, null);
+    long suppressedDisplayOnly = persistContact("e@example.com", "Zed Zed", "ZED ZED", 25, true, null);
+    entityManager.flush();
+    entityManager.clear();
+
+    List<EmailContactEntity> firstPage = emailContactDAO.findWithoutStructuredNamesAfter(0, PageRequest.of(0, 2));
+    assertEquals(List.of(displayOnly, blankGiven), firstPage.stream().map(EmailContactEntity::getId).toList());
+    List<EmailContactEntity> nextPage = emailContactDAO.findWithoutStructuredNamesAfter(blankGiven, PageRequest.of(0, 2));
+    assertEquals(List.of(suppressedDisplayOnly), nextPage.stream().map(EmailContactEntity::getId).toList());
+    assertTrue(emailContactDAO.findWithoutStructuredNamesAfter(suppressedDisplayOnly, PageRequest.of(0, 2)).isEmpty());
+    assertFalse(firstPage.stream().anyMatch(c -> c.getId() == nameless));
+  }
+
+  @Test
+  void updateSortKeyRewritesTheTwoDerivedColumnsOnly() {
+    long id = persistContact("a@example.com", "John Doe", "JOHN DOE", 9, false, null);
+    EmailContactEntity before = entityManager.find(EmailContactEntity.class, id);
+    before.setSeenCount(7);
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(1, emailContactDAO.updateSortKey(id, "DOE JOHN", 3));
+    assertEquals(0, emailContactDAO.updateSortKey(id + 1000, "X", 0));
+
+    EmailContactEntity after = entityManager.find(EmailContactEntity.class, id);
+    assertEquals("DOE JOHN", after.getSortName());
+    assertEquals(3, after.getSortBucket());
+    assertEquals("John Doe", after.getDisplayName());
+    assertEquals(7, after.getSeenCount());
   }
 
   /**

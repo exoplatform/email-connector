@@ -16,14 +16,12 @@
  */
 package org.exoplatform.emailConnector.upgrade;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.commons.api.settings.SettingService;
@@ -46,7 +44,8 @@ import jakarta.annotation.PostConstruct;
  * it now follows the contact form's reading of that name ("DOE JOHN", filed
  * under D). The key is written once at save time and read by the list, its
  * paging and the letter rail, so existing rows keep the old key until
- * recomputed. Runs once, at startup, on its own thread with the container bound
+ * recomputed. Only the two derived columns are rewritten, one row at a time,
+ * so nothing another writer changed meanwhile is carried back. Runs once, at startup, on its own thread with the container bound
  * by the transactional aspect of {@link #run()}, and records its completion in
  * the settings; a run that does not complete is retried at the next start.
  */
@@ -92,17 +91,20 @@ public class ContactSortNameBackfill {
 
   int recomputeSortNames() {
     int rewritten = 0;
-    int page = 0;
+    long lastId = 0;
     List<EmailContactEntity> contacts;
     do {
-      contacts = emailContactDAO.findAll(PageRequest.of(page++, PAGE_SIZE, Sort.by("id"))).getContent();
+      contacts = emailContactDAO.findWithoutStructuredNamesAfter(lastId, PageRequest.of(0, PAGE_SIZE));
       rewritten += recomputeSortNames(contacts);
+      if (!contacts.isEmpty()) {
+        lastId = contacts.get(contacts.size() - 1).getId();
+      }
     } while (contacts.size() == PAGE_SIZE);
     return rewritten;
   }
 
   int recomputeSortNames(List<EmailContactEntity> contacts) {
-    List<EmailContactEntity> changed = new ArrayList<>();
+    int rewritten = 0;
     for (EmailContactEntity contact : contacts) {
       if (StringUtils.isNotBlank(contact.getGivenName())
           || StringUtils.isNotBlank(contact.getFamilyName())
@@ -116,14 +118,9 @@ public class ContactSortNameBackfill {
       if (StringUtils.equals(sortName, contact.getSortName())) {
         continue;
       }
-      contact.setSortName(sortName);
-      contact.setSortBucket(EmailContactUtils.sortBucketOf(sortName));
-      changed.add(contact);
+      rewritten += emailContactDAO.updateSortKey(contact.getId(), sortName, EmailContactUtils.sortBucketOf(sortName));
     }
-    if (!changed.isEmpty()) {
-      emailContactDAO.saveAll(changed);
-    }
-    return changed.size();
+    return rewritten;
   }
 
   boolean isDone() {
