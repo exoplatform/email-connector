@@ -98,8 +98,6 @@ public class EmailContactUtilsTest {
 
   @Test
   void sortNameReadsADisplayNameLikeTheContactForm() {
-    // The form splits a display name into first word = given, rest = family; the
-    // sort key follows the same split so a synced contact files where an edited one does.
     assertEquals("DOE JOHN", EmailContactUtils.computeSortName(null, null, "John Doe", "jd@example.com"));
     assertEquals("AS SIGMA SEBASTIEN", EmailContactUtils.computeSortName(null, null, "Sébastien AS Sigma", "s@example.com"));
     assertEquals("DOE JOHN", EmailContactUtils.computeSortName(null, null, "Doe, John", "jd@example.com"));
