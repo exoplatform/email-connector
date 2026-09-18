@@ -24,7 +24,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.emailConnector.entity.EmailContactEntity;
 
@@ -308,4 +310,40 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
    * @return the rows, in no particular order
    */
   List<EmailContactEntity> findByUserId(String userId);
+
+  /**
+   * The rows whose sort key is derived from the display name alone — no
+   * structured name, a display name present — after a cursor, in id order, for
+   * a keyset walk over the whole store (every user). Blankness is tested by
+   * length, not by comparing with '': Oracle reads a zero-length string as
+   * NULL and a comparison against it as unknown, which would select nothing.
+   *
+   * @param lastId the last id already visited, 0 to start
+   * @param pageable the window size
+   * @return the next rows, in id order
+   */
+  @Query("SELECT c FROM EmailContactEntity c WHERE c.id > :lastId"
+      + " AND COALESCE(LENGTH(TRIM(c.givenName)), 0) = 0"
+      + " AND COALESCE(LENGTH(TRIM(c.familyName)), 0) = 0"
+      + " AND LENGTH(TRIM(c.displayName)) > 0"
+      + " ORDER BY c.id ASC")
+  List<EmailContactEntity> findWithoutStructuredNamesAfter(@Param("lastId")
+  long lastId, Pageable pageable);
+
+  /**
+   * Rewrites the two derived sort columns of one row and nothing else, so a
+   * concurrent writer's columns are never carried back from a stale snapshot.
+   *
+   * @param id the row
+   * @param sortName the derived sort key
+   * @param sortBucket the derived letter bucket
+   * @return the number of rows updated, 0 when the row is gone
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailContactEntity c SET c.sortName = :sortName, c.sortBucket = :sortBucket WHERE c.id = :id")
+  int updateSortKey(@Param("id")
+  long id, @Param("sortName")
+  String sortName, @Param("sortBucket")
+  int sortBucket);
 }

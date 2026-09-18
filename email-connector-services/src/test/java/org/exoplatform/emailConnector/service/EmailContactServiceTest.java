@@ -2587,4 +2587,11 @@ public class EmailContactServiceTest {
   private UserEmailSetting userEmailSetting() {
     return new UserEmailSetting("1", OWN_ADDRESS, "password", null, null, 0, 0L, null, null, "connector", true);
   }
+
+  @Test
+  void recomputeContactSortNamesDelegatesToTheStorage() {
+    when(emailContactStorage.recomputeSortNames()).thenReturn(7);
+
+    assertEquals(7, emailContactService.recomputeContactSortNames());
+  }
 }
