@@ -1585,9 +1585,13 @@ function notify(alertMessage, alertType, alertLink = null, alertLinkText = null)
 /**
  * The address of the Documents application showing the given folder. A folder in a
  * space drive opens the Documents app of that space (its own context); a folder in
- * the personal drive opens the user's own Documents (their workspace's Drive, i.e.
- * eXo.env.portal.defaultPath) — NOT the meta portal, which is a different Drive the
- * saved folder does not live in. Both read folderId from the URL.
+ * the personal drive opens it on the meta portal. Which drive is shown is decided by
+ * folderId, not by the site: the documents node is declared on the global site and is
+ * reachable under any of them. Both read folderId from the URL.
+ *
+ * eXo.env.portal.defaultPath is NOT the site root — the portal fills it with the
+ * user's chosen home page — so appending a page to it lands nowhere as soon as that
+ * home page is set to anything but the site root.
  *
  * @param {Object} pickerDetail the folder picker's selection event detail
  * @returns {String} the documents page URL for the picked folder
@@ -1598,8 +1602,8 @@ function getDocumentsFolderUrl(pickerDetail) {
     // the space's own Documents app
     return `${eXo.env.portal.context}/s/${pickerDetail.spaceId}/documents?${params}`;
   }
-  // the user's personal Documents (their workspace Drive), where the folder lives
-  return `${eXo.env.portal.defaultPath}/documents?${params}`;
+  // the user's personal Documents, as the Documents app addresses them itself
+  return `${eXo.env.portal.context}/${eXo.env.portal.defaultPortal}/documents?${params}`;
 }
 
 /**
