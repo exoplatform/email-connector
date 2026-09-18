@@ -314,16 +314,18 @@ public interface EmailContactDAO extends JpaRepository<EmailContactEntity, Long>
   /**
    * The rows whose sort key is derived from the display name alone — no
    * structured name, a display name present — after a cursor, in id order, for
-   * a keyset walk over the whole store (every user).
+   * a keyset walk over the whole store (every user). Blankness is tested by
+   * length, not by comparing with '': Oracle reads a zero-length string as
+   * NULL and a comparison against it as unknown, which would select nothing.
    *
    * @param lastId the last id already visited, 0 to start
    * @param pageable the window size
    * @return the next rows, in id order
    */
   @Query("SELECT c FROM EmailContactEntity c WHERE c.id > :lastId"
-      + " AND (c.givenName IS NULL OR TRIM(c.givenName) = '')"
-      + " AND (c.familyName IS NULL OR TRIM(c.familyName) = '')"
-      + " AND c.displayName IS NOT NULL AND TRIM(c.displayName) <> ''"
+      + " AND COALESCE(LENGTH(TRIM(c.givenName)), 0) = 0"
+      + " AND COALESCE(LENGTH(TRIM(c.familyName)), 0) = 0"
+      + " AND LENGTH(TRIM(c.displayName)) > 0"
       + " ORDER BY c.id ASC")
   List<EmailContactEntity> findWithoutStructuredNamesAfter(@Param("lastId")
   long lastId, Pageable pageable);
