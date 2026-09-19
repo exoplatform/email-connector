@@ -198,6 +198,7 @@ public class EmailScheduledSendServiceTest {
     Email saved = draft();
     saved.setId(9L);
     saved.setDraftLocalId(LOCAL_ID);
+    saved.setThreadId("thread-9");
     when(emailBoxService.scheduleDraft(any(Email.class), eq(USER), any())).thenAnswer(invocation -> {
       Function<Email, EmailScheduledSend> scheduler = invocation.getArgument(2);
       return scheduler.apply(saved);
@@ -214,6 +215,7 @@ public class EmailScheduledSendServiceTest {
     assertEquals(at, row.getValue().getNextAttemptDate().getTime());
     assertEquals("Europe/Paris", scheduled.getTimeZone());
     assertEquals(LOCAL_ID, scheduled.getDraftLocalId());
+    assertEquals("thread-9", scheduled.getThreadId());
 
     when(storage.countListed(USER)).thenReturn(100L);
     assertRefused(EmailScheduledSendService.LIMIT_REACHED, () -> service.schedule(draft(), at, "UTC", USER));
