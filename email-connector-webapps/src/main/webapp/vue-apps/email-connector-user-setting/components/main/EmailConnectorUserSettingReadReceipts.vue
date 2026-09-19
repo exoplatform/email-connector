@@ -126,6 +126,14 @@ export default {
     },
     /**
      * Shows preferences as the server answered them.
+     * <p>
+     * A stored ALWAYS is shown as ASK while the administrator disables it. No live
+     * response can carry that pair -- the server already answers a stored ALWAYS as
+     * ASK whenever the switch is off, and a save answers with the same read -- so this
+     * guard is deliberately unreachable and has no spec of its own. It is here for a
+     * response that predates the switch being turned off: a cached GET, or a reader
+     * left open across the change. Without it the screen would offer a choice the
+     * server would then refuse.
      *
      * @param {Object} settings {requestByDefault, responsePolicy, alwaysAllowed}
      * @returns {void}
