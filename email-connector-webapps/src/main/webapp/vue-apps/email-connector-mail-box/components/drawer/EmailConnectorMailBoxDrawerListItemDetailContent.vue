@@ -25,10 +25,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item-title v-text="email.subject" class="text-wrap overflow-visible" />
       </v-list-item-content>
     </v-list-item>
+    <!-- A mail scheduled to be sent (EXO-90434) is rendered as any message is, read-only:
+         this line says so and offers its Edit, which takes it out of its schedule first
+         -- the same slim line and text button as an unavailable message's retry. -->
+    <div
+      v-if="scheduled"
+      class="d-flex align-center px-0 pb-3 scheduled-mail-read-only">
+      <v-icon size="14" class="icon-default-color me-2">fas fa-info-circle</v-icon>
+      <span class="text-subtitle">{{ $t('emailConnector.mailBox.scheduled.readOnly') }}</span>
+      <v-btn
+        :disabled="email.scheduledStatus === 'SENDING'"
+        class="ms-2 scheduled-mail-edit"
+        color="primary"
+        text
+        small
+        @click="$emit('edit')">
+        {{ $t('emailConnector.mailBox.scheduled.action.edit') }}
+      </v-btn>
+    </div>
     <v-list-item
       :class="['height-auto', recipientsClass]">
       <email-connector-mail-box-drawer-list-item-detail-sender-avatar 
-        :email="email" 
+        :email="avatarEmail" 
         class="me-3 my-0" />
       <v-list-item-content class="py-0">
         <v-list-item-title
@@ -49,7 +67,60 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-btn>
         </v-list-item-subtitle>
       </v-list-item-content>
-      <v-list-item-action class="pt-4 my-0 d-flex flex-column align-end">
+      <!-- Scheduled: when it goes, in its state's colour, in place of the date; its own
+           actions in place of a message's (favorite, reply, ⋮). -->
+      <v-list-item-action
+        v-if="scheduled"
+        class="pt-4 my-0 d-flex flex-column align-end">
+        <v-list-item-subtitle
+          :class="stateColor"
+          class="pb-1 d-flex align-center scheduled-mail-date">
+          <v-icon size="12" :class="stateColor || 'icon-default-color'" class="me-1">far fa-clock</v-icon>
+          {{ scheduledForLabel }}
+        </v-list-item-subtitle>
+        <v-list-item-subtitle
+          v-if="stateText"
+          :class="stateColor"
+          class="pb-1 text-wrap text-end scheduled-mail-state">
+          {{ stateText }}
+        </v-list-item-subtitle>
+        <v-menu
+          v-if="scheduledActions.length"
+          :nudge-top="-1"
+          content-class="no-min-width border-radius z-index-modal overflow-hidden"
+          offset-y
+          left
+          bottom
+          attach>
+          <template #activator="{ on, attrs }">
+            <v-btn
+              v-bind="attrs"
+              :title="$t('emailConnector.mailBox.scheduled.actions')"
+              :aria-label="$t('emailConnector.mailBox.scheduled.actions')"
+              class="pa-0 scheduled-mail-menu"
+              icon
+              v-on="on">
+              <v-icon size="20" class="icon-default-color">fa-ellipsis-v</v-icon>
+            </v-btn>
+          </template>
+          <v-list dense>
+            <v-list-item
+              v-for="action in scheduledActions"
+              :key="action.name"
+              :data-action="action.name"
+              class="scheduled-mail-action"
+              @click="$emit('scheduled-action', action.name)">
+              <v-list-item-icon class="me-2 my-auto">
+                <v-icon size="14" class="icon-default-color">{{ action.icon }}</v-icon>
+              </v-list-item-icon>
+              <v-list-item-title>{{ action.label }}</v-list-item-title>
+            </v-list-item>
+          </v-list>
+        </v-menu>
+      </v-list-item-action>
+      <v-list-item-action
+        v-else
+        class="pt-4 my-0 d-flex flex-column align-end">
         <v-list-item-subtitle class="pb-1" v-text="receivedDate" />
         <div class="d-flex flex-row align-center">
           <!-- The message's favorite (the server's \Flagged flag): toggling pushes to
@@ -108,6 +179,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { personLabel } from '../../js/EmailRecipientDisplay.js';
+import { SCHEDULED_ACTIONS } from '../../js/EmailConnectorScheduledSendService.js';
 
 export default {
   data() {
@@ -146,13 +218,106 @@ export default {
       type: Boolean,
       default: false,
     },
+    // The Scheduled view's row of this mail, when the reader was opened on it from that
+    // view (EXO-90434): its actions and its reason are the row's, run by the view.
+    scheduledRow: {
+      type: Object,
+      default: null,
+    },
   },
   computed: {
+    /**
+     * Whether the message is a draft scheduled to be sent: shown read-only, with when
+     * it goes in place of a date (EXO-90434).
+     *
+     * @returns {Boolean} true for a scheduled draft
+     */
+    scheduled() {
+      return !!this.email?.scheduled;
+    },
+    /**
+     * The message as its avatar reads it: a scheduled draft is the user's own, and its
+     * row may carry no sender picture (or no sender at all, when only the Scheduled
+     * view's row is known), so it shows the user's own platform avatar.
+     *
+     * @returns {Object} the message, or a copy with the user's avatar
+     */
+    avatarEmail() {
+      if (!this.scheduled || this.email.sender?.avatarUrl) {
+        return this.email;
+      }
+      const userName = window.eXo?.env?.portal?.userName || '';
+      return {
+        ...this.email,
+        sender: { ...(this.email.sender || {}), avatarUrl: `/portal/rest/v1/social/users/${encodeURIComponent(userName)}/avatar` },
+      };
+    },
+    /**
+     * @returns {String} "Scheduled for {date}", in the zone the date was chosen in
+     */
+    scheduledForLabel() {
+      return this.$t('emailConnector.mailBox.scheduled.at', {
+        0: this.$emailConnectorMailBoxService.formatScheduledDate(this.email.scheduledDate, this.email.scheduledTimeZone),
+      });
+    },
+    /**
+     * What the scheduled mail's state says: the Scheduled view's row when there is one,
+     * which also carries the reason, else the status the draft's row carries.
+     *
+     * @returns {Object} {key, reasonKey, color}, or null while it simply waits
+     */
+    stateLine() {
+      return this.scheduled
+        ? this.$emailConnectorMailBoxService.scheduledStateLine(this.scheduledRow || { status: this.email.scheduledStatus })
+        : null;
+    },
+    /**
+     * @returns {String} the state's colour class, nothing while it simply waits
+     */
+    stateColor() {
+      return this.stateLine?.color || '';
+    },
+    /**
+     * The state's words, nothing while it simply waits. A conversation's row carries
+     * the status and not the reason, so without the view's row a mail not sent says
+     * where the reason is rather than inventing one.
+     *
+     * @returns {String} the words
+     */
+    stateText() {
+      if (!this.stateLine) {
+        return '';
+      }
+      if (!this.stateLine.reasonKey) {
+        return this.$t(this.stateLine.key);
+      }
+      return this.scheduledRow
+        ? this.$t(this.stateLine.key, { 0: this.$t(this.stateLine.reasonKey) })
+        : this.$t('emailConnector.mailBox.list.drawer.thread.draft.notSent');
+    },
+    /**
+     * The actions the Scheduled view's row offers, {name, icon, label}: none without
+     * that row, since only the view runs them -- the read-only line's Edit is offered
+     * everywhere.
+     *
+     * @returns {Array} the actions
+     */
+    scheduledActions() {
+      if (!this.scheduledRow) {
+        return [];
+      }
+      return this.$emailConnectorMailBoxService.scheduledActions(this.scheduledRow)
+        .map(name => ({ name, icon: SCHEDULED_ACTIONS[name].icon, label: this.$t(SCHEDULED_ACTIONS[name].label) }));
+    },
     receivedDate() {
       return this.$emailConnectorMailBoxService.formatDateString(this.email.receivedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
     },
     // A message from the user's own Sent folder is shown as "Me", like Gmail.
     senderLabel() {
+      if (this.scheduled) {
+        // The user's own: their name when the draft's row carries it, else "Me".
+        return this.email.sender?.name || this.$t('emailConnector.mailBox.list.drawer.detail.me');
+      }
       return this.email.folder === 'SENT'
         ? this.$t('emailConnector.mailBox.list.drawer.detail.me')
         : this.email.sender.name;
@@ -161,7 +326,8 @@ export default {
       return this.expandedHeader ? 'fa-chevron-up' : 'fa-chevron-down';
     },
     recipients() {
-      const recipients = [...this.email.to, ...this.email.cc, ...this.email.bcc];
+      // A draft's row may leave cc and bcc out (the Scheduled view's row does).
+      const recipients = [...(this.email.to || []), ...(this.email.cc || []), ...(this.email.bcc || [])];
       if (recipients.length === 0) {
         return '';
       }
