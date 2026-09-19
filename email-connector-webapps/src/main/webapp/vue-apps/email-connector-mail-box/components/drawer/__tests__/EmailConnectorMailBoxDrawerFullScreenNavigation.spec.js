@@ -24,7 +24,9 @@ import { createLocalVue, shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerList from '../EmailConnectorMailBoxDrawerList.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
-import { KEY_OPEN_DELAY_MS } from '../../../js/EmailConnectorMailBoxListNavigation.js';
+import { AUTO_OPEN_MARK_READ_DELAY_MS, KEY_OPEN_DELAY_MS } from '../../../js/EmailConnectorMailBoxListNavigation.js';
+import EmailConnectorMailBoxDrawerSearchResults from '../EmailConnectorMailBoxDrawerSearchResults.vue';
+import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 
 const FOLDERS = [
   { key: 'INBOX', type: 'BUILT_IN', syncEnabled: true },
@@ -91,6 +93,7 @@ async function mountDrawer(emails) {
     markAsJunk: jest.fn(() => Promise.resolve({ failedJunkMoves: 0 })),
     moveEmails: jest.fn(() => Promise.resolve({ failedMoves: 0 })),
     undoMoveEmails: jest.fn(() => Promise.resolve({ failedUndos: 0 })),
+    broadcastOpenEmail: jest.fn(() => Promise.resolve()),
   });
   const wrapper = shallowMount(EmailConnectorMailBoxDrawer, {
     attachTo: document.body,
@@ -315,7 +318,7 @@ describe('full screen opens on a mail (EXO-90414)', () => {
     fixture.wrapper.vm.autoSelectFirstEmail();
     await flush();
 
-    expect(fixture.service.getEmailByRemoteId).toHaveBeenCalledWith(2, 'INBOX');
+    expect(fixture.service.getEmailByRemoteId).toHaveBeenCalledWith(2, 'INBOX', { broadcast: false });
   });
 
   it('forgets the wait when the drawer goes back to its narrow layout', async () => {
@@ -349,7 +352,9 @@ describe('full screen moves on to the next mail after an action (EXO-90414)', ()
     expect(readerOpenings(fixture)).toEqual([3]);
     expect(fixture.wrapper.vm.email.mailRemoteId).toBe(3);
     expect(fixture.wrapper.vm.selectEmailPlaceHolder).toBe(false);
-    // Lit again once on screen: the placeholder's own watcher cleared it in between.
+    // Lit once, as the next mail opens: the placeholder is up and down again within the
+    // same tick (the reader opens on the next list row at once), so its watcher, which
+    // would clear the highlight, never runs.
     expect(fixture.opened[fixture.opened.length - 1]).toBe(3);
   });
 
@@ -598,19 +603,6 @@ describe('the arrow keys walk the list (EXO-90414)', () => {
     expect(readerOpenings(fixture)).toEqual([3]);
   });
 
-  it('marks the mail the keys stop on read once, at opening', async () => {
-    const unread = { ...row(2), read: false };
-    fixture = await mountDrawer([row(1), unread, row(3)]);
-    await openFullScreenOn(fixture, 1);
-    fixture.service.updateEmailsReadStatus.mockClear();
-
-    press(fixture, 'ArrowDown');
-    await settle();
-
-    expect(readerOpenings(fixture)).toEqual([2]);
-    expect(fixture.service.updateEmailsReadStatus.mock.calls).toEqual([[[2], true, 'INBOX']]);
-  });
-
   it('stops at either end of the list', async () => {
     fixture = await mountDrawer([row(1), row(2)]);
     await openFullScreenOn(fixture, 2);
@@ -711,16 +703,14 @@ describe('the arrow keys walk the list (EXO-90414)', () => {
     expect(readerOpenings(fixture)).toEqual([]);
   });
 
-  it('leaves the keys alone during a multi-selection, a search, or with the mail drawer on top', async () => {
+  it('leaves the keys alone during a multi-selection, or with the mail drawer on top', async () => {
     fixture = await mountDrawer([row(1), row(2)]);
     await openFullScreenOn(fixture, 1);
 
     await fixture.wrapper.setData({ selectMode: true });
     press(fixture, 'ArrowDown');
-    await fixture.wrapper.setData({ selectMode: false, searchTerm: 'mail' });
-    press(fixture, 'ArrowDown');
-    await fixture.wrapper.setData({ searchTerm: '' });
-    await flush();
+    await fixture.wrapper.setData({ selectMode: false });
+    await settle();
     expect(readerOpenings(fixture)).toEqual([]);
 
     // The list was walkable a moment ago -- and the mail drawer's flag is a plain root
@@ -729,9 +719,56 @@ describe('the arrow keys walk the list (EXO-90414)', () => {
     fixture.wrapper.vm.$root.isDetailDrawerActive = true;
     press(fixture, 'ArrowDown');
     fixture.wrapper.vm.$root.isDetailDrawerActive = false;
-    await flush();
+    await settle();
 
     expect(readerOpenings(fixture)).toEqual([]);
+  });
+
+  it('hears the keys with the focus on the page body, as soon as the drawer is open (no click first)', async () => {
+    fixture = await mountDrawer([row(1), row(2), row(3)]);
+    await openFullScreenOn(fixture, 1);
+    // What expanding leaves: the element that held the focus went away with the layout.
+    document.activeElement?.blur?.();
+    expect(document.activeElement).toBe(document.body);
+
+    const key = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(key);
+    await settle();
+
+    expect(key.defaultPrevented).toBe(true);
+    expect(readerOpenings(fixture)).toEqual([2]);
+  });
+
+  it('leaves the keys to a drawer opened over it, and stops listening once closed', async () => {
+    fixture = await mountDrawer([row(1), row(2), row(3)]);
+    await openFullScreenOn(fixture, 1);
+    const drawerOnTop = {};
+    window.eXo = { openedDrawers: [fixture.wrapper.vm.$refs.emailBoxDrawer, drawerOnTop] };
+    try {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await settle();
+      expect(readerOpenings(fixture)).toEqual([]);
+
+      window.eXo.openedDrawers.pop();
+      await fixture.wrapper.setData({ emailBoxDrawer: false });
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await settle();
+      expect(readerOpenings(fixture)).toEqual([]);
+    } finally {
+      delete window.eXo;
+    }
+  });
+
+  it('forgets a click in the narrow list once expanded (the list sat where the reader now is)', async () => {
+    fixture = await mountDrawer([row(1), row(2), row(3)]);
+    const narrowList = inDrawer(fixture, '<div class="drawerContent"><p>row</p></div>');
+    narrowList.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    await openFullScreenOn(fixture, 1);
+
+    press(fixture, 'ArrowDown');
+    await settle();
+
+    expect(readerOpenings(fixture)).toEqual([2]);
   });
 
   it('stops listening once the drawer is destroyed', async () => {
@@ -746,6 +783,261 @@ describe('the arrow keys walk the list (EXO-90414)', () => {
 
     expect(service.getEmailByRemoteId).not.toHaveBeenCalled();
     fixture = null;
+  });
+});
+
+describe('an automatically opened mail is read only once the user stayed on it (EXO-90414)', () => {
+  let fixture;
+
+  afterEach(() => {
+    jest.useRealTimers();
+    fixture?.teardown();
+  });
+
+  /**
+   * Advances the fake clock, then lets the promises it released settle.
+   *
+   * @param {Number} ms how far to advance
+   * @returns {Promise<void>} resolved once settled
+   */
+  async function tick(ms) {
+    jest.advanceTimersByTime(ms);
+    for (let i = 0; i < 6; i++) {
+      await Promise.resolve(); // eslint-disable-line no-await-in-loop
+    }
+  }
+
+  /**
+   * The read-status pushes the drawer sent.
+   *
+   * @returns {Array} the ids of each push marking read
+   */
+  function readPushes() {
+    return fixture.service.updateEmailsReadStatus.mock.calls.filter(call => call[1] === true).map(call => call[0]);
+  }
+
+  /**
+   * Mounts the drawer full screen on mail 1, with mails 2 and 3 unread, the clock faked.
+   *
+   * @returns {Promise<void>} resolved once mounted
+   */
+  async function mountOnFirst() {
+    fixture = await mountDrawer([row(1), { ...row(2), read: false }, { ...row(3), read: false }]);
+    await openFullScreenOn(fixture, 1);
+    fixture.service.updateEmailsReadStatus.mockClear();
+    jest.useFakeTimers();
+  }
+
+  it('leaves a mail walked past unread, and counts no opening for it', async () => {
+    await mountOnFirst();
+
+    press(fixture, 'ArrowDown');
+    await tick(KEY_OPEN_DELAY_MS);
+    expect(fixture.service.getEmailByRemoteId).toHaveBeenLastCalledWith(2, 'INBOX', { broadcast: false });
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS - 100);
+    press(fixture, 'ArrowDown', { target: inDrawer(fixture, '<div data-thread-key="<2@host>" tabindex="0"></div>') });
+    await tick(KEY_OPEN_DELAY_MS);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS - 100);
+
+    expect(readPushes()).toEqual([]);
+    expect(fixture.service.broadcastOpenEmail).not.toHaveBeenCalled();
+  });
+
+  it('reads it, and counts one opening, once the user stayed on it', async () => {
+    await mountOnFirst();
+
+    press(fixture, 'ArrowDown');
+    await tick(KEY_OPEN_DELAY_MS);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+
+    expect(readPushes()).toEqual([[2]]);
+    expect(fixture.service.broadcastOpenEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads a clicked mail at once, and counts its opening with the read itself', async () => {
+    await mountOnFirst();
+
+    fixture.wrapper.vm.openEmailDetailContent(2);
+    await tick(0);
+
+    expect(readPushes()).toEqual([[2]]);
+    expect(fixture.service.getEmailByRemoteId).toHaveBeenLastCalledWith(2, 'INBOX');
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+    expect(readPushes()).toEqual([[2]]);
+    expect(fixture.service.broadcastOpenEmail).not.toHaveBeenCalled();
+  });
+
+  it('does not read a mail opened automatically once the user clicked another one', async () => {
+    await mountOnFirst();
+
+    press(fixture, 'ArrowDown');
+    await tick(KEY_OPEN_DELAY_MS);
+    expect(fixture.wrapper.vm.autoOpenReadPending).toBe(true);
+    fixture.wrapper.vm.openEmailDetailContent(3);
+    // The reader is free at once to read the clicked one's conversation.
+    expect(fixture.wrapper.vm.autoOpenReadPending).toBe(false);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+
+    expect(readPushes()).toEqual([[3]]);
+    expect(fixture.service.broadcastOpenEmail).not.toHaveBeenCalled();
+  });
+
+  it('applies to the next mail after an action, and to the first one in full screen', async () => {
+    await mountOnFirst();
+
+    fixture.wrapper.vm.$root.$emit('delete-email', [1]);
+    await tick(0);
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(2);
+    expect(readPushes()).toEqual([]);
+    expect(fixture.wrapper.vm.autoOpenReadPending).toBe(true);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+    expect(readPushes()).toEqual([[2]]);
+
+    fixture.wrapper.vm.updateExpand(false);
+    await tick(200);
+    await fixture.wrapper.setData({ email: null });
+    fixture.wrapper.vm.updateExpand(true);
+    await tick(200);
+    // Mail 1 was deleted: the first of the list is now mail 2, read already.
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(2);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+    expect(fixture.service.broadcastOpenEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it('forgets the wait when the drawer collapses', async () => {
+    await mountOnFirst();
+
+    press(fixture, 'ArrowDown');
+    await tick(KEY_OPEN_DELAY_MS);
+    fixture.wrapper.vm.updateExpand(false);
+    // The layout switches 200 ms later; the page then settles before the wait would end.
+    await tick(200);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+
+    expect(readPushes()).toEqual([]);
+    expect(fixture.service.broadcastOpenEmail).not.toHaveBeenCalled();
+  });
+
+  it('keeps the reader from reading the conversation of a mail opened automatically', () => {
+    const emit = jest.fn();
+    const opened = { mailRemoteId: 2, folder: 'INBOX', read: false };
+    const reader = {
+      email: opened,
+      emails: [opened],
+      threadKey: EmailConnectorMailBoxDrawerThreadContent.methods.threadKey,
+      $root: { $emit: emit },
+    };
+
+    EmailConnectorMailBoxDrawerThreadContent.methods.markThreadRead.call({ ...reader, deferThreadRead: true });
+    expect(emit).not.toHaveBeenCalled();
+
+    // Per folder, with the folder (EXO-90416).
+    EmailConnectorMailBoxDrawerThreadContent.methods.markThreadRead.call({ ...reader, deferThreadRead: false });
+    expect(emit).toHaveBeenCalledWith('update-email-read-status', true, [2], 'INBOX');
+  });
+});
+
+describe('the arrow keys and the next mail after an action work on search results (EXO-90414)', () => {
+  let fixture;
+
+  afterEach(() => fixture?.teardown());
+
+  it('walks the hits in full screen, opening them as automatic openings', async () => {
+    fixture = await mountDrawer([row(1), row(2), row(3)]);
+    await fixture.wrapper.setData({ expanded: true, searchTerm: 'mail' });
+    await fixture.wrapper.vm.openSearchResult(fixture.wrapper.vm.mergedSearchResults[0]);
+    await flush();
+    fixture.service.getEmailByRemoteId.mockClear();
+
+    press(fixture, 'ArrowDown');
+    await settle();
+
+    expect(readerOpenings(fixture)).toEqual([2]);
+    expect(fixture.service.getEmailByRemoteId).toHaveBeenLastCalledWith(2, 'INBOX', { broadcast: false });
+    expect(fixture.wrapper.vm.openedSearchKey).toBe('INBOX:2');
+  });
+
+  it('walks hits one message at a time, two of one conversation included', async () => {
+    const sameConversation = [{ ...row(1), threadId: 't' }, { ...row(2), threadId: 't' }, row(3)];
+    fixture = await mountDrawer(sameConversation);
+    await fixture.wrapper.setData({ expanded: true, searchTerm: 'mail' });
+    await fixture.wrapper.vm.openSearchResult(fixture.wrapper.vm.mergedSearchResults[0]);
+    await flush();
+    fixture.service.getEmailByRemoteId.mockClear();
+
+    press(fixture, 'ArrowDown');
+    await settle();
+
+    expect(readerOpenings(fixture)).toEqual([2]);
+  });
+
+  it('opens the hit that took the place of one acted on, which leaves the results', async () => {
+    fixture = await mountDrawer([row(1), row(2), row(3)]);
+    await fixture.wrapper.setData({ expanded: true, searchTerm: 'mail' });
+    await fixture.wrapper.vm.openSearchResult(fixture.wrapper.vm.mergedSearchResults[1]);
+    await flush();
+    fixture.service.getEmailByRemoteId.mockClear();
+
+    fixture.wrapper.vm.$root.$emit('delete-email', [2]);
+    await flush();
+
+    expect(fixture.wrapper.vm.mergedSearchResults.map(result => result.mailRemoteId)).toEqual([1, 3]);
+    expect(readerOpenings(fixture)).toEqual([3]);
+  });
+
+  it('lets a click on another hit take over an automatic first hit still on its way', async () => {
+    fixture = await mountDrawer([row(1), row(2)]);
+    await fixture.wrapper.setData({ expanded: true, searchTerm: 'mail' });
+    // The first hit is not cached: pulling it in waits on the server (a running sync
+    // holds it for seconds).
+    let pulled;
+    fixture.service.fetchSearchedEmail.mockImplementation(() => new Promise(resolve => pulled = resolve));
+    const first = { ...fixture.wrapper.vm.mergedSearchResults[0], cached: false };
+    fixture.wrapper.vm.openAutomatically(first);
+
+    await fixture.wrapper.vm.openSearchResult(fixture.wrapper.vm.mergedSearchResults[1]);
+    pulled();
+    await flush();
+
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(2);
+    expect(readerOpenings(fixture)).toEqual([2]);
+  });
+
+  it('raises no error for a hit opening the user already moved on from', async () => {
+    fixture = await mountDrawer([row(1), row(2)]);
+    await fixture.wrapper.setData({ expanded: true, searchTerm: 'mail' });
+    let refuse;
+    fixture.service.fetchSearchedEmail.mockImplementation(() => new Promise((resolve, reject) => refuse = reject));
+    fixture.wrapper.vm.openSearchResult({ ...fixture.wrapper.vm.mergedSearchResults[0], cached: false });
+
+    await fixture.wrapper.vm.openSearchResult(fixture.wrapper.vm.mergedSearchResults[1]);
+    refuse(new Error('gone'));
+    await flush();
+
+    expect(fixture.alerts).toEqual([]);
+  });
+
+  it('lights the hit the reader shows and focuses the one the keys go to', async () => {
+    const results = [row(1), row(2)];
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerSearchResults, {
+      attachTo: document.body,
+      propsData: { results, openedKey: 'INBOX:2' },
+      mocks: { $t: key => key },
+      stubs: {
+        'email-connector-mail-box-drawer-search-result-item': {
+          props: ['rowKey', 'opened'],
+          render(createElement) {
+            return createElement('div', { attrs: { tabindex: '0', 'data-thread-key': this.rowKey, 'data-opened': String(this.opened) } });
+          },
+        },
+      },
+    });
+
+    expect(wrapper.findAll('[data-opened="true"]').wrappers.map(item => item.attributes('data-thread-key'))).toEqual(['INBOX:2']);
+    await wrapper.vm.revealThread('INBOX:1');
+    expect(document.activeElement.getAttribute('data-thread-key')).toBe('INBOX:1');
+    wrapper.destroy();
   });
 });
 
@@ -838,6 +1130,7 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
     service = serviceStub({
       isReadOnlyFolder: emailConnectorMailBoxService.isReadOnlyFolder,
       getEmailByRemoteId: jest.fn((mailRemoteId, folder) => Promise.resolve({ mailRemoteId, folder })),
+      broadcastOpenEmail: jest.fn(() => Promise.resolve()),
     });
     // Imported here so that a failure to mount it only fails these pins.
     const { default: EmailConnectorMailBoxDrawerListItemDetail } = await import('../EmailConnectorMailBoxDrawerListItemDetail.vue');
@@ -859,7 +1152,7 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
     wrapper.vm.$root.$emit('delete-email', [2]);
     await flush();
 
-    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(3, 'INBOX');
+    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(3, 'INBOX', { broadcast: false });
     expect(wrapper.vm.email.mailRemoteId).toBe(3);
     expect(wrapper.vm.selectEmailPlaceHolder).toBe(false);
   });
@@ -880,17 +1173,51 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
     wrapper.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
     await settle();
 
-    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(1, 'INBOX');
+    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(1, 'INBOX', { broadcast: false });
   });
 
-  it('leaves search results alone, as the mailbox drawer does', async () => {
+  it('walks search results too, and moves on after an action there', async () => {
     await mountExpanded([row(1), row(2), row(3)], 2);
     await wrapper.setData({ detachedFromList: true });
 
-    wrapper.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
     await settle();
+    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(1, 'INBOX', { broadcast: false });
 
-    expect(service.getEmailByRemoteId).not.toHaveBeenCalled();
+    wrapper.vm.$root.$emit('archive-email', [1]);
+    await flush();
+    expect(service.getEmailByRemoteId).toHaveBeenLastCalledWith(2, 'INBOX', { broadcast: false });
+  });
+
+  it('lets the reader read a mail the user clicked at once, even while an automatic one waited', async () => {
+    await mountExpanded([row(1), row(2), row(3)], 2);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    await settle();
+    expect(wrapper.vm.autoOpenReadPending).toBe(true);
+
+    wrapper.vm.openEmailDetailContent(3);
+
+    expect(wrapper.vm.autoOpenReadPending).toBe(false);
+  });
+
+  it('reads an automatically opened mail only once the user stayed on it', async () => {
+    const unread = { ...row(1), read: false };
+    await mountExpanded([unread, row(2), row(3)], 2);
+    const reads = [];
+    wrapper.vm.$root.$on('update-email-read-status', (read, ids) => reads.push([read, ids]));
+    jest.useFakeTimers();
+    try {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      jest.advanceTimersByTime(KEY_OPEN_DELAY_MS);
+      await Promise.resolve();
+      jest.advanceTimersByTime(AUTO_OPEN_MARK_READ_DELAY_MS - 100);
+      expect(reads).toEqual([]);
+      jest.advanceTimersByTime(100);
+      expect(reads).toEqual([[true, [1]]]);
+      expect(service.broadcastOpenEmail).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('keeps showing the mail after a move in the narrow layout, as it did before', async () => {
