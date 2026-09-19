@@ -59,13 +59,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :can-toggle="canToggleFavorite"
             :size="18"
             @toggle="toggleFavorite" />
+          <!-- Reply and the ⋮ menu (reply all, forward…) are withheld from a message
+               whose full copy could not be read: its recipients and body are not
+               known, and a reply would quote nothing and address nobody. -->
           <v-btn
+            v-if="!unavailable"
             @click="openReplyEmailDrawer"
             :title="$t('emailConnector.mailBox.list.drawer.detail.reply.button.title')"
             icon>
             <v-icon size="20" class="icon-default-color">fa-reply</v-icon>
           </v-btn>
           <email-connector-mail-box-drawer-list-item-detail-action-menu
+            v-if="!unavailable"
             :email="email"
             :in-thread="inThread" />
         </div>
@@ -74,10 +79,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <email-connector-mail-box-drawer-list-item-detail-header 
       v-if="expandedHeader"
       :email="email" />
+    <div
+      v-if="unavailable"
+      class="px-0 pb-4">
+      <div class="text-light-color text-truncate mb-2">{{ excerpt }}</div>
+      <div class="d-flex align-center">
+        <span class="text-subtitle">{{ $t('emailConnector.mailBox.list.drawer.detail.unavailable') }}</span>
+        <v-btn
+          class="ms-2"
+          color="primary"
+          text
+          small
+          @click="retryRead">
+          {{ $t('emailConnector.mailBox.list.drawer.detail.unavailable.retry') }}
+        </v-btn>
+      </div>
+    </div>
     <email-connector-mail-box-drawer-list-item-detail-body
+      v-else
       :expanded-drawer="expandedDrawer"
-      :email-body="email.content?.body"
-      :html-body="email.content?.html !== false" />
+      :email-body="emailBody"
+      :html-body="htmlBody" />
     <email-connector-mail-box-drawer-list-item-detail-attachments
       :email-attachments="emailAttachments"
       v-if="hasAttachments" />
@@ -158,6 +180,21 @@ export default {
     recipientsToggleTooltip() {
       return this.expandedHeader ? this.$t('emailConnector.mailBox.list.drawer.detail.hideRecipients') : this.$t('emailConnector.mailBox.list.drawer.detail.displayRecipients');
     },
+    // Read off the message in script rather than in the template: the template
+    // compiler of the component tests (vue-jest) does not parse optional chaining.
+    emailBody() {
+      return this.email.content?.body;
+    },
+    htmlBody() {
+      return this.email.content?.html !== false;
+    },
+    excerpt() {
+      return this.email.content?.excerpt || '';
+    },
+    // The full copy of this message could not be read (see settleListingRow).
+    unavailable() {
+      return !!this.email?.unavailable;
+    },
     hasAttachments() {
       return this.emailAttachments.length > 0;
     },
@@ -194,6 +231,15 @@ export default {
     // thread's own listener) if the mail server refuses the flag.
     toggleFavorite() {
       this.$root.$emit('update-email-favorite-status', !this.email.starred, [this.email.mailRemoteId]);
+    },
+    /**
+     * Asks the drawer holding this message to read it again, through the same request
+     * it opens a message with.
+     *
+     * @returns {void}
+     */
+    retryRead() {
+      this.$root.$emit('retry-email-read', this.email);
     },
     openReplyEmailDrawer() {
       this.$root.$emit('open-new-email-drawer', this.email);
