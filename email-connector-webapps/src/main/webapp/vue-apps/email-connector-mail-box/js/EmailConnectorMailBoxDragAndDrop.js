@@ -22,7 +22,7 @@
 // (delete-email), "Mark as spam" (junk-email), or the category assignment -- with the
 // same rules for which mail may go where. Nothing here talks to the server.
 
-import { canMarkAsJunk, moveTargets, threadIdsInFolder } from './EmailConnectorMailBoxService.js';
+import { canMarkAsJunk, isListedFolder, moveTargets, threadIdsInFolder } from './EmailConnectorMailBoxService.js';
 import { selectionByFolder, selectionKey } from './EmailConnectorMailBoxSelection.js';
 
 // The type the dragged payload is written under: a drop that does not carry it (a file,
@@ -33,23 +33,19 @@ export const DRAG_MIME = 'application/x-exo-email-move';
 // event that action emits: dropping on the Trash deletes, on the Spam marks as spam.
 const ACTION_FOLDERS = { TRASH: 'delete-email', JUNK: 'junk-email' };
 
-// Folders whose mail is never dragged beyond canMarkAsJunk's: All Mail is a
-// thread-completion cache, not a listable folder -- the server refuses to move out of it
-// and to categorize in it, so a drop of one of its search hits could only fail.
-const UNDRAGGABLE_FOLDERS = ['ALL_MAIL'];
-
 /**
  * Whether mail of a folder may be dragged at all: the rows "Move to...", Delete and
  * "Mark as spam" are offered on -- not a draft, not a Trash or Spam row -- and not a
  * row the server has not listed yet (refreshPending), whose UID is a placeholder; never
- * an All Mail hit (UNDRAGGABLE_FOLDERS).
+ * an All Mail hit (isListedFolder), which the server moves nothing out of and categorizes
+ * nothing in, so any drop of one could only fail.
  *
  * @param {String} folder the folder the row is numbered in; blank means INBOX
  * @param {Object} email the row, when there is one
  * @returns {Boolean} true when it may be dragged
  */
 export function canDragFrom(folder, email) {
-  return canMarkAsJunk(folder) && !UNDRAGGABLE_FOLDERS.includes(folder) && !email?.draftLocalId && !email?.refreshPending;
+  return canMarkAsJunk(folder) && isListedFolder(folder) && !email?.draftLocalId && !email?.refreshPending;
 }
 
 /**
