@@ -227,8 +227,9 @@ export function searchRows(results) {
 }
 
 /**
- * The shared behaviour of the two drawers that show the mail list beside the reader --
- * the mailbox drawer, and the mail drawer once expanded -- so both move the same way.
+ * The behaviour of the drawer that shows the mail list beside the reader -- the mailbox
+ * drawer, whose full screen is the only one since EXO-90415 (the mail drawer hands its
+ * mail over to it rather than widening itself).
  *
  * The component provides:
  * - `email` (data): the message the reader shows, or null;
@@ -526,9 +527,9 @@ export default {
       const index = threadIndexOf(threads, row);
       const messages = index >= 0 ? threads[index].emails : [row];
       // Each message in the folder its UID is numbered in, one read per folder, as the
-      // reader's own read of a conversation goes: a row of the mail drawer's search list
-      // may gather a conversation's hits from several folders, and the listing may hold
-      // another message under any of those numbers (EXO-90414).
+      // reader's own read of a conversation goes: a row may gather a conversation's
+      // messages from several folders, and the listing may hold another message under
+      // any of those numbers (EXO-90414).
       const unreadByFolder = new Map();
       messages.filter(message => !message.read).forEach(message => {
         const folder = message.folder || 'INBOX';
