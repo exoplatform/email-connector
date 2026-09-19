@@ -11170,6 +11170,11 @@ public class EmailBoxServiceTest {
     List<MimeMessage> transmitted = new ArrayList<>();
     doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
     Runnable onTransmitted = mock(Runnable.class);
+    // At the moment the record runs, nothing of the draft has been taken apart yet.
+    doAnswer(invocation -> {
+      verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+      return null;
+    }).when(onTransmitted).run();
 
     emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted);
 
@@ -11190,6 +11195,7 @@ public class EmailBoxServiceTest {
     order.verify(smtpTransmitter).transmit(any(MimeMessage.class));
     order.verify(onTransmitted).run();
     order.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    verify(emailBoxStorage, times(1)).deleteEmailsByIds(anyList());
   }
 
   /**
