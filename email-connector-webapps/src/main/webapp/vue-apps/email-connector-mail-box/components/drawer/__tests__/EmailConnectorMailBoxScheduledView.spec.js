@@ -429,7 +429,9 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
   it('edits through the composer, which cancels the schedule first', async () => {
     const { wrapper, emitted } = await mountList();
     wrapper.vm.onAction('edit', scheduledRow('d1'));
-    expect(emitted).toEqual([['edit-scheduled-email', { draftLocalId: 'd1', scheduledDate: Date.UTC(2026, 9, 1, 6, 0) }]]);
+    expect(emitted).toEqual([['edit-scheduled-email', expect.objectContaining({
+      draftLocalId: 'd1', scheduledDate: Date.UTC(2026, 9, 1, 6, 0), timeZone: 'Europe/Paris',
+    })]]);
   });
 
   it('reschedules with the shared picker, starting on the previous time, by PUT', async () => {
@@ -596,7 +598,13 @@ describe('a scheduled reply in its conversation is read-only (EXO-90434, PO deci
     const emitted = [];
     const vm = { $root: { $emit: (...args) => emitted.push(args) } };
     EmailConnectorMailBoxDrawerThreadContent.methods.editScheduledDraft.call(vm, DRAFT);
-    expect(emitted).toEqual([['edit-scheduled-email', { draftLocalId: 'd1', scheduledDate: DRAFT.scheduledDate }]]);
+    expect(emitted).toEqual([['edit-scheduled-email', expect.objectContaining({
+      draftLocalId: 'd1', scheduledDate: DRAFT.scheduledDate, timeZone: 'Europe/Paris', draft: DRAFT,
+    })]]);
+    // The Scheduled view's own row, a snippet for a body, is not handed over as the text.
+    emitted.length = 0;
+    EmailConnectorMailBoxDrawerThreadContent.methods.editScheduledDraft.call(vm, { ...DRAFT, scheduledRow: {} });
+    expect(emitted[0][1].draft).toBeNull();
   });
 });
 

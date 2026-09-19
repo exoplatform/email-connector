@@ -555,7 +555,15 @@ export default {
      * @returns {void}
      */
     editScheduledDraft(draft) {
-      this.$root.$emit('edit-scheduled-email', { draftLocalId: draft.draftLocalId, scheduledDate: draft.scheduledDate });
+      this.$root.$emit('edit-scheduled-email', {
+        draftLocalId: draft.draftLocalId,
+        scheduledDate: draft.scheduledDate,
+        timeZone: draft.scheduledTimeZone,
+        threadId: draft.threadId,
+        // The conversation's row is whole: the composer opens on it without reading it
+        // again. The Scheduled view's own row (its body a snippet) is not handed over.
+        draft: draft.scheduledRow ? null : draft,
+      });
     },
     /**
      * The Scheduled view's row of a draft, when the reader was opened on that draft from

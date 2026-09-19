@@ -292,7 +292,9 @@ describe('a row of the Scheduled view opens its mail read-only, as a folder row 
   it('runs the actions the reader offers for the opened mail, as its own', async () => {
     const { wrapper, emitted } = await mountList();
     wrapper.vm.$root.$emit('scheduled-email-action', 'edit', scheduledRow('d1'));
-    expect(emitted).toContainEqual(['edit-scheduled-email', { draftLocalId: 'd1', scheduledDate: Date.UTC(2026, 9, 1, 6, 0) }]);
+    expect(emitted).toContainEqual(['edit-scheduled-email', expect.objectContaining({
+      draftLocalId: 'd1', scheduledDate: Date.UTC(2026, 9, 1, 6, 0), timeZone: 'Europe/Paris',
+    })]);
   });
 });
 

@@ -24,6 +24,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     right
     go-back-button
     allow-expand
+    :confirm-close="scheduledChanged"
+    :confirm-close-labels="{
+      title: $t('emailConnector.mailBox.newEmail.drawer.scheduled.discard.title'),
+      message: $t('emailConnector.mailBox.newEmail.drawer.scheduled.discard.message'),
+      ok: $t('emailConnector.mailBox.newEmail.drawer.scheduled.discard.ok'),
+      cancel: $t('emailConnector.mailBox.newEmail.drawer.scheduled.discard.cancel')
+    }"
     @closed="close">
     <template #title>
       <span>
@@ -31,15 +38,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </span>
     </template>
     <template v-if="newEmailDrawer" #content>
-      <!-- A mail taken out of its schedule to be edited (EXO-90434): it is a draft again,
-           and says so until it is sent or scheduled again. -->
+      <!-- A scheduled mail being edited (EXO-90434, Outlook's way): it stays scheduled
+           while the composer is open, and says when it goes. -->
       <v-alert
-        v-if="previousScheduledDate"
-        class="mx-4 mt-3 mb-0 unscheduled-banner"
+        v-if="scheduledEdit"
+        class="mx-4 mt-3 mb-0 scheduled-edit-banner"
         type="info"
         dense
         text>
-        {{ $t('emailConnector.mailBox.newEmail.drawer.schedule.unscheduled') }}
+        {{ scheduledEditBanner }}
       </v-alert>
       <email-connector-recipient-field
         ref="toField"
@@ -124,15 +131,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template #footer>
       <div class="d-flex align-center">
+        <!-- Editing a scheduled mail, Discard throws the edits away, never the mail. -->
         <v-btn
-          v-if="hasContent"
+          v-if="scheduledEdit"
+          v-show="scheduledChanged"
+          :disabled="loading"
+          class="btn scheduled-edit-discard"
+          text
+          @click="discardScheduledChanges()">
+          {{ $t('emailConnector.mailBox.newEmail.drawer.scheduled.discardChanges') }}
+        </v-btn>
+        <v-btn
+          v-else-if="hasContent"
           :loading="discarding"
           @click="discardDraft()"
           class="btn"
           text>
           {{ $t('emailConnector.mailBox.newEmail.drawer.discard.label') }}
         </v-btn>
-        <span v-if="draftStatusLabel" class="text-caption text-sub-title ms-2">{{ draftStatusLabel }}</span>
+        <span v-if="draftStatusLabel && !scheduledEdit" class="text-caption text-sub-title ms-2">{{ draftStatusLabel }}</span>
         <v-spacer />
         <!-- Room for a future "More options" (⋮) button before Send -- read receipts,
              EXO-90435 -- which is not built yet. -->
@@ -152,12 +169,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               class="d-flex">
               <!-- Greyed out while the date and time card is open: the way on is its
                    check, or closing it (EXO-90434). -->
+              <!-- Editing a scheduled mail, the button is Update: the edits, same date. -->
               <v-btn
-                :disabled="disabled || scheduling || scheduleMode"
+                :disabled="disabled || scheduling || scheduleMode || (scheduledEdit && !scheduledChanged)"
                 :loading="loading"
-                @click="sendEmail()"
+                @click="scheduledEdit ? updateScheduled() : sendEmail()"
                 class="btn btn-primary composer-send-button">
-                {{ $t('emailConnector.mailBox.newEmail.drawer.send.label') }}
+                {{ scheduledEdit ? $t('emailConnector.mailBox.newEmail.drawer.scheduled.update')
+                  : $t('emailConnector.mailBox.newEmail.drawer.send.label') }}
               </v-btn>
               <v-menu
                 v-model="scheduleMenu"
@@ -180,14 +199,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                   class="pa-0"
                   dense>
                   <v-list-item
-                    :aria-label="$t('emailConnector.mailBox.newEmail.drawer.schedule.label')"
+                    v-if="scheduledEdit"
+                    class="px-2 scheduled-edit-send-now"
+                    @click="sendScheduledNow">
+                    <v-list-item-icon class="me-2 my-auto">
+                      <v-icon size="16">fas fa-paper-plane</v-icon>
+                    </v-list-item-icon>
+                    <v-list-item-title>
+                      {{ $t('emailConnector.mailBox.scheduled.action.sendNow') }}
+                    </v-list-item-title>
+                  </v-list-item>
+                  <v-list-item
+                    :aria-label="scheduleActionLabel"
                     class="px-2 schedule-send-action"
                     @click="openScheduleMode">
                     <v-list-item-icon class="me-2 my-auto">
                       <v-icon size="16">fas fa-clock</v-icon>
                     </v-list-item-icon>
                     <v-list-item-title>
-                      {{ $t('emailConnector.mailBox.newEmail.drawer.schedule.label') }}
+                      {{ scheduleActionLabel }}
                     </v-list-item-title>
                   </v-list-item>
                 </v-list>
@@ -196,11 +226,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </template>
           <email-connector-schedule-picker
             v-if="scheduleMode"
-            :value="previousScheduledDate"
-            :loading="scheduling"
+            :value="scheduledEdit && scheduledEdit.scheduledDate"
+            :loading="scheduling || loading"
             :disabled="disabled"
             :confirm-label="$t('emailConnector.mailBox.newEmail.drawer.schedule.confirm')"
-            @confirm="scheduleEmail" />
+            @confirm="onScheduleConfirmed" />
         </v-menu>
       </div>
     </template>
@@ -298,9 +328,12 @@ export default {
       scheduleMenu: false,
       scheduleMode: false,
       scheduling: false,
-      // When the mail on screen was scheduled before being taken out of its schedule to
-      // be edited: the banner says it is a draft again, and the picker starts there.
-      previousScheduledDate: null,
+      // The scheduled mail on screen, when the composer edits one (EXO-90434, Outlook's
+      // way): it stays scheduled while the composer is open, nothing is saved until
+      // Update, and closing without a change leaves it as it was. {draftLocalId,
+      // scheduledDate, timeZone, removedIds}: removedIds are its stored files taken off
+      // on screen, removed on the server only with the update.
+      scheduledEdit: null,
       title: '',
       editorMaxHeight: 0,
       // The draft this composer session is writing, as ONE record rather than a
@@ -426,6 +459,37 @@ export default {
           || !!this.attachments.length;
     },
     /**
+     * Whether the scheduled mail being edited has been changed on screen: its text or
+     * recipients, a file taken off, or one added. Only then is Update offered, and
+     * closing asks first (EXO-90434).
+     *
+     * @returns {boolean} true when there is something to update
+     */
+    scheduledChanged() {
+      if (!this.scheduledEdit) {
+        return false;
+      }
+      return (this.savedSignature !== null && this.composeSignature() !== this.savedSignature)
+        || this.scheduledEdit.removedIds.length > 0
+        || this.attachments.some(attachment => attachment.uploadId || attachment.uploading);
+    },
+    /**
+     * @returns {string} the edited scheduled mail's banner: "Scheduled for {date}"
+     */
+    scheduledEditBanner() {
+      return this.$t('emailConnector.mailBox.newEmail.drawer.schedule.scheduledFor', {
+        0: this.$emailConnectorMailBoxService.formatScheduledDate(this.scheduledEdit.scheduledDate, this.scheduledEdit.timeZone),
+      });
+    },
+    /**
+     * @returns {string} the caret menu's schedule entry: "Schedule send", or "Change
+     *          time..." for a scheduled mail being edited
+     */
+    scheduleActionLabel() {
+      return this.$t(this.scheduledEdit ? 'emailConnector.mailBox.newEmail.drawer.scheduled.changeTime'
+        : 'emailConnector.mailBox.newEmail.drawer.schedule.label');
+    },
+    /**
      * The quiet line beside the Discard button that says where the draft stands.
      * Only ever says something once there is a draft to say it about.
      *
@@ -469,7 +533,7 @@ export default {
     async open(email, forward, replyAll, prefill) {
       this.attachments = [];
       this.resetDraftTracking();
-      this.previousScheduledDate = null;
+      this.scheduledEdit = null;
       // Awaited before anything is written into the body, because the prefill
       // IS the body: patching a signature in after the drawer opened would race
       // the editor echo and the saved-signature stamp.
@@ -946,6 +1010,12 @@ export default {
      * @returns {void}
      */
     async insertInlineImage(file) {
+      if (this.scheduledEdit) {
+        // A picture in the text is a file stored on the draft first, which a scheduled
+        // mail being edited does not take before its update.
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.scheduled.noInlineImage'), 'info');
+        return;
+      }
       const session = this.draftSession;
       this.storingImages++;
       try {
@@ -1059,14 +1129,23 @@ export default {
      * @returns {void}
      */
     resume(draft) {
-      // A draft scheduled to be sent is frozen until its schedule is cancelled, and the
-      // server refuses every save of it: it is edited through its own Edit, which
-      // cancels the schedule first (editScheduledEmail), never resumed as it stands.
+      // A draft scheduled to be sent is frozen, and the server refuses every save of it:
+      // it is edited through its own Edit (editScheduledEmail), never resumed as a draft.
       if (draft?.scheduled) {
         this.$root.$emit('alert-message', this.$t('emailConnector.scheduled.locked'), 'info');
         return;
       }
-      this.previousScheduledDate = null;
+      this.openOnDraft(draft);
+    },
+    /**
+     * Opens the composer on a stored draft's text, recipients and files -- what resuming
+     * a draft and editing a scheduled mail share.
+     *
+     * @param {object} draft - the stored draft
+     * @returns {void}
+     */
+    openOnDraft(draft) {
+      this.scheduledEdit = null;
       // The files the draft was stored with, as chips the user can see and remove.
       this.attachments = this.storedAttachmentChips(draft);
       this.resetDraftTracking();
@@ -1279,7 +1358,7 @@ export default {
       this.editorMaxHeight = 0;
       this.scheduleMenu = false;
       this.scheduleMode = false;
-      this.previousScheduledDate = null;
+      this.scheduledEdit = null;
       this.newEmailDrawer = false;
     },
     /**
@@ -1322,6 +1401,10 @@ export default {
         return;
       }
       session.closed = true;
+      if (this.scheduledEdit) {
+        // Closing an edit of a scheduled mail leaves it as it was: nothing is saved.
+        return;
+      }
       const snapshot = this.snapshotDraft();
       if (snapshot.hasContent && (snapshot.signature !== this.savedSignature || session.localId || session.pending)) {
         this.storeDraft(session, snapshot, true, true);
@@ -1402,7 +1485,7 @@ export default {
       this.email.content.body = '';
       this.email.mailHeaderId = null;
       this.attachments = [];
-      this.previousScheduledDate = null;
+      this.scheduledEdit = null;
       this.resetDraftTracking();
     },
     /**
@@ -1425,7 +1508,9 @@ export default {
     onComposeChanged() {
       // editorEchoing: the editor handing the prefill back is not somebody typing,
       // and must not start the clock on a save (see onEditorReady).
-      if (!this.newEmailDrawer || this.savedSignature === null || this.editorEchoing) {
+      // A scheduled mail being edited is saved by its Update only: the server refuses
+      // any save of it, and closing without a change must leave it untouched.
+      if (!this.newEmailDrawer || this.savedSignature === null || this.editorEchoing || this.scheduledEdit) {
         return;
       }
       clearTimeout(this.localSaveTimer);
@@ -1486,6 +1571,9 @@ export default {
      * @returns {void}
      */
     saveDraft(push) {
+      if (this.scheduledEdit) {
+        return;
+      }
       const snapshot = this.snapshotDraft();
       if (!snapshot.hasContent || (snapshot.signature === this.savedSignature && !push)) {
         return;
@@ -1518,6 +1606,10 @@ export default {
      * @returns {Promise} resolves with the stored attachment, or rejects
      */
     async persistAttachment(entry) {
+      if (this.scheduledEdit) {
+        // Kept as the upload it is: the scheduled mail takes it with its update.
+        return null;
+      }
       const session = this.draftSession;
       if (!session.localId) {
         await this.forceDraft(session);
@@ -1545,6 +1637,13 @@ export default {
      * @returns {Promise} resolves once the file is off the draft
      */
     async unpersistAttachment(entry) {
+      if (this.scheduledEdit) {
+        // Taken off with the update, not now: closing without it keeps the file.
+        if (entry?.id && !this.scheduledEdit.removedIds.includes(entry.id)) {
+          this.scheduledEdit.removedIds.push(entry.id);
+        }
+        return;
+      }
       const session = this.draftSession;
       if (!session.localId || !entry?.id) {
         return;
@@ -1985,16 +2084,18 @@ export default {
       };
     },
     /**
-     * Edits a scheduled mail, Gmail's way (EXO-90434): its schedule is cancelled first --
-     * it is a draft again, back in Drafts -- and then it opens in the composer, saying it
-     * is no longer scheduled, with its previous time ready in the picker.
+     * Edits a scheduled mail, Outlook's way (EXO-90434): it opens in the composer and
+     * stays scheduled. Nothing is saved while it is open -- the server refuses any save
+     * of a scheduled draft -- so the edits live here until Update (or Send now, or a new
+     * time) replaces the mail's content on the server in one step; closing without a
+     * change sends no request at all.
      * <p>
-     * The draft is read back from the Drafts listing, which is where it now is and the
-     * one place that serves a draft's whole row (recipients, text, files, threading).
-     * A schedule already gone (404) is no reason not to open the draft; a mail being
-     * sent (409) is, and the user is told why.
+     * The draft's whole row (recipients, text, files, threading) is the one the reader
+     * already holds, handed over, or else read from its conversation: a scheduled draft
+     * is listed in no folder, and the conversation read serves it whole.
      *
-     * @param {Object} scheduled {draftLocalId, scheduledDate}: the mail to edit
+     * @param {Object} scheduled {draftLocalId, scheduledDate, timeZone, threadId, draft}:
+     *          the mail to edit, and its full row when the caller holds it
      * @returns {Promise<void>} resolved once the composer is open, or the user told
      */
     async editScheduledEmail(scheduled) {
@@ -2002,30 +2103,225 @@ export default {
       if (!draftLocalId) {
         return;
       }
-      try {
-        await this.$emailConnectorMailBoxService.cancelScheduledEmail(draftLocalId);
-      } catch (error) {
-        if (error?.status !== 404) {
-          this.$root.$emit('alert-message', this.$emailConnectorMailBoxService.scheduledErrorMessage(error, this,
-            'emailConnector.mailBox.scheduled.action.error'), 'error');
-          return;
+      let draft = scheduled.draft?.content ? scheduled.draft : null;
+      if (!draft && scheduled.threadId) {
+        try {
+          const conversation = await this.$emailConnectorMailBoxService.getThreadByThreadId(scheduled.threadId, 'DRAFTS');
+          draft = (conversation || []).find(email => email.draftLocalId === draftLocalId) || null;
+        } catch (e) {
+          draft = null;
         }
-      }
-      this.$root.$emit('scheduled-emails-changed');
-      this.$root.$emit('refresh-email-box');
-      let draft = null;
-      try {
-        const drafts = await this.$emailConnectorMailBoxService.getEmailBox('DRAFTS');
-        draft = (drafts?.emails || []).find(email => email.draftLocalId === draftLocalId) || null;
-      } catch (e) {
-        draft = null;
       }
       if (!draft) {
         this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.edit.notFound'), 'info');
         return;
       }
-      this.resume(draft);
-      this.previousScheduledDate = scheduled.scheduledDate || null;
+      this.openOnDraft(draft);
+      this.title = this.$t('emailConnector.mailBox.newEmail.drawer.scheduled.title');
+      this.scheduledEdit = {
+        draftLocalId,
+        scheduledDate: scheduled.scheduledDate || draft.scheduledDate || null,
+        timeZone: scheduled.timeZone || draft.scheduledTimeZone || null,
+        removedIds: [],
+      };
+    },
+    /**
+     * The picker's check: a new time for the scheduled mail being edited, with the
+     * edits; else the schedule of the mail being written.
+     *
+     * @param {Number} scheduledDate the instant, epoch milliseconds
+     * @param {String} timeZone the zone it was chosen in
+     * @returns {Promise<void>} resolved once done or refused
+     */
+    onScheduleConfirmed(scheduledDate, timeZone) {
+      return this.scheduledEdit ? this.updateScheduled(scheduledDate, timeZone) : this.scheduleEmail(scheduledDate, timeZone);
+    },
+    /**
+     * The edited mail as the update carries it: the text and recipients on screen, and
+     * the files added on screen, as the uploads they still are.
+     *
+     * @returns {Object} the draft payload
+     */
+    scheduledEditPayload() {
+      return {
+        ...this.outgoingDraft(),
+        attachments: this.attachments
+          .filter(attachment => attachment.uploadId)
+          .map(attachment => ({
+            uploadId: attachment.uploadId,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            size: attachment.size,
+          })),
+      };
+    },
+    /**
+     * Replaces the scheduled mail's content with the edits, in one request the server
+     * runs in one transaction -- and its date too when one is given (Change time...).
+     * The mail stays scheduled. A mail that went out meanwhile (409), or whose schedule
+     * is gone (404), keeps the edits as a new draft.
+     *
+     * @param {Number} scheduledDate a new instant, epoch milliseconds, or nothing to keep
+     *          the date
+     * @param {String} timeZone the zone it was chosen in, with a new instant
+     * @returns {Promise<Object>} the scheduled mail as it now stands, or null when refused
+     */
+    async updateScheduled(scheduledDate, timeZone) {
+      const edit = this.scheduledEdit;
+      if (!edit || this.loading || this.disabled) {
+        return null;
+      }
+      if (!this.to.length || this.pendingTo || this.pendingCc || this.pendingBcc) {
+        this.scheduleMode = false;
+        return null;
+      }
+      this.loading = true;
+      try {
+        const updated = await this.$emailConnectorMailBoxService.updateScheduledEmailContent(edit.draftLocalId,
+          this.scheduledEditPayload(), edit.removedIds, scheduledDate || null, scheduledDate ? timeZone : null);
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.newEmail.drawer.scheduled.updated', {
+          0: this.$emailConnectorMailBoxService.formatScheduledDate(updated?.scheduledDate || scheduledDate || edit.scheduledDate,
+            updated?.timeZone || timeZone || edit.timeZone),
+        }), 'success');
+        this.finishScheduledEdit();
+        return updated;
+      } catch (error) {
+        this.onScheduledEditRefused(error);
+        return null;
+      } finally {
+        this.loading = false;
+      }
+    },
+    /**
+     * Sends the scheduled mail now, as it stands on screen: the edits are written first,
+     * in the same single step as Update, then the mail is sent. The answer comes once
+     * the mail server answered, which may take a moment.
+     *
+     * @returns {Promise<void>} resolved once sent, refused or given up
+     */
+    async sendScheduledNow() {
+      const edit = this.scheduledEdit;
+      if (!edit || this.loading) {
+        return;
+      }
+      this.scheduleMenu = false;
+      if (this.scheduledChanged && !(await this.updateScheduledContentOnly())) {
+        return;
+      }
+      this.loading = true;
+      try {
+        const result = await this.$emailConnectorMailBoxService.sendScheduledEmailNow(edit.draftLocalId);
+        if (result?.status === 'SENT') {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.sendNow.success'), 'success');
+          this.$root.$emit('email-sent');
+        } else if (result?.status === 'SCHEDULED') {
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.sendNow.retryLater'), 'warning');
+        } else {
+          const line = this.$emailConnectorMailBoxService.scheduledStateLine(result);
+          this.$root.$emit('alert-message', line?.reasonKey ? this.$t(line.key, { 0: this.$t(line.reasonKey) })
+            : this.$t(line?.key || 'emailConnector.mailBox.scheduled.action.error'), 'error');
+        }
+        this.finishScheduledEdit();
+      } catch (error) {
+        this.onScheduledEditRefused(error);
+      } finally {
+        this.loading = false;
+      }
+    },
+    /**
+     * Writes the edits with the same date, and nothing else: what Send now needs first.
+     *
+     * @returns {Promise<Boolean>} true once written, false when refused (the user told)
+     */
+    async updateScheduledContentOnly() {
+      const edit = this.scheduledEdit;
+      this.loading = true;
+      try {
+        await this.$emailConnectorMailBoxService.updateScheduledEmailContent(edit.draftLocalId,
+          this.scheduledEditPayload(), edit.removedIds, null, null);
+        edit.removedIds = [];
+        return true;
+      } catch (error) {
+        this.onScheduledEditRefused(error);
+        return false;
+      } finally {
+        this.loading = false;
+      }
+    },
+    /**
+     * Closes the composer after a done edit, with nothing left to save, and has the
+     * Scheduled view and the folders read again.
+     *
+     * @returns {void}
+     */
+    finishScheduledEdit() {
+      this.scheduleMode = false;
+      this.emptyComposer();
+      this.$root.$emit('scheduled-emails-changed');
+      this.$root.$emit('refresh-email-box');
+      this.close();
+    },
+    /**
+     * Says why an edit of a scheduled mail was refused. A mail that went out while the
+     * composer was open (409), or whose schedule is gone (404), cannot take the edits:
+     * they are kept as a new draft, and the user told so. Anything else leaves the
+     * composer open on the edits, the reason said.
+     *
+     * @param {Error} error the refusal
+     * @returns {Promise<void>} resolved once handled
+     */
+    async onScheduledEditRefused(error) {
+      if (error?.status !== 409 && error?.status !== 404) {
+        this.$root.$emit('alert-message', this.$emailConnectorMailBoxService.scheduledErrorMessage(error, this,
+          'emailConnector.mailBox.newEmail.drawer.scheduled.updateError'), 'error');
+        return;
+      }
+      this.$root.$emit('alert-message', this.$t(error.status === 409
+        ? 'emailConnector.mailBox.newEmail.drawer.scheduled.alreadySent'
+        : 'emailConnector.mailBox.newEmail.drawer.scheduled.gone'), 'warning');
+      await this.keepEditsAsNewDraft();
+      this.$root.$emit('scheduled-emails-changed');
+      this.$root.$emit('refresh-email-box');
+    },
+    /**
+     * Keeps what is on screen as a new draft, when the scheduled mail it was an edit of
+     * can no longer take it: the text and recipients, and the files added on screen. The
+     * scheduled mail's own files are its, and stay with it.
+     *
+     * @returns {Promise<void>} resolved once the new draft is stored, or given up
+     */
+    async keepEditsAsNewDraft() {
+      const uploads = this.attachments.filter(attachment => attachment.uploadId);
+      this.scheduleMode = false;
+      this.scheduledEdit = null;
+      this.resetDraftTracking();
+      this.attachments = uploads;
+      this.title = this.$t('emailConnector.mailBox.newEmail.drawer.draft.title');
+      const session = this.draftSession;
+      await this.forceDraft(session);
+      this.savedSignature = this.composeSignature();
+      for (const upload of uploads) {
+        try {
+          const stored = await this.persistAttachment(upload);
+          if (stored) {
+            upload.id = stored.id;
+            upload.uploadId = null;
+            upload.stored = true;
+          }
+        } catch (e) {
+          // The file stays a chip of this session; the next save or the send carries it.
+        }
+      }
+    },
+    /**
+     * Throws the edits away, and the composer with them: the scheduled mail stays as it
+     * was, with no request made.
+     *
+     * @returns {void}
+     */
+    discardScheduledChanges() {
+      this.emptyComposer();
+      this.close();
     },
     /**
      * The "On <date>, <sender> wrote:" line above a reply's quoted block.

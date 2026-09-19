@@ -312,7 +312,12 @@ export default {
     onAction(action, scheduled) {
       switch (action) {
       case 'edit':
-        this.$root.$emit('edit-scheduled-email', { draftLocalId: scheduled.draftLocalId, scheduledDate: scheduled.scheduledDate });
+        this.$root.$emit('edit-scheduled-email', {
+          draftLocalId: scheduled.draftLocalId,
+          scheduledDate: scheduled.scheduledDate,
+          timeZone: scheduled.timeZone,
+          threadId: scheduled.threadId,
+        });
         break;
       case 'reschedule':
         this.rescheduled = scheduled;
