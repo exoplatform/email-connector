@@ -60,26 +60,34 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.scheduled.empty') }}
       </div>
     </div>
-    <!-- Reschedule: the composer's own date and time card (email-connector-schedule-picker),
-         in the platform's popup (exo-modal), as the platform shows any small modal. Not a
-         bare v-dialog: that one never tells the platform it is open (modalOpened), so the
-         drawers' overlay stays over it and takes its clicks -- the pickers and the check
-         never answered, and nothing was rescheduled. One confirm: the picker's check. -->
-    <exo-modal
+    <!-- Reschedule: the composer's own date and time card (email-connector-schedule-picker)
+         in the platform's standard popup, as exo-confirm-dialog draws it -- which has no
+         room for a form, hence the add-on's copy with a slot (email-connector-mail-box-
+         popup). Not a bare v-dialog: that one never tells the platform it is open
+         (modalOpened), so the drawers' overlay stays over it and takes its clicks. One
+         confirm: the popup's Reschedule, the picker's own check left out. -->
+    <email-connector-mail-box-popup
       ref="rescheduleModal"
       :title="$t('emailConnector.mailBox.scheduled.reschedule.title')"
+      :ok-label="$t('emailConnector.mailBox.scheduled.action.reschedule')"
+      :cancel-label="$t('emailConnector.mailBox.scheduled.reschedule.cancel')"
+      :ok-disabled="!rescheduleValid"
+      :loading="rescheduling"
       width="460px"
-      hide-actions
+      persistent
+      @ok="$refs.reschedulePicker && $refs.reschedulePicker.confirm()"
       @dialog-closed="rescheduled = null">
       <email-connector-schedule-picker
         v-if="rescheduled"
+        ref="reschedulePicker"
         :key="rescheduled.draftLocalId"
         :value="rescheduled.scheduledDate"
         :loading="rescheduling"
-        :confirm-label="$t('emailConnector.mailBox.scheduled.action.reschedule')"
-        class="px-2 pb-2 scheduled-email-reschedule-picker"
+        class="scheduled-email-reschedule-picker"
+        hide-confirm
+        @valid="rescheduleValid = $event"
         @confirm="reschedule" />
-    </exo-modal>
+    </email-connector-mail-box-popup>
     <exo-confirm-dialog
       ref="scheduledConfirmDialog"
       :title="confirmation && confirmation.title"
@@ -124,6 +132,8 @@ export default {
     busyIds: [],
     // The mail the reschedule popup is open for.
     rescheduled: null,
+    // Whether its picker holds an instant: the popup's Reschedule waits for one.
+    rescheduleValid: false,
     rescheduling: false,
     // The question the confirmation dialog is asking: {title, message, okLabel, run}.
     confirmation: null,
