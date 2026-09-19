@@ -649,14 +649,16 @@ export function isListingRow(email) {
 
 /**
  * The list row of a message whose full copy could not be read, made final: the
- * reader then renders it as the message it can show (sender, date, attachments, no
- * body) instead of a skeleton waiting for a copy that is not coming.
+ * reader then renders what it has (sender, date, excerpt) with a "could not be
+ * loaded" line and a retry, instead of a skeleton waiting for a copy that is not
+ * coming. Marked `unavailable`: its empty recipients and missing body are NOT the
+ * message's, so nothing may reply to it, forward it or quote it.
  *
  * @param {object} row the list row
  * @returns {object} a copy of the row that no longer reads as a listing row
  */
 export function settleListingRow(row) {
-  return { ...row, to: row.to || [], cc: row.cc || [], bcc: row.bcc || [] };
+  return { ...row, to: row.to || [], cc: row.cc || [], bcc: row.bcc || [], unavailable: true };
 }
 
 /**
