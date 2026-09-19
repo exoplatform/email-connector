@@ -71,7 +71,21 @@ public class EmailSyncStateStorage {
       return;
     }
     try {
-      emailSyncStateDAO.saveAndFlush(new EmailSyncStateEntity(userId, null, null, lastSyncDate, lastActivityDate, new Date(), null, 0L));
+      // A created row starts at an INBOX epoch no earlier row of this mailbox had (its
+      // creation instant): a disconnect or rebind deletes the row with the cache, and a
+      // re-created row back at 0 would tell a consumer that kept a UID cursor that
+      // nothing changed, while every UID now names a re-downloaded message without its
+      // category links, or another account's (EXO-90418). Bumps stay +1; consumers only
+      // compare for equality.
+      Date createdDate = new Date();
+      emailSyncStateDAO.saveAndFlush(new EmailSyncStateEntity(userId,
+                                                              null,
+                                                              null,
+                                                              lastSyncDate,
+                                                              lastActivityDate,
+                                                              createdDate,
+                                                              null,
+                                                              createdDate.getTime()));
     } catch (DataIntegrityViolationException e) {
       emailSyncStateDAO.resetSchedule(userId, lastSyncDate, lastActivityDate);
     }
