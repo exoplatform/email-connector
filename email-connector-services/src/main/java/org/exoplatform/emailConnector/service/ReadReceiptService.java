@@ -87,9 +87,9 @@ import io.meeds.social.util.JsonUtils;
  * stores no keywords (Exchange): a row the sync deletes and re-creates -- a move, an
  * archive, a reset, a message leaving and re-entering the sync window -- comes back
  * answered, because the prompt and the answer both read the store. Its unique index is
- * the at-most-once decision. The one exception is a message with no Message-ID of its
- * own, which has nothing to be recognised by once its row is gone: its answer lives on
- * its rows only, as it did before the store (PO decision of 2026-09-19, EXO-90435).
+ * the at-most-once decision. The one exception is a message that came with no
+ * Message-ID, which has nothing to be recognised by once its row is gone: its answer
+ * lives on its rows only, as it did before the store (PO decision of 2026-09-19, EXO-90435).
  */
 @Service
 public class ReadReceiptService {
@@ -361,9 +361,10 @@ public class ReadReceiptService {
    * nodes, the sync recording the server's keyword). Its cached copies then follow, as
    * a mirror; if one of them turns out answered already -- the sync mirrored another
    * client's keyword a moment ago -- nothing is sent either, and the store keeps the
-   * record that the request is answered. When the store holds an answer already, the
-   * copies still pending are brought in line with it before refusing. A message
-   * without a Message-ID is decided by its cached copies, as before the store.
+   * record that the request is answered. That record's STATE and ORIGIN are then this
+   * call's, not those of whoever answered: only "answered" is authoritative in it. When the store holds an answer already, the
+   * copies still pending are brought in line with it before refusing. A message that
+   * came with no Message-ID is decided by its cached copies, as before the store.
    *
    * @param username the user answering
    * @param email the message

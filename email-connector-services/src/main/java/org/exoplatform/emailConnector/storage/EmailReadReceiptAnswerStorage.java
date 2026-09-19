@@ -36,7 +36,6 @@ import org.exoplatform.emailConnector.dao.EmailReadReceiptAnswerDAO;
 import org.exoplatform.emailConnector.entity.EmailReadReceiptAnswerEntity;
 import org.exoplatform.emailConnector.model.ReadReceiptAnswerOrigin;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
-import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 
 /**
  * The durable read-receipt answers (EXO-90435), keyed by user and Message-ID: what
@@ -44,11 +43,11 @@ import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
  * {@code $MDNSent} keyword (Exchange).
  * <p>
  * Nothing here decides anything: an insert refused by the unique index comes back as
- * "not claimed", and the service draws the conclusion. A message is addressed by its
- * own Message-ID only -- one this add-on synthesized for a message that had none names
- * a cached row, not the message, so it is never a key here (those messages keep the
- * phase-1 answer on their rows). No cache: the rows are the decision, and a cached
- * copy of a decision is a decision nobody took.
+ * "not claimed", and the service draws the conclusion. A message is addressed by the
+ * Message-ID its cached rows carry, which is the one the message came with: a message
+ * that came with none has no key here, and keeps the phase-1 answer on its rows. No
+ * cache: the rows are the decision, and a cached copy of a decision is a decision
+ * nobody took.
  */
 @Component
 public class EmailReadReceiptAnswerStorage {
@@ -97,8 +96,8 @@ public class EmailReadReceiptAnswerStorage {
    * The answers a user gave to the given messages, one statement for the lot.
    *
    * @param userId the user
-   * @param messageIds the Message-IDs, may hold nulls, blanks and synthesized ids,
-   *          which have no answer here
+   * @param messageIds the Message-IDs, may hold nulls and blanks, which have no answer
+   *          here
    * @return the answers, keyed by {@link #messageIdHash} of each answered Message-ID
    *         (two spellings of one id share a key); never null
    */
@@ -157,11 +156,11 @@ public class EmailReadReceiptAnswerStorage {
    * and the hex is lower-case, so the unique index holds under any collation.
    *
    * @param messageId the Message-ID, as the cache stores it
-   * @return the hash, or null for a blank or synthesized id
+   * @return the hash, or null for a blank id
    */
   public static String messageIdHash(String messageId) {
     String id = StringUtils.trimToNull(messageId);
-    if (id == null || EmailThreadingUtils.isSynthesizedMessageId(id)) {
+    if (id == null) {
       return null;
     }
     try {
@@ -174,8 +173,8 @@ public class EmailReadReceiptAnswerStorage {
   }
 
   /**
-   * The keys of the given Message-IDs, each mapped back to its id; nulls, blanks and
-   * synthesized ids left out.
+   * The keys of the given Message-IDs, each mapped back to its id; nulls and blanks
+   * left out.
    *
    * @param messageIds the Message-IDs
    * @return hash to Message-ID, in the order given; never null
