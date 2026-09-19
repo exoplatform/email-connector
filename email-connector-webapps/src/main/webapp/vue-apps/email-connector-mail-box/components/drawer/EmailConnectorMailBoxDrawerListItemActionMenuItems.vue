@@ -363,7 +363,7 @@ export default {
   methods: {
     selectEmail() {
       this.$emit('close');
-      this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, selected: true }));
+      this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, folder: this.actingFolder, selected: true }));
     },
     updateEmailReadStatus() {
       this.$emit('close');
