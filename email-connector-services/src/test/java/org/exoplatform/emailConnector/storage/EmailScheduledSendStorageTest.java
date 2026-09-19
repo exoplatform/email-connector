@@ -148,6 +148,20 @@ public class EmailScheduledSendStorageTest {
   }
 
   /**
+   * The schedules of several drafts come in one read, keyed by draft, the owner's only.
+   */
+  @Test
+  void theSchedulesOfSeveralDraftsAreReadAtOnce() {
+    EmailScheduledSend created = storage.create(row(draft("d1")));
+    draft("d2");
+    Map<String, EmailScheduledSend> byDraft = storage.getByDraftLocalIds(USER, List.of("d1", "d2"));
+    assertEquals(1, byDraft.size());
+    assertEquals(created.getId(), byDraft.get("d1").getId());
+    assertTrue(storage.getByDraftLocalIds("mallory", List.of("d1")).isEmpty(), "another user's handle reads nothing");
+    assertTrue(storage.getByDraftLocalIds(USER, List.of()).isEmpty());
+  }
+
+  /**
    * The storage speaks the transitions the service needs, each answering whether it
    * landed, and the badge counts the rows needing the owner.
    */

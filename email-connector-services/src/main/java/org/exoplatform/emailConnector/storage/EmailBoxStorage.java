@@ -2101,7 +2101,7 @@ public class EmailBoxStorage {
                               // content.attachments like every other attachment of a
                               // row; this field exists only so the send path can hand
                               // the draft's own files to the message builder.
-                              null);
+                              null, false, null, null, null);
 
       // A draft carries its recipients on EVERY read, whatever the caller asked for.
       //
