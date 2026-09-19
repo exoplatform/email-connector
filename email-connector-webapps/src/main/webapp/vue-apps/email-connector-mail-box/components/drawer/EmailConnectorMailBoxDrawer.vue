@@ -22,7 +22,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     right
     allow-expand
     @expand-updated="updateExpand"
-    :loading="loading || (searchActive && searchServerRunning) || readerLoading || (loadingEmail && readerPartial)"
+    :loading="loading || syncInProgress || (searchActive && searchServerRunning) || readerLoading || (loadingEmail && readerPartial)"
     :use-filter="canSearch"
     :filter-placeholder="$t('emailConnector.mailBox.search.placeholder')"
     @filter-updated="onFilterUpdated"

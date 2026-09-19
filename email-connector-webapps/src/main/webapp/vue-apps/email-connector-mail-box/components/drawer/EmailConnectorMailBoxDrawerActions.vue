@@ -15,18 +15,9 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
+  <!-- A running sync is not signalled here: the drawer that holds this toolbar shows
+       it on its header's loading bar, the one indicator the mail app uses. -->
   <div class="align-self-center" v-if="!selectMode">
-    <v-tooltip v-if="syncInProgress" bottom>
-      <template #activator="{ on, attrs }">
-        <div
-          v-on="on"
-          v-bind="attrs"
-          class="d-inline-flex align-center">
-          <email-box-sync-loader loader-class="me-2" />
-        </div>
-      </template>
-      <span>{{ $t('emailConnector.mailBox.list.drawer.sync.inProgress.tooltip') }}</span>
-    </v-tooltip>
     <v-btn
       :title="$t('emailConnector.mailBox.list.drawer.newEmail.button.title')"
       @click="openNewEmailDrawer()"
