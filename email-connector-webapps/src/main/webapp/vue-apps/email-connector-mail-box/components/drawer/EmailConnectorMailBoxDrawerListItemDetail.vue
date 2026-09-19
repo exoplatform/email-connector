@@ -37,7 +37,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     }"
     @confirm-close="onAbortDownloadConfirmed"
     @opened="onDrawerOpened"
-    @closed="close">
+    @closed="close"
+    @mousedown.native="onListNavigationPointerDown">
     <template #title>
       <span></span>
     </template>
@@ -81,6 +82,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         object-type="email"
         hide-on-empty />
       <email-connector-mail-box-drawer-content
+        ref="listContent"
         :emails="filteredEmails"
         :selected-emails="selectedEmails"
         :select-mode="selectMode"
@@ -104,6 +106,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :email="email"
             :emails="filteredEmails"
             :expanded-drawer="expanded"
+            :defer-thread-read="autoOpenReadPending"
             @thread-context="threadContext = $event"
             @loading="readerLoading = $event"
             @opened-partial="readerPartial = $event" />
@@ -115,12 +118,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import listNavigationMixin from '../../js/EmailConnectorMailBoxListNavigation.js';
 
 // The dimmed page behind a drawer that opened on its own; kept by id so a second
 // open can never leave two of them stacked.
 const BACKDROP_ID = 'emailDetailDrawerBackdrop';
 
+// The other actions that take messages out of the list, each carrying their ids first
+// (the move, handled apart, carries its target after them). Delete and archive
+// are followed in both layouts, as they always were; these and the move only in the expanded one,
+// where the list is beside the reader (EXO-90414). In the narrow layout the toolbar
+// closes the drawer after most of them -- but not after a move, and following one
+// there would leave the reader on the "select an email" placeholder with no list.
+const EXPANDED_LIST_REMOVAL_EVENTS = ['junk-email', 'not-junk-email', 'restore-email', 'purge-email'];
+
 export default {
+  // Expanded, this drawer shows the list beside the reader like the mailbox drawer
+  // does, and moves through it the same way (EXO-90414).
+  mixins: [listNavigationMixin],
   data() {
     return {
       emailDetailDrawer: false,
@@ -173,8 +188,9 @@ export default {
     // "Retry" on a message whose full copy could not be read.
     this.onRetryEmailRead = (email) => {
       if (this.emailDetailDrawer && this.email?.unavailable && email?.mailRemoteId === this.email.mailRemoteId) {
-        // Re-read in the folder the opened message is numbered in (EXO-90416).
-        this.fetchEmail(email.mailRemoteId, this.email.folder || null);
+        // Re-read in the folder the opened message is numbered in (EXO-90416): the
+        // list may hold another message under its number.
+        this.fetchEmail(email.mailRemoteId, { folder: this.email.folder || null });
       }
     };
     this.$root.$on('retry-email-read', this.onRetryEmailRead);
@@ -200,7 +216,7 @@ export default {
       if (!this.emailDetailDrawer) {
         return; 
       }
-      this.openEmailDetailContent(mailRemoteId, folder);
+      this.openEmailDetailContent(mailRemoteId, { folder });
     };
     this.onUpdateEmailReadStatus = (read, emails, folder) => {
       if (!this.emailDetailDrawer) {
@@ -226,11 +242,16 @@ export default {
       if (!this.emailDetailDrawer) {
         return; 
       }
+      const listedBefore = this.filteredEmails;
       this.refreshEmails(emails, folder);
       this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
       if (this.selectMode) {
         this.cancelSelectMode();
       }
+      // Expanded, the reader moves on to the conversation that took the removed one's
+      // place rather than to the placeholder (listNavigationMixin) -- search results
+      // included, the list this drawer was handed for them.
+      this.openNextAfterRemoval(emails, listedBefore, folder);
     };
     // Mirror favorite changes (and their rollback after a refused push) onto this
     // drawer's own copies: the list it was opened with — a snapshot when it
@@ -273,6 +294,15 @@ export default {
     this.$root.$on('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$on('archive-email', this.onDeleteOrArchiveEmail);
+    this.onExpandedListRemoval = (emails, folder) => {
+      if (this.expanded) {
+        this.onDeleteOrArchiveEmail(emails, folder);
+      }
+    };
+    // A move carries its target before the folder its ids are numbered in.
+    this.onExpandedListMove = (emails, target, folder) => this.onExpandedListRemoval(emails, folder);
+    EXPANDED_LIST_REMOVAL_EVENTS.forEach(event => this.$root.$on(event, this.onExpandedListRemoval));
+    this.$root.$on('move-email', this.onExpandedListMove);
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
     });
@@ -329,6 +359,8 @@ export default {
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);
+    EXPANDED_LIST_REMOVAL_EVENTS.forEach(event => this.$root.$off(event, this.onExpandedListRemoval));
+    this.$root.$off('move-email', this.onExpandedListMove);
     this.$root.$off('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
   },
@@ -361,7 +393,33 @@ export default {
         filteredEmails = filteredEmails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
       }
       return filteredEmails;
-    }
+    },
+    /**
+     * The listed messages, for listNavigationMixin.
+     *
+     * @returns {Array} the list beside the reader
+     */
+    navigationEmails() {
+      return this.filteredEmails;
+    },
+    /**
+     * Whether Up and Down walk the list: only expanded, where there is a list beside
+     * the reader -- search results included -- and not during a multi-selection.
+     *
+     * @returns {Boolean} true when the arrow keys drive the list
+     */
+    canNavigateList() {
+      return this.emailDetailDrawer && this.expanded && !this.selectMode && this.filteredEmails.length > 0;
+    },
+    /**
+     * Whether the drawer is open, for listNavigationMixin: the arrow keys are listened
+     * to on the whole page only then.
+     *
+     * @returns {Boolean} true while the drawer is open
+     */
+    navigationDrawerOpen() {
+      return this.emailDetailDrawer;
+    },
   },
   watch: {
     async selectedCategoryId(val) {
@@ -416,7 +474,7 @@ export default {
       // With what the list knows of it, so a message already read is not pushed again.
       const listed = (emails || []).find(e => e.mailRemoteId === mailRemoteId && (e.folder || 'INBOX') === ownFolder);
       this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, listed?.read);
-      this.fetchEmail(mailRemoteId, folder);
+      this.fetchEmail(mailRemoteId, { folder });
     },
     /**
      * Opens the reader on a message and fetches the server's full copy of it.
@@ -431,16 +489,22 @@ export default {
      * A response to an earlier request is dropped: it would otherwise put the previous
      * message back on screen, or end the loading bar while the current one is pending.
      *
+     * An automatic opening (options.automatic, EXO-90414) reads the message without
+     * counting it as opened; listNavigationMixin counts it, and reads it, once the user
+     * stayed on it. Any opening ends the wait of the one before.
+     *
      * @param {number} mailRemoteId - the IMAP UID of the message to open
-     * @param {String} folder - the folder the UID is numbered in, when the caller knows
-     *        it; the row the reader opens on is looked up in that folder too, because
-     *        this drawer's list may be a search's (EXO-90416)
+     * @param {Object} options - {automatic}: whether the user did not ask for this
+     *        mail (EXO-90414); {folder}: the folder the UID is numbered in, when the
+     *        caller knows it. The row the reader opens on is looked up in that folder
+     *        too, because this drawer's list may be a search's (EXO-90416)
      * @returns {Promise<object|null>} the full message, or null when the request was
      *          superseded or failed
      */
-    fetchEmail(mailRemoteId, folder = null) {
+    fetchEmail(mailRemoteId, options = {}) {
+      this.cancelAutoOpenDwell();
       const request = ++this.emailRequest;
-      const ownFolder = this.folderOf(mailRemoteId, folder);
+      const ownFolder = this.folderOf(mailRemoteId, options.folder);
       const row = !this.detachedFromList && this.listedEmail(mailRemoteId, ownFolder) || null;
       // Clicking the message already open keeps its full copy on screen while it is
       // re-read, rather than stepping back to the bare list row.
@@ -456,7 +520,10 @@ export default {
         this.selectEmailPlaceHolder = false;
       }
       this.loadingEmail = true;
-      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder)
+      const read = options.automatic
+        ? this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder, { broadcast: false })
+        : this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder);
+      return read
         .then(email => {
           if (request !== this.emailRequest) {
             return null;
@@ -487,6 +554,8 @@ export default {
     supersedeEmailRequest() {
       this.emailRequest++;
       this.loadingEmail = false;
+      // The previous mail's wait is over, whatever comes next (EXO-90414).
+      this.cancelAutoOpenDwell();
     },
     /**
      * The full copy of the opened message could not be read. When the reader was
@@ -563,22 +632,54 @@ export default {
      * Switches the open reader to another message of the list, the wide layout's
      * click on a row beside it.
      *
+     * An automatic opening (options.automatic) does not mark it read: listNavigationMixin
+     * does, once the user stayed on it.
+     *
      * @param {number} mailRemoteId - the IMAP UID of the message to open
-     * @param {String} folder - the folder it is numbered in, when the row says so
-     * @returns {void}
+     * @param {Object} options - {automatic, folder}: see fetchEmail
+     * @returns {Promise<void>} resolved once the message is on screen, or dropped
      */
-    openEmailDetailContent(mailRemoteId, folder = null) {
+    openEmailDetailContent(mailRemoteId, options = {}) {
       this.selectEmailPlaceHolder = false;
-      const ownFolder = this.folderOf(mailRemoteId, folder);
-      this.fetchEmail(mailRemoteId, folder).then(email => {
-        if (email) {
-          this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, email?.read);
+      const ownFolder = this.folderOf(mailRemoteId, options.folder);
+      return this.fetchEmail(mailRemoteId, options).then(email => {
+        if (email && !options.automatic) {
+          this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, email.read);
           // After the emit, as it always was: the read-status handler recomputes the
           // placeholder for the list it was handed, and in the wide layout that
           // answer is "show the placeholder" for the very message just opened.
           this.selectEmailPlaceHolder = false;
         }
       });
+    },
+    /**
+     * Opens a listed message in the reader and lights its row, as a click on the row
+     * does -- for listNavigationMixin, which passes {automatic} for an opening the user
+     * did not ask for.
+     *
+     * @param {Object} row the listed message
+     * @param {Object} options {automatic}: whether the user did not ask for this mail
+     * @returns {Promise} resolved once the message is on screen
+     */
+    openListedEmail(row, options = {}) {
+      this.$root.$emit('set-opened', row.mailRemoteId);
+      return this.openEmailDetailContent(row.mailRemoteId, { ...options, folder: row.folder || 'INBOX' }).catch(() => null);
+    },
+    /**
+     * The drawer, for listNavigationMixin to tell whether it is the one on top.
+     *
+     * @returns {Object} the exo-drawer
+     */
+    navigationDrawer() {
+      return this.$refs.emailDetailDrawer;
+    },
+    /**
+     * The list beside the reader, for listNavigationMixin.
+     *
+     * @returns {Object} the list content component, or null when not expanded
+     */
+    navigationList() {
+      return this.$refs.listContent || null;
     },
     /**
      * Takes messages out of this drawer's list -- only the given folder's when the

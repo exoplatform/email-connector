@@ -27,6 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-model="selectedAll"
       @click.stop />
     <email-connector-mail-box-drawer-list
+      ref="list"
       :emails="emails"
       :current-email="email"
       :selected-emails="selectedEmails"
@@ -89,6 +90,22 @@ export default {
     }
   },
   methods: {
+    /**
+     * Brings one row of the list into view and focuses it (see the list's own
+     * revealThread).
+     *
+     * @param {String} threadKey the row's key
+     * @returns {Promise<void>} resolved once the row has the focus
+     */
+    revealThread(threadKey) {
+      return this.$refs.list?.revealThread(threadKey);
+    },
+    /**
+     * Selects every listed row, or none.
+     *
+     * @param {Boolean} value whether to select them all
+     * @returns {void}
+     */
     onSelectAllChange(value) {
       // A row the server has not listed yet (refreshPending: one an Undo put back, one
       // a move filed here) is not selectable: it carries a UID the server has
