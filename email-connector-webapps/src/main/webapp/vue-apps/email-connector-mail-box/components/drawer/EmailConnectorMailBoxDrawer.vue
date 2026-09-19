@@ -2437,7 +2437,7 @@ export default {
      *
      * @param {Number} failures how many messages the action could not be applied to
      * @param {String} action 'delete', 'archive', 'restore', 'purge', 'junk', 'notJunk',
-     *        'move' or 'undoMove', which picks the message
+     *        'move', 'undoMove' or 'categorize', which picks the message
      * @returns {void}
      */
     alertOnActionFailures(failures, action) {
