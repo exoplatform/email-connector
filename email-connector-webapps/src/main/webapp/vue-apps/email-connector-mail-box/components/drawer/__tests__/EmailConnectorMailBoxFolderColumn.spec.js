@@ -468,6 +468,50 @@ describe('going somewhere in full screen opens its first mail (EXO-90415)', () =
     expect(fixture.wrapper.vm.email.mailRemoteId).toBe(7);
   });
 
+  it('never opens the previous folder\'s mail when the folder is switched from a category view', async () => {
+    let answer;
+    fixture = await mountDrawer({ INBOX: [row(1), row(2, 'INBOX', { categoryIds: [12] }), row(3)], SENT: [row(7, 'SENT')] });
+    await expand(fixture);
+    fixture.wrapper.vm.$root.$emit('open-category-view', 12);
+    await flush();
+    await flush();
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(2);
+    fixture.service.getEmailByRemoteId.mockClear();
+    fixture.service.getEmailBox.mockImplementationOnce(() => new Promise(resolve => {
+      answer = () => resolve({ emails: [row(7, 'SENT')], folders: FOLDERS, emailSyncStatus: 'SUCCESS' });
+    }));
+
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'SENT');
+    await flush();
+    await flush();
+
+    // Leaving the view opened nothing of the inbox while SENT was on its way.
+    expect(fixture.service.getEmailByRemoteId).not.toHaveBeenCalled();
+    expect(fixture.wrapper.vm.selectEmailPlaceHolder).toBe(true);
+    expect(fixture.wrapper.vm.autoOpenReadPending).toBe(false);
+    answer();
+    await flush();
+    expect(fixture.service.getEmailByRemoteId.mock.calls).toEqual([[7, 'SENT', { broadcast: false }]]);
+  });
+
+  it('reads the categories\' subcategories on the first full screen only, never for a narrow drawer', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    await flush();
+    expect(fixture.service.getSubcategoryIds).not.toHaveBeenCalled();
+
+    await expand(fixture);
+    await flush();
+    expect(fixture.service.getSubcategoryIds.mock.calls.map(([id]) => id)).toEqual([11, 12]);
+
+    fixture.wrapper.vm.updateExpand(false);
+    fixture.wrapper.vm.updateExpand(true);
+    await flush();
+    expect(fixture.service.getSubcategoryIds).toHaveBeenCalledTimes(2);
+    jest.useFakeTimers();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
   it('opens the first mail of a category view the open mail is not in', async () => {
     fixture = await mountDrawer({ INBOX: [row(1), row(2, 'INBOX', { categoryIds: [12] })] });
     await expand(fixture);
