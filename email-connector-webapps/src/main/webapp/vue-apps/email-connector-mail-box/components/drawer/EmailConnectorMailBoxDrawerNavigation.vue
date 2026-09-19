@@ -128,7 +128,7 @@ export default {
       return this.folders.map(folder => {
         const counted = this.folderCounts[folder.key];
         const count = counted?.count > 0 ? counted.count : 0;
-        return this.entry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
+        return this.buildEntry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
           this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)), count, !!(count && counted.unread),
           () => this.switchFolder(folder.key));
       });
@@ -141,7 +141,7 @@ export default {
     categoryEntries() {
       return this.categories.map(category => {
         const count = this.categoryUnreadCounts[category.id] > 0 ? this.categoryUnreadCounts[category.id] : 0;
-        return this.entry(`category:${category.id}`, category.icon || 'fa-tag', category.name, count, count > 0,
+        return this.buildEntry(`category:${category.id}`, category.icon || 'fa-tag', category.name, count, count > 0,
           () => this.openCategoryView(category.id));
       });
     },
@@ -171,7 +171,7 @@ export default {
      * @param {Function} select what a click on it does
      * @returns {Object} the entry
      */
-    entry(value, icon, label, count, unread, select) {
+    buildEntry(value, icon, label, count, unread, select) {
       const key = unread ? 'emailConnector.mailBox.list.drawer.navigation.unread' : 'emailConnector.mailBox.list.drawer.navigation.total';
       const described = count ? this.$t(key, { 0: label, 1: count }) : label;
       return { value, icon, label, count, unread, select, ariaLabel: described, tooltip: described };
