@@ -22,8 +22,46 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
        gets instead is a marker, who it is addressed to, and the first line of what
        has been written so far — enough to recognise which unfinished reply this is
        without pretending it is mail. -->
+  <!-- A reply scheduled to be sent (EXO-90434, PO decision (a)): READ-ONLY here. It is
+       frozen until its schedule is cancelled, so nothing on this strip edits it in place:
+       it says when it goes, and its Edit takes it out of its schedule first -- the same
+       Edit as the Scheduled view's. -->
+  <div
+    v-if="scheduled"
+    class="d-flex align-center px-3 py-3 rounded ec-thread-draft ec-thread-draft-scheduled"
+    style="border: 1px dashed var(--v-borderColor, #e1e8ee);">
+    <v-icon
+      :class="stateLine ? stateLine.color : 'primary--text'"
+      class="flex-shrink-0 me-2"
+      size="14">
+      fa-clock
+    </v-icon>
+    <div class="d-flex flex-column no-min-width flex-grow-1">
+      <span class="font-weight-bold text-truncate scheduled-draft-date">{{ scheduledForLabel }}</span>
+      <div class="d-flex align-center no-min-width">
+        <span class="flex-shrink-0 text-truncate" style="max-width: 45%">{{ recipientsLabel }}</span>
+        <span class="text-light-color ms-3 text-truncate">{{ snippet }}</span>
+      </div>
+      <span
+        v-if="stateText"
+        :class="stateLine.color"
+        class="caption text-wrap scheduled-draft-state">
+        {{ stateText }}
+      </span>
+    </div>
+    <v-btn
+      :disabled="draft.scheduledStatus === 'SENDING'"
+      class="ms-2 flex-shrink-0 scheduled-draft-edit"
+      color="primary"
+      small
+      text
+      @click.stop="$emit('edit')">
+      {{ $t('emailConnector.mailBox.list.drawer.thread.draft.edit') }}
+    </v-btn>
+  </div>
   <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
   <div
+    v-else
     class="clickable d-flex align-center px-3 py-3 rounded ec-thread-draft"
     style="border: 1px dashed var(--v-borderColor, #e1e8ee);"
     tabindex="0"
@@ -64,6 +102,42 @@ export default {
     },
   },
   computed: {
+    /**
+     * Whether the draft is scheduled to be sent at a date: then it is shown read-only.
+     *
+     * @returns {Boolean} true for a scheduled draft
+     */
+    scheduled() {
+      return !!this.draft?.scheduled;
+    },
+    /**
+     * @returns {String} "Scheduled for {date}", in the zone the date was chosen in
+     */
+    scheduledForLabel() {
+      return this.$t('emailConnector.mailBox.list.drawer.thread.draft.scheduledFor', {
+        0: this.$emailConnectorMailBoxService.formatScheduledDate(this.draft.scheduledDate, this.draft.scheduledTimeZone),
+      });
+    },
+    /**
+     * @returns {Object} what the scheduled draft's state says, or null while it waits
+     */
+    stateLine() {
+      return this.$emailConnectorMailBoxService.scheduledStateLine({
+        status: this.draft?.scheduledStatus,
+        lastError: this.draft?.scheduledLastError,
+      });
+    },
+    /**
+     * @returns {String} the state line's words, nothing while it simply waits
+     */
+    stateText() {
+      if (!this.stateLine) {
+        return '';
+      }
+      return this.stateLine.reasonKey
+        ? this.$t(this.stateLine.key, { 0: this.$t(this.stateLine.reasonKey) })
+        : this.$t(this.stateLine.key);
+    },
     /**
      * Who the draft is addressed to so far, or a placeholder while it is addressed
      * to nobody — which is a perfectly ordinary state for a draft to be in and must

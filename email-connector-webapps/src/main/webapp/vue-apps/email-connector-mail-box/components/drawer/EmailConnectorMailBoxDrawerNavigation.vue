@@ -72,11 +72,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 @click="entry.select">
                 <v-list-item-icon :class="rail ? 'mx-auto' : 'ms-0 me-2'" class="my-auto align-self-center align-center">
                   <v-badge
-                    :value="rail && entry.unread"
-                    color="primary"
+                    :value="rail && (entry.unread || entry.attention)"
+                    :color="entry.attention ? 'warning' : 'primary'"
                     dot
                     overlap>
-                    <v-icon size="16">{{ entry.icon }}</v-icon>
+                    <v-icon size="16" :class="{ 'warning--text': entry.attention }">{{ entry.icon }}</v-icon>
                   </v-badge>
                 </v-list-item-icon>
                 <template v-if="!rail">
@@ -87,7 +87,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                   </v-list-item-content>
                   <v-list-item-action-text
                     v-if="entry.count"
-                    :class="{ 'font-weight-bold': entry.unread }"
+                    :class="{ 'font-weight-bold': entry.unread || entry.attention, 'warning--text': entry.attention }"
                     class="text-body-2">
                     {{ $emailConnectorMailBoxService.formatCount(entry.count) }}
                   </v-list-item-action-text>
@@ -140,7 +140,7 @@ export default {
         const count = counted?.count > 0 ? counted.count : 0;
         return { ...this.buildEntry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
           this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)), count, !!(count && counted.unread),
-          () => this.switchFolder(folder.key)), folderKey: folder.key };
+          () => this.switchFolder(folder.key), !!counted?.attention), folderKey: folder.key };
       });
     },
     /** @returns {Array} the categories, each with its unread mail */
@@ -170,12 +170,17 @@ export default {
      * @param {Number} count its count, 0 for none
      * @param {Boolean} unread whether the count is unread mail
      * @param {Function} select what a click on it does
+     * @param {Boolean} attention whether one of its mails needs the user -- the Scheduled
+     *        view's mail not sent (EXO-90434): its count shows in the warning colour
      * @returns {Object} the entry
      */
-    buildEntry(value, icon, label, count, unread, select) {
+    buildEntry(value, icon, label, count, unread, select, attention = false) {
       const key = unread ? 'emailConnector.mailBox.list.drawer.navigation.unread' : 'emailConnector.mailBox.list.drawer.navigation.total';
-      const described = count ? this.$t(key, { 0: label, 1: count }) : label;
-      return { value, icon, label, count, unread, select, ariaLabel: described, tooltip: described };
+      let described = count ? this.$t(key, { 0: label, 1: count }) : label;
+      if (attention) {
+        described = this.$t('emailConnector.mailBox.list.drawer.navigation.attention', { 0: described });
+      }
+      return { value, icon, label, count, unread, select, attention, ariaLabel: described, tooltip: described };
     },
     /**
      * Lists a folder with the menu's event, the listed one too (the way out of a view).
