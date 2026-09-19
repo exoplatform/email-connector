@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.storage;
 import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -36,6 +37,7 @@ import javax.mail.internet.InternetAddress;
 import org.apache.commons.lang3.StringUtils;
 import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.commons.file.model.FileInfo;
@@ -1303,6 +1305,35 @@ public class EmailBoxStorage {
     String[] emailSenderParts = emailBoxEntity.getSender().split(",");
     email.setSender(EmailConnectorUtils.getEmailSender(new InternetAddress(emailSenderParts[1], emailSenderParts[0]), false));
     return email;
+  }
+
+  /**
+   * The UIDs cached in one folder strictly between two bounds, highest first.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @param aboveUid the exclusive lower bound
+   * @param belowUid the exclusive upper bound
+   * @param limit how many at most
+   * @return the UIDs, highest first, never null
+   */
+  public List<Long> getUidsBetween(String userId, String folder, long aboveUid, long belowUid, int limit) {
+    if (limit <= 0 || belowUid <= aboveUid + 1) {
+      return Collections.emptyList();
+    }
+    return emailBoxDao.findUidsBetween(userId, folder, aboveUid, belowUid, PageRequest.of(0, limit));
+  }
+
+  /**
+   * The highest UID cached in one folder.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return the highest UID, 0 when the folder has no cached row
+   */
+  public long getMaxUid(String userId, String folder) {
+    Long maxUid = emailBoxDao.findMaxUid(userId, folder);
+    return maxUid == null ? 0L : maxUid;
   }
 
   public List<Email> getEmails(String userId, String folder) {

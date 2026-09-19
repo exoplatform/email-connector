@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -137,6 +138,11 @@ import com.sun.mail.imap.IMAPFolder;
 import com.sun.mail.imap.IMAPStore;
 import com.sun.mail.imap.ResyncData;
 
+import org.exoplatform.commons.api.notification.NotificationContext;
+import org.exoplatform.commons.api.notification.command.NotificationCommand;
+import org.exoplatform.commons.api.notification.command.NotificationExecutor;
+import org.exoplatform.commons.notification.impl.NotificationContextImpl;
+import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationPlugin;
 import org.exoplatform.commons.ObjectAlreadyExistsException;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -594,7 +600,7 @@ public class EmailBoxServiceTest {
   void synchronizeIsRefusedWhileTheMailboxIsClaimedElsewhere() {
     givenAUsableMailbox();
     when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(false);
-    when(emailSyncStateStorage.get(TEST_USER)).thenReturn(new EmailSyncState(TEST_USER, new Date(), "other-node", null, null, new Date()));
+    when(emailSyncStateStorage.get(TEST_USER)).thenReturn(new EmailSyncState(TEST_USER, new Date(), "other-node", null, null, new Date(), null, 0L));
     emailBoxService.synchronize(TEST_USER);
     verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
     verify(emailSyncStateStorage, never()).release(anyString(), anyString(), any(Date.class));
@@ -626,7 +632,7 @@ public class EmailBoxServiceTest {
   void resetIsRefusedWhileTheMailboxIsClaimedElsewhere() {
     givenAUsableMailbox();
     when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(false);
-    when(emailSyncStateStorage.get(TEST_USER)).thenReturn(new EmailSyncState(TEST_USER, new Date(), "other-node", null, null, new Date()));
+    when(emailSyncStateStorage.get(TEST_USER)).thenReturn(new EmailSyncState(TEST_USER, new Date(), "other-node", null, null, new Date(), null, 0L));
     IllegalStateException refused = assertThrows(IllegalStateException.class, () -> emailBoxService.resetAndResynchronize(TEST_USER));
     assertEquals("emailConnector.reset.syncInProgress", refused.getMessage());
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
@@ -643,6 +649,187 @@ public class EmailBoxServiceTest {
     emailBoxService.resetAndResynchronize(TEST_USER);
     verify(emailSyncStateStorage).claim(eq(TEST_USER), any(Date.class), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
     verify(emailSyncStateStorage).release(eq(TEST_USER), eq(EmailConnectorUtils.getSyncNodeName()), any(Date.class));
+  }
+
+  /**
+   * A reset moves the INBOX to a new epoch: the re-downloaded rows carry the same
+   * UIDs but none of their category links, and a consumer keeping a UID cursor
+   * (the AI auto-categorization's queue, EXO-90418) must go over them again.
+   */
+  @Test
+  @SneakyThrows
+  void aResetMovesTheInboxToANewEpoch() {
+    mockEmptySync();
+    emailBoxService.resetAndResynchronize(TEST_USER);
+    InOrder order = inOrder(emailBoxStorage, emailSyncStateStorage);
+    order.verify(emailSyncStateStorage).bumpInboxEpoch(TEST_USER);
+    order.verify(emailSyncStateStorage).release(eq(TEST_USER), anyString(), any(Date.class));
+  }
+
+  /**
+   * A new UIDVALIDITY on the server moves the INBOX to a new epoch; the same one
+   * does not, and neither does a first sync that has nothing to compare with.
+   */
+  @Test
+  @SneakyThrows
+  void aNewUidValidityMovesTheInboxToANewEpoch() {
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 100));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting(), state, 12L, 501L, 100, 777L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(emailSyncStateStorage).bumpInboxEpoch(TEST_USER);
+  }
+
+  /**
+   * Same UIDVALIDITY (a full path forced by a window change): no new epoch.
+   */
+  @Test
+  @SneakyThrows
+  void theSameUidValidityKeepsTheEpoch() {
+    MailboxSyncState state = new MailboxSyncState();
+    state.setSnapshot(MailFolder.INBOX, new FolderSyncSnapshot(11L, 501L, 100, 777L, 50));
+    IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting(), state, 11L, 501L, 100, 777L, true);
+    lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
+    emailBoxService.synchronize(TEST_USER);
+    verify(inbox).open(Folder.READ_ONLY);
+    verify(emailSyncStateStorage, never()).bumpInboxEpoch(anyString());
+  }
+
+  /**
+   * The epoch is read from the sync-state row, 0 when there is none.
+   */
+  @Test
+  void theEpochIsTheSyncStateRows() {
+    when(emailSyncStateStorage.get(TEST_USER)).thenReturn(new EmailSyncState(TEST_USER, null, null, null, null, new Date(), 7L, 3L));
+    assertEquals(3L, emailBoxService.getInboxEpoch(TEST_USER));
+    assertEquals(0L, emailBoxService.getInboxEpoch("nobody"));
+  }
+
+  /**
+   * Opening a sync's notification window initialises the persisted boundary with the
+   * highest UID cached before the sync.
+   */
+  @Test
+  void openingTheNotificationWindowInitialisesThePersistedBoundary() {
+    Email older = email("boundaryuser");
+    older.setMailRemoteId(40L);
+    Email newest = email("boundaryuser");
+    newest.setMailRemoteId(42L);
+    emailBoxService.openNotificationWindow("boundaryuser", List.of(older, newest));
+    verify(emailSyncStateStorage).initNotifiedUid("boundaryuser", 42L);
+  }
+
+  /**
+   * The node-agnostic send (EXO-90418): the range (NOTIFIED_UID, highest cached UID]
+   * is taken on the database FIRST, then only the unread messages of that range count
+   * -- not the ones at or below the boundary, however unread.
+   */
+  @Test
+  void thePendingNotificationTakesItsRangeThenCountsOnlyIt() {
+    String user = "rangeuser";
+    when(emailSyncStateStorage.get(user)).thenReturn(new EmailSyncState(user, null, null, null, null, new Date(), 10L, 0L));
+    when(emailBoxStorage.getEmails(user, MailFolder.INBOX)).thenReturn(List.of(unreadInboxEmail(user, 9L),
+                                                                                unreadInboxEmail(user, 10L),
+                                                                                unreadInboxEmail(user, 11L),
+                                                                                unreadInboxEmail(user, 12L)));
+    when(emailSyncStateStorage.advanceNotifiedUid(user, 10L, 12L)).thenReturn(true);
+    NotificationContext context = mock(NotificationContext.class);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      contexts.when(NotificationContextImpl::cloneInstance).thenReturn(context);
+      when(context.append(any(), any())).thenReturn(context);
+      NotificationExecutor executor = mock(NotificationExecutor.class);
+      when(context.getNotificationExecutor()).thenReturn(executor);
+      when(executor.with(nullable(NotificationCommand.class))).thenReturn(executor);
+
+      emailBoxService.sendPendingNewEmailsNotification(user);
+
+      verify(context).append(NewEmailsNotificationPlugin.NEW_EMAILS, "2");
+      verify(executor).execute(context);
+    }
+  }
+
+  /**
+   * A range another caller already took -- the syncing node's timer, a classifier on
+   * another node -- is not notified a second time.
+   */
+  @Test
+  void aRangeAnotherCallerTookIsNotNotifiedAgain() {
+    String user = "takenuser";
+    when(emailSyncStateStorage.get(user)).thenReturn(new EmailSyncState(user, null, null, null, null, new Date(), 10L, 0L));
+    when(emailBoxStorage.getEmails(user, MailFolder.INBOX)).thenReturn(List.of(unreadInboxEmail(user, 12L)));
+    when(emailSyncStateStorage.advanceNotifiedUid(user, 10L, 12L)).thenReturn(false);
+    try (MockedStatic<NotificationContextImpl> contexts = mockStatic(NotificationContextImpl.class)) {
+      emailBoxService.sendPendingNewEmailsNotification(user);
+      contexts.verifyNoInteractions();
+    }
+  }
+
+  /**
+   * No boundary at all (no row, or a row never initialised, and no sync window): the
+   * node-agnostic send cannot tell new mail apart and leaves it to the sync's own
+   * window, without even reading the mailbox.
+   */
+  @Test
+  void noBoundaryNoSend() {
+    emailBoxService.sendPendingNewEmailsNotification("unknownuser");
+    verify(emailBoxStorage, never()).getEmails("unknownuser", MailFolder.INBOX);
+    verify(emailSyncStateStorage, never()).advanceNotifiedUid(anyString(), any(), anyLong());
+  }
+
+  /**
+   * The classification hold: two minutes by default, floored at the grace delay and
+   * capped at the backstop whatever the property says.
+   */
+  @Test
+  void theClassificationHoldIsBounded() {
+    try {
+      assertEquals(120_000L, emailBoxService.getClassificationHoldMs());
+      System.setProperty(EmailBoxService.NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY, "1");
+      assertEquals(10_000L, emailBoxService.getClassificationHoldMs());
+      System.setProperty(EmailBoxService.NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY, "86400");
+      assertEquals(15 * 60_000L, emailBoxService.getClassificationHoldMs());
+      System.setProperty(EmailBoxService.NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY, "not-a-number");
+      assertEquals(120_000L, emailBoxService.getClassificationHoldMs());
+    } finally {
+      System.clearProperty(EmailBoxService.NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY);
+    }
+  }
+
+  /**
+   * A claimed notification waits for the classification hold once the sync is
+   * complete (two minutes by default), no longer the whole 15-minute backstop: a
+   * classifier on another node cannot release a claim here, it sends itself.
+   */
+  @Test
+  @SneakyThrows
+  void aClaimedWindowWaitsTheClassificationHoldNotTheBackstop() {
+    String user = "holduser";
+    emailBoxService.openNotificationWindow(user, List.of());
+    emailBoxService.deferNewEmailsNotification(user);
+    emailBoxService.completeNotificationWindow(user, List.of());
+    Object pending = ((Map<?, ?>) ReflectionTestUtils.getField(emailBoxService, "pendingNotifications")).get(user);
+    java.lang.reflect.Method future = pending.getClass().getDeclaredMethod("future");
+    future.setAccessible(true);
+    java.util.concurrent.ScheduledFuture<?> timer = (java.util.concurrent.ScheduledFuture<?>) future.invoke(pending);
+    long delay = timer.getDelay(TimeUnit.MILLISECONDS);
+    timer.cancel(false);
+    assertTrue(delay > 60_000L && delay <= 120_000L, "held for the classification hold, got " + delay + " ms");
+  }
+
+  /**
+   * An unread INBOX message with a given UID.
+   *
+   * @param user the owner
+   * @param uid the UID
+   * @return the message
+   */
+  private Email unreadInboxEmail(String user, long uid) {
+    Email email = email(user);
+    email.setMailRemoteId(uid);
+    email.setRead(false);
+    email.setCategoryIds(null);
+    return email;
   }
 
   /**

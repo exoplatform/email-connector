@@ -154,6 +154,7 @@ import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.EmailSyncState;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
@@ -327,6 +328,20 @@ public class EmailBoxService {
   // claim is taken or released, so it bounds silence rather than the run: a mailbox that
   // keeps classifying is never cut off, however large it is.
   private static final long       NOTIFICATION_MAX_WAIT_MS                                    = 15 * 60 * 1000L;
+
+  /**
+   * The JVM property capping how long a sync's new-mail notification is held for a
+   * classifier once the sync has cached its last message, in seconds (EXO-90418). A
+   * classifier that works off a persisted queue, possibly on another node, cannot
+   * release a claim in this JVM: it sends the notification itself when it is done
+   * ({@link #sendPendingNewEmailsNotification(String)}), and this hold is the safety
+   * net when it is slow. Floored at the grace delay, capped at the 15-minute backstop.
+   */
+  public static final String      NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY                   =
+                                                                            "email.connector.notification.classification.hold.seconds";
+
+  /** The default of {@link #NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY}: two minutes. */
+  private static final long       DEFAULT_NOTIFICATION_CLASSIFICATION_HOLD_SECONDS            = 120L;
 
   // Cooldown before a BLOCKED mailbox is allowed to retry a sync, so BLOCKED is a temporary
   // backoff rather than a permanent dead-end (a successful retry clears it).
@@ -1246,6 +1261,9 @@ public class EmailBoxService {
         // body per row -- on a 100-message mailbox that is minutes of waiting for folders the
         // inbox view, the notifications and the AI categorization never read.
         deleteUserEmails(username, MailFolder.INBOX);
+        // The re-downloaded rows carry the same UIDs but none of the category links:
+        // a consumer that kept a UID cursor must go over them again.
+        bumpInboxEpoch(username, "reset");
         // The summaries too, and all of them rather than the inbox's share: a summary is
         // keyed by conversation, a conversation spans folders, and the resync re-mints
         // thread ids from the messages it re-downloads -- so what survives a reset is a
@@ -1554,6 +1572,12 @@ public class EmailBoxService {
     }
     FolderSyncSnapshot folderSnapshot = syncFolder(folder, folderKey, username, userEmailSetting, windowSize, notify);
     if (folderSnapshot != null) {
+      if (notify && previousSnapshot != null && previousSnapshot.getUidValidity() > 0 && folderSnapshot.getUidValidity() > 0
+          && previousSnapshot.getUidValidity() != folderSnapshot.getUidValidity()) {
+        // The server renumbered the folder: the UIDs a consumer remembered now name
+        // other messages, or none.
+        bumpInboxEpoch(username, "UIDVALIDITY " + previousSnapshot.getUidValidity() + " -> " + folderSnapshot.getUidValidity());
+      }
       capturedSnapshot.accept(folderSnapshot);
     }
   }
@@ -11320,6 +11344,7 @@ public class EmailBoxService {
    */
   void openNotificationWindow(String username, List<Email> userEmails) {
     long maxLocalUid = maxKnownUid(userEmails);
+    initPersistedNotificationBoundary(username, maxLocalUid);
     pendingNotifications.compute(username, (user, pending) -> {
       if (pending == null) {
         return new PendingNotification(maxLocalUid, 0, false, notificationGenerations.incrementAndGet(), null);
@@ -11358,7 +11383,11 @@ public class EmailBoxService {
       long boundary = pending == null ? fallbackBoundary : Math.min(pending.maxLocalUid(), fallbackBoundary);
       int claims = pending == null ? 0 : pending.pendingClaims();
       cancelTimer(pending);
-      long delayMs = claims > 0 ? NOTIFICATION_MAX_WAIT_MS : NOTIFICATION_GRACE_MS;
+      // With a claim out, the classifier gets the capped hold, not the whole backstop:
+      // it may run on another node and send itself when done (EXO-90418), so the timer
+      // here is the safety net, and the persisted boundary makes whichever comes second
+      // a no-op.
+      long delayMs = claims > 0 ? getClassificationHoldMs() : NOTIFICATION_GRACE_MS;
       long generation = notificationGenerations.incrementAndGet();
       return new PendingNotification(boundary, claims, true, generation, scheduleNotificationTask(user, delayMs, generation));
     });
@@ -11533,6 +11562,118 @@ public class EmailBoxService {
   }
 
   /**
+   * Sends the new-mail notification of whatever new INBOX mail has not been notified
+   * yet, computed from the database: the node-agnostic end of a classification
+   * (EXO-90418). A consumer of the new-mail events that classifies the messages
+   * off-thread -- on any node -- calls this once its classification of the new mail
+   * is done, so the owner's per-category preference applies to classified messages.
+   * <p>
+   * Safe to call from anywhere and any number of times: the range is taken on the
+   * persisted boundary first, so the syncing node's own hold timer, or a second call,
+   * finds nothing left to notify. A mailbox whose boundary was never initialised (no
+   * sync ran since the upgrade) is left to the sync's own window.
+   *
+   * @param username the mailbox owner
+   */
+  public void sendPendingNewEmailsNotification(String username) {
+    try {
+      sendNotification(username, Long.MAX_VALUE);
+    } catch (Exception e) {
+      LOG.warn("Error sending the new-email notification for user {}", username, e);
+    }
+  }
+
+  /**
+   * The UIDs of the cached INBOX messages strictly between two bounds, highest first,
+   * at most {@code limit} of them: what a consumer working through a mailbox's new
+   * mail in bounded slices reads (EXO-90418). A UID is only meaningful within one
+   * {@link #getInboxEpoch(String) epoch}.
+   *
+   * @param username the mailbox owner
+   * @param aboveUid the exclusive lower bound
+   * @param belowUid the exclusive upper bound ({@code Long.MAX_VALUE} for none)
+   * @param limit how many at most
+   * @return the UIDs, highest first, never null
+   */
+  public List<Long> getInboxUidsBetween(String username, long aboveUid, long belowUid, int limit) {
+    return emailBoxStorage.getUidsBetween(username, MailFolder.INBOX, aboveUid, belowUid, limit);
+  }
+
+  /**
+   * The highest UID of the cached INBOX.
+   *
+   * @param username the mailbox owner
+   * @return the highest UID, 0 for an empty cache
+   */
+  public long getInboxMaxUid(String username) {
+    return emailBoxStorage.getMaxUid(username, MailFolder.INBOX);
+  }
+
+  /**
+   * The INBOX epoch of a mailbox: a number that changes whenever its INBOX UIDs stop
+   * meaning what they meant -- a reset (the cache cleared and re-downloaded, category
+   * links included) or a new UIDVALIDITY on the server. A consumer keeping a UID
+   * cursor stores the epoch beside it and restarts the cursor when it changed.
+   *
+   * @param username the mailbox owner
+   * @return the epoch, 0 for a mailbox with no sync state
+   */
+  public long getInboxEpoch(String username) {
+    EmailSyncState syncState = emailSyncStateStorage.get(username);
+    return syncState == null ? 0L : syncState.getInboxEpoch();
+  }
+
+  /**
+   * Initialises the persisted notification boundary at the start of an INBOX sync;
+   * best-effort, a failure here only leaves the in-JVM boundary in charge.
+   *
+   * @param username the mailbox owner
+   * @param maxLocalUid the highest INBOX UID cached before the sync
+   */
+  private void initPersistedNotificationBoundary(String username, long maxLocalUid) {
+    try {
+      emailSyncStateStorage.initNotifiedUid(username, maxLocalUid);
+    } catch (RuntimeException e) {
+      LOG.warn("Could not initialise the notification boundary of user {}", username, e);
+    }
+  }
+
+  /**
+   * Moves the mailbox's INBOX to a new epoch; best-effort, logged.
+   *
+   * @param username the mailbox owner
+   * @param reason why, for the log
+   */
+  private void bumpInboxEpoch(String username, String reason) {
+    try {
+      emailSyncStateStorage.bumpInboxEpoch(username);
+      LOG.info("The INBOX UIDs of user {} changed meaning ({}); consumers keeping a UID cursor restart it", username, reason);
+    } catch (RuntimeException e) {
+      LOG.warn("Could not move the INBOX of user {} to a new epoch ({})", username, reason, e);
+    }
+  }
+
+  /**
+   * How long a claimed notification is held once the sync is complete: the
+   * {@value #NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY} property, floored at the grace
+   * delay and capped at the backstop.
+   *
+   * @return the hold in milliseconds
+   */
+  long getClassificationHoldMs() {
+    long seconds = DEFAULT_NOTIFICATION_CLASSIFICATION_HOLD_SECONDS;
+    String configured = System.getProperty(NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY);
+    if (StringUtils.isNotBlank(configured)) {
+      try {
+        seconds = Long.parseLong(configured.trim());
+      } catch (NumberFormatException e) {
+        LOG.warn("Property {}='{}' is not a number of seconds; using {}", NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY, configured, seconds);
+      }
+    }
+    return Math.min(NOTIFICATION_MAX_WAIT_MS, Math.max(NOTIFICATION_GRACE_MS, seconds * 1000L));
+  }
+
+  /**
    * A notification waiting to be sent: the UID boundary that separates the newly-cached
    * messages from the ones already there, how many classification claims still hold it
    * back, whether the sync that opened it has finished caching (a zero-claim window may
@@ -11561,14 +11702,41 @@ public class EmailBoxService {
    * links are keyed by the local email id, so the freshly-synced INBOX is re-read from the
    * local cache (its {@code categoryIds}) rather than inspected on the raw IMAP messages.
    *
+   * <p>
+   * The boundary is persisted (EXO-90418): the range notified is (NOTIFIED_UID, the
+   * highest cached UID], taken with a conditional UPDATE first, so the notification of
+   * one range of new mail goes out once, whichever node and whichever path sends it.
+   * The in-JVM window's boundary is only the fallback for a row never initialised.
+   *
    * @param userName the mailbox owner
    * @param maxLocalUid the highest UID cached before the sync -- what counts as "new"
+   *          when the persisted boundary was never initialised
    */
   private void sendNotification(String userName, long maxLocalUid) {
+    EmailSyncState syncState = emailSyncStateStorage.get(userName);
+    Long notifiedUid = syncState == null ? null : syncState.getNotifiedUid();
+    long fromUid = notifiedUid == null ? maxLocalUid : notifiedUid;
+    if (fromUid == Long.MAX_VALUE) {
+      // No boundary anywhere: nothing can be told apart as new.
+      return;
+    }
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(userName);
     List<Email> currentEmails = emailBoxStorage.getEmails(userName, MailFolder.INBOX);
+    long toUid = maxKnownUid(currentEmails);
+    if (toUid <= fromUid) {
+      return;
+    }
+    // The range (from, to] is taken before anything is counted or sent: of every node
+    // (the syncing node's timer, a classifier done elsewhere) trying to notify the same
+    // new mail, exactly one moves the persisted boundary and sends. A mailbox with no
+    // state row keeps the in-JVM behaviour.
+    if (syncState != null && !emailSyncStateStorage.advanceNotifiedUid(userName, notifiedUid, toUid)) {
+      LOG.debug("The new-email notification of user {} up to UID {} was sent by another caller", userName, toUid);
+      return;
+    }
     long newUnreadCount = currentEmails.stream()
-                                       .filter(email -> email.getMailRemoteId() != null && email.getMailRemoteId() > maxLocalUid)
+                                       // toUid is the highest of these very rows: (from, to] is "above from"
+                                       .filter(email -> email.getMailRemoteId() != null && email.getMailRemoteId() > fromUid)
                                        .filter(email -> !email.isRead())
                                        .filter(email -> shouldNotifyForNewEmail(email, userEmailSetting))
                                        .count();

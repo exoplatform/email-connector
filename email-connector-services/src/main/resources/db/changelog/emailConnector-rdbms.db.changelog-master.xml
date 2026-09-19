@@ -1175,4 +1175,37 @@
     <rollback/>
   </changeSet>
 
+  <changeSet author="email-connector" id="1.0.0-61">
+    <comment>
+      Two columns on the sync-state row of each mailbox, for consumers of the new-mail
+      events that run on another node than the sync (EXO-90418: the AI
+      auto-categorization now works off a persisted queue, on whichever node claims it).
+
+      NOTIFIED_UID is the new-mail notification's boundary, persisted: the highest INBOX
+      UID the owner has been notified about. Whoever sends the notification -- the
+      syncing node's timer, or a consumer telling the connector its classification is
+      done, from any node -- first moves it with a conditional UPDATE, so one range of
+      new mail is notified once however many nodes try. Null until the first sync after
+      the upgrade initialises it from the cache.
+
+      INBOX_EPOCH changes whenever the INBOX UIDs stop meaning what they meant: a reset
+      (the cache is cleared and re-downloaded, category links included) or a new
+      UIDVALIDITY on the server. A consumer keeping a UID cursor restarts it when the
+      epoch it stored is not the current one.
+
+      No modifySql (1.0.0-53 says why), no index (both are read by primary key). Rolled
+      back explicitly.
+    </comment>
+    <addColumn tableName="EMAIL_SYNC_STATE">
+      <column name="NOTIFIED_UID" type="BIGINT"/>
+      <column name="INBOX_EPOCH" type="BIGINT" defaultValueNumeric="0">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_SYNC_STATE" columnName="INBOX_EPOCH"/>
+      <dropColumn tableName="EMAIL_SYNC_STATE" columnName="NOTIFIED_UID"/>
+    </rollback>
+  </changeSet>
+
 </databaseChangeLog>
