@@ -515,6 +515,26 @@ describe('going somewhere in full screen opens its first mail (EXO-90415)', () =
     expect(fixture.service.getEmailByRemoteId.mock.calls).toEqual([[8, 'DRAFTS', { broadcast: false }]]);
   });
 
+  it('opens nothing of a folder left for another one, even when its list answers last', async () => {
+    const answers = {};
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    await expand(fixture);
+    fixture.service.getEmailBox.mockImplementation(folder => new Promise(resolve => {
+      answers[folder.toLowerCase()] = rows => resolve({ emails: rows, folders: FOLDERS, emailSyncStatus: 'SUCCESS' });
+    }));
+    fixture.service.getEmailByRemoteId.mockClear();
+
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'SENT');
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'DRAFTS');
+    answers.drafts([row(8, 'DRAFTS')]);
+    await flush();
+    answers.sent([row(7, 'SENT')]);
+    await flush();
+
+    expect(fixture.service.getEmailByRemoteId.mock.calls).toEqual([[8, 'DRAFTS', { broadcast: false }]]);
+    expect(fixture.wrapper.vm.currentFolder).toBe('DRAFTS');
+  });
+
   it('still opens a category view\'s first mail while a chip reloads the folder', async () => {
     let answer;
     fixture = await mountDrawer({ INBOX: [row(1, 'INBOX', { starred: true }), row(2, 'INBOX', { categoryIds: [12], starred: true })] });

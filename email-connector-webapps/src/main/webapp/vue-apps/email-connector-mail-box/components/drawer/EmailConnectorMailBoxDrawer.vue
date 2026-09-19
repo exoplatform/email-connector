@@ -2783,10 +2783,12 @@ export default {
       this.folderLoading = true;
       this.loadEmailBox().finally(() => {
         this.loading = false;
-        // A later switch owns the flag until its own list is in.
-        if (folderLoad === this.folderLoads) {
-          this.folderLoading = false;
+        // A later switch owns the flag, the search and the opening: a superseded one
+        // answering last must not open its folder's mail in the folder now listed.
+        if (folderLoad !== this.folderLoads) {
+          return;
         }
+        this.folderLoading = false;
         // A running search follows the folder: local matches recompute from the
         // new list, and the server search re-runs scoped to the new folder.
         if (this.searchActive) {
