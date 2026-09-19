@@ -283,6 +283,11 @@ const UNREAD_COUNTED_FOLDERS = ['INBOX', 'JUNK'];
 
 const TOTAL_COUNTED_FOLDERS = ['DRAFTS'];
 
+// What the settings' folders drawer says when the folder list may have changed: a
+// folder created or renamed (its name drawer), one deleted or opted in or out, the
+// drawer closed.
+const FOLDERS_CHANGED_EVENTS = ['email-folders-list-changed', 'email-folders-saved', 'email-folders-updated'];
+
 // Where the user's own choice of column or rail is kept, in this browser only.
 const NAVIGATION_RAIL_STORAGE_KEY = 'emailConnector.mailBox.navigationRail';
 
@@ -680,6 +685,10 @@ export default {
     // expanding a mail opened over the list hands the mail over and expands HERE, with
     // that mail open -- the mail drawer then closes itself (EXO-90415).
     this.$root.$on('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
+    // The settings' folders drawer, opened over the mailbox from the folder column
+    // (EXO-90415): a folder created, renamed, deleted or opted in or out there -- and
+    // the drawer closing -- re-reads the folder list the column and the menu show.
+    FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$on(event, this.onFoldersChanged));
     // Opening the mailbox, optionally straight onto one message — that is how the
     // global Favorites drawer hands a mail over. The payload used to be the plain
     // "loading" flag and callers still pass it that way, so an object is what marks
@@ -760,6 +769,7 @@ export default {
     this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
     this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$off('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
+    FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$off(event, this.onFoldersChanged));
   },
   computed: {
     hasEmails() {
@@ -2898,6 +2908,28 @@ export default {
       const focused = kept || (this.searchActive ? rows[0] : firstOpenableThread(rows));
       if (focused) {
         this.revealThreadRow(focused.threadId);
+      }
+    },
+    /**
+     * Re-reads the folder list after the settings' folders drawer changed it
+     * (EXO-90415), so the column and the menu show it at once. A listed folder that is
+     * gone -- deleted, opted out, missing on the server, or refused by the listing --
+     * gives way to the inbox.
+     *
+     * @returns {Promise<void>} resolved once the list is re-read
+     */
+    async onFoldersChanged() {
+      if (!this.emailBoxDrawer) {
+        return;
+      }
+      let listed = true;
+      try {
+        await this.loadEmailBox();
+      } catch (e) {
+        listed = false;
+      }
+      if (this.currentFolder !== 'INBOX' && (!listed || !this.availableFolders.some(folder => folder.key === this.currentFolder))) {
+        this.onSwitchFolder('INBOX');
       }
     },
     /**
