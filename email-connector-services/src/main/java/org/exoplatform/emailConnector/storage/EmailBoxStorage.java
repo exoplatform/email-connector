@@ -63,6 +63,7 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.ThreadSummary;
@@ -1527,16 +1528,34 @@ public class EmailBoxStorage {
    * @return a map of folder discriminator to its message count
    */
   public Map<String, Integer> getFolderMessageCounts(String userId) {
-    Map<String, Integer> counts = new HashMap<>();
+    return getFolderCounts(userId).getMessageCounts();
+  }
+
+  /**
+   * The cached messages of each folder, all of them and the unread ones, from one
+   * grouped read (EXO-90415: the full-screen folder column's unread counts ride the
+   * folder list the listing already carries).
+   *
+   * @param userId the mailbox owner
+   * @return both counts, by folder discriminator
+   */
+  public FolderMessageCounts getFolderCounts(String userId) {
+    Map<String, Integer> messageCounts = new HashMap<>();
+    Map<String, Integer> unreadCounts = new HashMap<>();
     for (Object[] row : emailBoxDao.countMessagesByFolder(userId)) {
-      counts.put((String) row[0], ((Number) row[1]).intValue());
+      messageCounts.put((String) row[0], ((Number) row[1]).intValue());
+      // SUM over a group of at least one row is never null in practice; a dialect that
+      // answered null for zero would still mean none unread.
+      unreadCounts.put((String) row[0], row[2] == null ? 0 : ((Number) row[2]).intValue());
     }
-    if (counts.getOrDefault(MailFolder.DRAFTS, 0) > 0) {
+    if (messageCounts.getOrDefault(MailFolder.DRAFTS, 0) > 0) {
       // A scheduled draft is counted under "Scheduled", not here (EXO-90434). Asked
       // only when the mailbox has drafts at all, so a mailbox without any pays nothing.
-      counts.put(MailFolder.DRAFTS, (int) emailBoxDao.countUnscheduledByUserIdAndFolder(userId, MailFolder.DRAFTS));
+      // The unread count is left as the grouped read gave it: no folder column shows
+      // the drafts' unread number -- the drafts show in full (EXO-90415).
+      messageCounts.put(MailFolder.DRAFTS, (int) emailBoxDao.countUnscheduledByUserIdAndFolder(userId, MailFolder.DRAFTS));
     }
-    return counts;
+    return new FolderMessageCounts(messageCounts, unreadCounts);
   }
 
   /**

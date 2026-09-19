@@ -327,22 +327,6 @@ describe('a running sync — the drawer bar, and no spinner of its own', () => {
     wrapper.destroy();
   });
 
-  it('the detail drawer shows it too once widened, where the mailbox toolbar sits in its title', async () => {
-    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetail, {
-      mocks: {
-        $t: key => key,
-        $emailConnectorMailBoxService: serviceStub({}),
-        $vuetify: { breakpoint: {}, rtl: false },
-      },
-      stubs: { 'exo-drawer': ExoDrawerStub },
-    });
-    await wrapper.setData({ syncInProgress: true, expanded: false });
-    expect(wrapper.findComponent(ExoDrawerStub).props('loading')).toBeFalsy();
-    await wrapper.setData({ expanded: true });
-    expect(wrapper.findComponent(ExoDrawerStub).props('loading')).toBe(true);
-    wrapper.destroy();
-  });
-
   it('the mailbox toolbar renders no sync spinner while a sync runs', () => {
     const wrapper = shallowMount(EmailConnectorMailBoxDrawerActions, {
       propsData: { emails: [], selectedEmails: [], syncInProgress: true },
@@ -385,60 +369,10 @@ describe('while a conversation is on its way, the header acts on what is on scre
   });
 });
 
-describe('the detail drawer never reopens a message removed while it loads', () => {
-  // With nothing left to open, the delete leaves the placeholder (EXO-90414 moves the
-  // reader on to the next mail when there is one -- see the test after this one).
-  it('drops the answer once a delete switched to the placeholder', async () => {
-    const listed = listRow(2, '2026-09-02T10:00:00Z');
-    const answer = deferred();
-    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetail, {
-      mocks: {
-        $t: key => key,
-        $emailConnectorMailBoxService: serviceStub({ getEmailByRemoteId: jest.fn(() => answer.promise) }),
-        $vuetify: { breakpoint: {}, rtl: false },
-      },
-    });
-    const vm = wrapper.vm;
-    await wrapper.setData({ expanded: true });
-    vm.open(2, [listed], false, null);
-    vm.$root.$emit('delete-email', [2]);
-    expect(vm.selectEmailPlaceHolder).toBe(true);
-    expect(vm.loadingEmail).toBe(false);
-
-    answer.resolve(full(listed));
-    await flush();
-    expect(vm.selectEmailPlaceHolder).toBe(true);
-    expect(vm.email?.content?.body).toBeUndefined();
-    wrapper.destroy();
-  });
-
-  it('moves on to the next mail, never back to the one deleted while it loads (EXO-90414)', async () => {
-    const listed = listRow(2, '2026-09-02T10:00:00Z', { threadId: '<t2@host>' });
-    const other = listRow(3, '2026-09-03T10:00:00Z', { threadId: '<t3@host>' });
-    const answer = deferred();
-    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetail, {
-      mocks: {
-        $t: key => key,
-        $emailConnectorMailBoxService: serviceStub({
-          getEmailByRemoteId: jest.fn(mailRemoteId => (mailRemoteId === 2 ? answer.promise : new Promise(() => null))),
-        }),
-        $vuetify: { breakpoint: {}, rtl: false },
-      },
-    });
-    const vm = wrapper.vm;
-    await wrapper.setData({ expanded: true });
-    vm.open(2, [other, listed], false, null);
-    vm.$root.$emit('delete-email', [2]);
-    expect(vm.selectEmailPlaceHolder).toBe(false);
-    expect(vm.email).toBe(other);
-
-    answer.resolve(full(listed));
-    await flush();
-    expect(vm.email).toBe(other);
-    expect(vm.email?.content?.body).toBeUndefined();
-    wrapper.destroy();
-  });
-
+// The detail drawer's full screen, where a delete moved the reader on or put the
+// placeholder up while the message was still loading, is gone (EXO-90415): the mailbox
+// drawer's own pins cover that layout (EmailConnectorMailBoxDrawerWideReaderRequests).
+describe('the detail drawer reads a message again on Retry', () => {
   it('Retry reads a message that could not be read again', async () => {
     const listed = listRow(2, '2026-09-02T10:00:00Z');
     const reads = [deferred(), deferred()];
@@ -487,48 +421,6 @@ describe('a message whose full copy could not be read', () => {
     wrapper.vm.$root.$on('retry-email-read', email => retries.push(email));
     wrapper.findAll('button').filter(button => button.text() === 'emailConnector.mailBox.list.drawer.detail.unavailable.retry').at(0).trigger('click');
     expect(retries).toEqual([unavailable]);
-    wrapper.destroy();
-  });
-});
-
-describe('the expanded detail drawer, opening an unread message', () => {
-  it('stays on the message when the conversation is marked read before the message answers', async () => {
-    const opened = listRow(1, '2026-09-01T10:00:00Z', { threadId: '<first@host>' });
-    const unread = listRow(2, '2026-09-02T10:00:00Z', { read: false, threadId: null });
-    const answers = { 1: Promise.resolve(full(opened)), 2: deferred() };
-    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetail, {
-      mocks: {
-        $t: key => key,
-        $emailConnectorMailBoxService: serviceStub({
-          getEmailByRemoteId: jest.fn(uid => (uid === 2 ? answers[2].promise : answers[1])),
-          getThreadByThreadId: jest.fn(() => Promise.resolve([full(opened)])),
-          completeThreadByThreadId: jest.fn(() => deferred().promise),
-        }),
-        $vuetify: { breakpoint: {}, rtl: false },
-      },
-      stubs: {
-        'exo-drawer': { template: '<div><slot name="content" /></div>' },
-        'email-connector-mail-box-drawer-thread-content': EmailConnectorMailBoxDrawerThreadContent,
-      },
-    });
-    const vm = wrapper.vm;
-    vm.open(1, [opened, unread], false, null);
-    await flush();
-    await wrapper.setData({ expanded: true });
-
-    // The wide layout's click on the unread row: the reader lands (no conversation id,
-    // so at once) and marks it read before the message's own answer.
-    vm.openEmailDetailContent(2);
-    await flush();
-    const reader = wrapper.findComponent(EmailConnectorMailBoxDrawerThreadContent).vm;
-    expect(vm.selectEmailPlaceHolder).toBe(false);
-    expect(vm.loadingEmail).toBe(true);
-
-    answers[2].resolve(full(unread));
-    await flush();
-    expect(vm.selectEmailPlaceHolder).toBe(false);
-    expect(vm.email.content.body).toBe('<p>body 2</p>');
-    expect(wrapper.findComponent(EmailConnectorMailBoxDrawerThreadContent).vm).toBe(reader);
     wrapper.destroy();
   });
 });
