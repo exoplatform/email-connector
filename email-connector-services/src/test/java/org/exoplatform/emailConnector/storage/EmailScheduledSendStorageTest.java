@@ -36,6 +36,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.emailConnector.dao.EmailBoxDAO;
@@ -123,6 +125,26 @@ public class EmailScheduledSendStorageTest {
   }
 
   /**
+   * The "Scheduled" view reads its drafts, attachments included, with no transaction
+   * around the call -- as the REST thread does (open-in-view is off): a lazily loaded
+   * attachment list would fail there with no session. Committed rows, removed after.
+   * And a full pool asks for no due rows without being refused a page of size zero.
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void theScheduledViewReadsItsDraftsWithNoTransactionAround() {
+    EmailBoxEntity scheduled = draft("outside-tx", "zoe");
+    try {
+      Map<Long, Email> read = emailBoxStorage.getListedEmailsByIds("zoe", List.of(scheduled.getId()));
+      assertEquals("<p>at eight</p>", read.get(scheduled.getId()).getContent().getBody());
+      assertTrue(storage.findDueToSend(NOW, 0).isEmpty(), "a full pool asks for nothing, and is not refused");
+      assertTrue(storage.findDueToCheck(NOW, 0).isEmpty());
+    } finally {
+      emailBoxDAO.deleteEmailsByIds(List.of(scheduled.getId()));
+    }
+  }
+
+  /**
    * The storage speaks the transitions the service needs, each answering whether it
    * landed, and the badge counts the rows needing the owner.
    */
@@ -191,8 +213,19 @@ public class EmailScheduledSendStorageTest {
    * @return the stored row
    */
   private EmailBoxEntity draft(String draftLocalId) {
+    return draft(draftLocalId, USER);
+  }
+
+  /**
+   * A stored local draft of a user.
+   *
+   * @param draftLocalId its handle
+   * @param userId its owner
+   * @return the stored row
+   */
+  private EmailBoxEntity draft(String draftLocalId, String userId) {
     EmailBoxEntity draft = new EmailBoxEntity();
-    draft.setUserId(USER);
+    draft.setUserId(userId);
     draft.setFolder(MailFolder.DRAFTS);
     draft.setSender("Alice,alice@example.org");
     draft.setTo("Bob,bob@example.org");

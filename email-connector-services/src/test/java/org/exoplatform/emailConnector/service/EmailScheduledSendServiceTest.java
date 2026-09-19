@@ -247,6 +247,38 @@ public class EmailScheduledSendServiceTest {
   }
 
   /**
+   * A pool with no free thread asks the storage for nothing and ends the tick quietly
+   * (a page of size zero is refused by Spring Data).
+   */
+  @Test
+  void aFullPoolDispatchesNothingAndAsksForNothing() {
+    InlineExecutor full = new InlineExecutor(2);
+    full.active = 2;
+    ReflectionTestUtils.setField(service, "executor", full);
+    assertEquals(0, service.dispatchDue());
+    verify(storage, never()).findDueToSend(any(Date.class), org.mockito.ArgumentMatchers.anyInt());
+    verify(storage, never()).findDueToCheck(any(Date.class), org.mockito.ArgumentMatchers.anyInt());
+  }
+
+  /**
+   * "Send now" is in flight before its claim: a first-tick recovery running meanwhile
+   * excludes it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aSendNowIsInFlightBeforeItsClaim() throws Exception {
+    EmailScheduledSend claimed = claimedRow(1);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(claimed);
+    when(storage.claimNow(eq(USER), eq(LOCAL_ID), eq("node-a"), any(Date.class))).thenAnswer(invocation -> {
+      assertTrue(((java.util.Set<?>) ReflectionTestUtils.getField(service, "inFlight")).contains(31L));
+      return true;
+    });
+    service.sendNow(LOCAL_ID, USER);
+    assertTrue(((java.util.Set<?>) ReflectionTestUtils.getField(service, "inFlight")).isEmpty());
+  }
+
+  /**
    * A failure to connect is retried after a back-off (+1, +5, +15 minutes), never
    * beyond the retry budget, where it becomes FAILED and the owner is told.
    *
@@ -437,7 +469,7 @@ public class EmailScheduledSendServiceTest {
   void aSendNowThatLandsSendsAtOnceAndAnswersSent() throws Exception {
     EmailScheduledSend claimed = claimedRow(1);
     when(storage.claimNow(eq(USER), eq(LOCAL_ID), eq("node-a"), any(Date.class))).thenReturn(true);
-    when(storage.get(USER, LOCAL_ID)).thenReturn(claimed, (EmailScheduledSend) null);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(claimed, claimed, (EmailScheduledSend) null);
     ScheduledEmail result = service.sendNow(LOCAL_ID, USER);
     verify(emailBoxService, times(1)).sendStoredDraft(eq(USER), eq(LOCAL_ID), any(Runnable.class));
     assertEquals(ScheduledSendStatus.SENT, result.getStatus());
@@ -536,6 +568,8 @@ public class EmailScheduledSendServiceTest {
    */
   private static class InlineExecutor extends ThreadPoolExecutor {
 
+    private int active;
+
     /**
      * @param threads the core and maximum size
      */
@@ -551,6 +585,16 @@ public class EmailScheduledSendServiceTest {
     @Override
     public void execute(Runnable command) {
       command.run();
+    }
+
+    /**
+     * The busy-thread count the test set.
+     *
+     * @return the stated number of running tasks
+     */
+    @Override
+    public int getActiveCount() {
+      return active;
     }
   }
 }
