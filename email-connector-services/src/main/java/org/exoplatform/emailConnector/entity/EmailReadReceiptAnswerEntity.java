@@ -70,6 +70,9 @@ public class EmailReadReceiptAnswerEntity {
   @Column(name = "STATE")
   private ReadReceiptState        state;
 
+  // Who answered, as far as this add-on knows. Not authoritative on the rare row whose
+  // LOCAL claim then found a cached copy already answered (see ReadReceiptService#claim):
+  // only the row's existence -- "answered" -- is.
   @Enumerated(EnumType.STRING)
   @Column(name = "ORIGIN")
   private ReadReceiptAnswerOrigin origin;

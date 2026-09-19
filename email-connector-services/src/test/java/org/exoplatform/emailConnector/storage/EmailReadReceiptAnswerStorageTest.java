@@ -226,19 +226,22 @@ class EmailReadReceiptAnswerStorageTest {
   }
 
   /**
-   * No key for what does not name a message: nothing, blanks, or the placeholder this
-   * add-on synthesizes for a message that had no Message-ID. Such messages are never
-   * stored nor found.
+   * No key for what names no message: nothing, or blanks. Any Message-ID a message came
+   * with is one, whatever its domain -- one ending like this add-on's local placeholder
+   * included, which a sender could craft to get its receipt asked again.
    */
   @Test
-  void onlyARealMessageIdIsAKey() {
-    for (String none : Arrays.asList(null, "", "  ", "<7.alice@email-connector.local>")) {
+  void everyMessageIdAMessageCameWithIsAKey() {
+    for (String none : Arrays.asList(null, "", "  ")) {
       assertNull(EmailReadReceiptAnswerStorage.messageIdHash(none), String.valueOf(none));
       assertNull(answerStorage.claim(USER, none, ReadReceiptState.SENT, ReadReceiptAnswerOrigin.LOCAL, NOW));
     }
-    assertEquals(0, answerStorage.recordServerAnswers(USER, Arrays.asList(null, "<7.alice@email-connector.local>"), NOW));
+    assertEquals(0, answerStorage.recordServerAnswers(USER, Arrays.asList(null, ""), NOW));
     assertTrue(answerStorage.findAnswers(USER, Arrays.asList(null, "")).isEmpty());
     assertEquals(0, answerDAO.count());
+    assertNotNull(answerStorage.claim(USER, "<7.alice@email-connector.local>", ReadReceiptState.SENT, ReadReceiptAnswerOrigin.LOCAL, NOW));
+    assertNull(answerStorage.claim(USER, "<7.alice@email-connector.local>", ReadReceiptState.SENT, ReadReceiptAnswerOrigin.LOCAL, NOW),
+               "answered once, like any other message");
     assertNotEquals(EmailReadReceiptAnswerStorage.messageIdHash("<a@b>"), EmailReadReceiptAnswerStorage.messageIdHash("<A@b>"));
   }
 }
