@@ -80,9 +80,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @change="onSelectChange" />
       <div class="flex-grow-1 no-min-width">    
         <!-- eslint-disable vuejs-accessibility/no-static-element-interactions -->
+        <!-- data-thread-key is how the arrow keys find the row they stand on, and
+             aria-current tells a screen reader which conversation the reader shows --
+             the one it shows, not the one the keyboard highlight is passing over. No
+             outline: the arrow keys focus the row, and the row's own grey background
+             (lit on focus, see isHover) is the cue; the browser's ring drawn over it
+             read as a stray blue box. Inline because this webapp bundles no CSS. -->
         <div
           class="clickable"
+          style="outline: none;"
           tabindex="0"
+          :data-thread-key="threadKey"
+          :aria-current="inReader ? 'true' : null"
           :aria-label="ariaLabel"
           @click="openDetail"
           @keydown.enter="openDetail"
@@ -162,7 +171,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   </div>
 </template>
 
-<script>  
+<script>
+import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+
 export default {
   data() {
     return {
@@ -209,6 +220,12 @@ export default {
       type: String,
       default: null,
     },
+    // The message the full-screen reader shows beside the list; none in the narrow
+    // layout, where there is no reader beside it.
+    readerEmailId: {
+      type: [Number, String],
+      default: null,
+    },
     webmailUrl: {
       type: String,
       default: null,
@@ -243,6 +260,15 @@ export default {
     },
     threadIds() {
       return this.thread ? this.thread.mailRemoteIds : [this.email.mailRemoteId];
+    },
+    /**
+     * The row's key, as groupEmailsByThread builds it: what the arrow keys use to find
+     * the row they stand on and the one they go to.
+     *
+     * @returns {String} the key
+     */
+    threadKey() {
+      return String(this.thread ? this.thread.threadId : this.email.mailRemoteId);
     },
     threadCount() {
       return this.thread ? this.thread.count : 1;
@@ -358,11 +384,39 @@ export default {
     readOnly() {
       return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
+    /**
+     * Whether the row is selected: every message it gathers, by folder and UID -- a row
+     * of a search list is not selected because another folder's message shares a number
+     * with it (EXO-90416).
+     *
+     * @returns {Boolean} true when selected
+     */
     selected() {
-      return this.threadIds.every(id => this.selectedEmails.includes(id));
+      return this.selectionKeys.every(key => this.selectedEmails.includes(key));
+    },
+    /**
+     * What selecting the row selects: the conversation's messages in the row's own
+     * folder -- the ones its ⋮ menu's "Select" and its actions reach (threadIdsInFolder)
+     * -- keyed by that folder. A row of a search list may gather a conversation's hits
+     * from several folders; the others are rows of their own folders' concern.
+     *
+     * @returns {Array<String>} the selection keys
+     */
+    selectionKeys() {
+      const folder = this.email.folder || 'INBOX';
+      return this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread)
+        .map(mailRemoteId => selectionKey({ mailRemoteId, folder }));
     },
     opened() {
       return this.openedEmailId === this.email.mailRemoteId;
+    },
+    /**
+     * Whether the reader beside the list shows this row's message, for aria-current.
+     *
+     * @returns {Boolean} true when it does
+     */
+    inReader() {
+      return this.readerEmailId != null && this.threadIds.includes(this.readerEmailId);
     },
     backgroundClass() {
       if (this.isMobile) {
@@ -387,9 +441,24 @@ export default {
     },
   },
   methods: {
+    /**
+     * Sends a swipe's action on the row as its ⋮ menu does: the conversation's messages
+     * in the row's own folder (threadIdsInFolder), with that folder -- a row of a search
+     * list may gather hits from several folders, and a bare UID would be resolved in the
+     * listed folder, where the same number is another message (EXO-90416).
+     *
+     * @param {String} event the action's event
+     * @returns {void}
+     */
+    emitForRow(event) {
+      this.$root.$emit(event, this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread), this.email.folder || 'INBOX');
+    },
     emitSelect(selected) {
-      // A thread selects/deselects as a whole: one select-email per message id.
-      this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, selected }));
+      // A thread selects/deselects as a whole, in the row's folder (see selectionKeys):
+      // one select-email per message, with that folder.
+      const folder = this.email.folder || 'INBOX';
+      this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread)
+        .forEach(emailId => this.$root.$emit('select-email', { emailId, folder, selected }));
     },
     // Favorite/unfavorite the whole row, i.e. every listed message of the thread —
     // matching how the row's read/unread action treats a conversation.
@@ -405,11 +474,12 @@ export default {
       }
       else {
         if (this.expanded) {
-          this.$root.$emit('open-email-detail-content', this.email.mailRemoteId);
+          this.$root.$emit('open-email-detail-content', this.email.mailRemoteId, this.email.folder || 'INBOX');
           this.$root.$emit('set-opened', this.email.mailRemoteId);
         }
         else {
-          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl);
+          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl,
+            false, false, this.email.folder || 'INBOX');
         }
       }
     },
@@ -489,9 +559,9 @@ export default {
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
       if (confirm) {
         if (deleteEmail) {
-          this.$root.$emit('delete-email', this.threadIds);
+          this.emitForRow('delete-email');
         } else {
-          this.$root.$emit('archive-email', this.threadIds);
+          this.emitForRow('archive-email');
         }
       } else {
         this.reset();

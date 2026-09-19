@@ -617,8 +617,25 @@ export function unlinkEmailsFromCategory(mailRemoteIds, categoryId) {
   });
 }
 
-export function getEmailByRemoteId(mailRemoteId, folder) {
-  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+/**
+ * Reads one message in full.
+ *
+ * @param {Number} mailRemoteId the message's IMAP UID within its folder
+ * @param {String} folder the folder that UID is numbered in; INBOX when omitted
+ * @param {Object} options {broadcast}: false when the read must not count as the user
+ *   opening the message -- a message the reader opened on its own, whose opening is
+ *   signalled later by broadcastOpenEmail (EXO-90414). Counts when omitted.
+ * @returns {Promise<Object>} the message
+ */
+export function getEmailByRemoteId(mailRemoteId, folder, options = {}) {
+  const params = new URLSearchParams();
+  if (folder && folder !== 'INBOX') {
+    params.set('folder', folder);
+  }
+  if (options.broadcast === false) {
+    params.set('broadcast', 'false');
+  }
+  const query = params.toString() ? `?${params.toString()}` : '';
   return fetch(`/email-connector/rest/email-box/${mailRemoteId}${query}`, {
     headers: {
       'Content-Type': 'application/json'
@@ -632,6 +649,33 @@ export function getEmailByRemoteId(mailRemoteId, folder) {
       throw new Error('Error when getting email detail');
     }
   });
+}
+
+/**
+ * Whether a message is only its folder-list row: the listing leaves out the body and
+ * the recipients of every mail (a draft is always read whole), while every full read
+ * carries its recipients as a list, empty or not. Judged on the recipients rather
+ * than on the body because a full message may legitimately have an empty body.
+ *
+ * @param {object} email the message
+ * @returns {boolean} true when only the list row of the message is known
+ */
+export function isListingRow(email) {
+  return !!email && !email.draftLocalId && !Array.isArray(email.to);
+}
+
+/**
+ * The list row of a message whose full copy could not be read, made final: the
+ * reader then renders what it has (sender, date, excerpt) with a "could not be
+ * loaded" line and a retry, instead of a skeleton waiting for a copy that is not
+ * coming. Marked `unavailable`: its empty recipients and missing body are NOT the
+ * message's, so nothing may reply to it, forward it or quote it.
+ *
+ * @param {object} row the list row
+ * @returns {object} a copy of the row that no longer reads as a listing row
+ */
+export function settleListingRow(row) {
+  return { ...row, to: row.to || [], cc: row.cc || [], bcc: row.bcc || [], unavailable: true };
 }
 
 /**
@@ -1107,6 +1151,26 @@ export function deleteDraft(draftLocalId) {
   }).then((resp) => {
     if (!resp?.ok) {
       throw new Error('Error when deleting draft');
+    }
+  });
+}
+
+/**
+ * Counts one opening of a message by the user -- for a message the reader opened on
+ * its own, read with {broadcast: false}, once the user has stayed on it (EXO-90414).
+ *
+ * @returns {Promise<void>} resolved once the server took it
+ */
+export function broadcastOpenEmail() {
+  return fetch('/email-connector/rest/email-box/open/broadcast', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when broadcasting an email opening');
     }
   });
 }

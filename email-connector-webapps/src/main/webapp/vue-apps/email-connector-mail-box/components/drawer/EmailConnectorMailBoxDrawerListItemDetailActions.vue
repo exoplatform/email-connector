@@ -148,6 +148,17 @@ export default {
       return this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread);
     },
     /**
+     * The folder the toolbar acts in -- the opened message's own -- sent along with the
+     * ids so the mailbox addresses them there: the message may be a search result from
+     * another folder than the one listed, where the same numbers are other messages
+     * (EXO-90416).
+     *
+     * @returns {String} the folder key
+     */
+    actingFolder() {
+      return this.email?.folder || 'INBOX';
+    },
+    /**
      * The conversation as the extension seam receives it: what the reader assembled,
      * plus the one thing a contributor cannot work out for itself without repeating
      * this add-on's definition of a thread.
@@ -226,7 +237,7 @@ export default {
      * @returns {void}
      */
     updateEmailReadStatus() {
-      this.$root.$emit('update-email-read-status', false, this.threadIds);
+      this.$root.$emit('update-email-read-status', false, this.threadIds, this.actingFolder);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
@@ -236,7 +247,7 @@ export default {
      * @returns {void}
      */
     deleteEmail() {
-      this.$root.$emit('delete-email', this.threadIds);
+      this.$root.$emit('delete-email', this.threadIds, this.actingFolder);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
@@ -246,7 +257,7 @@ export default {
      * @returns {void}
      */
     archiveEmail() {
-      this.$root.$emit('archive-email', this.threadIds);
+      this.$root.$emit('archive-email', this.threadIds, this.actingFolder);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
@@ -268,7 +279,7 @@ export default {
      * @returns {void}
      */
     markAsJunk() {
-      this.$root.$emit('junk-email', this.threadIds);
+      this.$root.$emit('junk-email', this.threadIds, this.actingFolder);
       this.$root.$emit('close-email-detail-drawer');
     },
     /**
