@@ -2855,7 +2855,9 @@ export default {
       this.autoSelectFirstEmail();
       const rows = this.navigationEntriesOf(this.navigationEmails);
       const kept = showingEmail ? rows[threadIndexOf(rows, this.email)] : null;
-      const focused = kept || (!showingEmail && (this.searchActive ? rows[0] : firstOpenableThread(rows)));
+      // A kept mail the list does not hold (one pinned from outside) leaves the focus to
+      // the first row: the arrows walk the list from its top, the reader keeps the mail.
+      const focused = kept || (this.searchActive ? rows[0] : firstOpenableThread(rows));
       if (focused) {
         this.revealThreadRow(focused.threadId);
       }
