@@ -1255,8 +1255,8 @@ export default {
         if (!result.cached) {
           await this.fetchSearchedEmail(result);
         }
-        this.markResultOpened(result);
         if (this.expanded) {
+          this.markResultOpened(result);
           const email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(result.mailRemoteId, result.folder);
           this.supersedeEmailRequest();
           this.email = email;
@@ -1266,7 +1266,11 @@ export default {
           this.updateEmailsReadStatus(true, [result.mailRemoteId], result.folder || 'INBOX', wasRead);
           this.$root.$emit('set-opened', result.mailRemoteId);
         } else {
+          // Handed over as they were before this opening: the mail drawer reads the hit
+          // unless it knows it read already, and a row stamped read first told it so --
+          // an unread hit was then never read on the server (EXO-90416). Stamped after.
           this.$root.$emit('open-email-detail-drawer', result.mailRemoteId, this.mergedSearchResults, this.syncInProgress, this.webmailUrl, true, false, result.folder);
+          this.markResultOpened(result);
         }
       } catch (error) {
         // A fetch refused because a synchronization is running (already retried
