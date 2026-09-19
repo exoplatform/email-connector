@@ -22,6 +22,7 @@
 
 import { shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
+import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 
 const FOLDERS = [
@@ -103,9 +104,10 @@ function full(listed) {
  *
  * @param {Array} emails the listed rows
  * @param {Function} getEmailByRemoteId the single-message read
+ * @param {Object} stubs the components to stub, or to render for real
  * @returns {Object} {wrapper, service, teardown}
  */
-async function mountWide(emails, getEmailByRemoteId) {
+async function mountWide(emails, getEmailByRemoteId, stubs = { 'exo-drawer': true }) {
   const service = serviceStub({
     getEmailByRemoteId: jest.fn(getEmailByRemoteId),
     deleteEmails: jest.fn(() => Promise.resolve({ failedDeletions: 0 })),
@@ -119,7 +121,7 @@ async function mountWide(emails, getEmailByRemoteId) {
       $emailConnectorCommonService: serviceStub({}),
       $vuetify: { breakpoint: {}, rtl: false },
     },
-    stubs: { 'exo-drawer': true },
+    stubs,
   });
   await wrapper.setData({ emailBox: { emails, folders: FOLDERS }, emailBoxDrawer: true, expanded: true });
   return {
@@ -213,6 +215,47 @@ describe('EmailConnectorMailBoxDrawer — the wide reader\'s message requests', 
     await flush();
     expect(vm.email.unavailable).toBeUndefined();
     expect(vm.email.content.body).toBe('body 2');
+    fixture.teardown();
+  });
+
+  it('marking the conversation read before the message answers never closes the message being opened', async () => {
+    // Unread, and with no conversation id: the reader has nothing to read and marks
+    // the conversation read at once, before the message's own answer.
+    const unread = { ...row(2), read: false, threadId: null };
+    const answer = deferred();
+    const fixture = await mountWide([unread, row(3)], () => answer.promise, {
+      'exo-drawer': { template: '<div><slot name="content" /></div>' },
+      'email-connector-mail-box-drawer-thread-content': EmailConnectorMailBoxDrawerThreadContent,
+    });
+    const vm = fixture.wrapper.vm;
+
+    vm.openEmailDetailContent(2);
+    await flush();
+    const reader = fixture.wrapper.findComponent(EmailConnectorMailBoxDrawerThreadContent).vm;
+    // Whoever marks it read — this drawer at open, the reader on landing, the list
+    // row's menu — the message stays open and its request alive.
+    vm.$root.$emit('update-email-read-status', true, [2]);
+    await flush();
+    expect(vm.selectEmailPlaceHolder).toBe(false);
+    expect(vm.loadingEmail).toBe(true);
+
+    answer.resolve(full(unread));
+    await flush();
+    expect(vm.selectEmailPlaceHolder).toBe(false);
+    expect(vm.email.content.body).toBe('body 2');
+    expect(fixture.wrapper.findComponent(EmailConnectorMailBoxDrawerThreadContent).vm).toBe(reader);
+    fixture.teardown();
+  });
+
+  it('marking the opened message UNREAD still puts it away', async () => {
+    const listed = row(2);
+    const fixture = await mountWide([listed, row(3)], () => Promise.resolve(full(listed)));
+    const vm = fixture.wrapper.vm;
+    vm.openEmailDetailContent(2);
+    await flush();
+
+    vm.$root.$emit('update-email-read-status', false, [2]);
+    expect(vm.selectEmailPlaceHolder).toBe(true);
     fixture.teardown();
   });
 });
