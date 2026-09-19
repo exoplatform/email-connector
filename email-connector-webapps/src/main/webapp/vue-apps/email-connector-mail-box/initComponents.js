@@ -60,6 +60,7 @@ import EmailConnectorNewEmailDrawer from './components/drawer/EmailConnectorNewE
 import EmailConnectorNewEmailDrawerAttachments from './components/drawer/EmailConnectorNewEmailDrawerAttachments.vue';
 import EmailConnectorNewEmailDrawerNoSubjectConfirmPopup from './components/drawer/EmailConnectorNewEmailDrawerNoSubjectConfirmPopup.vue';
 import EmailConnectorMailBoxPurgeConfirmPopup from './components/drawer/EmailConnectorMailBoxPurgeConfirmPopup.vue';
+import EmailConnectorMailBoxDiscardDraftsConfirmPopup from './components/drawer/EmailConnectorMailBoxDiscardDraftsConfirmPopup.vue';
 import EmailConnectorMailBoxMoveToFolderDrawer from './components/drawer/EmailConnectorMailBoxMoveToFolderDrawer.vue';
 import EmailConnectorScheduleSendPicker from './components/drawer/EmailConnectorScheduleSendPicker.vue';
 import EmailConnectorMailBoxPopup from './components/drawer/EmailConnectorMailBoxPopup.vue';
@@ -114,6 +115,7 @@ const components = {
   'email-connector-new-email-drawer-attachments': EmailConnectorNewEmailDrawerAttachments,
   'email-connector-new-email-drawer-no-subject-confirm-popup': EmailConnectorNewEmailDrawerNoSubjectConfirmPopup,
   'email-connector-mail-box-purge-confirm-popup': EmailConnectorMailBoxPurgeConfirmPopup,
+  'email-connector-mail-box-discard-drafts-confirm-popup': EmailConnectorMailBoxDiscardDraftsConfirmPopup,
   'email-connector-mail-box-move-to-folder-drawer': EmailConnectorMailBoxMoveToFolderDrawer,
   'email-connector-schedule-picker': EmailConnectorScheduleSendPicker,
   'email-connector-mail-box-popup': EmailConnectorMailBoxPopup,
