@@ -18,7 +18,8 @@
 // The attachment menu's action context (EXO-90419): a contributed vueComponent gets
 // the same context as a click() action, and storeInMailAttachments() stores the
 // attachment through the very call opening it uses, so an attachment already stored
-// is not stored a second time.
+// is not stored a second time within the page. A contributed component rendering
+// several rows says so, so the menu still opens upward when it lacks room below.
 
 import Vue from 'vue';
 import { shallowMount } from '@vue/test-utils';
@@ -42,6 +43,12 @@ const EmailConnectorMailBoxDrawerAttachmentActionMenu = require('../EmailConnect
 
 const CONTRIBUTED = { name: 'contributed-action', props: ['attachment', 'context'], render: h => h('div') };
 
+/**
+ * Mounts the attachment menu on an attachment, with the real mail box service.
+ *
+ * @param {Object} attachment the attachment the menu is opened on
+ * @returns {Object} the test-utils wrapper
+ */
 function mountMenu(attachment) {
   return shallowMount(EmailConnectorMailBoxDrawerAttachmentActionMenu, {
     propsData: { attachment },
@@ -61,6 +68,7 @@ describe('EmailConnectorMailBoxDrawerAttachmentActionMenu context', () => {
       id: 'contributed',
       rank: 100,
       vueComponent: CONTRIBUTED,
+      rows: () => 8,
     });
   });
 
@@ -108,5 +116,23 @@ describe('EmailConnectorMailBoxDrawerAttachmentActionMenu context', () => {
     documentsDeployed = false;
     const context = mountMenu({ mailRemoteId: 9, attachmentRemoteId: 'a3', name: 'x.pdf' }).vm.buildContext();
     expect(context.storeInMailAttachments).toBeNull();
+  });
+
+  it('counts every row a contributed component renders when choosing which way to open', () => {
+    const wrapper = mountMenu({ mailRemoteId: 10, attachmentRemoteId: 'a4', name: 'y.pdf' });
+    const rows = wrapper.vm.actions.reduce((count, action) => count + wrapper.vm.rowsOf(action), 0);
+    // the built-in actions applicable to a pdf (download, save, forward) + the 8 contributed rows
+    expect(rows).toBe(11);
+    window.innerHeight = 800;
+    // room for four one-row actions below the button, not for eleven rows
+    const button = { getBoundingClientRect: () => ({ bottom: 800 - (40 * 4 + 16) - 1 }) };
+    wrapper.vm.chooseDirection({ currentTarget: button });
+    expect(wrapper.vm.openUpward).toBe(true);
+  });
+
+  it('counts one row for an action that declares none, or a nonsensical count', () => {
+    const wrapper = mountMenu({ mailRemoteId: 11, attachmentRemoteId: 'a5', name: 'z.pdf' });
+    expect(wrapper.vm.rowsOf({ id: 'plain' })).toBe(1);
+    expect(wrapper.vm.rowsOf({ id: 'broken', rows: () => 'many' })).toBe(1);
   });
 });

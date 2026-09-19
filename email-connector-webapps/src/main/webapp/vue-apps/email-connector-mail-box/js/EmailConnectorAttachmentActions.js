@@ -51,9 +51,15 @@ import * as service from './EmailConnectorMailBoxService.js';
  * - saveInDocuments(attachments): open the Documents folder picker and, on the folder
  *   the user picks, save the given attachments there, reporting the outcome as a toast;
  * - storeInMailAttachments(): store the attachment under Mail Attachments/Received in
- *   the user's Drive — the very copy opening it makes, reused rather than stored twice
- *   — and resolve the id of that document, for an action that works on a document
- *   rather than on a mail part. Null when the Documents add-on is not installed.
+ *   the user's Drive and resolve the id of that document, for an action that works on
+ *   a document rather than on a mail part. It goes through the very call opening the
+ *   attachment uses, so within the page the copy either of them made is reused rather
+ *   than stored again; after a reload, like opening, it stores a new copy. Null when
+ *   the Documents add-on is not installed.
+ *
+ * A vueComponent that renders more than one menu row declares how many through
+ * `rows: attachment => n` (one when absent), so the menu can tell whether it has room
+ * to open downward.
  */
 const EXTENSION_TYPE = 'emailConnector';
 
