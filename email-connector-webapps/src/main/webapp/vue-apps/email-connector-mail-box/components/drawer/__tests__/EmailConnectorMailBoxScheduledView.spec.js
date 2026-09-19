@@ -332,7 +332,7 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
       mocks: { $t: translate, $te: key => key.startsWith('emailConnector.scheduled.'), $emailConnectorMailBoxService: service },
       stubs: {
         'exo-confirm-dialog': { props: ['title', 'message', 'okLabel'], template: '<div class="confirm" />', methods: { open: confirmOpen } },
-        'exo-modal': { template: '<div class="modal"><slot /></div>', methods: { open: jest.fn(), close: modalClose } },
+        'email-connector-mail-box-popup': { template: '<div class="modal"><slot /></div>', methods: { open: jest.fn(), close: modalClose } },
       },
     });
     const emitted = [];
