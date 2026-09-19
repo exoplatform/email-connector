@@ -12000,6 +12000,20 @@ public class EmailBoxServiceTest {
     EmailBoxService.captureReadReceiptRequest(plain, notAsked, MailFolder.INBOX);
     assertFalse(notAsked.isReadReceiptRequested());
     assertNull(notAsked.getReadReceiptState());
+
+    // A read receipt asking for a read receipt asks for nothing: no MDN answers an MDN.
+    MimeMessage receipt = new MimeMessage(Session.getInstance(new Properties()));
+    receipt.setHeader("Disposition-Notification-To", "bob@partner.example");
+    MimeMultipart report = new MimeMultipart("report");
+    MimeBodyPart text = new MimeBodyPart();
+    text.setText("read");
+    report.addBodyPart(text);
+    receipt.setContent(report);
+    receipt.saveChanges();
+    receipt.setHeader("Content-Type", receipt.getContentType() + "; report-type=disposition-notification");
+    Email mdn = new Email();
+    EmailBoxService.captureReadReceiptRequest(receipt, mdn, MailFolder.INBOX);
+    assertFalse(mdn.isReadReceiptRequested(), receipt.getContentType());
   }
 
   /**
@@ -12064,7 +12078,7 @@ public class EmailBoxServiceTest {
                                      Map.of(5L, pending),
                                      TEST_USER,
                                      MailFolder.INBOX);
-    verify(emailBoxStorage).markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of(5L));
+    verify(emailBoxStorage).markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of(5L), List.of(message.getMessageID()));
 
     pending.setReadReceiptState(ReadReceiptState.IGNORED);
     ReflectionTestUtils.invokeMethod(emailBoxService,
@@ -12074,7 +12088,7 @@ public class EmailBoxServiceTest {
                                      Map.of(5L, pending),
                                      TEST_USER,
                                      MailFolder.INBOX);
-    verify(emailBoxStorage).markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of());
+    verify(emailBoxStorage).markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of(), List.of());
   }
 
   /**

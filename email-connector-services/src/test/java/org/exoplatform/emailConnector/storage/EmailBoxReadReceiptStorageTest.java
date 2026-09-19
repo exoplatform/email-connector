@@ -138,11 +138,17 @@ class EmailBoxReadReceiptStorageTest {
 
     Email answeredElsewhere = emailBoxStorage.createEmail(incoming("<twice@partner.example>", MailFolder.INBOX, 2L));
     Email archived = emailBoxStorage.createEmail(incoming("<twice@partner.example>", MailFolder.ARCHIVE, 3L));
-    emailBoxStorage.markReadReceiptsAnswered(USER, MailFolder.ARCHIVE, List.of(3L));
+    emailBoxStorage.markReadReceiptsAnswered(USER, MailFolder.ARCHIVE, List.of(3L), List.of());
     assertEquals(ReadReceiptState.SENT, read(archived.getId(), USER, null).getReadReceiptState());
     assertFalse(emailBoxStorage.claimReadReceipt(USER, answeredElsewhere, ReadReceiptState.IGNORED),
                 "another copy was answered: the message was");
     assertNull(read(answeredElsewhere.getId(), USER, null).getReadReceiptState());
+
+    Email inboxCopy = emailBoxStorage.createEmail(incoming("<mirrored@partner.example>", MailFolder.INBOX, 6L));
+    emailBoxStorage.createEmail(incoming("<mirrored@partner.example>", MailFolder.ALL_MAIL, 16L));
+    emailBoxStorage.markReadReceiptsAnswered(USER, MailFolder.ALL_MAIL, List.of(16L), List.of("<mirrored@partner.example>"));
+    assertEquals(ReadReceiptState.SENT, read(inboxCopy.getId(), USER, null).getReadReceiptState(),
+                 "the sync's mirror answers every copy of the message");
 
     Email anonymous = emailBoxStorage.createEmail(incoming(null, MailFolder.INBOX, 4L));
     assertTrue(emailBoxStorage.claimReadReceipt(USER, anonymous, ReadReceiptState.IGNORED), "by its id");
