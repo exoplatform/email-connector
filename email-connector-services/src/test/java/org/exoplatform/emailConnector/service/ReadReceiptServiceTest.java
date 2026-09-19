@@ -214,6 +214,10 @@ class ReadReceiptServiceTest {
 
     assertNull(receipt.getHeader("Bcc"));
     assertEquals(1, receipt.getAllRecipients().length);
+    // JavaMail would encode the break anyway; the receipt goes further and flattens it,
+    // so the subject reads back as the one line it is shown as, here and in the text.
+    assertEquals("Read: Hello Bcc: victim@example.org", receipt.getSubject());
+    assertTrue(((String) ((Multipart) receipt.getContent()).getBodyPart(0).getContent()).contains("\"Hello Bcc: victim@example.org\""));
     assertNull(receipt.getHeader("In-Reply-To"), "no id to thread on");
     String fields = read(((Multipart) receipt.getContent()).getBodyPart(1).getInputStream());
     assertFalse(fields.contains("Original-Message-ID"), fields);
