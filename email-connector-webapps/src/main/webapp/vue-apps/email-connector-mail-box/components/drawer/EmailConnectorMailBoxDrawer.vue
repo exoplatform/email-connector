@@ -115,9 +115,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- The left pane in full screen: the folder column, then the list, each scrolling
          on its own so the folders stay put while the list moves (EXO-90415). Always on
          screen once expanded, an empty folder included: the column is how the user
-         leaves it. The column keeps the pane's platform grey and the list -- folder or
-         search results -- is white, a thin border between them (the PO's option A),
-         open and as a rail alike. -->
+         leaves it. The list -- folder or search results -- is on the pane's platform
+         grey, like exo-drawer's header strip above it; the column is a shade darker
+         (the platform's grey-background, brandable), a divider between them, open and
+         as a rail; the reader beside the pane stays white. An empty list says so in the
+         list, under its chips, not in the reader. -->
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <div class="d-flex flex-row fill-height">
         <email-connector-mail-box-drawer-navigation
@@ -129,11 +131,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :category-unread-counts="categoryUnreadCounts"
           :rail="navigationRail"
           :style="{ width: navigationWidth, minWidth: navigationWidth }"
-          :class="$vuetify.rtl ? 'border-left-color' : 'border-right-color'"
-          class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing" />
+          class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing grey-background" />
+        <v-divider vertical />
         <div
           ref="expandedListPane"
-          class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden white-background"
+          class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden"
           style="min-width: 0;">
           <email-connector-mail-box-drawer-search-results
             v-if="searchActive"
@@ -155,6 +157,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               @toggle-favorite="onToggleFavoriteFilter"
               @toggle-unread="toggleUnreadFilter" />
             <email-connector-mail-box-drawer-content
+              v-if="hasEmails"
               ref="expandedListContent"
               :emails="emails"
               :email="email"
@@ -163,6 +166,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :indeterminate="indeterminate"
               expanded
               @update:selected-emails="selectedEmails = $event" />
+            <email-connector-mail-box-drawer-no-email v-else compact />
             <div
               v-if="customFolderWindow"
               class="caption text-sub-title text-center py-2">
@@ -200,9 +204,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :server-searching="searchServerRunning"
         :server-error="searchServerError"
         @open-result="openSearchResult" />
+      <!-- Full screen: the reader. With nothing open it shows the "select an email"
+           placeholder while the list beside it holds something to select, and nothing
+           over an empty list, which says so itself (EXO-90415). -->
+      <template v-else-if="expanded">
+        <email-connector-mail-box-drawer-multi-select-email
+          v-if="selectMode"
+          :emails="emails"
+          :selected-emails="selectedEmails" />
+        <template v-else-if="selectEmailPlaceHolder">
+          <email-connector-mail-box-drawer-select-email v-if="navigationEmails.length" />
+        </template>
+        <!-- The reader tells the header which conversation it is showing, so the
+             title bar above can act on the exchange rather than on the one message
+             that was clicked. This drawer holds both of them and is the only place
+             the value can pass between them. -->
+        <email-connector-mail-box-drawer-thread-content
+          v-else
+          :email="email"
+          :emails="emails"
+          expanded-drawer
+          :defer-thread-read="autoOpenReadPending"
+          @thread-context="threadContext = $event"
+          @loading="readerLoading = $event"
+          @opened-partial="readerPartial = $event" />
+      </template>
       <template v-else>
         <email-connector-mail-box-drawer-filter-chips
-          v-if="!expanded"
           :important-category="importantCategory"
           :category-view-id="categoryViewId"
           :favorite-only="favoriteOnly"
@@ -212,28 +240,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @toggle-favorite="onToggleFavoriteFilter"
           @toggle-unread="toggleUnreadFilter" />
         <template v-if="hasEmails">
-          <template v-if="expanded">
-            <email-connector-mail-box-drawer-multi-select-email
-              v-if="selectMode"
-              :emails="emails"
-              :selected-emails="selectedEmails" />
-            <email-connector-mail-box-drawer-select-email v-else-if="selectEmailPlaceHolder" />
-            <!-- The reader tells the header which conversation it is showing, so the
-                 title bar above can act on the exchange rather than on the one message
-                 that was clicked. This drawer holds both of them and is the only place
-                 the value can pass between them. -->
-            <email-connector-mail-box-drawer-thread-content
-              v-else
-              :email="email"
-              :emails="emails"
-              expanded-drawer
-              :defer-thread-read="autoOpenReadPending"
-              @thread-context="threadContext = $event"
-              @loading="readerLoading = $event"
-              @opened-partial="readerPartial = $event" />
-          </template>
           <email-connector-mail-box-drawer-content
-            v-else
             ref="listContent"
             :emails="emails"
             :selected-emails="selectedEmails"
@@ -245,7 +252,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <!-- A custom folder is a recent-activity mirror, not a copy, and the list says
                so rather than letting an older message look lost. -->
           <div
-            v-if="customFolderWindow && !expanded"
+            v-if="customFolderWindow"
             class="caption text-sub-title text-center py-2">
             {{ $t('emailConnector.mailBox.list.drawer.folder.custom.window', { 0: customFolderWindow }) }}
           </div>
