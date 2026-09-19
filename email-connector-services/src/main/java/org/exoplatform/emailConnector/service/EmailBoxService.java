@@ -6447,6 +6447,36 @@ public class EmailBoxService {
    * this stayed out of EXO-89367's reach.
    */
   public int linkEmailsToCategory(List<Long> mailRemoteIds, long categoryId, String username) throws IllegalAccessException {
+    return linkEmailsToCategory(mailRemoteIds, categoryId, username, MailFolder.INBOX);
+  }
+
+  /**
+   * {@link #linkEmailsToCategory(List, long, String)} for UIDs numbered in a given
+   * folder -- a message dragged onto a category from the full-screen list, a search hit
+   * or a custom folder (EXO-90421). A UID only numbers a message within its folder, so
+   * resolving one from another folder in the inbox would label whatever inbox message
+   * carries the same number (the EXO-90416 wrong-message class); the rows are looked up
+   * in {@code folder} instead. Everything else -- the category check, the idempotence,
+   * the badge broadcast -- is the inbox assignment's, unchanged.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to tag
+   * @param categoryId the category id
+   * @param username the mailbox owner, acting (the category ACL is checked for them)
+   * @param folder the folder the UIDs are numbered in; blank means INBOX
+   * @return the number of emails newly linked
+   * @throws IllegalAccessException if the user may not read their mailbox or use the category
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for a
+   *           folder that is not a listable one, {@code emailConnector.category.notFound}
+   *           for an unknown category
+   */
+  public int linkEmailsToCategory(List<Long> mailRemoteIds,
+                                  long categoryId,
+                                  String username,
+                                  String folder) throws IllegalAccessException {
+    String actingFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+    if (!MailFolder.isBrowsable(actingFolder)) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
       return 0;
     }
@@ -6455,7 +6485,7 @@ public class EmailBoxService {
     }
     int linked = 0;
     for (Long mailRemoteId : mailRemoteIds) {
-      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.INBOX, false, false, false, false);
+      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, actingFolder, false, false, false, false);
       if (email == null) {
         continue;
       }
