@@ -8014,6 +8014,133 @@ public class EmailBoxService {
   }
 
   /**
+   * Takes a scheduled draft's schedule row for an edit, or refuses (see
+   * {@link #updateScheduledDraft}).
+   */
+  @FunctionalInterface
+  public interface ScheduleTaker {
+
+    /**
+     * Takes the row, or throws.
+     *
+     * @throws ObjectNotFoundException when the owner has no such scheduled mail
+     */
+    void take() throws ObjectNotFoundException;
+  }
+
+  /**
+   * Replaces the content of a scheduled draft in one transaction (EXO-90434): its
+   * subject, body and recipients, the files taken off it, the files added to it -- the
+   * mail stays scheduled, so it is never sent half-edited, nor lost between a cancel and
+   * a new schedule.
+   * <p>
+   * {@code takeSchedule} runs first, inside the transaction: it takes the schedule row
+   * (a conditional write that holds the row's lock until the transaction ends, see
+   * {@code EmailScheduledSendStorage#takeForEdit}) or refuses -- the mail is being sent,
+   * was sent, or its sending could not be confirmed -- and then nothing is written. A
+   * dispatcher's claim of the row waits for the commit and reads the new content; a
+   * rollback leaves the draft as it was, files included.
+   * <p>
+   * The checks are the scheduling's: the files the draft keeps must be readable, the
+   * total must fit the size a message may carry, an upload must still be there. New
+   * files come as commons uploads, stored here onto the draft, since the draft is
+   * locked against the usual attach call while it is scheduled; their temporary files
+   * are the caller's to release once this returns.
+   *
+   * @param draft the draft as the composer shows it: its local id, subject, body,
+   *          recipients, and the new files as uploads
+   * @param removedAttachmentIds the draft's stored files to take off it, may be null
+   * @param username the mailbox owner
+   * @param takeSchedule takes the schedule row for the edit, or throws
+   * @return the draft as it now stands
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws ObjectNotFoundException if the user has no draft under that local id
+   * @throws IllegalArgumentException {@code emailConnector.drafts.send.localIdMandatory},
+   *           {@code emailConnector.mailBox.newEmail.attach.maxSize.error},
+   *           {@code emailConnector.drafts.attach.uploadGone},
+   *           {@code emailConnector.drafts.attach.unknown} or
+   *           {@code emailConnector.drafts.send.attachmentGone}
+   * @throws ScheduledSendConflictException from {@code takeSchedule}
+   */
+  @Transactional(rollbackFor = Exception.class)
+  public Email updateScheduledDraft(Email draft,
+                                    List<Long> removedAttachmentIds,
+                                    String username,
+                                    ScheduleTaker takeSchedule) throws IllegalAccessException, ObjectNotFoundException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SAVE_DRAFT_MESSAGE, username));
+    }
+    if (draft == null || StringUtils.isBlank(draft.getDraftLocalId())) {
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    String draftLocalId = draft.getDraftLocalId();
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      // The schedule row first: past this line no dispatcher can claim the mail until
+      // the edit is committed, and a refusal here has written nothing.
+      takeSchedule.take();
+      List<EmailAttachment> kept = emailBoxStorage.getDraftAttachments(username, draftLocalId);
+      Set<Long> removed = removedAttachmentIds == null ? Set.of() : new HashSet<>(removedAttachmentIds);
+      Set<Long> onDraft = kept.stream().map(EmailAttachment::getId).collect(Collectors.toSet());
+      if (!onDraft.containsAll(removed)) {
+        throw new IllegalArgumentException("emailConnector.drafts.attach.unknown");
+      }
+      List<EmailOutgoingAttachment> uploads = CollectionUtils.isEmpty(draft.getAttachments()) ? List.of()
+                                                                                              : draft.getAttachments()
+                                                                                                     .stream()
+                                                                                                     .filter(upload -> upload != null
+                                                                                                         && StringUtils.isNotBlank(upload.getUploadId()))
+                                                                                                     .toList();
+      long total = kept.stream()
+                       .filter(attachment -> !removed.contains(attachment.getId()))
+                       .mapToLong(attachment -> attachment.getSize() == null ? 0L : attachment.getSize())
+                       .sum()
+          + uploads.stream().mapToLong(upload -> Math.max(upload.getSize(), 0)).sum();
+      if (total > MAX_OUTGOING_ATTACHMENTS_SIZE) {
+        throw new IllegalArgumentException("emailConnector.mailBox.newEmail.attach.maxSize.error");
+      }
+      for (Long attachmentId : removed) {
+        emailBoxStorage.removeDraftAttachment(username, draftLocalId, attachmentId);
+      }
+      for (EmailOutgoingAttachment upload : uploads) {
+        if (emailBoxStorage.addDraftAttachment(username,
+                                               draftLocalId,
+                                               upload.getUploadId(),
+                                               upload.getName(),
+                                               upload.getMimeType()) == null) {
+          throw new IllegalArgumentException("emailConnector.drafts.attach.uploadGone");
+        }
+      }
+      Email withFiles = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      try {
+        readSendableDraftFiles(withFiles != null ? withFiles : stored, username, userEmailSetting);
+      } catch (IllegalStateException e) {
+        throw new IllegalArgumentException(e.getMessage(), e);
+      }
+      // The files are the ones just written, not the uploads: the row's content only.
+      Email content = new Email();
+      content.setDraftLocalId(draftLocalId);
+      content.setSubject(draft.getSubject());
+      content.setContent(draft.getContent());
+      content.setTo(draft.getTo());
+      content.setCc(draft.getCc());
+      content.setBcc(draft.getBcc());
+      Email current = withFiles != null ? withFiles : stored;
+      saveDraftBeforeSend(content, current);
+      return emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
    * Sends a scheduled draft as it is stored (EXO-90434): the same message the
    * interactive send would build ({@link #buildOutgoingDraftMessage} -- body,
    * recipients, subject, pinned Message-ID, stored In-Reply-To and References, stored
@@ -10485,6 +10612,17 @@ public class EmailBoxService {
     }
   }
 
+
+  /**
+   * Releases commons uploads whose bytes were stored elsewhere: their temporary files
+   * have no further purpose. For a caller that stored them within a transaction of its
+   * own, once that transaction committed ({@link #updateScheduledDraft}).
+   *
+   * @param uploadIds the uploads, may be null
+   */
+  public void releaseUploads(List<String> uploadIds) {
+    removeUploadResources(uploadIds);
+  }
 
   /**
    * Removes the commons temporary upload resources that backed the attachments

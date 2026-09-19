@@ -1328,6 +1328,52 @@ public class EmailBoxRest {
   }
 
   /**
+   * Replaces a scheduled mail's content, and optionally its date, in place (EXO-90434).
+   *
+   * @param request the caller
+   * @param draftLocalId the draft's local id
+   * @param scheduleRequest the draft as the composer shows it (new files as uploads),
+   *          the stored files to take off it, and optionally a new instant and its zone
+   * @return the scheduled mail
+   */
+  @PutMapping("/scheduled/{draftLocalId}/content")
+  @Secured("users")
+  @Operation(summary = "Updates a scheduled mail's content in place", method = "PUT",
+             description = "Replaces the subject, body, recipients and files of a scheduled (or failed) mail, and its date when scheduledDate is given, in one transaction: the mail stays scheduled, is never sent half-edited, and a dispatcher about to send it waits for the update and sends the new content. New files come as uploads in draft.attachments; removedAttachmentIds are stored files to take off it. Answers 400 with a message code (emailConnector.scheduled.recipientsMandatory, .date.tooSoon, .date.tooFar, .timeZone.invalid, emailConnector.mailBox.newEmail.attach.maxSize.error, emailConnector.drafts.attach.uploadGone, emailConnector.drafts.attach.unknown, emailConnector.drafts.send.attachmentGone), 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending) or its sending could not be confirmed (emailConnector.scheduled.uncertain); nothing is changed then.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Being sent, sent, or uncertain"), })
+  public ScheduledEmail updateScheduledEmailContent(HttpServletRequest request,
+                                                    @Parameter(description = "The draft's local id", required = true)
+                                                    @PathVariable("draftLocalId")
+                                                    String draftLocalId,
+                                                    @Parameter(description = "The draft, the files to take off, and optionally the instant (epoch ms) and its time zone", required = true)
+                                                    @RequestBody
+                                                    ScheduleRequest scheduleRequest) {
+    if (scheduleRequest == null || scheduleRequest.getDraft() == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+    }
+    try {
+      return emailScheduledSendService.updateContent(draftLocalId,
+                                                     scheduleRequest.getDraft(),
+                                                     scheduleRequest.getRemovedAttachmentIds(),
+                                                     scheduleRequest.getScheduledDate(),
+                                                     scheduleRequest.getTimeZone(),
+                                                     request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
    * Cancels a schedule: the mail goes back to Drafts, content kept (EXO-90434).
    *
    * @param request the caller

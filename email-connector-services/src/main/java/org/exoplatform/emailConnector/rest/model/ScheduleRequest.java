@@ -16,6 +16,8 @@
  */
 package org.exoplatform.emailConnector.rest.model;
 
+import java.util.List;
+
 import org.exoplatform.emailConnector.model.Email;
 
 import lombok.AllArgsConstructor;
@@ -33,9 +35,23 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class ScheduleRequest {
 
-  private Email  draft;
+  private Email      draft;
 
-  private Long   scheduledDate;
+  private Long       scheduledDate;
 
-  private String timeZone;
+  private String     timeZone;
+
+  // The draft's stored files to take off it, when its content is updated in place.
+  private List<Long> removedAttachmentIds;
+
+  /**
+   * A request to schedule a draft, or to give a scheduled mail a new date.
+   *
+   * @param draft the draft as the composer shows it, may be null
+   * @param scheduledDate the instant, epoch milliseconds
+   * @param timeZone the zone it was chosen in
+   */
+  public ScheduleRequest(Email draft, Long scheduledDate, String timeZone) {
+    this(draft, scheduledDate, timeZone, null);
+  }
 }

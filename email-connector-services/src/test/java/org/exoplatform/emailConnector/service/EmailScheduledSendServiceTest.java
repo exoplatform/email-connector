@@ -64,6 +64,7 @@ import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailScheduledSend;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
@@ -246,6 +247,74 @@ public class EmailScheduledSendServiceTest {
     verify(storage).markSent(eq(31L), eq("node-a"), eq(NOW), any(Date.class));
     verify(storage, never()).get(32L);
     assertTrue(notified.isEmpty(), "a sent mail notifies nobody");
+  }
+
+  /**
+   * An edit of a scheduled mail's content runs in the mailbox service's transaction and
+   * takes the schedule row there, first: kept date, the row taken for the edit; a new
+   * date, the row rescheduled in the same step; the new files' uploads released after.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void anEditTakesTheRowInTheTransactionThenReleasesTheUploads() throws Exception {
+    EmailScheduledSend row = claimedRow(0);
+    row.setStatus(ScheduledSendStatus.SCHEDULED);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(row);
+    when(storage.takeForEdit(eq(USER), eq(LOCAL_ID), any(Date.class))).thenReturn(true);
+    doAnswer(invocation -> {
+      ((EmailBoxService.ScheduleTaker) invocation.getArgument(3)).take();
+      return null;
+    }).when(emailBoxService).updateScheduledDraft(any(Email.class), any(), eq(USER), any(EmailBoxService.ScheduleTaker.class));
+    Email edited = draft();
+    edited.setAttachments(List.of(new EmailOutgoingAttachment("upload-1", "slides.pdf", "application/pdf", 10L)));
+
+    service.updateContent(LOCAL_ID, edited, List.of(7L), null, null, USER);
+
+    verify(emailBoxService).updateScheduledDraft(eq(edited), eq(List.of(7L)), eq(USER), any(EmailBoxService.ScheduleTaker.class));
+    verify(storage).takeForEdit(eq(USER), eq(LOCAL_ID), any(Date.class));
+    verify(storage, never()).reschedule(anyString(), anyString(), any(Date.class), anyString(), any(Date.class));
+    verify(emailBoxService).releaseUploads(List.of("upload-1"));
+
+    long later = System.currentTimeMillis() + 3_600_000;
+    when(storage.reschedule(eq(USER), eq(LOCAL_ID), any(Date.class), eq("UTC"), any(Date.class))).thenReturn(true);
+    service.updateContent(LOCAL_ID, draft(), null, later, "UTC", USER);
+    verify(storage).reschedule(eq(USER), eq(LOCAL_ID), eq(new Date(later)), eq("UTC"), any(Date.class));
+  }
+
+  /**
+   * An edit of a mail being sent, sent or uncertain is refused from inside the
+   * transaction, as a conflict, and the uploads are left alone; a bad request is
+   * refused before any of it.
+   */
+  @Test
+  void anEditOfAMailOnItsWayIsAConflictAndWritesNothing() throws Exception {
+    EmailScheduledSend row = claimedRow(1);
+    when(storage.get(USER, LOCAL_ID)).thenReturn(row);
+    when(storage.takeForEdit(eq(USER), eq(LOCAL_ID), any(Date.class))).thenReturn(false);
+    doAnswer(invocation -> {
+      ((EmailBoxService.ScheduleTaker) invocation.getArgument(3)).take();
+      return null;
+    }).when(emailBoxService).updateScheduledDraft(any(Email.class), any(), eq(USER), any(EmailBoxService.ScheduleTaker.class));
+
+    ScheduledSendConflictException conflict = assertThrows(ScheduledSendConflictException.class,
+                                                           () -> service.updateContent(LOCAL_ID, draft(), null, null, null, USER));
+    assertEquals(ScheduledSendConflictException.SENDING, conflict.getMessage());
+    row.setStatus(ScheduledSendStatus.UNCERTAIN);
+    assertEquals(EmailScheduledSendService.UNCERTAIN_CONFLICT,
+                 assertThrows(ScheduledSendConflictException.class,
+                              () -> service.updateContent(LOCAL_ID, draft(), null, null, null, USER)).getMessage());
+    when(storage.get(USER, LOCAL_ID)).thenReturn(null);
+    assertThrows(ObjectNotFoundException.class, () -> service.updateContent(LOCAL_ID, draft(), null, null, null, USER));
+    verify(emailBoxService, never()).releaseUploads(any());
+
+    Email noRecipient = draft();
+    noRecipient.setTo(List.of());
+    assertRefused(EmailScheduledSendService.RECIPIENTS_MANDATORY,
+                  () -> service.updateContent(LOCAL_ID, noRecipient, null, null, null, USER));
+    assertRefused(EmailScheduledSendService.DATE_TOO_SOON,
+                  () -> service.updateContent(LOCAL_ID, draft(), null, System.currentTimeMillis() + 1000, "UTC", USER));
+    verify(emailBoxService, times(3)).updateScheduledDraft(any(Email.class), any(), eq(USER), any(EmailBoxService.ScheduleTaker.class));
   }
 
   /**
