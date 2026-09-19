@@ -368,15 +368,20 @@ export default {
      * @returns {Boolean} true when selected
      */
     selected() {
-      return this.rowMessages.every(message => this.selectedEmails.includes(selectionKey(message)));
+      return this.selectionKeys.every(key => this.selectedEmails.includes(key));
     },
     /**
-     * The messages the row gathers: its conversation's, or its own.
+     * What selecting the row selects: the conversation's messages in the row's own
+     * folder -- the ones its ⋮ menu's "Select" and its actions reach (threadIdsInFolder)
+     * -- keyed by that folder. A row of a search list may gather a conversation's hits
+     * from several folders; the others are rows of their own folders' concern.
      *
-     * @returns {Array} the messages
+     * @returns {Array<String>} the selection keys
      */
-    rowMessages() {
-      return this.thread ? this.thread.emails : [this.email];
+    selectionKeys() {
+      const folder = this.email.folder || 'INBOX';
+      return this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread)
+        .map(mailRemoteId => selectionKey({ mailRemoteId, folder }));
     },
     opened() {
       return this.openedEmailId === this.email.mailRemoteId;
@@ -417,10 +422,11 @@ export default {
       this.$root.$emit(event, this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread), this.email.folder || 'INBOX');
     },
     emitSelect(selected) {
-      // A thread selects/deselects as a whole: one select-email per message, with the
-      // folder it is numbered in.
-      this.rowMessages.forEach(message => this.$root.$emit('select-email',
-        { emailId: message.mailRemoteId, folder: message.folder || 'INBOX', selected }));
+      // A thread selects/deselects as a whole, in the row's folder (see selectionKeys):
+      // one select-email per message, with that folder.
+      const folder = this.email.folder || 'INBOX';
+      this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread)
+        .forEach(emailId => this.$root.$emit('select-email', { emailId, folder, selected }));
     },
     // Favorite/unfavorite the whole row, i.e. every listed message of the thread —
     // matching how the row's read/unread action treats a conversation.
