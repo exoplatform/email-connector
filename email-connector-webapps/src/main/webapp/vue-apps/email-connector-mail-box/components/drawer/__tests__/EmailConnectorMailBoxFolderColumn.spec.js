@@ -331,8 +331,26 @@ describe('the folder column folds to a rail and back without losing its order (E
     expect(visibleOrder(wrapper)).toEqual(['I:emailConnector.mailBox.list.drawer.folder.inbox',
       'I:emailConnector.mailBox.list.drawer.folder.sent', 'I:emailConnector.mailBox.list.drawer.folder.drafts',
       'I:emailConnector.mailBox.list.drawer.folder.junk', 'I:Factures', 'I:Important', 'I:Invitation']);
-    expect(wrapper.element.classList.contains('py-0')).toBe(true);
-    expect(wrapper.element.classList.contains('py-2')).toBe(false);
+  });
+
+  it('starts its first row on the chips row\'s line, open (the FOLDERS header) and as a rail (the first icon)', async () => {
+    // The chips row and the column's first row share one height; the FOLDERS header is
+    // as tall and centres its label, and as a rail the first entry -- a dense row -- is
+    // centred in it by half of the difference. Heights, not offsets.
+    const wrapper = mountOpenColumn();
+    const header = wrapper.find('[data-section="folders"] v-subheader');
+    expect(header.attributes('style')).toContain(`height: ${emailConnectorMailBoxService.LIST_TOP_ROW_HEIGHT}`);
+    expect(wrapper.find('[data-section="categories"] v-subheader').attributes('style')).toBeUndefined();
+    expect(wrapper.element.style.paddingTop).toBe('0px');
+    expect(visibleOrder(wrapper)[0]).toBe('H:emailConnector.mailBox.list.drawer.menu.folders');
+
+    await wrapper.setProps({ rail: true });
+    expect(emailConnectorMailBoxService.RAIL_TOP_PADDING).toBe(`${(emailConnectorMailBoxService.LIST_TOP_ROW_HEIGHT_PX
+      - emailConnectorMailBoxService.DENSE_ROW_HEIGHT_PX) / 2}px`);
+    expect(wrapper.element.style.paddingTop).toBe(emailConnectorMailBoxService.RAIL_TOP_PADDING);
+    expect(visibleOrder(wrapper)[0]).toBe('I:emailConnector.mailBox.list.drawer.folder.inbox');
+    // Nothing of its own paints over the shade the drawer gives it.
+    expect(wrapper.element.classList.contains('transparent')).toBe(false);
   });
 });
 
@@ -507,9 +525,15 @@ describe('the full-screen left pane (EXO-90415)', () => {
 
     const pane = () => fixture.wrapper.vm.$refs.expandedListPane;
     const column = () => fixture.wrapper.find('email-connector-mail-box-drawer-navigation');
+    // The chips row is the height the column's first row shares, its chips centred in it.
+    const chips = pane().querySelector('email-connector-mail-box-drawer-filter-chips');
+    expect(chips.style.minHeight).toBe(emailConnectorMailBoxService.LIST_TOP_ROW_HEIGHT);
+    expect(chips.classList.contains('py-3')).toBe(false);
     // The list paints nothing of its own: exo-drawer's grey pane, as its header strip.
     expect(Array.from(pane().classList).some(name => name.includes('background') || name === 'white')).toBe(false);
-    expect(column().classes()).toContain('grey-background');
+    // A veil of the platform's grey over the pane: darker than the list in any
+    // branding, and not a class Vuetify's .transparent could outrank.
+    expect(column().attributes('style')).toContain('background-color: rgba(112, 112, 112, 0.08)');
     // The divider sits between them, whichever the reading direction.
     const divider = column().element.nextElementSibling;
     expect(divider.tagName).toBe('V-DIVIDER');
@@ -519,7 +543,7 @@ describe('the full-screen left pane (EXO-90415)', () => {
     await fixture.wrapper.setData({ navigationRail: true, searchTerm: 'mail' });
     expect(pane().querySelector('email-connector-mail-box-drawer-search-results')).not.toBeNull();
     expect(Array.from(pane().classList).some(name => name.includes('background'))).toBe(false);
-    expect(column().classes()).toContain('grey-background');
+    expect(column().attributes('style')).toContain('background-color: rgba(112, 112, 112, 0.08)');
   });
 
   describe('an empty list says so in the list, not in the reader', () => {
@@ -583,15 +607,88 @@ describe('the full-screen left pane (EXO-90415)', () => {
       expect(emptyState().placeholder).toBe(true);
     });
 
-    it('draws the compact message small and at the top, the narrow one as before', () => {
-      const draw = compact => shallowMount(EmailConnectorMailBoxDrawerNoEmail, { propsData: { compact }, mocks: { $t: key => key } });
-      const compact = draw(true);
-      expect(compact.find('v-list-item').classes()).toEqual(expect.arrayContaining(['pt-6', 'align-start']));
-      expect(compact.find('v-list-item').classes()).not.toContain('full-height');
-      expect(compact.find('v-icon').attributes('size')).toBe('32');
-      const narrow = draw(false);
+    /**
+     * Draws the message on its own.
+     *
+     * @param {Object} propsData its props
+     * @returns {Object} the wrapper
+     */
+    function drawMessage(propsData) {
+      return shallowMount(EmailConnectorMailBoxDrawerNoEmail, {
+        propsData,
+        mocks: { $t: (key, params) => (params ? `${key}|${Object.values(params).join('|')}` : key) },
+      });
+    }
+
+    it('centres the compact message under its icon, in the platform\'s muted colours', () => {
+      const compact = drawMessage({ compact: true, folderName: 'Sent' });
+      const block = compact.element;
+      expect(block.classList.contains('text-center')).toBe(true);
+      expect(block.classList.contains('pt-10')).toBe(true);
+      const icon = compact.find('v-icon');
+      expect(icon.attributes('size')).toBe('32');
+      expect(icon.classes()).toContain('icon-default-color');
+      // The text right under the icon, 8 px apart, in the row's secondary style.
+      const text = icon.element.nextElementSibling;
+      expect(Array.from(text.classList)).toEqual(expect.arrayContaining(['mt-2', 'text-subtitle', 'text-sub-title']));
+      expect(compact.find('v-list-item').exists()).toBe(false);
+    });
+
+    it('says why the list is empty: the folder, or the filters, which it offers to clear', () => {
+      expect(drawMessage({ compact: true, folderName: 'Sent' }).find('.text-sub-title').text())
+        .toBe('emailConnector.mailBox.list.drawer.noEmail.folder|Sent');
+      const filtered = drawMessage({ compact: true, folderName: 'Sent', filtered: true });
+      expect(filtered.find('.text-sub-title').text()).toBe('emailConnector.mailBox.list.drawer.noEmail.filtered');
+      expect(filtered.find('v-btn').text()).toBe('emailConnector.mailBox.list.drawer.noEmail.clearFilters');
+      expect(drawMessage({ compact: true, folderName: 'Sent' }).find('v-btn').exists()).toBe(false);
+    });
+
+    it('keeps the narrow message as it was', () => {
+      const narrow = drawMessage({});
       expect(narrow.find('v-list-item').classes()).toEqual(expect.arrayContaining(['full-height', 'align-center']));
       expect(narrow.find('v-icon').attributes('size')).toBe('60');
+      expect(narrow.find('v-list-item-title').text()).toBe('emailConnector.mailBox.list.drawer.noEmail');
+    });
+
+    it('tells the message the folder and whether filters narrow the list, and clears them all', async () => {
+      fixture = await mountDrawer({ INBOX: [row(1, 'INBOX', { starred: true })] });
+      await expand(fixture);
+      const message = () => fixture.wrapper.find('[data-slot="fullAppLeftContent"] email-connector-mail-box-drawer-no-email');
+
+      // Unread on, then the Important view: nothing matches both.
+      fixture.wrapper.vm.toggleUnreadFilter();
+      fixture.wrapper.vm.$root.$emit('open-category-view', 11);
+      await flush();
+      await flush();
+      expect(message().exists()).toBe(true);
+      expect(message().attributes('filtered')).toBe('true');
+      expect(message().attributes('folder-name')).toBe('emailConnector.mailBox.list.drawer.folder.inbox');
+
+      fixture.service.getEmailBox.mockClear();
+      // The message is a plain element here: its event reaches the drawer as a DOM one.
+      message().element.dispatchEvent(new CustomEvent('clear-filters'));
+      await flush();
+      await flush();
+
+      expect(fixture.wrapper.vm.categoryViewId).toBeNull();
+      expect(fixture.wrapper.vm.unreadOnly).toBe(false);
+      expect(fixture.wrapper.vm.emails.map(email => email.mailRemoteId)).toEqual([1]);
+      expect(message().exists()).toBe(false);
+      // Unread and a category are client-side: nothing to reload for them.
+      expect(fixture.service.getEmailBox).not.toHaveBeenCalled();
+    });
+
+    it('clears the Favorites chip too, which the server answers', async () => {
+      fixture = await mountDrawer({ INBOX: [row(1)] });
+      await expand(fixture);
+      await fixture.wrapper.setData({ favoriteOnly: true });
+      fixture.service.getEmailBox.mockClear();
+
+      fixture.wrapper.vm.clearFilters();
+      await flush();
+
+      expect(fixture.wrapper.vm.favoriteOnly).toBe(false);
+      expect(fixture.service.getEmailBox).toHaveBeenCalledWith('INBOX', false);
     });
 
     it('leaves the narrow layout as it was: the message fills the drawer', async () => {
