@@ -44,6 +44,12 @@ const OPEN_POPUP_SELECTOR = '.v-menu__content.menuable__content__active, .v-dial
 // read -- every conversation it passes.
 export const KEY_OPEN_DELAY_MS = 150;
 
+// How long a mail the reader opened on its own -- the first of the list in full screen,
+// the next one after an action, the one the arrow keys stopped on -- must stay the
+// opened one before it counts as read and as opened, the way Outlook's reading pane
+// does: walking past a mail leaves it unread. An explicit click reads it at once.
+export const AUTO_OPEN_MARK_READ_DELAY_MS = 2000;
+
 // The drawer's right-hand pane. In the wide layout it holds the reader, where the
 // arrow keys scroll the message being read, as they do in any page.
 const READER_PANE_SELECTOR = '.drawerContent';
@@ -204,40 +210,158 @@ export function navigationStep(event) {
 }
 
 /**
+ * Search hits as rows of the list: one message each -- the results are messages, not
+ * conversations -- keyed by folder and UID, a UID being unique only within its folder.
+ * Shaped like groupEmailsByThread's threads so every helper above walks them unchanged.
+ *
+ * @param {Array} results the search hits, as listed
+ * @returns {Array} one row per hit, {threadId, emails, latest, mailRemoteIds}
+ */
+export function searchRows(results) {
+  return (results || []).map(result => ({
+    threadId: `${result.folder || 'INBOX'}:${result.mailRemoteId}`,
+    emails: [result],
+    latest: result,
+    mailRemoteIds: [result.mailRemoteId],
+  }));
+}
+
+/**
  * The shared behaviour of the two drawers that show the mail list beside the reader --
  * the mailbox drawer, and the mail drawer once expanded -- so both move the same way.
  *
  * The component provides:
  * - `email` (data): the message the reader shows, or null;
  * - `expanded` (data): whether the wide layout is on screen;
+ * - `selectEmailPlaceHolder` (data): whether the reader shows the "select an email"
+ *   placeholder;
  * - `navigationEmails` (computed): the listed messages, as the list receives them;
+ * - `navigationDrawerOpen` (computed): whether the drawer is open -- the keys are
+ *   listened to on the whole page only then;
  * - `canNavigateList` (computed): whether the arrow keys drive the list right now;
- * - `openListedEmail(row)` (method): opens a listed message in the reader, the way a
- *   click on its row does;
+ * - `openListedEmail(row, {automatic})` (method): opens a listed message in the reader,
+ *   the way a click on its row does -- or, automatic, without reading it or counting it
+ *   as opened (see AUTO_OPEN_MARK_READ_DELAY_MS);
  * - `emailRequest` (plain field): the reader's request generation (EXO-90412), moved
  *   on by every opening of the reader and by every leave for the placeholder, so a
- *   delayed arrow-key opening can tell it was overtaken;
- * - `navigationList()` (method): the list content component on screen, or null.
+ *   delayed opening, or a delayed read, can tell it was overtaken; the component's
+ *   `supersedeEmailRequest` also calls cancelAutoOpenDwell, so a mail the user opens
+ *   themselves is never held back from being read;
+ * - `navigationList()` (method): the list component on screen, or null;
+ * - `navigationDrawer()` (method): its exo-drawer, to tell whether it is the drawer on
+ *   top of the page;
+ * - optionally `navigationEntriesOf(rows)` (method): the rows the list shows for a
+ *   listing -- conversations by default (threadRows), one per hit in a search;
+ * - optionally `onAutoOpenedEmailRead(row)` (method): what else the drawer marks read
+ *   when an automatically opened mail was read.
  */
 export default {
+  data() {
+    return {
+      // An automatically opened mail is on screen and not read yet: the reader must not
+      // mark its conversation read on its own (deferThreadRead) before the dwell ends.
+      autoOpenReadPending: false,
+    };
+  },
   created() {
-    // Whether the last click in the drawer landed in the reader pane: plain, not
+    // Whether the last click in the wide layout landed in the reader pane: plain, not
     // reactive -- nothing renders it. See onListNavigationPointerDown.
     this.lastPointerInReader = false;
     // The pending reader opening of the arrow keys (see KEY_OPEN_DELAY_MS).
     this.keyOpenTimer = null;
+    // The pending read of an automatically opened mail (AUTO_OPEN_MARK_READ_DELAY_MS).
+    this.autoOpenReadTimer = null;
   },
   beforeDestroy() {
+    document.removeEventListener('keydown', this.onDocumentNavigationKeydown);
     window.clearTimeout(this.keyOpenTimer);
+    window.clearTimeout(this.autoOpenReadTimer);
+  },
+  watch: {
+    /**
+     * Listens to the keys on the whole page while the drawer is open.
+     * <p>
+     * Not on the drawer itself: a key only reaches an element through the focus, and the
+     * focus leaves the drawer whenever the element holding it goes away -- the expand
+     * button, re-rendered as the drawer switches layouts; a row an action removed -- and
+     * falls back to the page's body, where a listener on the drawer never hears it
+     * (EXO-90414: the arrow keys did nothing after expanding until the user clicked in
+     * the list). Only the drawer on top of the page acts (onDocumentNavigationKeydown).
+     *
+     * @param {Boolean} open whether the drawer is open
+     * @returns {void}
+     */
+    navigationDrawerOpen: {
+      immediate: true,
+      handler(open) {
+        if (open) {
+          document.addEventListener('keydown', this.onDocumentNavigationKeydown);
+        } else {
+          document.removeEventListener('keydown', this.onDocumentNavigationKeydown);
+        }
+      },
+    },
+    /**
+     * A layout switch forgets where the last click landed -- in the narrow layout the
+     * list itself sits in the pane the reader takes in the wide one -- and ends the wait
+     * of an automatically opened mail: the reader is gone.
+     *
+     * @param {Boolean} expanded whether the wide layout is on screen
+     * @returns {void}
+     */
+    expanded(expanded) {
+      this.lastPointerInReader = false;
+      if (!expanded) {
+        this.cancelAutoOpenDwell();
+      }
+    },
   },
   methods: {
     /**
-     * Remembers whether the last click in the drawer landed in the reader pane.
+     * The rows the list shows for a listing; conversations unless the drawer says
+     * otherwise.
+     *
+     * @param {Array} rows the listed messages
+     * @returns {Array} the rows, shaped like groupEmailsByThread's threads
+     */
+    navigationEntriesOf(rows) {
+      return threadRows(rows);
+    },
+    /**
+     * A key pressed anywhere on the page, taken by the list when this drawer is the one
+     * on top: exo-drawer stacks every open drawer in `eXo.openedDrawers`, and a drawer
+     * opened over this one -- the composer, the folder picker, the mail drawer -- owns
+     * the keys while it is there. Every other guard is the list's own
+     * (onListNavigationKeydown).
+     *
+     * @param {KeyboardEvent} event the key press
+     * @returns {void}
+     */
+    onDocumentNavigationKeydown(event) {
+      if (this.isTopmostNavigationDrawer()) {
+        this.onListNavigationKeydown(event);
+      }
+    },
+    /**
+     * Whether this drawer is the one on top of the page.
+     *
+     * @returns {Boolean} true when no other drawer is open over it
+     */
+    isTopmostNavigationDrawer() {
+      const stack = window.eXo?.openedDrawers;
+      if (!stack?.length) {
+        return true;
+      }
+      return stack[stack.length - 1] === this.navigationDrawer();
+    },
+    /**
+     * Remembers whether the last click in the wide layout landed in the reader pane.
      * <p>
      * A click on the message's text focuses no element of the reader -- the nearest
      * focusable ancestor is the drawer itself -- yet the browser scrolls the pane
-     * clicked last with the arrow keys. So a key pressed on the drawer itself after
-     * such a click still belongs to the reader.
+     * clicked last with the arrow keys. So a key pressed outside any row after such a
+     * click still belongs to the reader. Forgotten at every layout switch: in the narrow
+     * layout that pane holds the list (see the `expanded` watcher).
      *
      * @param {MouseEvent} event the press
      * @returns {void}
@@ -248,13 +372,13 @@ export default {
     /**
      * Up and Down on the list.
      *
-     * In the wide layout the reader follows: the next conversation opens beside the
-     * list, as a click on it would, once the user stops on it (KEY_OPEN_DELAY_MS) --
-     * the row is focused and lit at once. In the narrow one the reader is a drawer of its own
-     * that would cover the list, so the key only moves the focus -- the row lights up
-     * and scrolls into view -- and Enter or Space, which the row already answers, opens
-     * it. Either way the row is revealed first when it lies beyond the rows the list
-     * has built so far.
+     * In the wide layout the reader follows: the next row opens beside the list once
+     * the user stops on it (KEY_OPEN_DELAY_MS) -- the row is focused and lit at once --
+     * and counts as read only once the user stayed on it (AUTO_OPEN_MARK_READ_DELAY_MS).
+     * In the narrow one the reader is a drawer of its own that would cover the list, so
+     * the key only moves the focus -- the row lights up and scrolls into view -- and
+     * Enter or Space, which the row already answers, opens it. Either way the row is
+     * revealed first when it lies beyond the rows the list has built so far.
      *
      * The keys the reader needs stay the reader's: in the wide layout a key pressed
      * with the focus in the message scrolls the message.
@@ -270,7 +394,7 @@ export default {
       if (this.expanded && this.isKeyForReader(event)) {
         return;
       }
-      const threads = threadRows(this.navigationEmails);
+      const threads = this.navigationEntriesOf(this.navigationEmails);
       const accept = this.expanded ? isOpenableRow : isFocusableRow;
       // The row holding the focus first: each key focuses the row it goes to at once,
       // while the reader only shows it once the server answered -- so a key pressed
@@ -288,13 +412,16 @@ export default {
         return;
       }
       if (this.expanded) {
+        // Leaving the mail on screen is leaving it: its wait ends with the key, not with
+        // the next opening a moment later.
+        this.cancelAutoOpenDwell();
         this.$root.$emit('set-opened', target.latest.mailRemoteId);
         window.clearTimeout(this.keyOpenTimer);
         const openingsBefore = this.emailRequest;
         this.keyOpenTimer = window.setTimeout(() => {
           this.keyOpenTimer = null;
           if (this.isKeyOpeningStillWanted(target, openingsBefore)) {
-            this.openListedEmail(target.latest);
+            this.openAutomatically(target.latest);
           }
         }, KEY_OPEN_DELAY_MS);
       }
@@ -313,12 +440,77 @@ export default {
      */
     isKeyOpeningStillWanted(target, openingsBefore) {
       return this.expanded && this.canNavigateList && this.emailRequest === openingsBefore
-        && threadRows(this.navigationEmails).some(thread => thread.threadId === target.threadId
+        && this.navigationEntriesOf(this.navigationEmails).some(thread => thread.threadId === target.threadId
           && thread.latest.mailRemoteId === target.latest.mailRemoteId);
     },
     /**
+     * Opens a row the user did not click -- the first of the list, the next one after
+     * an action, the one the arrow keys stopped on -- and starts the wait after which it
+     * counts as read and as opened.
+     *
+     * @param {Object} row the listed message
+     * @returns {Promise} resolved once the message is on screen
+     */
+    openAutomatically(row) {
+      const opening = this.openListedEmail(row, { automatic: true });
+      this.startAutoOpenDwell(row);
+      return opening;
+    },
+    /**
+     * Starts the wait of an automatically opened mail (AUTO_OPEN_MARK_READ_DELAY_MS).
+     * <p>
+     * Called right after the opening. Every other opening, the placeholder, the drawer
+     * closing (they all supersede the reader's request, which cancels this wait), a key
+     * moving on and a collapse end the wait; the mail is read only if the reader still
+     * shows it when the wait ends.
+     *
+     * @param {Object} row the listed message that was opened
+     * @returns {void}
+     */
+    startAutoOpenDwell(row) {
+      this.cancelAutoOpenDwell();
+      this.autoOpenReadPending = true;
+      this.autoOpenReadTimer = window.setTimeout(() => {
+        this.autoOpenReadTimer = null;
+        this.autoOpenReadPending = false;
+        if (!this.selectEmailPlaceHolder && this.email?.mailRemoteId === row.mailRemoteId) {
+          this.markAutoOpenedEmailRead(row);
+        }
+      }, AUTO_OPEN_MARK_READ_DELAY_MS);
+    },
+    /**
+     * Ends the wait of an automatically opened mail without reading it: the user moved
+     * on, or opened something themselves -- which the reader then reads at once.
+     *
+     * @returns {void}
+     */
+    cancelAutoOpenDwell() {
+      window.clearTimeout(this.autoOpenReadTimer);
+      this.autoOpenReadTimer = null;
+      this.autoOpenReadPending = false;
+    },
+    /**
+     * Reads an automatically opened mail once the user stayed on it: its conversation's
+     * unread messages in the list -- what the reader marks read when it opens one on a
+     * click -- and one opening counted, which its read left out.
+     *
+     * @param {Object} row the listed message
+     * @returns {void}
+     */
+    markAutoOpenedEmailRead(row) {
+      const threads = this.navigationEntriesOf(this.navigationEmails);
+      const index = threadIndexOf(threads, row);
+      const messages = index >= 0 ? threads[index].emails : [row];
+      const unread = messages.filter(message => !message.read).map(message => message.mailRemoteId);
+      if (unread.length) {
+        this.$root.$emit('update-email-read-status', true, unread);
+      }
+      this.onAutoOpenedEmailRead?.(row);
+      this.$emailConnectorMailBoxService.broadcastOpenEmail().catch(() => null);
+    },
+    /**
      * Whether a key pressed in the wide layout belongs to the reader: pressed in the
-     * reader pane, or on the drawer itself right after a click in the reader pane (see
+     * reader pane, or outside any row right after a click in the reader pane (see
      * onListNavigationPointerDown).
      *
      * @param {KeyboardEvent} event the key press
@@ -354,8 +546,9 @@ export default {
     },
     /**
      * Keeps the full-screen reader on a mail when the one it showed leaves the list:
-     * it opens the row that took its place (see threadTakingThePlaceOf), or leaves the
-     * "select an email" placeholder when nothing is left to open.
+     * it opens the row that took its place (see threadTakingThePlaceOf) -- as an
+     * automatic opening, read only if the user stays on it -- or leaves the "select an
+     * email" placeholder when nothing is left to open.
      *
      * Called by the component right after the action has taken the rows out of its
      * listing, with the listing as it was before.
@@ -368,9 +561,10 @@ export default {
       if (!this.expanded || !this.email || !(removedIds || []).includes(this.email.mailRemoteId)) {
         return null;
       }
-      const next = threadTakingThePlaceOf(threadRows(listedBefore), threadRows(this.navigationEmails), this.email);
+      const next = threadTakingThePlaceOf(this.navigationEntriesOf(listedBefore),
+        this.navigationEntriesOf(this.navigationEmails), this.email);
       if (next) {
-        this.openListedEmail(next.latest);
+        this.openAutomatically(next.latest);
         this.revealThreadRow(next.threadId);
       }
       return next;
