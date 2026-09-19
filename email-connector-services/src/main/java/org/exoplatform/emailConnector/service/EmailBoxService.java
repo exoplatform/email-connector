@@ -1324,6 +1324,8 @@ public class EmailBoxService {
    *          body prefetch to open its own extra IMAP connections
    * @param emailBoxCacheSize the number of most recent messages to keep
    * @param notify whether to fire the new-mail notification (INBOX only)
+   * @param previousSnapshot what the last full sync of the folder saw, may be null: a
+   *          different UIDVALIDITY moves the INBOX to a new epoch
    * @return the folder's change snapshot as of this sync's SELECT, for the next
    *         sync's skip-if-unchanged check; null when none could be captured (the
    *         next sync then simply takes the full path again)
@@ -1333,7 +1335,8 @@ public class EmailBoxService {
                           String username,
                           UserEmailSetting userEmailSetting,
                           int emailBoxCacheSize,
-                          boolean notify) throws MessagingException, IllegalAccessException {
+                          boolean notify,
+                          FolderSyncSnapshot previousSnapshot) throws MessagingException, IllegalAccessException {
     if (folder == null) {
       return null;
     }
@@ -1366,6 +1369,14 @@ public class EmailBoxService {
       // in the cache, and the next sync would skip right over it. Anything arriving
       // after this line makes the next check mismatch, which is the safe direction.
       FolderSyncSnapshot folderSnapshot = captureFolderSnapshot(folder, totalMessages, emailBoxCacheSize);
+      if (notify && previousSnapshot != null && folderSnapshot != null && previousSnapshot.getUidValidity() > 0
+          && folderSnapshot.getUidValidity() > 0 && previousSnapshot.getUidValidity() != folderSnapshot.getUidValidity()) {
+        // The server renumbered the folder: the UIDs a consumer remembered now name other
+        // messages, or none. Moved to a new epoch HERE, before the first new-mail
+        // broadcast of this sync, so a consumer woken by those broadcasts already reads
+        // the new epoch (EXO-90418).
+        bumpInboxEpoch(username, "UIDVALIDITY " + previousSnapshot.getUidValidity() + " -> " + folderSnapshot.getUidValidity());
+      }
       long windowFetchStart = System.currentTimeMillis();
       // Prefetch flags + envelope + UID + headers + MIME structure in a single
       // round-trip (see buildSyncFetchProfile for why every piece is in there).
@@ -1588,14 +1599,8 @@ public class EmailBoxService {
     if (canSkipFolderSync(store, folder, folderKey, previousSnapshot, windowSize, username)) {
       return;
     }
-    FolderSyncSnapshot folderSnapshot = syncFolder(folder, folderKey, username, userEmailSetting, windowSize, notify);
+    FolderSyncSnapshot folderSnapshot = syncFolder(folder, folderKey, username, userEmailSetting, windowSize, notify, previousSnapshot);
     if (folderSnapshot != null) {
-      if (notify && previousSnapshot != null && previousSnapshot.getUidValidity() > 0 && folderSnapshot.getUidValidity() > 0
-          && previousSnapshot.getUidValidity() != folderSnapshot.getUidValidity()) {
-        // The server renumbered the folder: the UIDs a consumer remembered now name
-        // other messages, or none.
-        bumpInboxEpoch(username, "UIDVALIDITY " + previousSnapshot.getUidValidity() + " -> " + folderSnapshot.getUidValidity());
-      }
       capturedSnapshot.accept(folderSnapshot);
     }
   }
