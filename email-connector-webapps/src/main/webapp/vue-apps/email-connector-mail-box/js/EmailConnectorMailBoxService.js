@@ -635,6 +635,33 @@ export function getEmailByRemoteId(mailRemoteId, folder) {
 }
 
 /**
+ * Whether a message is only its folder-list row: the listing leaves out the body and
+ * the recipients of every mail (a draft is always read whole), while every full read
+ * carries its recipients as a list, empty or not. Judged on the recipients rather
+ * than on the body because a full message may legitimately have an empty body.
+ *
+ * @param {object} email the message
+ * @returns {boolean} true when only the list row of the message is known
+ */
+export function isListingRow(email) {
+  return !!email && !email.draftLocalId && !Array.isArray(email.to);
+}
+
+/**
+ * The list row of a message whose full copy could not be read, made final: the
+ * reader then renders what it has (sender, date, excerpt) with a "could not be
+ * loaded" line and a retry, instead of a skeleton waiting for a copy that is not
+ * coming. Marked `unavailable`: its empty recipients and missing body are NOT the
+ * message's, so nothing may reply to it, forward it or quote it.
+ *
+ * @param {object} row the list row
+ * @returns {object} a copy of the row that no longer reads as a listing row
+ */
+export function settleListingRow(row) {
+  return { ...row, to: row.to || [], cc: row.cc || [], bcc: row.bcc || [], unavailable: true };
+}
+
+/**
  * The query naming the folder a conversation is read from, when that matters: opened
  * from the Trash or the Junk folder, the reader must see the conversation's copies in
  * that folder (EXO-89942), which every other read hides. Any other folder adds
