@@ -319,8 +319,13 @@ describe('dragging a mail onto the folder column (EXO-90421)', () => {
 
   it('a category is assigned to it, by folder, and it stays in the list', async () => {
     fixture = await mountDrawer([row(1), row(2)]);
+    const announced = [];
+    fixture.wrapper.vm.$root.$on('email-categories-updated', update => announced.push(update));
 
     const { over } = await dragOnto(fixture, mountRow(fixture, 2), mountColumn(fixture), 'category:11');
+
+    // Announced with its folder, for the reader's category bar to follow when it shows the mail.
+    expect(announced).toEqual([{ mailRemoteIds: [2], categoryId: 11, assign: true, folder: 'INBOX' }]);
 
     expect(over.defaultPrevented).toBe(true);
     expect(fixture.service.linkEmailsToCategory).toHaveBeenCalledWith([2], 11, 'INBOX');
