@@ -99,6 +99,22 @@ describe('EmailConnectorMailBoxDrawerListItemDetailActions', () => {
     });
   });
 
+  // EXO-90416 — the message may be a search result from another folder than the one
+  // listed, where the same numbers are other messages: the ids travel with the folder
+  // they are numbered in, so the mailbox never files, deletes or flags the listed twin.
+  it.each([
+    ['updateEmailReadStatus', 'update-email-read-status', args => args[2]],
+    ['deleteEmail', 'delete-email', args => args[1]],
+    ['archiveEmail', 'archive-email', args => args[1]],
+    ['markAsJunk', 'junk-email', args => args[1]],
+    ['moveToFolder', 'open-move-to-folder-drawer', args => args[1]],
+  ])('%s() says which folder its ids are numbered in', (method, event, folderFromArgs) => {
+    const archived = { mailRemoteId: 5, folder: 'ARCHIVE', subject: 'A search result' };
+    const { wrapper, emit } = mountToolbar(archived, null);
+    wrapper.vm[method]();
+    expect(folderFromArgs(emittedArgs(emit, event))).toBe('ARCHIVE');
+  });
+
   it('scopes the conversation to the acting folder: a message filed elsewhere must not move along with the Inbox one (EXO-89942)', () => {
     // thread.messages spans folders on purpose (EmailConnectorMailBoxDrawerThreadContent
     // assembles the reader's conversation ACROSS folders, so a filed message resurfaces

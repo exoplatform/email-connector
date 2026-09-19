@@ -387,6 +387,24 @@ export default {
     },
   },
   methods: {
+    /**
+     * Sends a swipe's action for the whole row, one event per folder its messages are
+     * numbered in: a row of a search list may gather a conversation's hits from several
+     * folders, and a bare UID would be resolved in the listed folder, where the same
+     * number is another message (EXO-90416).
+     *
+     * @param {String} event the action's event
+     * @returns {void}
+     */
+    emitPerFolder(event) {
+      const messages = this.thread ? this.thread.emails : [this.email];
+      const groups = new Map();
+      messages.forEach(message => {
+        const folder = message.folder || 'INBOX';
+        groups.set(folder, (groups.get(folder) || []).concat(message.mailRemoteId));
+      });
+      groups.forEach((ids, folder) => this.$root.$emit(event, ids, folder));
+    },
     emitSelect(selected) {
       // A thread selects/deselects as a whole: one select-email per message id.
       this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, selected }));
@@ -405,11 +423,12 @@ export default {
       }
       else {
         if (this.expanded) {
-          this.$root.$emit('open-email-detail-content', this.email.mailRemoteId);
+          this.$root.$emit('open-email-detail-content', this.email.mailRemoteId, this.email.folder || 'INBOX');
           this.$root.$emit('set-opened', this.email.mailRemoteId);
         }
         else {
-          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl);
+          this.$root.$emit('open-email-detail-drawer', this.email.mailRemoteId, this.emails, this.syncInProgress, this.webmailUrl,
+            false, false, this.email.folder || 'INBOX');
         }
       }
     },
@@ -489,9 +508,9 @@ export default {
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
       if (confirm) {
         if (deleteEmail) {
-          this.$root.$emit('delete-email', this.threadIds);
+          this.emitPerFolder('delete-email');
         } else {
-          this.$root.$emit('archive-email', this.threadIds);
+          this.emitPerFolder('archive-email');
         }
       } else {
         this.reset();
