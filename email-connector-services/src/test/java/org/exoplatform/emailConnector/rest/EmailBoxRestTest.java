@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -953,6 +954,43 @@ public class EmailBoxRestTest {
     mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                      .content(asJsonString(new ScheduleRequest(new Email(), null, "UTC"))))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * An update of a scheduled mail's content in place reaches the service as the caller,
+   * with the draft, the files to take off and the optional date; each refusal answers
+   * its status, and a request without a draft is a 400 (EXO-90434).
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void anUpdateOfAScheduledMailsContentAnswersItsStatusForTheCallerOnly() throws Exception {
+    Email draft = new Email();
+    draft.setSubject("New subject");
+    String body = asJsonString(new ScheduleRequest(draft, null, null, List.of(7L)));
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(body))
+           .andExpect(status().isOk());
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailScheduledSendService).updateContent(eq("draft-1"), sent.capture(), eq(List.of(7L)), isNull(), isNull(), eq(SIMPLE_USER));
+    assertEquals("New subject", sent.getValue().getSubject());
+
+    Object[][] cases = { { new IllegalArgumentException("emailConnector.scheduled.recipientsMandatory"), 400 },
+        { new IllegalAccessException("no"), 401 }, { new ObjectNotFoundException("gone"), 404 },
+        { new ScheduledSendConflictException(ScheduledSendConflictException.SENDING), 409 } };
+    for (Object[] testCase : cases) {
+      doThrow((Exception) testCase[0]).when(emailScheduledSendService)
+                                      .updateContent(anyString(), any(Email.class), any(), any(), any(), anyString());
+      mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                        .contentType(MediaType.APPLICATION_JSON)
+                                                                        .content(body))
+             .andExpect(status().is((int) testCase[1]));
+    }
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(asJsonString(new ScheduleRequest(null, null, null))))
            .andExpect(status().isBadRequest());
   }
 

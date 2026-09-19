@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
@@ -39,8 +40,10 @@ import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.entity.EmailScheduledSendEntity;
@@ -73,6 +76,9 @@ public class EmailScheduledSendClaimConcurrencyTest {
 
   private static final Date              NOW       = new Date(1_800_000_000_000L);
 
+  private static final Set<ScheduledSendStatus> EDITABLE     = Set.of(ScheduledSendStatus.SCHEDULED,
+                                                                        ScheduledSendStatus.FAILED);
+
   private static final Set<ScheduledSendStatus> SENDABLE_NOW =
                                                            Set.of(ScheduledSendStatus.SCHEDULED,
                                                                   ScheduledSendStatus.FAILED,
@@ -83,6 +89,9 @@ public class EmailScheduledSendClaimConcurrencyTest {
 
   @Autowired
   private EmailBoxDAO                    emailBoxDAO;
+
+  @Autowired
+  private PlatformTransactionManager     transactionManager;
 
   private final List<Long>               drafts    = new ArrayList<>();
 
@@ -172,6 +181,62 @@ public class EmailScheduledSendClaimConcurrencyTest {
       assertEquals(1, results.get(0) + results.get(1), "round " + round + ": exactly one of the two claims lands");
       assertEquals(results.get(0) == 1 ? "node-a" : "node-b", dao.findById(id).orElseThrow().getClaimedBy());
     }
+  }
+
+  /**
+   * An edit of a scheduled mail's content in flight holds its row (EXO-90434): the
+   * dispatcher's claim waits for the edit's commit, then claims, and the draft it then
+   * reads is the edited one -- the mail is never sent half-edited.
+   *
+   * @throws Exception if the edit or the claim does
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void aClaimWaitsForAnEditInFlightThenReadsTheEditedDraft() throws Exception {
+    long id = scheduledRow("edit");
+    TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+    CountDownLatch held = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      Future<Integer> edit = pool.submit(() -> transaction.execute(status -> {
+        int taken = dao.takeForEdit(USER, "edit", NOW, EDITABLE);
+        EmailBoxEntity draft = emailBoxDAO.findById(drafts.get(drafts.size() - 1)).orElseThrow();
+        draft.setBody("<p>edited</p>");
+        emailBoxDAO.saveAndFlush(draft);
+        held.countDown();
+        try {
+          release.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        return taken;
+      }));
+      assertTrue(held.await(30, TimeUnit.SECONDS));
+      Future<Integer> claim = pool.submit(() -> dao.claim(id, "node-a", NOW, ScheduledSendStatus.SCHEDULED,
+                                                          ScheduledSendStatus.SENDING));
+      Thread.sleep(500);
+      assertFalse(claim.isDone(), "the claim waits for the edit in flight");
+      release.countDown();
+      assertEquals(1, edit.get(30, TimeUnit.SECONDS), "the edit took the row");
+      assertEquals(1, claim.get(30, TimeUnit.SECONDS), "then the claim lands");
+      assertEquals("<p>edited</p>", emailBoxDAO.findById(drafts.get(drafts.size() - 1)).orElseThrow().getBody());
+      assertEquals(ScheduledSendStatus.SENDING, dao.findById(id).orElseThrow().getStatus());
+    } finally {
+      release.countDown();
+      pool.shutdownNow();
+    }
+  }
+
+  /**
+   * An edit that comes after the claim takes nothing: the mail is on its way.
+   */
+  @Test
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  void anEditAfterTheClaimTakesNothing() {
+    long id = scheduledRow("late-edit");
+    assertEquals(1, dao.claim(id, "node-a", NOW, ScheduledSendStatus.SCHEDULED, ScheduledSendStatus.SENDING));
+    assertEquals(0, dao.takeForEdit(USER, "late-edit", NOW, EDITABLE));
   }
 
   /**

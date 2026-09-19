@@ -213,6 +213,29 @@ public interface EmailScheduledSendDAO extends JpaRepository<EmailScheduledSendE
   ScheduledSendStatus sending);
 
   /**
+   * Takes a mail's schedule row for an edit of its content (EXO-90434), only while it is
+   * in one of the given states: the row is written (its update date), which holds its
+   * lock until the caller's transaction ends. A dispatcher's claim of the same row waits
+   * for that end, then reads the edit; a claim that came first leaves the row in a
+   * state this refuses, and nothing is edited.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the draft's handle
+   * @param now the write instant
+   * @param from the statuses an edit may start from
+   * @return one when taken, zero when the row is absent or in another state
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailScheduledSendEntity s SET s.updatedDate = :now"
+      + " WHERE s.userId = :userId AND s.draftLocalId = :draftLocalId AND s.status IN :from")
+  int takeForEdit(@Param("userId")
+  String userId, @Param("draftLocalId")
+  String draftLocalId, @Param("now")
+  Date now, @Param("from")
+  Collection<ScheduledSendStatus> from);
+
+  /**
    * A new date for a mail that is not being sent: back to SCHEDULED, due at that date,
    * with a fresh error slate and a fresh retry budget.
    *
