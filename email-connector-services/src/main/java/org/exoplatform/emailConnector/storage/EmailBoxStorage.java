@@ -1509,19 +1509,15 @@ public class EmailBoxStorage {
   }
 
   /**
-   * A folder's cached messages as the folder list shows them: {@link #getEmails(String, String)},
-   * except that the Drafts folder leaves out the drafts scheduled to be sent, which
-   * the "Scheduled" view lists instead (EXO-90434).
+   * The Drafts folder as the folder list shows it: {@link #getEmails(String, String)} of
+   * DRAFTS, less the drafts scheduled to be sent, which the "Scheduled" view lists
+   * instead (EXO-90434).
    *
    * @param userId the mailbox owner
-   * @param folder the folder discriminator
-   * @return the folder's listed messages, newest first
+   * @return the unscheduled drafts, newest first
    */
-  public List<Email> getListedEmails(String userId, String folder) {
-    if (!MailFolder.DRAFTS.equals(folder)) {
-      return getEmails(userId, folder);
-    }
-    return toListing(emailBoxDao.findUnscheduledByUserIdAndFolderWithAttachments(userId, folder), userId);
+  public List<Email> getUnscheduledDrafts(String userId) {
+    return toListing(emailBoxDao.findUnscheduledByUserIdAndFolderWithAttachments(userId, MailFolder.DRAFTS), userId);
   }
 
   /**
