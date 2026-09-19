@@ -58,6 +58,7 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -142,6 +143,10 @@ public class EmailThreadAiSummaryTest {
   // "Scheduled" view, and the two-step transmitter only the scheduled send uses.
   @MockitoBean
   private EmailScheduledSendStorage emailScheduledSendStorage;
+
+  // Read receipts, phase 2 (EXO-90435): a dependency of the service, not exercised here.
+  @MockitoBean
+  private EmailReadReceiptAnswerStorage readReceiptAnswerStorage;
 
   @MockitoBean
   private SmtpTransmitter         smtpTransmitter;

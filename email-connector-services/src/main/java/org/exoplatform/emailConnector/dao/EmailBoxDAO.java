@@ -28,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.emailConnector.entity.EmailBoxEntity;
 import org.exoplatform.emailConnector.model.DraftState;
+import org.exoplatform.emailConnector.model.ReadReceiptState;
 
 public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
@@ -370,12 +371,19 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * its UID, both of which move under a draft), so without it here the reconcile
    * would have to re-read every draft row in full just to learn the handle.
    *
+   * <p>
+   * The read-receipt request and its answer joined it with EXO-90435: the reconcile
+   * mirrors the server's {@code $MDNSent} keyword onto the rows still pending, and
+   * without them here it could only write to every row carrying the keyword on every
+   * sync, forever.
+   *
    * @param userId the mailbox owner
    * @param folder the folder discriminator
    * @return rows of {@code [id, mailRemoteId, threadId, threadIndexRoot, read,
-   *         recent, starred, draftState, draftLocalId]}, newest first
+   *         recent, starred, draftState, draftLocalId, readReceiptRequested,
+   *         readReceiptState]}, newest first
    */
-  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred, email.draftState, email.draftLocalId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
+  @Query("SELECT email.id, email.mailRemoteId, email.threadId, email.threadIndexRoot, email.read, email.recent, email.starred, email.draftState, email.draftLocalId, email.readReceiptRequested, email.readReceiptState FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder ORDER BY email.receivedDate DESC")
   List<Object[]> findSyncViewByUserIdAndFolder(@Param("userId")
   String userId, @Param("folder")
   String folder);
@@ -977,4 +985,130 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   Long findMaxUid(@Param("userId")
   String userId, @Param("folder")
   String folder);
+
+  /**
+   * How many cached copies of one message already carry an answer to its read-receipt
+   * request. Asked before {@link #claimReadReceiptByMailHeaderId}, rather than folded
+   * into it as a sub-select, because MySQL refuses an UPDATE whose sub-query reads the
+   * table being updated (error 1093).
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the message's Message-ID
+   * @return the number of answered copies
+   */
+  @Query("SELECT COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId AND email.readReceiptState IS NOT NULL")
+  long countAnsweredReadReceiptsByMailHeaderId(@Param("userId")
+  String userId, @Param("mailHeaderId")
+  String mailHeaderId);
+
+  /**
+   * Answers a read-receipt request on every pending cached copy of one message: the
+   * claim that makes a receipt go out at most once. A message is cached once per
+   * folder it is in (Inbox and Gmail's All Mail, a moved copy...), and it is one
+   * message to its sender, so all of them move together. Two concurrent claims cannot
+   * both win: the second one's UPDATE re-reads {@code READ_RECEIPT_STATE IS NULL}
+   * under the first one's row locks and claims nothing.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the message's Message-ID
+   * @param state the answer
+   * @return the number of rows claimed; 0 means the request was already answered
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.readReceiptState = :state WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId AND email.readReceiptState IS NULL")
+  int claimReadReceiptByMailHeaderId(@Param("userId")
+  String userId, @Param("mailHeaderId")
+  String mailHeaderId, @Param("state")
+  ReadReceiptState state);
+
+  /**
+   * The same claim for a row that carries no Message-ID, which can only be addressed
+   * by its own id.
+   *
+   * @param userId the mailbox owner
+   * @param id the row's technical id
+   * @param state the answer
+   * @return 1 when claimed, 0 when already answered
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.readReceiptState = :state WHERE email.userId = :userId AND email.id = :id AND email.readReceiptState IS NULL")
+  int claimReadReceiptById(@Param("userId")
+  String userId, @Param("id")
+  long id, @Param("state")
+  ReadReceiptState state);
+
+  /**
+   * Gives a claim back, when the receipt it was taken for could not leave at all:
+   * only the rows still carrying that very claim are touched, so an answer written
+   * since (by the sync mirroring another client's) is never erased.
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderId the message's Message-ID
+   * @param state the claim being given back
+   * @return the number of rows released
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.readReceiptState = NULL WHERE email.userId = :userId AND email.mailHeaderId = :mailHeaderId AND email.readReceiptState = :state")
+  int releaseReadReceiptByMailHeaderId(@Param("userId")
+  String userId, @Param("mailHeaderId")
+  String mailHeaderId, @Param("state")
+  ReadReceiptState state);
+
+  /**
+   * {@link #releaseReadReceiptByMailHeaderId} for a row without a Message-ID.
+   *
+   * @param userId the mailbox owner
+   * @param id the row's technical id
+   * @param state the claim being given back
+   * @return 1 when released
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.readReceiptState = NULL WHERE email.userId = :userId AND email.id = :id AND email.readReceiptState = :state")
+  int releaseReadReceiptById(@Param("userId")
+  String userId, @Param("id")
+  long id, @Param("state")
+  ReadReceiptState state);
+
+  /**
+   * Mirrors the server's {@code $MDNSent} keyword: the pending requests among the
+   * given messages of one folder are recorded as answered, because another client (or
+   * this one, before a reset) answered them. Only requested, pending rows move, so
+   * the statement is a no-op on everything the sync has already mirrored.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   * @param mailRemoteIds the UIDs carrying the keyword
+   * @param state the state to record
+   * @return the number of rows updated
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.readReceiptState = :state WHERE email.userId = :userId AND email.folder = :folder AND email.mailRemoteId IN :mailRemoteIds AND email.readReceiptRequested = true AND email.readReceiptState IS NULL")
+  int markReadReceiptsAnswered(@Param("userId")
+  String userId, @Param("folder")
+  String folder, @Param("mailRemoteIds")
+  List<Long> mailRemoteIds, @Param("state")
+  ReadReceiptState state);
+
+  /**
+   * The same mirror, carried to every other cached copy of the answered messages, by
+   * their Message-ID: one message is one answer to its sender, wherever it is cached
+   * (the Inbox copy and Gmail's All Mail copy share one request).
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderIds the Message-IDs of the messages carrying the keyword
+   * @param state the state to record
+   * @return the number of rows updated
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.readReceiptState = :state WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds AND email.readReceiptRequested = true AND email.readReceiptState IS NULL")
+  int markReadReceiptsAnsweredByMailHeaderIds(@Param("userId")
+  String userId, @Param("mailHeaderIds")
+  List<String> mailHeaderIds, @Param("state")
+  ReadReceiptState state);
 }

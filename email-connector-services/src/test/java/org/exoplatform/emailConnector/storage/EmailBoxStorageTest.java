@@ -63,6 +63,7 @@ import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 
 import org.exoplatform.commons.file.services.FileService;
@@ -223,7 +224,7 @@ public class EmailBoxStorageTest {
     when(emailBoxDAO.findSyncViewByUserIdAndFolder("root", "INBOX"))
                                                                    .thenReturn(List.<Object[]> of(new Object[] { 7L, 1212L,
                                                                        "<t@host>", "", Boolean.TRUE, Boolean.FALSE,
-                                                                       Boolean.TRUE, null, null }));
+                                                                       Boolean.TRUE, null, null, Boolean.TRUE, ReadReceiptState.IGNORED }));
     List<Email> emails = emailBoxStorage.getSyncEmails("root", "INBOX");
     assertEquals(1, emails.size());
     Email email = emails.get(0);
@@ -238,6 +239,10 @@ public class EmailBoxStorageTest {
     assertEquals("INBOX", email.getFolder());
     assertNull(email.getContent());
     assertNull(email.getCategoryIds());
+    // And the read-receipt request with its answer (EXO-90435), which the reconcile
+    // reads to mirror $MDNSent onto pending requests only.
+    assertTrue(email.isReadReceiptRequested());
+    assertEquals(ReadReceiptState.IGNORED, email.getReadReceiptState());
   }
 
   @Test
@@ -249,7 +254,7 @@ public class EmailBoxStorageTest {
     when(emailBoxDAO.findSyncViewByUserIdAndFolder("root", "DRAFTS"))
                                                                     .thenReturn(List.<Object[]> of(new Object[] { 9L, 4242L,
                                                                         "<t@host>", "", Boolean.TRUE, Boolean.FALSE,
-                                                                        Boolean.FALSE, DraftState.DIRTY, "draft-1" }));
+                                                                        Boolean.FALSE, DraftState.DIRTY, "draft-1", Boolean.FALSE, null }));
     Email draft = emailBoxStorage.getSyncEmails("root", "DRAFTS").get(0);
     assertEquals(DraftState.DIRTY, draft.getDraftState());
     assertEquals("draft-1", draft.getDraftLocalId());
@@ -552,7 +557,11 @@ public class EmailBoxStorageTest {
                                                        null,
                                                        null,
                                                        null,
-                                                       null);
+                                                       null,
+                                                       false,
+                                                       null,
+                                                       null,
+                                                       false);
     Optional<EmailAttachmentEntity> emailAttachmentEntity = Optional.ofNullable(new EmailAttachmentEntity(2L,
                                                                                                           emailBoxEntity,
                                                                                                           "2",
@@ -797,7 +806,8 @@ public class EmailBoxStorageTest {
                      null,
                      null,
                      null,
-                     null, null, false, null, null, null);
+                     null, null, false, null, null, null,
+                     false, null, null, false, null, null);
   }
 
   /**
