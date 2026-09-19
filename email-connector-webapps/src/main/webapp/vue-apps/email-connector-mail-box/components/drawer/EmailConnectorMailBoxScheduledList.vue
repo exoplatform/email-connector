@@ -61,23 +61,25 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </div>
     </div>
     <!-- Reschedule: the composer's own date and time card (email-connector-schedule-picker),
-         in a dialog of its own here. -->
-    <v-dialog
-      v-model="rescheduleDialog"
-      max-width="420"
-      content-class="overflow-visible">
-      <v-card v-if="rescheduleDialog" class="overflow-visible">
-        <v-card-title class="text-subtitle-1">
-          {{ $t('emailConnector.mailBox.scheduled.reschedule.title') }}
-        </v-card-title>
-        <email-connector-schedule-picker
-          :value="rescheduled && rescheduled.scheduledDate"
-          :loading="rescheduling"
-          :confirm-label="$t('emailConnector.mailBox.scheduled.action.reschedule')"
-          class="px-2 pb-2"
-          @confirm="reschedule" />
-      </v-card>
-    </v-dialog>
+         in the platform's popup (exo-modal), as the platform shows any small modal. Not a
+         bare v-dialog: that one never tells the platform it is open (modalOpened), so the
+         drawers' overlay stays over it and takes its clicks -- the pickers and the check
+         never answered, and nothing was rescheduled. One confirm: the picker's check. -->
+    <exo-modal
+      ref="rescheduleModal"
+      :title="$t('emailConnector.mailBox.scheduled.reschedule.title')"
+      width="460px"
+      hide-actions
+      @dialog-closed="rescheduled = null">
+      <email-connector-schedule-picker
+        v-if="rescheduled"
+        :key="rescheduled.draftLocalId"
+        :value="rescheduled.scheduledDate"
+        :loading="rescheduling"
+        :confirm-label="$t('emailConnector.mailBox.scheduled.action.reschedule')"
+        class="px-2 pb-2 scheduled-email-reschedule-picker"
+        @confirm="reschedule" />
+    </exo-modal>
     <exo-confirm-dialog
       ref="scheduledConfirmDialog"
       :title="confirmation && confirmation.title"
@@ -120,7 +122,7 @@ export default {
     pagesRead: 0,
     // The mails an action is running on: their menu waits, the drawer's bar says so.
     busyIds: [],
-    rescheduleDialog: false,
+    // The mail the reschedule popup is open for.
     rescheduled: null,
     rescheduling: false,
     // The question the confirmation dialog is asking: {title, message, okLabel, run}.
@@ -304,7 +306,7 @@ export default {
         break;
       case 'reschedule':
         this.rescheduled = scheduled;
-        this.rescheduleDialog = true;
+        this.$nextTick(() => this.$refs.rescheduleModal.open());
         break;
       case 'sendNow':
       case 'retry':
@@ -362,7 +364,8 @@ export default {
       }
     },
     /**
-     * Gives the mail the date picked in the dialog.
+     * Gives the mail the date picked in the popup, which closes once it is taken; a
+     * refusal leaves it open on the picked date, to pick another.
      *
      * @param {Number} scheduledDate the instant, epoch milliseconds
      * @param {String} timeZone the zone it was chosen in
@@ -376,7 +379,7 @@ export default {
       this.rescheduling = true;
       return this.$emailConnectorMailBoxService.rescheduleEmail(scheduled.draftLocalId, scheduledDate, timeZone)
         .then(updated => {
-          this.rescheduleDialog = false;
+          this.$refs.rescheduleModal?.close();
           this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.reschedule.success', {
             0: this.$emailConnectorMailBoxService.formatScheduledDate(updated?.scheduledDate || scheduledDate,
               updated?.timeZone || timeZone),
