@@ -31,6 +31,7 @@ import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jpa.test.autoconfigure.TestEntityManager;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
 
@@ -156,6 +157,29 @@ public class EmailBoxDAOTest {
     entityManager.persist(email);
     entityManager.flush();
     return id;
+  }
+
+  /**
+   * The slice read of a consumer working through new mail (EXO-90418): UIDs strictly
+   * between the bounds, highest first, scoped to the owner and the folder, bounded by
+   * the page; and the folder's highest UID, null on an empty folder.
+   */
+  @Test
+  void theUidSliceIsExclusiveNewestFirstAndScoped() {
+    for (long uid : new long[] { 3, 5, 7, 9, 11 }) {
+      persistEmail(uid, "b", Boolean.FALSE);
+    }
+    persistEmail(8, MailFolder.SENT, "b", Boolean.FALSE);
+    EmailBoxEntity other = entityManager.find(EmailBoxEntity.class, persistEmail(10, "b", Boolean.FALSE));
+    other.setUserId("bob");
+    entityManager.persist(other);
+    entityManager.flush();
+
+    assertEquals(List.of(9L, 7L, 5L), emailBoxDAO.findUidsBetween(USERNAME, MailFolder.INBOX, 3, 11, PageRequest.of(0, 10)));
+    assertEquals(List.of(11L, 9L), emailBoxDAO.findUidsBetween(USERNAME, MailFolder.INBOX, 0, Long.MAX_VALUE, PageRequest.of(0, 2)));
+    assertEquals(11L, emailBoxDAO.findMaxUid(USERNAME, MailFolder.INBOX));
+    assertEquals(8L, emailBoxDAO.findMaxUid(USERNAME, MailFolder.SENT));
+    assertNull(emailBoxDAO.findMaxUid(USERNAME, MailFolder.ARCHIVE));
   }
 
   /**
