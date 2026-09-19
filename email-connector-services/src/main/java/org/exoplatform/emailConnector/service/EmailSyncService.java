@@ -256,6 +256,22 @@ public class EmailSyncService {
   }
 
   /**
+   * Whether the mailbox of a user is being synchronized right now, by any node of the
+   * cluster: its state row carries a live claim (EXO-90418). The claim is the truth of
+   * "running" for every path that downloads the INBOX -- the dispatched sync, the
+   * manual "sync now", the immediate first sync, the reset -- so a consumer of the
+   * new-mail events on another node can wait for the mailbox to settle before it
+   * treats its new mail as complete. A claim gone stale (its node died) does not
+   * count.
+   *
+   * @param userId the mailbox owner
+   * @return true when a synchronization holds the mailbox
+   */
+  public boolean isSyncRunning(String userId) {
+    return emailSyncStateStorage.isClaimed(userId, EmailConnectorUtils.getSyncClaimStaleBefore(new Date()));
+  }
+
+  /**
    * A snapshot for the administration drawer's status line. The backlog is
    * counted with the very thresholds the next tick will select on, so the line
    * never shows a backlog the dispatcher would not see.

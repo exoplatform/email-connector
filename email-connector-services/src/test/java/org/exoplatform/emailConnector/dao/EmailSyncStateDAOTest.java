@@ -290,6 +290,90 @@ public class EmailSyncStateDAOTest {
   }
 
   /**
+   * A live claim is "a sync is running" for a consumer on any node; a stale one,
+   * or none, is not.
+   */
+  @Test
+  void aLiveClaimIsASyncRunning() {
+    persist("syncing", minutesAgo(5), NODE_A, minutesAgo(30), null);
+    persist("crashed", minutesAgo(61), NODE_A, minutesAgo(90), null);
+    persist("idle", null, null, minutesAgo(30), null);
+
+    assertEquals(1, emailSyncStateDAO.countLiveClaim("syncing", staleBefore()));
+    assertEquals(0, emailSyncStateDAO.countLiveClaim("crashed", staleBefore()));
+    assertEquals(0, emailSyncStateDAO.countLiveClaim("idle", staleBefore()));
+    assertEquals(0, emailSyncStateDAO.countLiveClaim("nobody", staleBefore()));
+  }
+
+  /**
+   * The persisted notification boundary is initialised when absent, lowered when it
+   * stands above the cache (a reset, a renumbered folder), and otherwise kept.
+   */
+  @Test
+  void theNotificationBoundaryIsInitialisedOrLoweredNeverRaised() {
+    persist("fresh", null, null, null, null);
+    EmailSyncStateEntity above = persist("above", null, null, null, null);
+    above.setNotifiedUid(500L);
+    EmailSyncStateEntity below = persist("below", null, null, null, null);
+    below.setNotifiedUid(40L);
+    entityManager.persist(above);
+    entityManager.persist(below);
+    entityManager.flush();
+
+    emailSyncStateDAO.initNotifiedUid("fresh", 42L);
+    emailSyncStateDAO.initNotifiedUid("above", 42L);
+    emailSyncStateDAO.initNotifiedUid("below", 42L);
+
+    assertEquals(42L, reload("fresh").getNotifiedUid());
+    assertEquals(42L, reload("above").getNotifiedUid());
+    assertEquals(40L, reload("below").getNotifiedUid(), "a boundary below the cache is new mail not yet notified: kept");
+  }
+
+  /**
+   * The range of a notification is taken once: the boundary moves only from where
+   * the caller read it, and never backwards; a never-initialised boundary is taken by
+   * its own statement.
+   */
+  @Test
+  void aNotificationRangeIsTakenOnce() {
+    EmailSyncStateEntity row = persist("alice", null, null, null, null);
+    row.setNotifiedUid(10L);
+    entityManager.persist(row);
+    entityManager.flush();
+    persist("never", null, null, null, null);
+
+    assertEquals(1, emailSyncStateDAO.advanceNotifiedUid("alice", 10L, 12L));
+    assertEquals(0, emailSyncStateDAO.advanceNotifiedUid("alice", 10L, 12L), "a second taker of the same range loses");
+    // The race that matters: two callers read 10; one took (10, 12]; more mail landed
+    // since, and the slower one now asks for (10, 15] -- it must lose, or 11 and 12
+    // would be notified twice.
+    assertEquals(0, emailSyncStateDAO.advanceNotifiedUid("alice", 10L, 15L), "a caller that read a stale boundary loses");
+    assertEquals(0, emailSyncStateDAO.advanceNotifiedUid("alice", 12L, 12L), "an empty range is not taken");
+    assertEquals(0, emailSyncStateDAO.advanceNotifiedUid("alice", 12L, 11L), "the boundary never moves backwards");
+    assertEquals(12L, reload("alice").getNotifiedUid());
+
+    assertEquals(0, emailSyncStateDAO.initialiseNotifiedUid("alice", 20L), "an initialised boundary is not re-initialised");
+    assertEquals(1, emailSyncStateDAO.initialiseNotifiedUid("never", 20L));
+    assertEquals(20L, reload("never").getNotifiedUid());
+  }
+
+  /**
+   * The epoch moves by one per bump, on the row named only.
+   */
+  @Test
+  void theInboxEpochMovesByOne() {
+    persist("alice", null, null, null, null);
+    persist("bob", null, null, null, null);
+
+    assertEquals(1, emailSyncStateDAO.bumpInboxEpoch("alice"));
+    assertEquals(1, emailSyncStateDAO.bumpInboxEpoch("alice"));
+    assertEquals(0, emailSyncStateDAO.bumpInboxEpoch("nobody"));
+
+    assertEquals(2L, reload("alice").getInboxEpoch());
+    assertEquals(0L, reload("bob").getInboxEpoch());
+  }
+
+  /**
    * Persists one row and flushes it, so every statement under test reads it from
    * the database rather than from the persistence context.
    *
@@ -301,7 +385,7 @@ public class EmailSyncStateDAOTest {
    * @return the persisted row
    */
   private EmailSyncStateEntity persist(String userId, Date syncStartedDate, String claimedBy, Date lastSyncDate, Date lastActivityDate) {
-    EmailSyncStateEntity row = new EmailSyncStateEntity(userId, syncStartedDate, claimedBy, lastSyncDate, lastActivityDate, NOW);
+    EmailSyncStateEntity row = new EmailSyncStateEntity(userId, syncStartedDate, claimedBy, lastSyncDate, lastActivityDate, NOW, null, 0L);
     entityManager.persist(row);
     entityManager.flush();
     return row;
