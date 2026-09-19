@@ -125,12 +125,12 @@ import listNavigationMixin from '../../js/EmailConnectorMailBoxListNavigation.js
 const BACKDROP_ID = 'emailDetailDrawerBackdrop';
 
 // The other actions that take messages out of the list, each carrying their ids first
-// (the move carries its target after them, which is not needed here). Delete and archive
-// are followed in both layouts, as they always were; these only in the expanded one,
+// (the move, handled apart, carries its target after them). Delete and archive
+// are followed in both layouts, as they always were; these and the move only in the expanded one,
 // where the list is beside the reader (EXO-90414). In the narrow layout the toolbar
 // closes the drawer after most of them -- but not after a move, and following one
 // there would leave the reader on the "select an email" placeholder with no list.
-const EXPANDED_LIST_REMOVAL_EVENTS = ['junk-email', 'not-junk-email', 'restore-email', 'purge-email', 'move-email'];
+const EXPANDED_LIST_REMOVAL_EVENTS = ['junk-email', 'not-junk-email', 'restore-email', 'purge-email'];
 
 export default {
   // Expanded, this drawer shows the list beside the reader like the mailbox drawer
@@ -250,7 +250,7 @@ export default {
       // Expanded, the reader moves on to the conversation that took the removed one's
       // place rather than to the placeholder (listNavigationMixin) -- search results
       // included, the list this drawer was handed for them.
-      this.openNextAfterRemoval(emails, listedBefore);
+      this.openNextAfterRemoval(emails, listedBefore, folder);
     };
     // Mirror favorite changes (and their rollback after a refused push) onto this
     // drawer's own copies: the list it was opened with — a snapshot when it
@@ -293,12 +293,15 @@ export default {
     this.$root.$on('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$on('archive-email', this.onDeleteOrArchiveEmail);
-    this.onExpandedListRemoval = (emails) => {
+    this.onExpandedListRemoval = (emails, folder) => {
       if (this.expanded) {
-        this.onDeleteOrArchiveEmail(emails);
+        this.onDeleteOrArchiveEmail(emails, folder);
       }
     };
+    // A move carries its target before the folder its ids are numbered in.
+    this.onExpandedListMove = (emails, target, folder) => this.onExpandedListRemoval(emails, folder);
     EXPANDED_LIST_REMOVAL_EVENTS.forEach(event => this.$root.$on(event, this.onExpandedListRemoval));
+    this.$root.$on('move-email', this.onExpandedListMove);
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
     });
@@ -356,6 +359,7 @@ export default {
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);
     EXPANDED_LIST_REMOVAL_EVENTS.forEach(event => this.$root.$off(event, this.onExpandedListRemoval));
+    this.$root.$off('move-email', this.onExpandedListMove);
     this.$root.$off('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
   },

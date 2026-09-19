@@ -372,7 +372,9 @@ export default {
     this.onRetryEmailRead = (email) => {
       if (this.emailBoxDrawer && !this.$root.isDetailDrawerActive && this.email?.unavailable
           && email?.mailRemoteId === this.email.mailRemoteId) {
-        this.openEmailDetailContent(email.mailRemoteId);
+        // In the message's own folder: a search result's may not be the listed one, which
+        // may hold another message under the same number (EXO-90416).
+        this.openEmailDetailContent(email.mailRemoteId, this.email.folder || 'INBOX');
       }
     };
     this.$root.$on('retry-email-read', this.onRetryEmailRead);
@@ -472,8 +474,8 @@ export default {
         this.cancelSelectMode();
       }
     };
-    this.onDeleteEmail = (emails, folder) => this.applyListAction(emails, () => this.deleteEmails(emails, folder));
-    this.onArchiveEmail = (emails, folder) => this.applyListAction(emails, () => this.archiveEmails(emails, folder));
+    this.onDeleteEmail = (emails, folder) => this.applyListAction(emails, () => this.deleteEmails(emails, folder), folder);
+    this.onArchiveEmail = (emails, folder) => this.applyListAction(emails, () => this.archiveEmails(emails, folder), folder);
     // The two Trash actions, wired exactly as delete and archive are: the rows leave
     // the listing, the reader stops showing what is no longer there, and a running
     // selection ends. The confirmation for the permanent one is asked before the event
@@ -485,14 +487,14 @@ export default {
     // The two Junk actions, wired the same way. "Mark as spam" leaves from any
     // writable folder, "Not spam" from the Spam listing; a Delete out of Spam is the
     // ordinary delete-email above, addressed to the row's own folder.
-    this.onJunkEmail = (emails, folder) => this.applyListAction(emails, () => this.markAsJunk(emails, folder));
+    this.onJunkEmail = (emails, folder) => this.applyListAction(emails, () => this.markAsJunk(emails, folder), folder);
     this.onNotJunkEmail = (emails) => this.applyListAction(emails, () => this.restoreFromJunk(emails));
     this.$root.$on('junk-email', this.onJunkEmail);
     this.$root.$on('not-junk-email', this.onNotJunkEmail);
     // "Move to..." into one of the user's own folders, wired the same way as archive:
     // the rows leave the listing at once, the reader stops showing what is no longer
     // there, and a running selection ends. The target comes from the picker drawer.
-    this.onMoveEmail = (emails, target, folder) => this.applyListAction(emails, () => this.moveEmails(emails, target, folder));
+    this.onMoveEmail = (emails, target, folder) => this.applyListAction(emails, () => this.moveEmails(emails, target, folder), folder);
     this.$root.$on('move-email', this.onMoveEmail);
     // A draft was saved to (or discarded from) the Drafts folder. The list is a
     // mirror of the local cache and the composer has just changed it, so it has to
@@ -817,17 +819,8 @@ export default {
     },
     emails() {
       let emails = this.emailBox?.emails || [];
-      emails = emails.filter(e => !this.deletedEmailIds.includes(e.mailRemoteId));
-      emails = emails.filter(e => !this.archivedEmailIds.includes(e.mailRemoteId));
-      emails = emails.filter(e => !this.restoredEmailIds.includes(e.mailRemoteId));
-      emails = emails.filter(e => !this.purgedEmailIds.includes(e.mailRemoteId));
-      emails = emails.filter(e => !this.junkedEmailIds.includes(e.mailRemoteId));
-      emails = emails.filter(e => !this.unjunkedEmailIds.includes(e.mailRemoteId));
-      // By folder as well as UID, unlike the lists above: a move's rows are looked for in
-      // TWO folders, and the destination may hold a row of its own under the number the
-      // moved message had in its origin.
-      emails = emails.filter(e => !this.movedEmailIds.some(moved => moved.id === e.mailRemoteId
-        && moved.folder === (e.folder || this.currentFolder)));
+      // The optimistic removals, by folder as well as UID (see isOptimisticallyRemoved).
+      emails = emails.filter(e => !this.isOptimisticallyRemoved(e));
       emails = this.withRefreshPendingRows(emails);
       // The filters combine: each one narrows what the others left, so
       // "unread favorites in this category" is just everything toggled on. A
@@ -1453,19 +1446,32 @@ export default {
     },
     /**
      * Whether an action here took a message out of the listing before the server says
-     * so: the same optimistic removals the folder's list applies, applied to the search
-     * results, so a hit acted on leaves them too. By UID, as those lists record it --
-     * a move is recorded with its folder.
+     * so -- for the folder's list and for the search results alike, so a hit acted on
+     * leaves them too.
+     * <p>
+     * By folder as well as UID, in every one of the lists: a UID only numbers a message
+     * within its folder, and the search results hold several folders at once, so the
+     * number alone hid every other hit that happened to share it (EXO-90414). A move's
+     * rows are looked for in two folders for the same reason.
      *
      * @param {Object} row a listed message or a search hit
      * @returns {Boolean} true when an action took it out
      */
     isOptimisticallyRemoved(row) {
-      const id = row.mailRemoteId;
-      return this.deletedEmailIds.includes(id) || this.archivedEmailIds.includes(id)
-        || this.restoredEmailIds.includes(id) || this.purgedEmailIds.includes(id)
-        || this.junkedEmailIds.includes(id) || this.unjunkedEmailIds.includes(id)
-        || this.movedEmailIds.some(moved => moved.id === id && moved.folder === (row.folder || this.currentFolder));
+      const folder = row.folder || this.currentFolder;
+      const removed = entry => entry.id === row.mailRemoteId && entry.folder === folder;
+      return [this.deletedEmailIds, this.archivedEmailIds, this.restoredEmailIds, this.purgedEmailIds,
+        this.junkedEmailIds, this.unjunkedEmailIds, this.movedEmailIds].some(list => list.some(removed));
+    },
+    /**
+     * The {folder, id} entries the optimistic removal lists record, for ids grouped by
+     * the folder they are numbered in.
+     *
+     * @param {Array} groups [folder, ids] pairs (byOwnFolder)
+     * @returns {Array} the entries
+     */
+    removalEntries(groups) {
+      return groups.flatMap(([folder, ids]) => ids.map(id => ({ folder, id })));
     },
     /**
      * Closes the mailbox and forgets everything the next opening must not inherit:
@@ -1893,7 +1899,7 @@ export default {
       const filed = groups.map(([folder, ids]) =>
         this.rememberMovedRows(ids.map(id => ({ ...this.rowOfEmail(id, folder), folder })), target));
       const hidden = target === 'JUNK' ? this.junkedEmailIds : this.deletedEmailIds;
-      hidden.push(...emailIds);
+      hidden.push(...this.removalEntries(groups));
       groups.forEach(([folder, ids], index) =>
         request(ids, folder)
           .then(failures => failures, () => ids.length)
@@ -1949,7 +1955,7 @@ export default {
         return;
       }
       const rows = emailIds.map(id => ({ ...this.rowOfEmail(id, origin), folder: origin }));
-      hidden.push(...emailIds);
+      hidden.push(...this.removalEntries([[origin, emailIds]]));
       request(emailIds)
         .then(({ failures, toSent }) => {
           if (failures === 0) {
@@ -1974,7 +1980,7 @@ export default {
       if (!emailIdsToPurge.length) {
         return;
       }
-      this.purgedEmailIds.push(...emailIdsToPurge);
+      this.purgedEmailIds.push(...this.removalEntries([['TRASH', emailIdsToPurge]]));
       this.$emailConnectorMailBoxService.purgeEmails(emailIdsToPurge)
         .then(purgeResult => this.alertOnActionFailures(purgeResult.failedPurges ?? 0, 'purge'))
         .catch(() => this.alertOnActionFailures(emailIdsToPurge.length, 'purge'));
@@ -2054,7 +2060,7 @@ export default {
     archiveEmails(emailIdsToArchive = [], folder = null) {
       // Group BEFORE hiding the rows — same reason as deleteEmails above.
       const groups = this.byOwnFolder(emailIdsToArchive, folder);
-      this.archivedEmailIds.push(...emailIdsToArchive);
+      this.archivedEmailIds.push(...this.removalEntries(groups));
       groups.forEach(([folder, ids]) =>
         this.$emailConnectorMailBoxService.archiveEmails(ids, folder)
           .then(archiveResult => this.alertOnActionFailures(archiveResult.failedArchives ?? 0, 'archive'))
@@ -2628,9 +2634,10 @@ export default {
      *
      * @param {Array<Number>} emails the IMAP UIDs the action applies to
      * @param {Function} action runs the action
+     * @param {String} folder the folder the ids are numbered in, when the emitter knows it
      * @returns {void}
      */
-    applyListAction(emails, action) {
+    applyListAction(emails, action, folder = null) {
       const listedBefore = this.navigationEmails;
       action();
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
@@ -2641,7 +2648,7 @@ export default {
         this.cancelSelectMode();
       }
       if (!this.pinnedEmail) {
-        this.openNextAfterRemoval(emails, listedBefore);
+        this.openNextAfterRemoval(emails, listedBefore, folder);
       }
     },
   }
