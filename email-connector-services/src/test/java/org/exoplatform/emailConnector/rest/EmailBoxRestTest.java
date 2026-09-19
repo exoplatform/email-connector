@@ -74,7 +74,12 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
+import org.exoplatform.emailConnector.model.ReadReceiptAction;
+import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
+import org.exoplatform.emailConnector.model.ReadReceiptState;
+import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.ScheduledSendStatus;
@@ -130,6 +135,9 @@ public class EmailBoxRestTest {
 
   @MockitoBean
   private EmailScheduledSendService emailScheduledSendService;
+
+  @MockitoBean
+  private ReadReceiptService    readReceiptService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -1023,5 +1031,109 @@ public class EmailBoxRestTest {
     doThrow(new ScheduledSendConflictException(ScheduledSendConflictException.SENDING)).when(emailBoxService)
                                                                                         .deleteDraft("draft-1", SIMPLE_USER);
     mockMvc.perform(delete(EMAIL_BOX_PATH + "/drafts/draft-1").with(testSimpleUser())).andExpect(status().isConflict());
+  }
+
+  /**
+   * The answer to a read-receipt request reaches the service for the authenticated
+   * caller -- never a user named in the request -- and each refusal gets its status:
+   * 204 answered, 404 unknown or not the caller's, 400 not requested / not allowed /
+   * no action, 409 already answered, 401 no usable connector, 500 not sent.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void answeringAReadReceiptRequestMapsEveryOutcome() throws Exception {
+    String path = EMAIL_BOX_PATH + "/12/read-receipt";
+    mockMvc.perform(post(path).with(testSimpleUser())
+                              .content("{\"action\":\"SEND\"}")
+                              .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNoContent());
+    verify(readReceiptService).respond(12L, SIMPLE_USER, ReadReceiptAction.SEND);
+
+    doThrow(new ObjectNotFoundException("gone")).when(readReceiptService).respond(12L, SIMPLE_USER, ReadReceiptAction.IGNORE);
+    expectAnswer(path, "IGNORE").andExpect(status().isNotFound());
+
+    doThrow(new IllegalArgumentException(ReadReceiptService.NOT_REQUESTED)).when(readReceiptService)
+                                                                           .respond(13L, SIMPLE_USER, ReadReceiptAction.SEND);
+    expectAnswer(EMAIL_BOX_PATH + "/13/read-receipt", "SEND").andExpect(status().isBadRequest());
+
+    doThrow(new ReadReceiptConflictException(ReadReceiptConflictException.ALREADY_HANDLED)).when(readReceiptService)
+                                                                                         .respond(14L, SIMPLE_USER, ReadReceiptAction.SEND);
+    expectAnswer(EMAIL_BOX_PATH + "/14/read-receipt", "SEND").andExpect(status().isConflict());
+
+    doThrow(IllegalAccessException.class).when(readReceiptService).respond(15L, SIMPLE_USER, ReadReceiptAction.SEND);
+    expectAnswer(EMAIL_BOX_PATH + "/15/read-receipt", "SEND").andExpect(status().isUnauthorized());
+
+    doThrow(new IllegalStateException(ReadReceiptService.SEND_FAILED)).when(readReceiptService)
+                                                                     .respond(16L, SIMPLE_USER, ReadReceiptAction.SEND);
+    expectAnswer(EMAIL_BOX_PATH + "/16/read-receipt", "SEND").andExpect(status().isInternalServerError());
+
+    doThrow(new IllegalArgumentException(ReadReceiptService.INVALID_ACTION)).when(readReceiptService).respond(17L, SIMPLE_USER, null);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/17/read-receipt").with(testSimpleUser())
+                                                             .content("{}")
+                                                             .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * Every read that feeds the reader is decorated with the prompt for the caller; the
+   * JSON carries readReceiptRequested and readReceiptPrompt and never the stored
+   * answer; and a send's payload brings readReceiptRequested in while a
+   * readReceiptTo it may carry is ignored.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theReaderIsToldWhatToDoAndThePayloadCannotAddressAReceipt() throws Exception {
+    Email email = new Email();
+    email.setId(12L);
+    email.setReadReceiptRequested(true);
+    email.setReadReceiptState(ReadReceiptState.SENT);
+    when(emailBoxService.getOwnedEmailById(12L, SIMPLE_USER)).thenReturn(email);
+    org.mockito.Mockito.doAnswer(invocation -> {
+      ((Email) invocation.getArgument(0)).setReadReceiptPrompt(ReadReceiptPrompt.ASK);
+      return null;
+    }).when(readReceiptService).decorate(any(Email.class), eq(SIMPLE_USER));
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/favorites/12").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.readReceiptRequested").value(true))
+           .andExpect(jsonPath("$.readReceiptPrompt").value("ASK"))
+           .andExpect(jsonPath("$.readReceiptState").doesNotExist());
+
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(34L, SIMPLE_USER, "INBOX", true, true, true, true)).thenReturn(email);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/34").with(testSimpleUser())).andExpect(status().isOk());
+    verify(readReceiptService, org.mockito.Mockito.times(2)).decorate(any(Email.class), eq(SIMPLE_USER));
+    List<Email> thread = List.of(email);
+    when(emailBoxService.getThread("t", SIMPLE_USER, null)).thenReturn(thread);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/t").with(testSimpleUser())).andExpect(status().isOk());
+    verify(readReceiptService).decorate(thread, SIMPLE_USER);
+    when(emailBoxService.completeThread("t", SIMPLE_USER, null)).thenReturn(thread);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/thread/t/complete").with(testSimpleUser())).andExpect(status().isOk());
+    verify(readReceiptService, org.mockito.Mockito.times(2)).decorate(thread, SIMPLE_USER);
+
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser())
+                                                  .content("{\"to\":[{\"address\":\"bob@example.org\"}],\"readReceiptRequested\":true,"
+                                                      + "\"readReceiptTo\":\"eve@tracker.example\",\"readReceiptPrompt\":\"AUTO\"}")
+                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxService).sendEmail(sent.capture(), eq(SIMPLE_USER));
+    org.junit.jupiter.api.Assertions.assertTrue(sent.getValue().isReadReceiptRequested());
+    org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptTo(), "read-only: never from a payload");
+    org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptPrompt());
+  }
+
+  /**
+   * Posts an answer.
+   *
+   * @param path the path
+   * @param action the action
+   * @return the result
+   * @throws Exception when the request cannot be performed
+   */
+  private ResultActions expectAnswer(String path, String action) throws Exception {
+    return mockMvc.perform(post(path).with(testSimpleUser())
+                                     .content("{\"action\":\"" + action + "\"}")
+                                     .contentType(MediaType.APPLICATION_JSON));
   }
 }

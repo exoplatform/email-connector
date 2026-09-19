@@ -27,6 +27,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -41,6 +42,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
@@ -56,8 +58,11 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
+import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
+import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -68,6 +73,9 @@ import lombok.SneakyThrows;
 
 @SpringBootTest(classes = { UserEmailSettingRest.class, PortalAuthenticationManager.class })
 @ContextConfiguration(classes = { WebSecurityConfiguration.class })
+// The platform's REST wire contract (application-common.properties): a primitive absent
+// from a body reads as its default, as the read-receipt preferences rely on.
+@TestPropertySource(properties = "spring.jackson.deserialization.fail-on-null-for-primitives=false")
 @AutoConfigureWebMvc
 @AutoConfigureMockMvc(addFilters = false)
 @ExtendWith(MockitoExtension.class)
@@ -96,6 +104,9 @@ public class UserEmailSettingRestTest {
 
   @MockitoBean
   private EmailSignatureService   emailSignatureService;
+
+  @MockitoBean
+  private ReadReceiptService      readReceiptService;
 
   @Autowired
   private SecurityFilterChain     filterChain;
@@ -228,5 +239,33 @@ public class UserEmailSettingRestTest {
   @SneakyThrows
   private String asJsonString(final Object obj) {
     return OBJECT_MAPPER.writeValueAsString(obj);
+  }
+
+  /**
+   * The read-receipt preferences are read and written for the authenticated caller,
+   * and a refused ALWAYS answers 400 with its code.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void readReceiptPreferences() throws Exception {
+    when(readReceiptService.getSettings(SIMPLE_USER)).thenReturn(new ReadReceiptSettings(true, ReadReceiptPolicy.ASK, true));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/read-receipts").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.requestByDefault").value(true))
+           .andExpect(jsonPath("$.responsePolicy").value("ASK"))
+           .andExpect(jsonPath("$.alwaysAllowed").value(true));
+
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/read-receipts").with(testSimpleUser())
+                                                                   .content("{\"requestByDefault\":false,\"responsePolicy\":\"NEVER\"}")
+                                                                   .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(readReceiptService).saveSettings(SIMPLE_USER, new ReadReceiptSettings(false, ReadReceiptPolicy.NEVER, false));
+
+    when(readReceiptService.saveSettings(eq(SIMPLE_USER), any())).thenThrow(new IllegalArgumentException(ReadReceiptService.NOT_ALLOWED));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/read-receipts").with(testSimpleUser())
+                                                                   .content("{\"responsePolicy\":\"ALWAYS\"}")
+                                                                   .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest());
   }
 }
