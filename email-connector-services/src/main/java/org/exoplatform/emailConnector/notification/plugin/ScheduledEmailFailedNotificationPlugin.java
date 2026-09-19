@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.notification.plugin;
 import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.web.util.HtmlUtils;
 
 import org.exoplatform.commons.api.notification.NotificationContext;
 import org.exoplatform.commons.api.notification.model.ArgumentLiteral;
@@ -100,7 +101,10 @@ public class ScheduledEmailFailedNotificationPlugin extends BaseNotificationPlug
     Locale locale = Locale.of(NotificationPluginUtils.getLanguage(receiver));
     ResourceBundleService bundles = CommonsUtils.getService(ResourceBundleService.class);
     String title = bundles.getSharedString(TITLE_KEY, locale);
-    String shownSubject = StringUtils.isBlank(subject) ? bundles.getSharedString(NO_SUBJECT_KEY, locale) : subject;
+    // Escaped: the sentence is HTML in the mail channel's template, and a subject is
+    // text the user typed.
+    String shownSubject = StringUtils.isBlank(subject) ? bundles.getSharedString(NO_SUBJECT_KEY, locale)
+                                                       : HtmlUtils.htmlEscape(subject);
     String reasonText = StringUtils.defaultIfBlank(bundles.getSharedString(REASON_KEY_PREFIX + reason, locale), reason);
     String content = StringUtils.defaultString(bundles.getSharedString(CONTENT_KEY, locale))
                                 .replace("{0}", shownSubject)
