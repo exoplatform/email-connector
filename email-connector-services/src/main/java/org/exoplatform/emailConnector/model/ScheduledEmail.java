@@ -35,6 +35,10 @@ public class ScheduledEmail {
   // The draft's handle, which every action on the schedule is addressed by.
   private String               draftLocalId;
 
+  // The draft's conversation, so a reader can open the whole mail -- body and
+  // attachments -- through the conversation read that already serves scheduled drafts.
+  private String               threadId;
+
   private List<EmailRecipient> to;
 
   private String               subject;

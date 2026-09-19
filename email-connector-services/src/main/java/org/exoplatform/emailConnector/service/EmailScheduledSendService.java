@@ -827,8 +827,9 @@ public class EmailScheduledSendService {
   }
 
   /**
-   * A scheduled mail as the view lists it: recipients, subject and a one-line snippet
-   * from the draft, date, zone, status and error code from the schedule.
+   * A scheduled mail as the view lists it: recipients, subject, a one-line snippet and
+   * the conversation id from the draft, date, zone, status and error code from the
+   * schedule.
    *
    * @param row the schedule row
    * @param draft its draft, may be null
@@ -842,6 +843,7 @@ public class EmailScheduledSendService {
     scheduled.setStatus(row.getStatus());
     scheduled.setLastError(row.getLastError());
     if (draft != null) {
+      scheduled.setThreadId(draft.getThreadId());
       scheduled.setTo(draft.getTo());
       scheduled.setSubject(draft.getSubject());
       scheduled.setSnippet(snippet(draft.getContent()));
