@@ -120,8 +120,8 @@ extensionRegistry.registerExtension(EXTENSION_TYPE, EXTENSION_NAME, {
 // the editor (see EmailConnectorAttachmentOpenMixin), so a menu entry doing the same
 // would only be a duplicate. Editing means Save in Documents first.
 
-// No AI action here either: this app knows nothing of the AI add-on. The document
-// AI actions (the Documents "files" UX bindings) are contributed onto this extension
-// point by the add-on that owns that coupling, as a vueComponent that stores the
-// attachment through context.storeInMailAttachments() and then runs the binding on
-// the stored document.
+// No AI action here either: this app knows nothing of the AI add-on. "Ask AI" with
+// the document AI actions (the Documents "files" UX bindings) is contributed onto
+// this extension point by the add-on that owns that coupling, as a vueComponent that
+// stores the attachment through context.storeInMailAttachments() and then opens the
+// AI panel on the stored document, as Documents does on a file.
