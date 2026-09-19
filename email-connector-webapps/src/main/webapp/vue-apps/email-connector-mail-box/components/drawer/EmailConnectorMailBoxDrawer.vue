@@ -733,6 +733,7 @@ export default {
       this.showHandedOverEmail(email);
     };
     this.$root.$on('open-email-thread-content', this.onOpenEmailThreadContent);
+    this.$root.$on('scheduled-email-updated', this.onScheduledEmailUpdated);
     // The mail drawer's expand button: the one full-screen layout is this drawer's, so
     // expanding a mail opened over the list hands the mail over and expands HERE, with
     // that mail open -- the mail drawer then closes itself (EXO-90415).
@@ -820,6 +821,7 @@ export default {
     this.$root.$off('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
     this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
+    this.$root.$off('scheduled-email-updated', this.onScheduledEmailUpdated);
     this.$root.$off('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
     FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$off(event, this.onFoldersChanged));
   },
@@ -1555,6 +1557,27 @@ export default {
      * @param {String} folder the folder it is numbered in, when the caller knows it
      * @returns {void}
      */
+    /**
+     * Follows the Scheduled view's mail the full-screen reader shows (EXO-90434): its new
+     * date or state once the view was read again, or the "select an email" placeholder
+     * once it is no longer scheduled -- sent, cancelled, discarded, being edited.
+     *
+     * @param {String} draftLocalId the mail's draft local id
+     * @param {Object} row the reader's row for it now, null when it left the view
+     * @returns {void}
+     */
+    onScheduledEmailUpdated(draftLocalId, row) {
+      if (!this.expanded || !this.email?.scheduledRow || this.email.draftLocalId !== draftLocalId) {
+        return;
+      }
+      if (row) {
+        this.email = row;
+      } else {
+        this.pinnedEmail = false;
+        this.email = null;
+        this.selectEmailPlaceHolder = true;
+      }
+    },
     showHandedOverEmail(email, folder = null) {
       const ownFolder = folder || email.folder || 'INBOX';
       const listed = this.emails.find(e => e.mailRemoteId === email.mailRemoteId && (e.folder || 'INBOX') === ownFolder);

@@ -28,6 +28,21 @@ export const MIN_SCHEDULE_DELAY_MS = 60 * 1000;
 /** The latest a mail may be scheduled, from now: a year, as the server bounds it. */
 export const MAX_SCHEDULE_HORIZON_MS = 365 * 24 * 60 * 60 * 1000;
 
+/**
+ * Each action's icon and label key: the menus of a Scheduled view's row and of the mail
+ * opened from it show the ones the mail's state offers (scheduledActions), in that order.
+ */
+export const SCHEDULED_ACTIONS = {
+  edit: { icon: 'fa-pen', label: 'emailConnector.mailBox.scheduled.action.edit' },
+  reschedule: { icon: 'fa-calendar-alt', label: 'emailConnector.mailBox.scheduled.action.reschedule' },
+  sendNow: { icon: 'fa-paper-plane', label: 'emailConnector.mailBox.scheduled.action.sendNow' },
+  retry: { icon: 'fa-redo', label: 'emailConnector.mailBox.scheduled.action.retry' },
+  sendAgain: { icon: 'fa-redo', label: 'emailConnector.mailBox.scheduled.action.sendAgain' },
+  cancel: { icon: 'fa-ban', label: 'emailConnector.mailBox.scheduled.action.cancel' },
+  moveToDrafts: { icon: 'fa-file-alt', label: 'emailConnector.mailBox.scheduled.action.moveToDrafts' },
+  discard: { icon: 'fa-trash', label: 'emailConnector.mailBox.scheduled.action.discard' },
+};
+
 /** How many scheduled mails the view reads per page. */
 export const SCHEDULED_PAGE_SIZE = 20;
 
@@ -275,4 +290,46 @@ export function scheduledErrorMessage(error, vm, fallbackKey) {
     return vm.$t(code);
   }
   return vm.$t(fallbackKey);
+}
+
+/**
+ * Plain text as HTML text: its markup characters escaped.
+ *
+ * @param {String} text the text, may be null
+ * @returns {String} the HTML
+ */
+function escapeText(text) {
+  return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * The row the reader is opened on for a mail of the Scheduled view: the draft, shown
+ * read-only in its conversation the way a scheduled reply already is (PO decision (a)),
+ * built from what GET /scheduled lists. The conversation is read by its thread id when
+ * the row carries one; without it the reader shows this row alone, as it does for any
+ * message whose conversation reads empty. It keeps the listed row, whose actions the
+ * reader then offers (scheduledRow), and is marked read: nothing about opening it may
+ * be pushed to the mail server as a read status.
+ *
+ * @param {Object} scheduled the scheduled mail, as GET /scheduled lists it
+ * @returns {Object} the draft row the reader opens on
+ */
+export function scheduledReaderRow(scheduled) {
+  return {
+    draftLocalId: scheduled.draftLocalId,
+    threadId: scheduled.threadId || null,
+    folder: 'DRAFTS',
+    subject: scheduled.subject || '',
+    to: scheduled.to || [],
+    // The snippet is plain text, and a body is read as HTML: escaped, so a "<" in it
+    // stays a character.
+    content: { body: scheduled.body || escapeText(scheduled.snippet), attachments: scheduled.attachments || [] },
+    receivedDate: scheduled.scheduledDate,
+    read: true,
+    scheduled: true,
+    scheduledDate: scheduled.scheduledDate,
+    scheduledTimeZone: scheduled.timeZone,
+    scheduledStatus: scheduled.status,
+    scheduledRow: scheduled,
+  };
 }
