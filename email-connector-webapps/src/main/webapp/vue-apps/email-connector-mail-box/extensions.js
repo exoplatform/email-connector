@@ -184,6 +184,18 @@ document.addEventListener('open-email-box-search', event => {
   window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {searchTerm}));
 });
 
+/*
+ * Opens the mailbox on one of its built-in folders or views, from anywhere in the
+ * platform: the web notification of a scheduled mail that was not sent uses it to open
+ * the Scheduled view (EXO-90434).
+ *
+ * detail: {folder} -- the folder key, SCHEDULED for the Scheduled view.
+ */
+document.addEventListener('open-email-box-folder', event => {
+  const folder = event?.detail?.folder;
+  window.require(['SHARED/eXoVueI18n', 'PORTLET/email-connector/EmailConnectorUserSetting'], exoi18n => initConnectorsMailBox(exoi18n, {folder}));
+});
+
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
   const urlParams = new URLSearchParams(window.location.search);
   const shouldOpenEmailBox = urlParams.get('openEmailBox') === 'true';

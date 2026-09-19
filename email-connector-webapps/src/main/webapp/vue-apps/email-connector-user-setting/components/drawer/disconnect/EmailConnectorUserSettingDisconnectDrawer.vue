@@ -27,7 +27,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span>{{ $t('UserSettings.emailConnector.userSetting.switch.disconnect.title', [connectorName]) }}</span>
     </template>
     <template v-if="disconnectDrawer" #content>
+      <!-- Disconnecting cancels the mails scheduled to be sent (EXO-90434): said before
+           the account is released, never learnt afterwards. -->
+      <v-alert
+        v-if="scheduledCount"
+        class="ma-4 mb-0 scheduled-emails-warning"
+        type="warning"
+        dense
+        text>
+        {{ scheduledWarning }}
+      </v-alert>
       <email-connector-contacts-choice-step
+        v-if="contactsCount"
         v-model="contactsChoice"
         :count="contactsCount"
         disconnecting />
@@ -62,7 +73,18 @@ export default {
     connectorName: '',
     contactsChoice: 'keep',
     contactsCount: 0,
+    scheduledCount: 0,
   }),
+  computed: {
+    /**
+     * @returns {String} "N scheduled emails will be cancelled", singular for one
+     */
+    scheduledWarning() {
+      return this.scheduledCount === 1
+        ? this.$t('UserSettings.emailConnector.userSetting.disconnect.scheduled.one')
+        : this.$t('UserSettings.emailConnector.userSetting.disconnect.scheduled.many', { 0: this.scheduledCount });
+    },
+  },
   created() {
     this.$root.$on('open-user-setting-disconnect-drawer', this.open);
   },
@@ -83,14 +105,20 @@ export default {
      */
     open(emailConnector) {
       this.connectorName = emailConnector?.name || '';
-      this.$emailConnectorUserSettingService.getContactsCount()
-        .then(count => {
+      // The mails scheduled to be sent are counted with the contacts (EXO-90434): the
+      // disconnect cancels them, so a mailbox holding some is asked for its say-so too.
+      Promise.all([
+        this.$emailConnectorUserSettingService.getContactsCount(),
+        this.$emailConnectorUserSettingService.getScheduledEmailsCount(),
+      ])
+        .then(([count, scheduledCount]) => {
           this.contactsCount = count;
-          if (count > 0) {
+          this.scheduledCount = scheduledCount || 0;
+          if (count > 0 || this.scheduledCount > 0) {
             this.$refs.userSettingDisconnectDrawer.open();
             return;
           }
-          // Nothing stored means nothing to decide about.
+          // Nothing stored and nothing scheduled means nothing to decide about.
           return this.disconnect();
         })
         // An unreadable count is not a reason to hold the disconnect hostage:
@@ -116,6 +144,7 @@ export default {
       this.loading = false;
       this.contactsChoice = 'keep';
       this.contactsCount = 0;
+      this.scheduledCount = 0;
       this.connectorName = '';
     },
     /**

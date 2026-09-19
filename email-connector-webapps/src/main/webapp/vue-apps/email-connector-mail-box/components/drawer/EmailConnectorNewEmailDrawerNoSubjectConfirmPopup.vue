@@ -18,8 +18,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <exo-confirm-dialog
     ref="noSubjectEmailConfirmDialog"
     :title="$t('emailConnector.mailBox.newEmail.drawer.confirmNoSubject.title')"
-    :message="$t('emailConnector.mailBox.newEmail.drawer.confirmNoSubject.message')"
-    :ok-label="$t('emailConnector.mailBox.newEmail.drawer.confirmNoSubject.button.send')"
+    :message="message || $t('emailConnector.mailBox.newEmail.drawer.confirmNoSubject.message')"
+    :ok-label="okLabel || $t('emailConnector.mailBox.newEmail.drawer.confirmNoSubject.button.send')"
     :cancel-label="$t('emailConnector.mailBox.newEmail.drawer.confirmNoSubject.button.cancel')"
     persistent
     @ok="sendEmail" />
@@ -29,20 +29,46 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 export default {
   data() {
     return {
-      email: null
+      email: null,
+      // What the question says and does when it is asked for something else than a
+      // send -- a schedule (EXO-90434): its wording, and what going on runs.
+      message: null,
+      okLabel: null,
+      onConfirm: null,
     };
   },
   created() {
-    this.$root.$on('open-no-subject-email-confirm-popup', (email) => {
-      this.open(email);
+    this.$root.$on('open-no-subject-email-confirm-popup', (email, options) => {
+      this.open(email, options);
     });
   },
   methods: {
-    open(email) { 
+    /**
+     * Asks whether to go on without a subject.
+     *
+     * @param {Object} email the payload a send hands back on "go on"
+     * @param {Object} options {message, okLabel, onConfirm} for another action than a
+     *        send: its wording, and what to run instead of handing the payload back
+     * @returns {void}
+     */
+    open(email, options) {
       this.email = email;
-      this.$refs.noSubjectEmailConfirmDialog.open(); 
+      this.message = options?.message || null;
+      this.okLabel = options?.okLabel || null;
+      this.onConfirm = options?.onConfirm || null;
+      this.$refs.noSubjectEmailConfirmDialog.open();
     },
-    sendEmail() { 
+    /**
+     * Goes on without a subject: runs the action that asked, or hands the payload back
+     * to the send.
+     *
+     * @returns {void}
+     */
+    sendEmail() {
+      if (this.onConfirm) {
+        this.onConfirm();
+        return;
+      }
       this.$root.$emit('send-email', this.email);
     }
   }

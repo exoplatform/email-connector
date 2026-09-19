@@ -99,6 +99,23 @@ export function deleteUserEmailSetting() {
     }
   });
 }
+
+/**
+ * How many mails the user has scheduled to be sent (EXO-90434): what disconnecting
+ * cancels, and what the disconnect confirmation warns about. An unreadable count is
+ * none, as the contacts count is: the disconnect is never held hostage by it.
+ *
+ * @returns {Promise<Number>} the count
+ */
+export function getScheduledEmailsCount() {
+  return fetch('/email-connector/rest/email-box/scheduled/count', {
+    credentials: 'include',
+    cache: 'no-store',
+  }).then(resp => (resp?.ok ? resp.json() : 0))
+    .then(count => Number(count) || 0)
+    .catch(() => 0);
+}
+
 /**
  * How many contacts this user would be deciding about.
  * <p>
