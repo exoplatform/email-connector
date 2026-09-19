@@ -494,6 +494,50 @@ describe('going somewhere in full screen opens its first mail (EXO-90415)', () =
     expect(fixture.service.getEmailByRemoteId.mock.calls).toEqual([[7, 'SENT', { broadcast: false }]]);
   });
 
+  it('opens nothing of a folder the user already left for another one still loading', async () => {
+    const answers = {};
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    await expand(fixture);
+    fixture.service.getEmailBox.mockImplementation(folder => new Promise(resolve => {
+      answers[folder.toLowerCase()] = rows => resolve({ emails: rows, folders: FOLDERS, emailSyncStatus: 'SUCCESS' });
+    }));
+    fixture.service.getEmailByRemoteId.mockClear();
+
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'SENT');
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'DRAFTS');
+    // SENT's answer lands after DRAFTS was asked for: DRAFTS is still on its way.
+    answers.sent([row(7, 'SENT')]);
+    await flush();
+    expect(fixture.service.getEmailByRemoteId).not.toHaveBeenCalled();
+
+    answers.drafts([row(8, 'DRAFTS')]);
+    await flush();
+    expect(fixture.service.getEmailByRemoteId.mock.calls).toEqual([[8, 'DRAFTS', { broadcast: false }]]);
+  });
+
+  it('still opens a category view\'s first mail while a chip reloads the folder', async () => {
+    let answer;
+    fixture = await mountDrawer({ INBOX: [row(1, 'INBOX', { starred: true }), row(2, 'INBOX', { categoryIds: [12], starred: true })] });
+    await expand(fixture);
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(1);
+    fixture.service.getEmailBox.mockImplementationOnce(() => new Promise(resolve => {
+      answer = () => resolve({ emails: [row(1, 'INBOX', { starred: true }), row(2, 'INBOX', { categoryIds: [12], starred: true })], folders: FOLDERS, emailSyncStatus: 'SUCCESS' });
+    }));
+    const revealThreadRow = jest.spyOn(fixture.wrapper.vm, 'revealThreadRow');
+
+    // The Favorites chip reloads the folder (the favorite subset is the server's).
+    fixture.wrapper.vm.onToggleFavoriteFilter();
+    fixture.wrapper.vm.$root.$emit('open-category-view', 12);
+    await flush();
+    await flush();
+    answer();
+    await flush();
+
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(2);
+    expect(fixture.wrapper.vm.selectEmailPlaceHolder).toBe(false);
+    expect(revealThreadRow).toHaveBeenCalledWith(row(2).threadId);
+  });
+
   it('reads the categories\' subcategories on the first full screen only, never for a narrow drawer', async () => {
     fixture = await mountDrawer({ INBOX: [row(1)] });
     await flush();
