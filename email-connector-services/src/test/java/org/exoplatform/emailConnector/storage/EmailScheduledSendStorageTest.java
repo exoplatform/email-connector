@@ -129,6 +129,8 @@ public class EmailScheduledSendStorageTest {
    * around the call -- as the REST thread does (open-in-view is off): a lazily loaded
    * attachment list would fail there with no session. Committed rows, removed after.
    * And a full pool asks for no due rows without being refused a page of size zero.
+   * HSQLDB only: vendor behaviour of the read (Oracle refuses a DISTINCT over CLOBs, which
+   * is why the query has none) is not something this suite can show.
    */
   @Test
   @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -136,6 +138,7 @@ public class EmailScheduledSendStorageTest {
     EmailBoxEntity scheduled = draft("outside-tx", "zoe");
     try {
       Map<Long, Email> read = emailBoxStorage.getListedEmailsByIds("zoe", List.of(scheduled.getId()));
+      assertEquals(1, read.size());
       assertEquals("<p>at eight</p>", read.get(scheduled.getId()).getContent().getBody());
       assertTrue(storage.findDueToSend(NOW, 0).isEmpty(), "a full pool asks for nothing, and is not refused");
       assertTrue(storage.findDueToCheck(NOW, 0).isEmpty());
