@@ -386,9 +386,10 @@ describe('while a conversation is on its way, the header acts on what is on scre
 });
 
 describe('the detail drawer never reopens a message removed while it loads', () => {
+  // With nothing left to open, the delete leaves the placeholder (EXO-90414 moves the
+  // reader on to the next mail when there is one -- see the test after this one).
   it('drops the answer once a delete switched to the placeholder', async () => {
     const listed = listRow(2, '2026-09-02T10:00:00Z');
-    const other = listRow(3, '2026-09-03T10:00:00Z');
     const answer = deferred();
     const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetail, {
       mocks: {
@@ -399,7 +400,7 @@ describe('the detail drawer never reopens a message removed while it loads', () 
     });
     const vm = wrapper.vm;
     await wrapper.setData({ expanded: true });
-    vm.open(2, [listed, other], false, null);
+    vm.open(2, [listed], false, null);
     vm.$root.$emit('delete-email', [2]);
     expect(vm.selectEmailPlaceHolder).toBe(true);
     expect(vm.loadingEmail).toBe(false);
@@ -407,6 +408,33 @@ describe('the detail drawer never reopens a message removed while it loads', () 
     answer.resolve(full(listed));
     await flush();
     expect(vm.selectEmailPlaceHolder).toBe(true);
+    expect(vm.email?.content?.body).toBeUndefined();
+    wrapper.destroy();
+  });
+
+  it('moves on to the next mail, never back to the one deleted while it loads (EXO-90414)', async () => {
+    const listed = listRow(2, '2026-09-02T10:00:00Z', { threadId: '<t2@host>' });
+    const other = listRow(3, '2026-09-03T10:00:00Z', { threadId: '<t3@host>' });
+    const answer = deferred();
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetail, {
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: serviceStub({
+          getEmailByRemoteId: jest.fn(mailRemoteId => (mailRemoteId === 2 ? answer.promise : new Promise(() => null))),
+        }),
+        $vuetify: { breakpoint: {}, rtl: false },
+      },
+    });
+    const vm = wrapper.vm;
+    await wrapper.setData({ expanded: true });
+    vm.open(2, [other, listed], false, null);
+    vm.$root.$emit('delete-email', [2]);
+    expect(vm.selectEmailPlaceHolder).toBe(false);
+    expect(vm.email).toBe(other);
+
+    answer.resolve(full(listed));
+    await flush();
+    expect(vm.email).toBe(other);
     expect(vm.email?.content?.body).toBeUndefined();
     wrapper.destroy();
   });
