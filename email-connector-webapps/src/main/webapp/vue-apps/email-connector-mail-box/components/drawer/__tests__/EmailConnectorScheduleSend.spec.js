@@ -309,6 +309,16 @@ describe('scheduling runs Send\'s checks, then stores the draft and freezes it (
     expect(service.scheduleDraft.mock.calls[0][0]).toBe('draft-9');
   });
 
+  it('never sends beside a schedule in flight: Send waits, and a send asked meanwhile does nothing', async () => {
+    const { wrapper, service } = await mountComposer();
+    await wrapper.setData({ scheduling: true });
+    expect(wrapper.find('.composer-send-button').attributes('disabled')).toBe('disabled');
+    wrapper.vm.sendEmail();
+    expect(service.sendEmail).not.toHaveBeenCalled();
+    expect(service.sendDraft).not.toHaveBeenCalled();
+    expect(wrapper.vm.loading).toBe(false);
+  });
+
   it('says a refusal in the user\'s words and keeps the composer open', async () => {
     const refusedWith = code => jest.fn(() => {
       const error = new Error(code);

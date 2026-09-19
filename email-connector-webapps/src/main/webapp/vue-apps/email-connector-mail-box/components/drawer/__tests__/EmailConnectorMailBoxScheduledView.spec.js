@@ -364,6 +364,44 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
     expect(full.wrapper.vm.hasMore).toBe(false);
   });
 
+  it('re-reads whole pages, so "Show more" never lists a mail twice (the server pages by offset / limit)', async () => {
+    // The server's paging: page offset / limit of size limit, over its current rows.
+    let rows = Array.from({ length: 45 }, (value, index) => scheduledRow(`d${index}`));
+    const serve = jest.fn((offset, limit) => {
+      const page = Math.floor(offset / limit);
+      return Promise.resolve(rows.slice(page * limit, page * limit + limit));
+    });
+    const { wrapper } = await mountList({ getScheduledEmails: serve });
+    await wrapper.vm.loadMore();
+    await wrapper.vm.loadMore();
+    expect(wrapper.vm.items.length).toBe(45);
+    expect(wrapper.vm.hasMore).toBe(false);
+
+    // One cancelled here, two scheduled elsewhere: 46 rows now.
+    rows = [...rows.slice(1), scheduledRow('new1'), scheduledRow('new2')];
+    await wrapper.vm.reload();
+    expect(serve).toHaveBeenLastCalledWith(0, 60);
+    expect(wrapper.vm.items.length).toBe(46);
+    expect(wrapper.vm.hasMore).toBe(false);
+
+    // A reload of a length past the server's largest page asks for that page at most.
+    rows = Array.from({ length: 130 }, (value, index) => scheduledRow(`e${index}`));
+    await wrapper.setData({ items: rows.slice(0, 101) });
+    await wrapper.vm.reload();
+    expect(serve).toHaveBeenLastCalledWith(0, 100);
+    expect(wrapper.vm.hasMore).toBe(true);
+    await wrapper.vm.loadMore();
+    const ids = wrapper.vm.items.map(item => item.draftLocalId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.length).toBe(120);
+  });
+
+  it('drops a mail already listed when a page brings it again', async () => {
+    const { wrapper } = await mountList({ getScheduledEmails: jest.fn(offset => Promise.resolve(offset ? [scheduledRow('d2'), scheduledRow('d3')] : [scheduledRow('d1'), scheduledRow('d2')])) });
+    await wrapper.vm.loadMore();
+    expect(wrapper.vm.items.map(item => item.draftLocalId)).toEqual(['d1', 'd2', 'd3']);
+  });
+
   it('re-reads itself when the server\'s count moves, or a schedule changed elsewhere', async () => {
     const { wrapper, service } = await mountList();
     await wrapper.setProps({ signal: '1|true' });
@@ -425,6 +463,14 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
     });
     await wrapper.vm.sendNow(scheduledRow('d2'));
     expect(alerts(emitted)[1]).toEqual(['emailConnector.mailBox.scheduled.notSent|emailConnector.mailBox.scheduled.error.TOO_LARGE', 'error']);
+  });
+
+  it('says a mail sent now that could not reach the mail server will be retried by itself', async () => {
+    const { wrapper, emitted } = await mountList({
+      sendScheduledEmailNow: jest.fn(() => Promise.resolve(scheduledRow('d1', { status: 'SCHEDULED', lastError: 'NETWORK' }))),
+    });
+    await wrapper.vm.sendNow(scheduledRow('d1'));
+    expect(alerts(emitted)[1]).toEqual(['emailConnector.mailBox.scheduled.sendNow.retryLater', 'warning']);
   });
 
   it('warns that sending an uncertain mail again may deliver it twice', async () => {
@@ -616,11 +662,12 @@ describe('every code the backend answers with is said in the user\'s words (EXO-
       'emailConnector.scheduled.date.tooSoon', 'emailConnector.scheduled.date.tooFar', 'emailConnector.scheduled.timeZone.invalid',
       'emailConnector.scheduled.limitReached', 'emailConnector.scheduled.recipientsMandatory',
       'emailConnector.scheduled.attachmentsNotStored', 'emailConnector.scheduled.serverCopyRemains',
-      'emailConnector.drafts.send.attachmentGone'];
+      'emailConnector.drafts.send.attachmentGone', 'emailConnector.drafts.send.gone'];
     const reasons = [...emailConnectorMailBoxService.NOT_SENT_REASONS, 'unknown'].map(reason => `emailConnector.mailBox.scheduled.error.${reason}`);
     const states = ['SCHEDULED', 'SENDING', 'FAILED', 'UNCERTAIN'].map(status => emailConnectorMailBoxService.scheduledStateLine({ status }))
       .filter(Boolean).map(line => line.key);
     const missing = [...codes, ...reasons, ...states, 'emailConnector.mailBox.list.drawer.folder.scheduled',
+      'emailConnector.mailBox.scheduled.sendNow.retryLater', 'emailConnector.mailBox.list.drawer.thread.draft.notSent',
       'emailConnector.mailBox.list.drawer.folder.custom.serverScheduled'].filter(key => !keys.has(key));
     expect(missing).toEqual([]);
   });
