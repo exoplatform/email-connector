@@ -281,6 +281,16 @@ export default {
     threadIds() {
       return this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread);
     },
+    /**
+     * The folder the menu acts in -- the row's own, the one threadIds is scoped to --
+     * sent along with the ids: in a list of search results the rows come from several
+     * folders, where the same numbers are other messages (EXO-90416).
+     *
+     * @returns {String} the folder key
+     */
+    actingFolder() {
+      return this.email?.folder || 'INBOX';
+    },
     // A thread reads as read only when none of its messages is unread.
     threadRead() {
       return this.thread ? this.thread.unreadCount === 0 : this.email.read;
@@ -357,7 +367,7 @@ export default {
     },
     updateEmailReadStatus() {
       this.$emit('close');
-      this.$root.$emit('update-email-read-status', !this.threadRead, this.threadIds);
+      this.$root.$emit('update-email-read-status', !this.threadRead, this.threadIds, this.actingFolder);
     },
     updateEmailFavoriteStatus() {
       this.$emit('close');
@@ -365,11 +375,11 @@ export default {
     },
     deleteEmail() {
       this.$emit('close');
-      this.$root.$emit('delete-email', this.threadIds);
+      this.$root.$emit('delete-email', this.threadIds, this.actingFolder);
     },
     archiveEmail() {
       this.$emit('close');
-      this.$root.$emit('archive-email', this.threadIds);
+      this.$root.$emit('archive-email', this.threadIds, this.actingFolder);
     },
     /**
      * Reports the row (or the whole thread it stands for) as spam. No confirmation:
@@ -379,7 +389,7 @@ export default {
      */
     markAsJunk() {
       this.$emit('close');
-      this.$root.$emit('junk-email', this.threadIds);
+      this.$root.$emit('junk-email', this.threadIds, this.actingFolder);
     },
     /**
      * Opens the folder picker for the row (or the whole thread it stands for).
