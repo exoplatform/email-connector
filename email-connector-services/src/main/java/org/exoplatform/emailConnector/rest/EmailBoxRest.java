@@ -36,6 +36,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -57,7 +58,11 @@ import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
+import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
+import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.rest.model.ScheduleRequest;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -71,8 +76,14 @@ import jakarta.servlet.http.HttpServletRequest;
 @Tag(name = "/email-connector/rest/email-box", description = "Manages Email Box")
 public class EmailBoxRest {
 
+  // The largest page of the "Scheduled" view: the per-user limit's default.
+  private static final int          MAX_SCHEDULED_PAGE = 100;
+
   @Autowired
-  private EmailBoxService emailBoxService;
+  private EmailBoxService           emailBoxService;
+
+  @Autowired
+  private EmailScheduledSendService emailScheduledSendService;
 
   @GetMapping()
   @Secured("users")
@@ -1083,7 +1094,8 @@ public class EmailBoxRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
-      @ApiResponse(responseCode = "404", description = "No draft under that local id (it has been sent or discarded)"), })
+      @ApiResponse(responseCode = "404", description = "No draft under that local id (it has been sent or discarded)"),
+      @ApiResponse(responseCode = "409", description = "The draft is scheduled to be sent, and locked (emailConnector.scheduled.locked)"), })
   public Email saveDraft(HttpServletRequest request,
                          @Parameter(description = "The composed draft", required = true)
                          @RequestBody
@@ -1103,6 +1115,8 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       return saved;
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -1118,6 +1132,7 @@ public class EmailBoxRest {
       @ApiResponse(responseCode = "400", description = "No local id, or a send of this draft is already in flight"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "No draft under that local id"),
+      @ApiResponse(responseCode = "409", description = "The draft is scheduled; it is sent through its schedule (emailConnector.scheduled.locked)"),
       @ApiResponse(responseCode = "500", description = "The mail server refused the message"), })
   public void sendDraft(HttpServletRequest request,
                         @Parameter(description = "The draft's local id", required = true)
@@ -1134,6 +1149,8 @@ public class EmailBoxRest {
       // answers to one question, and the addressable one wins.
       draft.setDraftLocalId(draftLocalId);
       emailBoxService.sendDraft(draft, request.getRemoteUser());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (ObjectNotFoundException e) {
@@ -1152,6 +1169,7 @@ public class EmailBoxRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
       @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "The draft is scheduled and being sent (emailConnector.scheduled.sending)"),
       @ApiResponse(responseCode = "500", description = "The copy on the mail server could not be removed"), })
   public ResponseEntity<String> deleteDraft(HttpServletRequest request,
                                             @Parameter(description = "The draft's local id", required = true)
@@ -1162,10 +1180,211 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       return ResponseEntity.ok().build();
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * Schedules a draft to be sent at a date (EXO-90434).
+   *
+   * @param request the caller, the only owner a draft is looked up for
+   * @param draftLocalId the draft's local id
+   * @param scheduleRequest the draft as the composer shows it, the instant and its zone
+   * @return the scheduled mail
+   */
+  @PostMapping("/drafts/{draftLocalId}/schedule")
+  @Secured("users")
+  @Operation(summary = "Schedules a draft to be sent at a date", method = "POST",
+             description = "Saves the text the composer shows onto the draft, then freezes it: the draft is removed from the mail server's Drafts folder (so no other client can send it), locked against edits, listed under Scheduled instead of Drafts, and sent as the caller at scheduledDate (epoch milliseconds, UTC), by whichever node gets to it first and only once. timeZone is the zone the date was chosen in, for display. The date must be at least one minute and at most one year ahead of the server's clock. Answers 400 with a message code (emailConnector.scheduled.date.tooSoon, .date.tooFar, .timeZone.invalid, .limitReached, .recipientsMandatory, emailConnector.drafts.send.attachmentGone), 404 for a draft the caller does not have, 409 when it is already scheduled or being sent, 500 when its copy on the mail server could not be removed (emailConnector.scheduled.serverCopyRemains; nothing is scheduled then).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Already scheduled, or being sent"),
+      @ApiResponse(responseCode = "500", description = "The draft's copy on the mail server could not be removed"), })
+  public ScheduledEmail scheduleDraft(HttpServletRequest request,
+                                      @Parameter(description = "The draft's local id", required = true)
+                                      @PathVariable("draftLocalId")
+                                      String draftLocalId,
+                                      @Parameter(description = "The draft, the instant (epoch ms) and its time zone", required = true)
+                                      @RequestBody
+                                      ScheduleRequest scheduleRequest) {
+    if (scheduleRequest == null || scheduleRequest.getDraft() == null || scheduleRequest.getScheduledDate() == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+    }
+    try {
+      // The path names the draft, as it does for the send: a body claiming another id
+      // would be two answers to one question.
+      scheduleRequest.getDraft().setDraftLocalId(draftLocalId);
+      return emailScheduledSendService.schedule(scheduleRequest.getDraft(),
+                                                scheduleRequest.getScheduledDate(),
+                                                scheduleRequest.getTimeZone(),
+                                                request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
+  /**
+   * The caller's scheduled mails, soonest first (EXO-90434).
+   *
+   * @param request the caller
+   * @param offset the first row, a multiple of limit
+   * @param limit the page size, 1 to 100
+   * @return the page
+   */
+  @GetMapping("/scheduled")
+  @Secured("users")
+  @Operation(summary = "Lists the caller's scheduled mails", method = "GET",
+             description = "The caller's mails scheduled to be sent, soonest first: recipients, subject, a one-line snippet, the instant (epoch ms), the zone it was chosen in, the status (SCHEDULED, SENDING, FAILED, UNCERTAIN) and, when not sent, the reason code. A mail that was sent is no longer listed: it is in Sent.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public List<ScheduledEmail> getScheduledEmails(HttpServletRequest request,
+                                                 @Parameter(description = "The first row, a multiple of limit")
+                                                 @RequestParam(value = "offset", required = false, defaultValue = "0")
+                                                 int offset,
+                                                 @Parameter(description = "The page size, 1 to 100")
+                                                 @RequestParam(value = "limit", required = false, defaultValue = "20")
+                                                 int limit) {
+    try {
+      return emailScheduledSendService.getScheduledEmails(request.getRemoteUser(),
+                                                          Math.max(0, offset),
+                                                          Math.max(1, Math.min(limit, MAX_SCHEDULED_PAGE)));
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
+  /**
+   * How many mails the caller has scheduled: what the disconnect confirmation warns will
+   * be cancelled (EXO-90434).
+   *
+   * @param request the caller
+   * @return the count
+   */
+  @GetMapping("/scheduled/count")
+  @Secured("users")
+  @Operation(summary = "Counts the caller's scheduled mails", method = "GET",
+             description = "How many mails the caller has scheduled and not yet sent. Disconnecting the mailbox cancels them all.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"), })
+  public long countScheduledEmails(HttpServletRequest request) {
+    return emailScheduledSendService.countScheduledEmails(request.getRemoteUser());
+  }
+
+  /**
+   * Gives a scheduled (or failed) mail a new date (EXO-90434).
+   *
+   * @param request the caller
+   * @param draftLocalId the draft's local id
+   * @param scheduleRequest the new instant and its zone
+   * @return the scheduled mail
+   */
+  @PutMapping("/scheduled/{draftLocalId}")
+  @Secured("users")
+  @Operation(summary = "Reschedules a scheduled mail", method = "PUT",
+             description = "Gives a scheduled mail, or one that failed, a new date (epoch ms) and zone, with the same bounds as scheduling. Answers 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending) or its sending could not be confirmed (emailConnector.scheduled.uncertain).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Being sent, sent, or uncertain"), })
+  public ScheduledEmail rescheduleEmail(HttpServletRequest request,
+                                        @Parameter(description = "The draft's local id", required = true)
+                                        @PathVariable("draftLocalId")
+                                        String draftLocalId,
+                                        @Parameter(description = "The instant (epoch ms) and its time zone", required = true)
+                                        @RequestBody
+                                        ScheduleRequest scheduleRequest) {
+    if (scheduleRequest == null || scheduleRequest.getScheduledDate() == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+    }
+    try {
+      return emailScheduledSendService.reschedule(draftLocalId,
+                                                  scheduleRequest.getScheduledDate(),
+                                                  scheduleRequest.getTimeZone(),
+                                                  request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Cancels a schedule: the mail goes back to Drafts, content kept (EXO-90434).
+   *
+   * @param request the caller
+   * @param draftLocalId the draft's local id
+   * @return no content
+   */
+  @DeleteMapping("/scheduled/{draftLocalId}")
+  @Secured("users")
+  @Operation(summary = "Cancels a scheduled mail", method = "DELETE",
+             description = "Removes the schedule: the mail goes back to Drafts with its content, attachments and threading, as a draft that lives only here until its next save pushes it to the mail server again. Answers 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Cancelled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Being sent, or sent"), })
+  public ResponseEntity<Void> cancelScheduledEmail(HttpServletRequest request,
+                                                   @Parameter(description = "The draft's local id", required = true)
+                                                   @PathVariable("draftLocalId")
+                                                   String draftLocalId) {
+    try {
+      emailScheduledSendService.cancel(draftLocalId, request.getRemoteUser());
+      return ResponseEntity.noContent().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    }
+  }
+
+  /**
+   * Sends a scheduled mail now, or retries a failed or uncertain one (EXO-90434).
+   *
+   * @param request the caller
+   * @param draftLocalId the draft's local id
+   * @return the mail as it now stands: SENT when it went out
+   */
+  @PostMapping("/scheduled/{draftLocalId}/send")
+  @Secured("users")
+  @Operation(summary = "Sends a scheduled mail now", method = "POST",
+             description = "Sends a scheduled mail at once, or retries one that failed or whose sending could not be confirmed (the caller decides: a retry of an uncertain mail may deliver it twice). It takes the same claim as the dispatcher, so of the two racing only one sends. Answers the mail as it now stands -- status SENT when it went out, else its status and reason code -- 404 for a mail the caller has not scheduled, 409 when it is being sent or sent (emailConnector.scheduled.sending).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Being sent, or sent"), })
+  public ScheduledEmail sendScheduledEmailNow(HttpServletRequest request,
+                                              @Parameter(description = "The draft's local id", required = true)
+                                              @PathVariable("draftLocalId")
+                                              String draftLocalId) {
+    try {
+      return emailScheduledSendService.sendNow(draftLocalId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     }
   }
 
@@ -1189,6 +1408,8 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       return draft;
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -1226,6 +1447,8 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       return forwarded;
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -1255,6 +1478,8 @@ public class EmailBoxRest {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
       return draft;
+    } catch (ScheduledSendConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
