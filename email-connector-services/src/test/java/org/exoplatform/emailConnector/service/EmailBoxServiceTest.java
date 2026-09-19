@@ -1007,21 +1007,24 @@ public class EmailBoxServiceTest {
 
   @Test
   @SneakyThrows
-  void aDeleteTheServerNeverTookIsCountedAndPutsTheRowBack() {
-    // The silent half. The row was listed and the server has nothing at that number —
-    // exactly what a Sent uid looked like against the inbox before the fix. It must not
-    // read as a success: the count is what the endpoint answers and what the interface
-    // tells the user, and the row goes back so the message stays visible.
+  void aDeleteOfAMessageTheServerNoLongerHoldsDropsItsRowRatherThanPuttingItBack() {
+    // EXO-90437: the row was listed and the server has nothing at that number — the
+    // message was removed or renumbered elsewhere. Putting the row back (the old
+    // behaviour) made it undeletable for good: every later delete failed the same way,
+    // which is what a user reports as "this mail cannot be deleted". The delete is the
+    // outcome they asked for, so it counts as done, the stale row goes, and the folder
+    // is re-read in case the message still exists under another number.
     IMAPFolder sent = givenASubscribedSentFolder();
     givenACachedRow(MailFolder.SENT, 1212L, "<sent@host>");
     when(sent.getMessageByUID(1212L)).thenReturn(null);
 
     int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
 
-    assertEquals(1, failed);
+    assertEquals(0, failed);
     verify(sent, never()).copyMessages(any(), any());
-    verify(emailBoxStorage).createEmail(argThat(email -> email.getId() == null && MailFolder.SENT.equals(email.getFolder())));
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
   }
+
 
   @Test
   @SneakyThrows
@@ -1039,6 +1042,49 @@ public class EmailBoxServiceTest {
     verify(sent, never()).copyMessages(any(), any());
     verify(stranger, never()).setFlag(Flags.Flag.DELETED, true);
     verify(emailBoxStorage).createEmail(any(Email.class));
+  }
+
+  /**
+   * EXO-90437: the row keeps the ENVELOPE's spelling of the Message-ID, which drops the
+   * square brackets of a domain literal, while the identity check reads the raw header,
+   * which keeps them. The same message must be recognised, or it can never be deleted.
+   */
+  @Test
+  @SneakyThrows
+  void aDeleteRecognisesTheSameMessageWhenTheEnvelopeDropsTheDomainLiteralBrackets() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message mine = givenAMessageInFolderAt(sent, 1212L, "<1525267343.1.1789851293801@[192.168.0.248]>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<1525267343.1.1789851293801@192.168.0.248>");
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * The normalization only undoes spellings of one id: brackets, angle brackets, the
+   * domain's case. A different local part, or a different domain, is still refused.
+   */
+  @Test
+  void messageIdsCompareAcrossSpellingsButNotAcrossMessages() {
+    assertTrue(EmailBoxService.sameMessageId("<a.1@[10.0.0.1]>", "<a.1@10.0.0.1>"));
+    assertTrue(EmailBoxService.sameMessageId(" <a.1@Host.Example> ", "<a.1@host.example>"));
+    assertTrue(EmailBoxService.sameMessageId("a.1@host", "<a.1@host>"));
+    assertFalse(EmailBoxService.sameMessageId("<A.1@host>", "<a.1@host>"));
+    assertFalse(EmailBoxService.sameMessageId("<a.1@[10.0.0.1]>", "<a.1@10.0.0.2>"));
+    assertFalse(EmailBoxService.sameMessageId(null, "<a.1@host>"));
+  }
+
+  /**
+   * The undo-move search looks a domain-literal id up by its local part, which every
+   * spelling of the raw header contains; a plain domain is searched as it is.
+   */
+  @Test
+  void aDomainLiteralIdIsSearchedByItsLocalPart() {
+    assertEquals("a.1@", EmailBoxService.messageIdSearchKey("<a.1@192.168.0.248>"));
+    assertEquals("a.1@", EmailBoxService.messageIdSearchKey("<a.1@[192.168.0.248]>"));
+    assertEquals("<a.1@host.example>", EmailBoxService.messageIdSearchKey("<a.1@host.example>"));
   }
 
   @Test
@@ -4029,13 +4075,16 @@ public class EmailBoxServiceTest {
    */
   @Test
   @SneakyThrows
-  void aConversationWhoseSentCopyIsGoneCountsThatCopyAsFailed() {
+  void aConversationWhoseSentCopyIsGoneStillDeletesTheHalfThatIsThere() {
+    // EXO-90437: the Sent copy is no longer on the server, so deleting it is the state
+    // the user asked for. It is not counted as a failure and its row is not put back --
+    // a row whose message is gone could never be deleted again.
     ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
     when(fixture.sent().getMessageByUID(77L)).thenReturn(null);
 
     int failed = emailBoxService.deleteConversations(List.of(1212L), TEST_USER, MailFolder.INBOX);
 
-    assertEquals(1, failed);
+    assertEquals(0, failed);
     verify(fixture.inbox()).copyMessages(new Message[] { fixture.received() }, fixture.trash());
   }
 
@@ -4065,13 +4114,16 @@ public class EmailBoxServiceTest {
   @Test
   @SneakyThrows
   void aDeleteThatMovedNothingQueuesNoRefresh() {
+    // Nothing reached the Trash, so the Trash has nothing new to list. The message was
+    // already gone from the inbox, so the delete counts as done (EXO-90437) -- what this
+    // pins is the absence of the re-read, not the count.
     ScheduledExecutorService scheduler = mockFolderRefreshScheduler();
     ConversationFixture fixture = givenAConversationAcrossInboxAndSent();
     when(fixture.inbox().getMessageByUID(1212L)).thenReturn(null);
 
     int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.INBOX);
 
-    assertEquals(1, failed);
+    assertEquals(0, failed);
     verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
     assertTrue(pendingFolderRefreshes().isEmpty());
   }
