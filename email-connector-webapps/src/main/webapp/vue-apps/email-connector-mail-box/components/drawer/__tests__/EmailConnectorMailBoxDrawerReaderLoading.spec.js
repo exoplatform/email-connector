@@ -462,3 +462,45 @@ describe('a message whose full copy could not be read', () => {
     wrapper.destroy();
   });
 });
+
+describe('the expanded detail drawer, opening an unread message', () => {
+  it('stays on the message when the conversation is marked read before the message answers', async () => {
+    const opened = listRow(1, '2026-09-01T10:00:00Z', { threadId: '<first@host>' });
+    const unread = listRow(2, '2026-09-02T10:00:00Z', { read: false, threadId: null });
+    const answers = { 1: Promise.resolve(full(opened)), 2: deferred() };
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetail, {
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: serviceStub({
+          getEmailByRemoteId: jest.fn(uid => (uid === 2 ? answers[2].promise : answers[1])),
+          getThreadByThreadId: jest.fn(() => Promise.resolve([full(opened)])),
+          completeThreadByThreadId: jest.fn(() => deferred().promise),
+        }),
+        $vuetify: { breakpoint: {}, rtl: false },
+      },
+      stubs: {
+        'exo-drawer': { template: '<div><slot name="content" /></div>' },
+        'email-connector-mail-box-drawer-thread-content': EmailConnectorMailBoxDrawerThreadContent,
+      },
+    });
+    const vm = wrapper.vm;
+    vm.open(1, [opened, unread], false, null);
+    await flush();
+    await wrapper.setData({ expanded: true });
+
+    // The wide layout's click on the unread row: the reader lands (no conversation id,
+    // so at once) and marks it read before the message's own answer.
+    vm.openEmailDetailContent(2);
+    await flush();
+    const reader = wrapper.findComponent(EmailConnectorMailBoxDrawerThreadContent).vm;
+    expect(vm.selectEmailPlaceHolder).toBe(false);
+    expect(vm.loadingEmail).toBe(true);
+
+    answers[2].resolve(full(unread));
+    await flush();
+    expect(vm.selectEmailPlaceHolder).toBe(false);
+    expect(vm.email.content.body).toBe('<p>body 2</p>');
+    expect(wrapper.findComponent(EmailConnectorMailBoxDrawerThreadContent).vm).toBe(reader);
+    wrapper.destroy();
+  });
+});
