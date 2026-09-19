@@ -61,11 +61,13 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.lang.ref.WeakReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import javax.activation.DataHandler;
 import javax.activation.DataSource;
 import javax.activation.FileDataSource;
 import javax.mail.Address;
+import javax.mail.AuthenticationFailedException;
 import javax.mail.Authenticator;
 import javax.mail.BodyPart;
 import javax.mail.FetchProfile;
@@ -76,10 +78,12 @@ import javax.mail.MessageRemovedException;
 import javax.mail.MessagingException;
 import javax.mail.Multipart;
 import javax.mail.Part;
+import javax.mail.SendFailedException;
 import javax.mail.Session;
 import javax.mail.Store;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
+import javax.mail.internet.AddressException;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
@@ -101,7 +105,9 @@ import javax.mail.search.SubjectTerm;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -130,6 +136,8 @@ import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
+import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
+import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
 import org.exoplatform.emailConnector.entity.EmailThreadAiSummaryEntity;
 import org.exoplatform.emailConnector.model.DiscoveredFolder;
@@ -153,7 +161,10 @@ import org.exoplatform.emailConnector.model.EmailSearchResult;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
 import org.exoplatform.emailConnector.model.EmailSearchResultPage;
 import org.exoplatform.emailConnector.model.EmailSender;
+import org.exoplatform.emailConnector.model.EmailScheduledSend;
 import org.exoplatform.emailConnector.model.EmailSyncState;
+import org.exoplatform.emailConnector.model.ScheduledSendError;
+import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.SyncStatus;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
@@ -164,6 +175,7 @@ import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationP
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.emailConnector.utils.EmailContactUtils;
@@ -719,6 +731,22 @@ public class EmailBoxService {
   // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email (SMTP-friendly, 25 MB).
   private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = 25L * 1024 * 1024;
 
+  // The message code the size cap is refused with, which a scheduled send maps to its own
+  // error code rather than letting it read as an internal failure.
+  // The message code a draft whose files cannot all be carried is refused with.
+  private static final String     ATTACHMENT_GONE_CODE                                        =
+                                                       "emailConnector.drafts.send.attachmentGone";
+
+  private static final String     MAX_SIZE_ERROR_CODE                                         =
+                                                      "emailConnector.mailBox.newEmail.attach.maxSize.error";
+
+  // The socket bounds of a scheduled send's SMTP session: a minute to connect, five
+  // minutes per read or write. Both far inside the stuck timeout after which a claim is
+  // declared interrupted (30 minutes by default), so a live send always ends first.
+  static final int                SCHEDULED_SMTP_CONNECT_TIMEOUT_MS                           = 60_000;
+
+  static final int                SCHEDULED_SMTP_IO_TIMEOUT_MS                                = 300_000;
+
   // What an attachment is called and what it is declared as when the message it came
   // from says neither. Both are load-bearing rather than cosmetic: a row with a blank
   // name is not written at all (the entity mapper answers null for one), and a part
@@ -880,6 +908,17 @@ public class EmailBoxService {
   // later consumer) learns who the user writes to without this class knowing about it.
   @Autowired
   private ApplicationEventPublisher eventPublisher;
+
+  // The schedule of a draft (EXO-90434): read here to lock a scheduled draft against
+  // edits and to count the "Scheduled" view. Writes and the send logic belong to
+  // EmailScheduledSendService, which calls this service, never the other way round.
+  @Autowired
+  private EmailScheduledSendStorage emailScheduledSendStorage;
+
+  // The two-step transmission a scheduled send needs to tell "never reached the
+  // server" from "may have been accepted".
+  @Autowired
+  private SmtpTransmitter           smtpTransmitter;
 
   /**
    * Stops the notification scheduler with the Spring context. The thread is a daemon, so a
@@ -3268,8 +3307,16 @@ public class EmailBoxService {
       // the routine sync from checking every folder every period.
       refreshCustomFolderIfStale(username, userEmailSetting, emailFolderService.getFolderByKey(username, folder));
     }
-    List<Email> emails = starredOnly ? emailBoxStorage.getStarredEmails(username, folder)
-                                     : emailBoxStorage.getEmails(username, folder);
+    List<Email> emails;
+    if (starredOnly) {
+      emails = emailBoxStorage.getStarredEmails(username, folder);
+    } else if (MailFolder.DRAFTS.equals(folder)) {
+      // The Drafts folder leaves out the drafts scheduled to be sent: the "Scheduled"
+      // view lists them, and they may not be edited while they wait.
+      emails = emailBoxStorage.getUnscheduledDrafts(username);
+    } else {
+      emails = emailBoxStorage.getEmails(username, folder);
+    }
     Map<String, Integer> folderCounts = emailBoxStorage.getFolderMessageCounts(username);
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
@@ -4467,6 +4514,10 @@ public class EmailBoxService {
         || folderCounts.getOrDefault(MailFolder.DRAFTS, 0) > 0) {
       views.add(builtInView(MailFolder.DRAFTS, folderCounts));
     }
+    MailFolderView scheduledView = scheduledView(username);
+    if (scheduledView != null) {
+      views.add(scheduledView);
+    }
     if ((isJunkSyncEnabled() && StringUtils.isNotBlank(syncState.getJunkFolderName()))
         || folderCounts.getOrDefault(MailFolder.JUNK, 0) > 0) {
       views.add(builtInView(MailFolder.JUNK, folderCounts));
@@ -4481,6 +4532,29 @@ public class EmailBoxService {
       }
     }
     return views;
+  }
+
+  /**
+   * The "Scheduled" view, right after Drafts, only when the owner has mail waiting to be
+   * sent at a date: its count, and whether one of them needs attention (a failure, or a
+   * send that could not be confirmed). Counted from the schedule table, never from the
+   * mail cache: a scheduled mail is a draft row, and the Drafts count leaves it out.
+   *
+   * @param username the mailbox owner
+   * @return the view, or null when nothing is scheduled
+   */
+  private MailFolderView scheduledView(String username) {
+    long[] counts = emailScheduledSendStorage.countListedAndAttention(username);
+    if (counts == null || counts.length < 2 || counts[0] <= 0) {
+      return null;
+    }
+    MailFolderView view = new MailFolderView();
+    view.setKey(MailFolder.SCHEDULED);
+    view.setType(MailFolderView.TYPE_BUILT_IN);
+    view.setSyncEnabled(true);
+    view.setCount((int) counts[0]);
+    view.setAttention(counts[1] > 0);
+    return view;
   }
 
   /**
@@ -4519,7 +4593,8 @@ public class EmailBoxService {
                               customFolder.isMissing(),
                               folderCounts.getOrDefault(customFolder.getKey(), 0),
                               customFolder.getLastSyncDate(),
-                              emailFolderService.getWindowSize());
+                              emailFolderService.getWindowSize(),
+                              false);
   }
 
   /**
@@ -6750,7 +6825,35 @@ public class EmailBoxService {
    */
   private Session smtpSession(EmailConnector emailConnector,
                               String username) throws ConnectorCredentialsException {
+    return smtpSession(emailConnector, username, false);
+  }
+
+  /**
+   * The SMTP session a send runs on, optionally with bounded socket timeouts.
+   * <p>
+   * A scheduled send asks for the bounds, and needs them: JavaMail's own default is to
+   * wait forever, and a send that can hang forever holds its claim forever -- past the
+   * stuck timeout after which any node declares the send interrupted (see
+   * {@code EmailScheduledSendService}). With the bounds, a live send always ends, one
+   * way or another, well inside that timeout. The interactive send keeps the
+   * unbounded behaviour it always had.
+   *
+   * @param emailConnector the connector the user is bound to
+   * @param username the eXo login the session is authenticated for
+   * @param bounded whether to bound the connect, read and write timeouts
+   * @return the session
+   * @throws ConnectorCredentialsException when the configured provider cannot
+   *           produce credentials for this account
+   */
+  private Session smtpSession(EmailConnector emailConnector,
+                              String username,
+                              boolean bounded) throws ConnectorCredentialsException {
     Properties props = new Properties();
+    if (bounded) {
+      props.put("mail.smtp.connectiontimeout", String.valueOf(SCHEDULED_SMTP_CONNECT_TIMEOUT_MS));
+      props.put("mail.smtp.timeout", String.valueOf(SCHEDULED_SMTP_IO_TIMEOUT_MS));
+      props.put("mail.smtp.writetimeout", String.valueOf(SCHEDULED_SMTP_IO_TIMEOUT_MS));
+    }
     props.put("mail.smtp.auth", "true");
     props.put("mail.smtp." + emailConnector.getSmtpSecurityType() + ".enable", "true");
     props.put("mail.smtp.host", emailConnector.getSmtpUrl());
@@ -6794,6 +6897,34 @@ public class EmailBoxService {
                                            List<String> uploadIds,
                                            String username) throws MessagingException, UnsupportedEncodingException,
                                                                    ConnectorCredentialsException {
+    return buildOutgoingMessage(email, userEmailSetting, emailConnector, pinnedMessageId, uploadIds, username, false);
+  }
+
+  /**
+   * {@link #buildOutgoingMessage(Email, UserEmailSetting, EmailConnector, String, List, String)},
+   * on a session whose socket timeouts are bounded or not -- see
+   * {@link #smtpSession(EmailConnector, String, boolean)}.
+   *
+   * @param email the composed email
+   * @param userEmailSetting the user's connector binding
+   * @param emailConnector the connector the user is bound to
+   * @param pinnedMessageId the Message-ID to go out with, or null
+   * @param uploadIds mutable list populated with the upload ids that were attached
+   * @param username the sender
+   * @param boundedTimeouts whether the session bounds its socket timeouts
+   * @return the message
+   * @throws MessagingException if the message cannot be built
+   * @throws UnsupportedEncodingException if the display name cannot be encoded
+   * @throws ConnectorCredentialsException when no credentials can be produced
+   */
+  private MimeMessage buildOutgoingMessage(Email email,
+                                           UserEmailSetting userEmailSetting,
+                                           EmailConnector emailConnector,
+                                           String pinnedMessageId,
+                                           List<String> uploadIds,
+                                           String username,
+                                           boolean boundedTimeouts) throws MessagingException, UnsupportedEncodingException,
+                                                                    ConnectorCredentialsException {
     // The address the message is sent AS, which is the provider's to name and not
     // the setting's: Personal answers the stored address, so nothing changes for
     // it, but a provider authenticating as a technical account sends for someone
@@ -6802,7 +6933,7 @@ public class EmailBoxService {
                                                           emailConnector.getAuthProviderName(),
                                                           username);
     String emailAddress = StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
-    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username), pinnedMessageId);
+    MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username, boundedTimeouts), pinnedMessageId);
     Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
     message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
     if (!CollectionUtils.isEmpty(email.getTo())) {
@@ -6883,6 +7014,27 @@ public class EmailBoxService {
                        String username,
                        UserEmailSetting userEmailSetting) throws MessagingException {
     Transport.send(message);
+    afterTransmission(message, email, reply, username, userEmailSetting);
+  }
+
+  /**
+   * Everything a delivered mail entails once the mail server has accepted it: the
+   * {@code SEND_EMAIL} broadcast, the sent-recipients event, the copy in the Sent folder
+   * (fenced: a filing failure never makes a delivered mail look undelivered), and the
+   * Sent folder's refresh. Shared by the interactive send ({@link #deliver}) and the
+   * scheduled one ({@link #sendStoredDraft}), so the two cannot drift.
+   *
+   * @param message the message that was transmitted
+   * @param email the email behind it, for the sent-recipients event
+   * @param reply whether it answers another message
+   * @param username the sender
+   * @param userEmailSetting the user's connector binding, for the Sent folder
+   */
+  private void afterTransmission(MimeMessage message,
+                                 Email email,
+                                 boolean reply,
+                                 String username,
+                                 UserEmailSetting userEmailSetting) {
     listenerService.broadcast(EmailConnectorUtils.SEND_EMAIL, username, reply ? "reply" : "newEmail");
     publishEmailSentEvent(username, email);
     try {
@@ -7216,6 +7368,11 @@ public class EmailBoxService {
         // "there is no such draft" lets the composer's existing catch shrug it off.
         return null;
       }
+      if (stored != null) {
+        // A draft scheduled to be sent is frozen until its schedule is cancelled: an
+        // autosave landing now would change a mail the owner already decided to send.
+        requireNotScheduled(username, draftLocalId);
+      }
       Email toStore = stored == null ? buildFirstDraftRevision(draft, draftLocalId, username, userEmailSetting)
                                      : buildNextDraftRevision(draft, stored);
       Email saved = emailBoxStorage.saveDraft(toStore);
@@ -7338,26 +7495,15 @@ public class EmailBoxService {
         // second copy of the same mail on the wire.
         throw new IllegalArgumentException("emailConnector.drafts.send.alreadyInFlight");
       }
+      // A scheduled draft is sent by its schedule ("send now"), never from a composer:
+      // two senders of one draft is how a mail goes out twice.
+      requireNotScheduled(username, draftLocalId);
       // The files the draft has been carrying since some earlier session, read once and
       // checked BEFORE anything is written or claimed. A send that cannot carry every
       // file it shows must leave the draft exactly where it was: nothing saved, nothing
       // claimed, nothing removed here or on the server, and the user still holding a
       // draft they can fix.
-      List<EmailAttachment> storedAttachments = emailBoxStorage.getDraftAttachments(username, draftLocalId);
-      if (!remoteDraftParts(storedAttachments).isEmpty()) {
-        // An imported draft being sent without ever having been pushed since it was
-        // edited. Its files are still addresses into the copy on the server, and the
-        // message about to go out is built here — so they come over now or the send is
-        // refused. Refused and not "sent without them": a mail delivered without the
-        // file its sender attached cannot be discovered by them or taken back.
-        if (!materializeRemoteDraftParts(stored, username, userEmailSetting)) {
-          LOG.warn("The draft of user {} cannot be sent: the files it shows are still only in a server copy that cannot be read",
-                   username);
-          throw new IllegalStateException("emailConnector.drafts.send.attachmentGone");
-        }
-        storedAttachments = emailBoxStorage.getDraftAttachments(username, draftLocalId);
-      }
-      requireReadableDraftFiles(storedAttachments, username);
+      List<EmailAttachment> storedAttachments = readSendableDraftFiles(stored, username, userEmailSetting);
       DraftState stateBeforeSend = saveDraftBeforeSend(draft, stored);
       emailBoxStorage.updateDraftState(username, draftLocalId, DraftState.SENDING);
       try {
@@ -7378,6 +7524,53 @@ public class EmailBoxService {
         // different lock object from the one a concurrent autosave is holding.
         draftLocks.remove(lockKey);
       }
+    }
+  }
+
+  /**
+   * The files a draft will be sent with, read and checked before anything about the
+   * draft is written or claimed: shared by the interactive send, the scheduling of a
+   * draft and the scheduled send itself, so all three refuse the same drafts.
+   * <p>
+   * An imported draft whose files are still addresses into its copy on the server
+   * (sent without a push since it was edited) has them brought over first, or is
+   * refused: a mail delivered without the file its sender attached cannot be
+   * discovered by them or taken back. Then every file must have its bytes behind it.
+   *
+   * @param stored the draft's row
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @return the draft's files, all readable
+   * @throws IllegalStateException {@code emailConnector.drafts.send.attachmentGone} when
+   *           a file the draft shows cannot be carried
+   */
+  private List<EmailAttachment> readSendableDraftFiles(Email stored, String username, UserEmailSetting userEmailSetting) {
+    String draftLocalId = stored.getDraftLocalId();
+    List<EmailAttachment> storedAttachments = emailBoxStorage.getDraftAttachments(username, draftLocalId);
+    if (!remoteDraftParts(storedAttachments).isEmpty()) {
+      if (!materializeRemoteDraftParts(stored, username, userEmailSetting)) {
+        LOG.warn("The draft of user {} cannot be sent: the files it shows are still only in a server copy that cannot be read",
+                 username);
+        throw new IllegalStateException(ATTACHMENT_GONE_CODE);
+      }
+      storedAttachments = emailBoxStorage.getDraftAttachments(username, draftLocalId);
+    }
+    requireReadableDraftFiles(storedAttachments, username);
+    return storedAttachments;
+  }
+
+  /**
+   * Refuses an edit or an interactive send of a draft that is scheduled to be sent: the
+   * schedule row is what locks it, in the database and so on every node.
+   *
+   * @param username the mailbox owner
+   * @param draftLocalId the draft's handle
+   * @throws ScheduledSendConflictException {@code emailConnector.scheduled.locked} when
+   *           the draft is scheduled
+   */
+  private void requireNotScheduled(String username, String draftLocalId) {
+    if (emailScheduledSendStorage.isScheduled(username, draftLocalId)) {
+      throw new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED);
     }
   }
 
@@ -7451,11 +7644,15 @@ public class EmailBoxService {
     EmailConnector emailConnector =
                                   emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
     List<String> uploadIds = new ArrayList<>();
-    draft.setStoredAttachments(storedAttachments);
     try {
-      MimeMessage message =
-                          buildOutgoingMessage(draft, userEmailSetting, emailConnector, stored.getMailHeaderId(), uploadIds, username);
-      applyStoredThreadingHeaders(message, stored);
+      MimeMessage message = buildOutgoingDraftMessage(draft,
+                                                      stored,
+                                                      storedAttachments,
+                                                      username,
+                                                      userEmailSetting,
+                                                      emailConnector,
+                                                      uploadIds,
+                                                      false);
       deliver(message, draft, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
     } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException e) {
       logSendFailure(username, emailConnector, e);
@@ -7475,6 +7672,50 @@ public class EmailBoxService {
       // cleanupSentDraft), which is the only place that knows the draft is over.
       removeUploadResources(uploadIds);
     }
+  }
+
+  /**
+   * Builds the message a draft goes out as: the content (body, recipients, subject)
+   * from {@code content}, the identity from the stored row -- its pinned Message-ID and
+   * its stored threading headers -- and the draft's own stored files (inline pictures
+   * and attachments) alongside any upload the content carries. The one builder behind
+   * both ways a draft is sent: the interactive send passes what the composer shows,
+   * the scheduled send passes the stored row itself, so the two cannot build different
+   * messages from the same draft.
+   *
+   * @param content where body, recipients, subject and uploads come from
+   * @param stored the draft's row, for its identity
+   * @param storedAttachments the draft's own files, already checked readable
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param emailConnector the connector the user is bound to
+   * @param uploadIds mutable list populated with the upload ids that were attached
+   * @param boundedTimeouts whether the SMTP session bounds its socket timeouts
+   * @return the message, ready for the wire
+   * @throws MessagingException if the message cannot be built
+   * @throws UnsupportedEncodingException if the display name cannot be encoded
+   * @throws ConnectorCredentialsException when no credentials can be produced
+   */
+  private MimeMessage buildOutgoingDraftMessage(Email content,
+                                                Email stored,
+                                                List<EmailAttachment> storedAttachments,
+                                                String username,
+                                                UserEmailSetting userEmailSetting,
+                                                EmailConnector emailConnector,
+                                                List<String> uploadIds,
+                                                boolean boundedTimeouts) throws MessagingException,
+                                                                         UnsupportedEncodingException,
+                                                                         ConnectorCredentialsException {
+    content.setStoredAttachments(storedAttachments);
+    MimeMessage message = buildOutgoingMessage(content,
+                                               userEmailSetting,
+                                               emailConnector,
+                                               stored.getMailHeaderId(),
+                                               uploadIds,
+                                               username,
+                                               boundedTimeouts);
+    applyStoredThreadingHeaders(message, stored);
+    return message;
   }
 
   /**
@@ -7575,6 +7816,13 @@ public class EmailBoxService {
       if (stored == null) {
         return false;
       }
+      // A scheduled draft may be discarded (its schedule goes with it, through the
+      // database's cascade) -- but not while it is on its way, or already gone out.
+      EmailScheduledSend schedule = emailScheduledSendStorage.get(username, draftLocalId);
+      if (schedule != null
+          && (schedule.getStatus() == ScheduledSendStatus.SENDING || schedule.getStatus() == ScheduledSendStatus.SENT)) {
+        throw new ScheduledSendConflictException(ScheduledSendConflictException.SENDING);
+      }
       // Again the UID and not the state: a LOCAL_ONLY row that carries one has a copy
       // up there just the same, and reading the state here meant a draft the user had
       // thrown away was left in their Drafts folder — and, being a Drafts message we
@@ -7595,6 +7843,336 @@ public class EmailBoxService {
       // it here is what keeps the map bounded by the drafts that actually exist
       // rather than by every draft ever written in this JVM's lifetime.
       draftLocks.remove(lockKey);
+    }
+  }
+
+  /**
+   * Freezes a draft for a scheduled send (EXO-90434): the composer's text is written to
+   * the row, the schedule row is created -- which locks the draft on every node -- and
+   * the draft's copy in the mail server's Drafts folder is removed, so no other mail
+   * client can send the mail the owner has scheduled here.
+   * <p>
+   * Under the draft's own lock, like every other write to a draft. The steps are
+   * ordered so each failure leaves a state that is true, since they cannot share one
+   * transaction (an IMAP round trip sits in the middle):
+   * <ol>
+   * <li>refusals first, nothing written: no such draft, an interactive send in flight,
+   * already scheduled, a file the draft shows that cannot be carried;</li>
+   * <li>the text on screen saved onto the row -- after which the row is protected from
+   * the sync (a saved draft is LOCAL_ONLY or DIRTY);</li>
+   * <li>the schedule row, through {@code scheduler} (the caller's validation -- the
+   * date, the limit -- runs there and may refuse: the text is saved, nothing else
+   * changed);</li>
+   * <li>the server copy removed; if the server still has it, the schedule row is removed
+   * again and the scheduling refused, since a copy another client can send is the
+   * double send this step exists to prevent;</li>
+   * <li>the row detached from the copy that is gone (LOCAL_ONLY, no UID).</li>
+   * </ol>
+   *
+   * @param draft the draft as the composer shows it, carrying its local id
+   * @param username the mailbox owner
+   * @param scheduler creates the schedule row for the saved draft row, and answers it
+   * @return the schedule row
+   * @throws IllegalAccessException if the user may not use their mailbox
+   * @throws ObjectNotFoundException if the user has no draft under that local id
+   * @throws IllegalArgumentException {@code emailConnector.drafts.send.localIdMandatory}
+   *           or {@code emailConnector.drafts.send.attachmentGone}, or what
+   *           {@code scheduler} refuses with
+   * @throws ScheduledSendConflictException when the draft is already scheduled or being
+   *           sent
+   * @throws IllegalStateException {@code emailConnector.scheduled.serverCopyRemains} when
+   *           the server copy could not be removed
+   */
+  public EmailScheduledSend scheduleDraft(Email draft,
+                                          String username,
+                                          Function<Email, EmailScheduledSend> scheduler) throws IllegalAccessException,
+                                                                                         ObjectNotFoundException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE, username));
+    }
+    if (draft == null || StringUtils.isBlank(draft.getDraftLocalId())) {
+      throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    String draftLocalId = draft.getDraftLocalId();
+    ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      if (DraftState.SENDING.equals(stored.getDraftState())) {
+        throw new ScheduledSendConflictException(ScheduledSendConflictException.SENDING);
+      }
+      requireNotScheduled(username, draftLocalId);
+      try {
+        readSendableDraftFiles(stored, username, userEmailSetting);
+      } catch (IllegalStateException e) {
+        // The same refusal as the send's, answered as the caller's to fix (take the
+        // broken chip off) rather than as a failure of the server.
+        throw new IllegalArgumentException(e.getMessage(), e);
+      }
+      saveDraftBeforeSend(draft, stored);
+      Email saved = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      EmailScheduledSend schedule = scheduler.apply(saved != null ? saved : stored);
+      long serverCopyUid = serverDraftCopyUid(stored);
+      if (serverCopyUid > 0 && isServerDraftsEnabled()) {
+        if (!removeServerDraftCopy(serverCopyUid, stored.getMailHeaderId(), username, userEmailSetting)) {
+          emailScheduledSendStorage.delete(schedule.getId());
+          throw new IllegalStateException("emailConnector.scheduled.serverCopyRemains");
+        }
+        emailBoxStorage.detachDraftFromServerCopy(username, draftLocalId);
+      }
+      return schedule;
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Sends a scheduled draft as it is stored (EXO-90434): the same message the
+   * interactive send would build ({@link #buildOutgoingDraftMessage} -- body,
+   * recipients, subject, pinned Message-ID, stored In-Reply-To and References, stored
+   * files and inline pictures), transmitted in two steps so a failure can be told
+   * apart ({@link SmtpTransmitter}), then taken apart exactly as a sent draft is
+   * ({@link #cleanupSentDraft}).
+   * <p>
+   * {@code onTransmitted} runs the moment the mail server has accepted the message,
+   * before anything else: it is the caller's record that the mail is out, written while
+   * nothing else can fail first. Nothing after that point is reported as a failure --
+   * the mail is sent -- so the record, the Sent copy and the cleanup are each fenced.
+   * If the node stops between the acceptance and the record, the caller's recovery
+   * finds the send interrupted and never sends again (see
+   * {@code EmailScheduledSendService}).
+   *
+   * @param username the mailbox owner, as whom the mail is sent
+   * @param draftLocalId the draft's handle
+   * @param onTransmitted run once the mail server accepted the message
+   * @throws ScheduledSendFailure classified: TRANSIENT (nothing reached the server),
+   *           PERMANENT (refused before anything was accepted), AMBIGUOUS (may have
+   *           been accepted)
+   * @throws ObjectNotFoundException if the draft is gone
+   */
+  public void sendStoredDraft(String username,
+                              String draftLocalId,
+                              Runnable onTransmitted) throws ScheduledSendFailure, ObjectNotFoundException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.DISCONNECTED, null);
+    }
+    EmailConnector emailConnector =
+                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    if (emailConnector == null) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.DISCONNECTED, null);
+    }
+    String lockKey = draftLockKey(username, draftLocalId);
+    ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
+    lock.lock();
+    boolean sent = false;
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      List<EmailAttachment> storedAttachments;
+      try {
+        storedAttachments = readSendableDraftFiles(stored, username, userEmailSetting);
+      } catch (IllegalStateException e) {
+        throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.ATTACHMENT_GONE, e);
+      }
+      MimeMessage message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector);
+      try {
+        smtpTransmitter.transmit(message);
+      } catch (SmtpTransmitter.TransmissionException e) {
+        ScheduledSendFailure failure = classifyTransmissionFailure(e);
+        LOG.warn("The scheduled send of a draft of user {} through {}:{} failed ({}, {})",
+                 username,
+                 emailConnector.getSmtpUrl(),
+                 emailConnector.getSmtpPort(),
+                 failure.getKind(),
+                 failure.getError(),
+                 e);
+        throw failure;
+      } catch (RuntimeException e) {
+        // Nothing may be assumed about a failure the transmitter did not classify: the
+        // message may be out.
+        throw new ScheduledSendFailure(ScheduledSendFailure.Kind.AMBIGUOUS, ScheduledSendError.UNCONFIRMED, e);
+      }
+      sent = true;
+      try {
+        onTransmitted.run();
+      } catch (RuntimeException e) {
+        LOG.warn("A scheduled mail of user {} was sent but could not be recorded as sent; its draft is removed anyway",
+                 username,
+                 e);
+      }
+      try {
+        afterTransmission(message, stored, StringUtils.isNotBlank(stored.getInReplyTo()), username, userEmailSetting);
+      } catch (RuntimeException e) {
+        LOG.warn("A scheduled mail of user {} was sent but its post-send bookkeeping failed", username, e);
+      }
+      cleanupSentDraft(stored, username, userEmailSetting);
+    } finally {
+      lock.unlock();
+      if (sent) {
+        draftLocks.remove(lockKey);
+      }
+    }
+  }
+
+  /**
+   * Removes the draft row of a scheduled mail already sent, whose run did not get to
+   * remove it (its node stopped between the send and the cleanup). The schedule row
+   * goes with it, through the database's cascade.
+   *
+   * @param username the mailbox owner
+   * @param draftLocalId the draft's handle
+   * @return true when a draft row was found and removed
+   */
+  public boolean deleteSentScheduledDraft(String username, String draftLocalId) {
+    String lockKey = draftLockKey(username, draftLocalId);
+    ReentrantLock lock = draftLocks.computeIfAbsent(lockKey, key -> new ReentrantLock());
+    lock.lock();
+    try {
+      Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
+      if (stored == null) {
+        return false;
+      }
+      cleanupSentDraft(stored, username, userEmailSettingService.getUserEmailSetting(username));
+      return true;
+    } finally {
+      lock.unlock();
+      draftLocks.remove(lockKey);
+    }
+  }
+
+  /**
+   * Whether the mail server's Sent folder holds a message with the given Message-ID:
+   * how a scheduled send whose outcome is unknown is resolved (EXO-90434). A server
+   * that files its own copy of what it relays (Gmail, Outlook) has it at once; on
+   * others the copy exists only if the send got as far as appending it.
+   *
+   * @param username the mailbox owner
+   * @param messageId the Message-ID the draft was pinned with
+   * @return true when a message with that id is in the Sent folder
+   * @throws IllegalStateException when the mailbox cannot be read
+   */
+  public boolean isInSentFolder(String username, String messageId) {
+    if (StringUtils.isBlank(messageId)) {
+      return false;
+    }
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null) {
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
+    }
+    Store store = null;
+    IMAPFolder sentFolder = null;
+    try {
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      sentFolder = resolveSentFolder(store, loadMailboxSyncState(username));
+      if (sentFolder == null) {
+        return false;
+      }
+      sentFolder.open(Folder.READ_ONLY);
+      Message[] found = sentFolder.search(new HeaderTerm(HEADER_MESSAGE_ID, messageId));
+      return found != null && found.length > 0;
+    } catch (Exception e) {
+      throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username), e);
+    } finally {
+      closeFolderQuietly(sentFolder, false, "Sent", username);
+      closeQuietly(null, store, username);
+    }
+  }
+
+  /**
+   * Builds a scheduled draft's message from its stored row, on a session with bounded
+   * socket timeouts, and classifies a refusal to build as a permanent failure: nothing
+   * has been transmitted, and building it again unchanged would be refused again.
+   *
+   * @param stored the draft's row, content and identity alike
+   * @param storedAttachments its files, checked readable
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   * @param emailConnector the connector the user is bound to
+   * @return the message
+   * @throws ScheduledSendFailure PERMANENT: TOO_LARGE, AUTHENTICATION (no credentials
+   *           produced), RECIPIENT_REFUSED (an address that does not parse) or INTERNAL
+   */
+  private MimeMessage buildScheduledMessage(Email stored,
+                                            List<EmailAttachment> storedAttachments,
+                                            String username,
+                                            UserEmailSetting userEmailSetting,
+                                            EmailConnector emailConnector) throws ScheduledSendFailure {
+    // No upload ever rides along: a stored draft has only its stored files, which the
+    // send must not free (they belong to the draft until cleanupSentDraft).
+    List<String> uploadIds = new ArrayList<>();
+    try {
+      return buildOutgoingDraftMessage(stored, stored, storedAttachments, username, userEmailSetting, emailConnector, uploadIds, true);
+    } catch (ConnectorCredentialsException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.AUTHENTICATION, e);
+    } catch (AddressException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.RECIPIENT_REFUSED, e);
+    } catch (IllegalStateException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT,
+                                     MAX_SIZE_ERROR_CODE.equals(e.getMessage()) ? ScheduledSendError.TOO_LARGE
+                                                                                : ScheduledSendError.INTERNAL,
+                                     e);
+    } catch (MessagingException | UnsupportedEncodingException | RuntimeException e) {
+      throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.INTERNAL, e);
+    } finally {
+      removeUploadResources(uploadIds);
+    }
+  }
+
+  /**
+   * What a failed transmission means for sending again, from the step it failed in.
+   * <ul>
+   * <li>preparing: nothing sent; no recipient is a refused recipient, anything else an
+   * internal failure -- PERMANENT;</li>
+   * <li>connecting: nothing sent; refused credentials are PERMANENT, anything else
+   * (unreachable, timed out, TLS) is TRANSIENT and retried;</li>
+   * <li>sending: a {@link SendFailedException} is the server's refusal, so nothing was
+   * accepted -- recipients refused, or the message refused -- PERMANENT, unless the
+   * server reports having accepted it for some recipients already (a partial send),
+   * which is AMBIGUOUS; any other failure may come after the server accepted the data,
+   * and is AMBIGUOUS too. JavaMail does not say whether the data had started, so the
+   * doubt is resolved towards "maybe sent": a spurious "couldn't confirm" costs the
+   * owner a look, a spurious retry costs their recipient a duplicate.</li>
+   * </ul>
+   *
+   * @param e the failure and its step
+   * @return the classified failure
+   */
+  private ScheduledSendFailure classifyTransmissionFailure(SmtpTransmitter.TransmissionException e) {
+    Throwable cause = e.getCause();
+    switch (e.getPhase()) {
+    case PREPARE:
+      return new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT,
+                                      cause instanceof SendFailedException ? ScheduledSendError.RECIPIENT_REFUSED
+                                                                           : ScheduledSendError.INTERNAL,
+                                      e);
+    case CONNECT:
+      return ExceptionUtils.indexOfType(e, AuthenticationFailedException.class) >= 0
+                                                                                      ? new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT,
+                                                                                                                 ScheduledSendError.AUTHENTICATION,
+                                                                                                                 e)
+                                                                                      : new ScheduledSendFailure(ScheduledSendFailure.Kind.TRANSIENT,
+                                                                                                                 ScheduledSendError.NETWORK,
+                                                                                                                 e);
+    default:
+      if (cause instanceof SendFailedException sendFailed) {
+        if (!ArrayUtils.isEmpty(sendFailed.getValidSentAddresses())) {
+          return new ScheduledSendFailure(ScheduledSendFailure.Kind.AMBIGUOUS, ScheduledSendError.UNCONFIRMED, e);
+        }
+        return new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT,
+                                        ArrayUtils.isEmpty(sendFailed.getInvalidAddresses()) ? ScheduledSendError.REFUSED
+                                                                                             : ScheduledSendError.RECIPIENT_REFUSED,
+                                        e);
+      }
+      return new ScheduledSendFailure(ScheduledSendFailure.Kind.AMBIGUOUS, ScheduledSendError.UNCONFIRMED, e);
     }
   }
 
@@ -7648,6 +8226,7 @@ public class EmailBoxService {
       if (stored == null) {
         return null;
       }
+      requireNotScheduled(username, draftLocalId);
       // Refused before the bytes are written rather than after, so a file that cannot
       // be sent is never stored: the cap is the one the send path already enforces,
       // and a draft that has gone over it is a draft that cannot leave.
@@ -7757,6 +8336,7 @@ public class EmailBoxService {
         LOG.warn("Forward for user {}: draft {} does not exist, nothing was attached", username, draftLocalId);
         return null;
       }
+      requireNotScheduled(username, draftLocalId);
       // The message is read from the CACHE, under this user and this folder, and the
       // caller never says which parts to take. That is the whole of the access check:
       // a UID is not a name, and a caller that could hand in a part path would be
@@ -8031,6 +8611,7 @@ public class EmailBoxService {
     ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
     lock.lock();
     try {
+      requireNotScheduled(username, draftLocalId);
       if (!emailBoxStorage.removeDraftAttachment(username, draftLocalId, attachmentId)) {
         return null;
       }
@@ -8401,7 +8982,7 @@ public class EmailBoxService {
         LOG.warn("The draft of user {} cannot be sent: its attachment {} has no file behind it any more",
                  username,
                  attachment.getName());
-        throw new IllegalStateException("emailConnector.drafts.send.attachmentGone");
+        throw new IllegalStateException(ATTACHMENT_GONE_CODE);
       }
     }
   }
@@ -9337,7 +9918,7 @@ public class EmailBoxService {
     // order the user attached them in -- the stored ones are by definition older.
     totalSize += addStoredAttachmentParts(multipart, bottomFiles);
     if (totalSize > MAX_OUTGOING_ATTACHMENTS_SIZE) {
-      throw new IllegalStateException("emailConnector.mailBox.newEmail.attach.maxSize.error");
+      throw new IllegalStateException(MAX_SIZE_ERROR_CODE);
     }
     for (EmailOutgoingAttachment attachment : email.getAttachments() == null ? List.<EmailOutgoingAttachment> of()
                                                                             : email.getAttachments()) {
@@ -9352,7 +9933,7 @@ public class EmailBoxService {
       File file = new File(uploadResource.getStoreLocation());
       totalSize += file.length();
       if (totalSize > MAX_OUTGOING_ATTACHMENTS_SIZE) {
-        throw new IllegalStateException("emailConnector.mailBox.newEmail.attach.maxSize.error");
+        throw new IllegalStateException(MAX_SIZE_ERROR_CODE);
       }
       String fileName = StringUtils.isNotBlank(attachment.getName()) ? attachment.getName() : uploadResource.getFileName();
       multipart.addBodyPart(attachmentBodyPart(new FileDataSource(file), fileName, attachment.getMimeType()));

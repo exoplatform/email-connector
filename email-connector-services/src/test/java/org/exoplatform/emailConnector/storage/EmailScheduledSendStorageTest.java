@@ -109,7 +109,7 @@ public class EmailScheduledSendStorageTest {
     storage.create(row(scheduled));
 
     assertEquals(List.of("plain"),
-                 emailBoxStorage.getListedEmails(USER, MailFolder.DRAFTS).stream().map(Email::getDraftLocalId).toList());
+                 emailBoxStorage.getUnscheduledDrafts(USER).stream().map(Email::getDraftLocalId).toList());
     assertEquals(2, emailBoxStorage.getEmails(USER, MailFolder.DRAFTS).size(), "every other read still sees both");
     assertEquals(1, emailBoxStorage.getFolderMessageCounts(USER).get(MailFolder.DRAFTS));
 

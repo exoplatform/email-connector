@@ -67,6 +67,10 @@ public class MailFolderView {
   // The mirror window, so the listing can say "showing the N most recent".
   private Integer windowSize;
 
+  // Whether the view needs the owner's attention: the "Scheduled" view sets it when a
+  // mail in it could not be sent, or could not be confirmed sent.
+  private boolean attention;
+
   /**
    * Whether this is one of the user's own folders.
    *

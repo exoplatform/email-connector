@@ -25,4 +25,13 @@ public class NotificationConstants {
   public static final String LINK                           = "LINK";
 
   public static final String NEW_EMAILS_NOTIFICATION_PLUGIN = "NewEmailsNotificationPlugin";
+
+  /** A scheduled mail was not sent, or could not be confirmed sent (EXO-90434). */
+  public static final String SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN = "ScheduledEmailFailedNotificationPlugin";
+
+  /** The scheduled mail's subject, as the notification carries it. */
+  public static final String SUBJECT                        = "SUBJECT";
+
+  /** Why it was not sent: a {@code ScheduledSendError} name, never the server's text. */
+  public static final String REASON                         = "REASON";
 }

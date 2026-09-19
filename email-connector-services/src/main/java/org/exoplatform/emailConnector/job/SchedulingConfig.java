@@ -24,9 +24,10 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * Turns on Spring's scheduler for this add-on, the way caldav-integration's
  * {@code SchedulingConfig} does for its sweep.
  * <p>
- * Scoped to this package rather than declared on the application class: the only
- * scheduled work here is the mailbox sync dispatcher, and a deployment reading
- * this file should see what it is switching on. Each WAR's Spring context enables
+ * Scoped to this package rather than declared on the application class: the
+ * scheduled work here is the mailbox sync dispatcher and the scheduled-send
+ * dispatcher (EXO-90434), both in this package, and a deployment reading this file
+ * should see what it is switching on. Each WAR's Spring context enables
  * scheduling for itself; nothing the platform provides does it for an add-on.
  */
 @Configuration
