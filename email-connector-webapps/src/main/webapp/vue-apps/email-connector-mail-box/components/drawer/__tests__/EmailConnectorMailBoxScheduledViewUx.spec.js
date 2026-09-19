@@ -25,6 +25,7 @@ import EmailConnectorMailBoxScheduledList from '../EmailConnectorMailBoxSchedule
 import EmailConnectorMailBoxScheduledListItem from '../EmailConnectorMailBoxScheduledListItem.vue';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerListItemDetailContent from '../EmailConnectorMailBoxDrawerListItemDetailContent.vue';
+import EmailConnectorMailBoxPopup from '../EmailConnectorMailBoxPopup.vue';
 import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 import EmailConnectorMailBoxDrawerListItemDetail from '../EmailConnectorMailBoxDrawerListItemDetail.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
@@ -86,6 +87,21 @@ function scheduledRow(id, extra = {}) {
   };
 }
 
+// The schedule picker as the popup drives it: its check left out, its validity told,
+// confirm() handing the picked instant over.
+const PICKER = {
+  props: { value: Number, hideConfirm: Boolean },
+  template: '<div class="picker" />',
+  mounted() {
+    this.$emit('valid', true);
+  },
+  methods: {
+    confirm() {
+      this.$emit('confirm', Date.UTC(2026, 9, 3, 6, 0), 'UTC');
+    },
+  },
+};
+
 /**
  * Mounts the list, its reads answered by the given functions.
  *
@@ -104,7 +120,12 @@ async function mountList(answers = {}, propsData = {}, modal = { open: jest.fn()
     mocks: { $t: translate, $te: () => false, $emailConnectorMailBoxService: service },
     stubs: {
       'exo-confirm-dialog': { template: '<div class="confirm" />', methods: { open: jest.fn() } },
-      'exo-modal': { props: { title: String, width: String, hideActions: Boolean }, template: '<div class="modal"><slot /></div>', methods: modal },
+      'email-connector-mail-box-popup': {
+        props: { title: String, okLabel: String, cancelLabel: String, okDisabled: Boolean, width: String },
+        template: '<div class="modal"><slot /></div>',
+        methods: modal,
+      },
+      'email-connector-schedule-picker': PICKER,
     },
   });
   const emitted = [];
@@ -435,18 +456,36 @@ describe('the opened scheduled mail in the reader (EXO-90434, PO decision (a))',
 });
 
 describe('Reschedule is the platform\'s popup, and it applies the new time (EXO-90434)', () => {
-  it('opens the shared picker in exo-modal, sized and titled, with the picker\'s check as its one confirm', async () => {
+  it('opens the shared picker in the standard popup, titled, with Reschedule and Cancel, the picker\'s check left out', async () => {
     const modal = { open: jest.fn(), close: jest.fn() };
-    const { wrapper } = await mountList({}, {}, modal);
+    const rescheduleEmail = jest.fn((id, date, zone) => Promise.resolve(scheduledRow(id, { scheduledDate: date, timeZone: zone })));
+    const { wrapper } = await mountList({ rescheduleEmail }, {}, modal);
     expect(wrapper.find('v-dialog').exists()).toBe(false);
     wrapper.vm.onAction('reschedule', scheduledRow('d1'));
     await wrapper.vm.$nextTick();
     await wrapper.vm.$nextTick();
     expect(modal.open).toHaveBeenCalled();
-    const popup = wrapper.find('.modal');
-    expect(popup.vm.$props).toEqual({ title: 'emailConnector.mailBox.scheduled.reschedule.title', width: '460px', hideActions: true });
-    const picker = popup.find('email-connector-schedule-picker');
-    expect(picker.attributes('value')).toBe(String(Date.UTC(2026, 9, 1, 6, 0)));
+    const popup = wrapper.findComponent('.modal');
+    expect(popup.props()).toEqual({
+      title: 'emailConnector.mailBox.scheduled.reschedule.title',
+      okLabel: 'emailConnector.mailBox.scheduled.action.reschedule',
+      cancelLabel: 'emailConnector.mailBox.scheduled.reschedule.cancel',
+      okDisabled: false,
+      width: '460px',
+    });
+    const picker = wrapper.findComponent(PICKER);
+    expect(picker.props()).toEqual({ value: Date.UTC(2026, 9, 1, 6, 0), hideConfirm: true });
+
+    // No instant picked: Reschedule waits.
+    picker.vm.$emit('valid', false);
+    await wrapper.vm.$nextTick();
+    expect(popup.props('okDisabled')).toBe(true);
+    picker.vm.$emit('valid', true);
+
+    // The popup's Reschedule is the one confirm: it has the picker hand its instant over.
+    popup.vm.$emit('ok');
+    await flush();
+    expect(rescheduleEmail).toHaveBeenCalledWith('d1', Date.UTC(2026, 9, 3, 6, 0), 'UTC');
   });
 
   it('PUTs the picked time and closes on success; a refusal says why and leaves the popup open', async () => {
@@ -511,7 +550,7 @@ describe('every action of both menus -- the row\'s and the reader\'s -- runs its
         ...ROW_STUBS,
         'email-connector-mail-box-scheduled-list-item': EmailConnectorMailBoxScheduledListItem,
         'exo-confirm-dialog': { props: ['title'], template: '<div class="confirm" />', methods: confirm },
-        'exo-modal': { template: '<div class="modal"><slot /></div>', methods: modal },
+        'email-connector-mail-box-popup': { template: '<div class="modal"><slot /></div>', methods: modal },
       },
     });
     const emitted = [];
@@ -568,5 +607,65 @@ describe('every action of both menus -- the row\'s and the reader\'s -- runs its
       await message.find(`.scheduled-mail-action[data-action="${testCase.action}"]`).trigger('click');
       await expectHandled(testCase, mounted);
     });
+  });
+});
+
+describe('the add-on\'s standard popup mirrors exo-confirm-dialog, with a slot (EXO-90434)', () => {
+  const DIALOG = { props: ['value', 'contentClass', 'width'], template: '<div class="dialog"><slot /></div>' };
+
+  /**
+   * Mounts the popup.
+   *
+   * @param {Object} propsData its props
+   * @returns {Object} the wrapper
+   */
+  function mountPopup(propsData = {}) {
+    return shallowMount(EmailConnectorMailBoxPopup, {
+      propsData: { title: 'Reschedule', okLabel: 'Reschedule', cancelLabel: 'Cancel', ...propsData },
+      slots: { default: '<div class="slotted" />' },
+      stubs: {
+        'v-dialog': DIALOG,
+        'v-card': { template: '<div class="card" v-bind="$attrs"><slot /></div>' },
+        'v-card-text': { template: '<div><slot /></div>' },
+        'v-card-actions': { template: '<div><slot /></div>' },
+      },
+    });
+  }
+
+  it('draws exo-confirm-dialog\'s popup: uiPopup, the branding layout, a transparent card, its header, its buttons', () => {
+    const popup = mountPopup();
+    expect(popup.findComponent(DIALOG).props('contentClass')).toBe('uiPopup layout-drawer');
+    expect(popup.find('.card').classes()).toEqual(['card', 'elevation-12', 'transparent']);
+    expect(popup.find('.popupHeader').classes()).toEqual(expect.arrayContaining(['ignore-vuetify-classes', 'ClearFix', 'layout-drawer']));
+    expect(popup.find('.popupHeader .text-title').text()).toBe('Reschedule');
+    expect(popup.find('.uiIconClose').exists()).toBe(true);
+    expect(popup.find('.slotted').exists()).toBe(true);
+    expect(popup.find('.popup-ok').classes()).toEqual(expect.arrayContaining(['btn', 'btn-primary']));
+    expect(popup.find('.popup-cancel').classes()).toEqual(expect.arrayContaining(['btn']));
+    expect(mountPopup({ isBrandingLayout: false }).findComponent(DIALOG).props('contentClass')).toBe('uiPopup ');
+  });
+
+  it('says OK and stays open for the caller to close; Cancel closes it and tells the platform', async () => {
+    const events = [];
+    const listener = () => events.push('modalClosed');
+    document.addEventListener('modalClosed', listener);
+    const popup = mountPopup();
+    popup.vm.open();
+    await popup.vm.$nextTick();
+    await popup.find('.popup-ok').trigger('click');
+    expect(popup.emitted('ok')).toHaveLength(1);
+    expect(popup.vm.dialog).toBe(true);
+    await popup.find('.popup-cancel').trigger('click');
+    await flush();
+    expect(popup.vm.dialog).toBe(false);
+    expect(popup.emitted('dialog-closed')).toHaveLength(1);
+    expect(events).toEqual(['modalClosed']);
+    document.removeEventListener('modalClosed', listener);
+  });
+
+  it('keeps OK disabled while its content is not valid, or while it works', () => {
+    expect(mountPopup({ okDisabled: true }).find('.popup-ok').attributes('disabled')).toBe('disabled');
+    expect(mountPopup({ loading: true }).find('.popup-ok').attributes('disabled')).toBe('disabled');
+    expect(mountPopup().find('.popup-ok').attributes('disabled')).toBeUndefined();
   });
 });
