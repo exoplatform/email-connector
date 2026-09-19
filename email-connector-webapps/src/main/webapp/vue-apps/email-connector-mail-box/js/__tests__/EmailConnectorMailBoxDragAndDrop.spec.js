@@ -24,6 +24,7 @@ import {
   dragLabel,
   dragPayloadOfRow,
   dragPayloadOfSearchHit,
+  draggedRowCount,
   folderDropAction,
   hasDragPayload,
   startDrag,
@@ -133,6 +134,33 @@ describe('what a dragged row carries (EXO-90421)', () => {
 
   it('an All Mail hit is not dragged: the server moves nothing out of it and categorizes nothing in it', () => {
     expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'ALL_MAIL' })).toBeNull();
+  });
+});
+
+describe('how many rows a drag says it moves (EXO-90421, PO feedback)', () => {
+  const conversation = (threadId, uids) => uids.map(uid => message(uid, 'INBOX', { threadId }));
+  const listed = [...conversation('a', [1, 2, 3]), ...conversation('b', [4, 5, 6]), ...conversation('c', [7])];
+  const threadOf = uids => ({ emails: listed.filter(email => uids.includes(email.mailRemoteId)) });
+
+  it('two selected conversations of three messages each are two rows, all six messages moving', () => {
+    const row = {
+      email: listed[0],
+      thread: threadOf([1, 2, 3]),
+      selectMode: true,
+      selectedEmails: ['INBOX:1', 'INBOX:2', 'INBOX:3', 'INBOX:4', 'INBOX:5', 'INBOX:6'],
+      emails: listed,
+    };
+
+    expect(draggedRowCount(row)).toBe(2);
+    expect(dragPayloadOfRow(row).ids).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('a row dragged alone is one row, whatever its message count', () => {
+    expect(draggedRowCount({ email: listed[0], thread: threadOf([1, 2, 3]), emails: listed })).toBe(1);
+    // Unselected, beside a selection of two conversations: it moves alone, and says so.
+    const selectedEmails = ['INBOX:1', 'INBOX:2', 'INBOX:3', 'INBOX:4', 'INBOX:5', 'INBOX:6'];
+    expect(draggedRowCount({ email: listed[6], thread: threadOf([7]), selectMode: true, selectedEmails, emails: listed }))
+      .toBe(1);
   });
 });
 
