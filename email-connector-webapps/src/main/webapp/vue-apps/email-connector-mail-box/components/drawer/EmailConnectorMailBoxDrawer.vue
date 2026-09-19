@@ -123,6 +123,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :current-folder="currentFolder"
           :categories="emailCategories"
           :category-view-id="categoryViewId"
+          :folder-counts="folderCounts"
+          :category-unread-counts="categoryUnreadCounts"
           :rail="navigationRail"
           :style="{ width: navigationWidth, minWidth: navigationWidth }"
           class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing" />
@@ -267,6 +269,14 @@ const NAVIGATION_RAIL_WIDTH_PX = 56;
 // some 660 px beside an open column.
 const NAVIGATION_RAIL_BELOW_WIDTH_PX = 1440;
 
+// The folders the column counts the unread mail of, and the ones it counts in full
+// (EXO-90415), Outlook's choice, agreed with the PO. The spam is read-only here
+// (isReadOnlyFolder): opening a message there reads nothing, so its count follows the
+// server's \Seen alone, at the next load.
+const UNREAD_COUNTED_FOLDERS = ['INBOX', 'JUNK'];
+
+const TOTAL_COUNTED_FOLDERS = ['DRAFTS'];
+
 // Where the user's own choice of column or rail is kept, in this browser only.
 const NAVIGATION_RAIL_STORAGE_KEY = 'emailConnector.mailBox.navigationRail';
 
@@ -366,6 +376,13 @@ export default {
       layoutExpanded: false,
       // Whether the full-screen folder column is folded to an icon rail (EXO-90415).
       navigationRail: initialNavigationRail(),
+      // The unread mail read or unread here since the folder list was last loaded, by
+      // folder: the counts the server gave move with the user's own reads until the
+      // next load brings its own.
+      unreadAdjustments: {},
+      // Each category's id with its subcategories', by category id: what a category's
+      // unread count is matched against, as its view is (selectedCategoryIds).
+      categorySubtrees: {},
       email: null,
       // The wide layout's own reader: the opened message's request is pending, the
       // reader is reading the conversation, and whether it still shows the opened
@@ -498,6 +515,7 @@ export default {
     // default.
     this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.emailCategories = list || []);
+    this.emailCategoryIdsPromise.then(() => this.readCategorySubtrees()).catch(() => null);
     // Read the "Default view" setting from here rather than from open(), for the
     // same reason the categories are read from here: both are needed to know
     // WHICH list to show, and asking for them only once the drawer is opening is
@@ -837,6 +855,41 @@ export default {
      */
     navigationWidth() {
       return `${this.navigationRail ? NAVIGATION_RAIL_WIDTH_PX : NAVIGATION_WIDTH_PX}px`;
+    },
+    /**
+     * The count each folder of the column shows (EXO-90415): the unread mail of the
+     * inbox (the plain inbox, whatever the badge counts) and of the spam, moved by the
+     * reads made here since the list was loaded; every message of the drafts.
+     *
+     * @returns {Object} {count, unread} by folder key
+     */
+    folderCounts() {
+      const counts = {};
+      this.folders.forEach(folder => {
+        if (UNREAD_COUNTED_FOLDERS.includes(folder.key)) {
+          counts[folder.key] = {
+            count: Math.max(0, (folder.unreadCount || 0) + (this.unreadAdjustments[folder.key] || 0)),
+            unread: true,
+          };
+        } else if (TOTAL_COUNTED_FOLDERS.includes(folder.key)) {
+          counts[folder.key] = { count: folder.count || 0, unread: false };
+        }
+      });
+      return counts;
+    },
+    /**
+     * The unread mail of each category over the loaded window of the listed folder
+     * (EXO-90415): the categories are assigned to cached mail, so this is what the
+     * client holds -- the same window a category view lists.
+     *
+     * @returns {Object} the count by category id
+     */
+    categoryUnreadCounts() {
+      const unread = (this.emailBox?.emails || []).filter(email => !email.read && !this.isOptimisticallyRemoved(email));
+      return Object.fromEntries(this.emailCategories.map(category => {
+        const ids = this.categorySubtrees[category.id] || [category.id];
+        return [category.id, unread.filter(email => (email.categoryIds || []).some(id => ids.includes(id))).length];
+      }));
     },
     /**
      * What the column's toggle does, for its tooltip and its accessible name.
@@ -1793,9 +1846,14 @@ export default {
       const emailIdsToUpdate = emailIds.filter(id => {
         const email = this.emails.find(e => e.mailRemoteId === id && (!folder || (e.folder || 'INBOX') === folder));
         if (!email) {
-          if (folder && !this.$emailConnectorMailBoxService.isReadOnlyFolder(folder)
-              && this.knownReadStatus(id, folder, knownRead) !== read) {
+          const known = folder && this.knownReadStatus(id, folder, knownRead);
+          if (folder && !this.$emailConnectorMailBoxService.isReadOnlyFolder(folder) && known !== read) {
             unlisted.push(id);
+            // Counted only when the change is known to be one: a message of unknown
+            // state may already have been read.
+            if (typeof known === 'boolean') {
+              this.adjustUnread(folder, read);
+            }
           }
           return false;
         }
@@ -1804,6 +1862,7 @@ export default {
         }
         if (email.read !== read) {
           this.$set(email, 'read', read);
+          this.adjustUnread(email.folder || 'INBOX', read);
           return true;
         }
         return false;
@@ -1816,6 +1875,30 @@ export default {
           .forEach(result => this.$set(result, 'read', read));
         this.$emailConnectorMailBoxService.updateEmailsReadStatus(unlisted, read, folder);
       }
+    },
+    /**
+     * Moves a folder's unread count by one message read or unread here, until the next
+     * load brings the server's count (EXO-90415).
+     *
+     * @param {String} folder the folder the message is numbered in
+     * @param {Boolean} read whether it was read (one fewer unread) or unread (one more)
+     * @returns {void}
+     */
+    adjustUnread(folder, read) {
+      this.$set(this.unreadAdjustments, folder, (this.unreadAdjustments[folder] || 0) + (read ? -1 : 1));
+    },
+    /**
+     * Reads each category's subcategories once the categories are known, for the
+     * column's unread counts. A category whose subcategories cannot be read counts on
+     * its own id alone.
+     *
+     * @returns {Promise<void>} resolved once every category is read
+     */
+    readCategorySubtrees() {
+      return Promise.all(this.emailCategories.map(category =>
+        Promise.resolve(this.$emailConnectorMailBoxService.getSubcategoryIds(category.id))
+          .catch(() => null)
+          .then(ids => this.$set(this.categorySubtrees, category.id, ids?.length ? ids : [category.id]))));
     },
     /**
      * The folder a message id belongs to — the ROW's own, which is the only one the
@@ -2631,6 +2714,9 @@ export default {
     async loadEmailBox() {
       const wasSyncing = this.syncInProgress;
       this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
+      // The folder list's unread counts are the server's again, the reads made here
+      // included.
+      this.unreadAdjustments = {};
       this.pruneRefreshPendingRows();
       // A folder opened while rows a "Move to..." filed into it are still on their way:
       // the move happened with another folder on screen, so the watch the Undo arms for

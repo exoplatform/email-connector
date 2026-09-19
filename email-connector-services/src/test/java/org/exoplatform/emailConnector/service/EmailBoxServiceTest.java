@@ -165,6 +165,7 @@ import org.exoplatform.emailConnector.event.EmailSentEvent;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
+import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
@@ -303,7 +304,7 @@ public class EmailBoxServiceTest {
   private static final String SENDER_THE_PROVIDER_NAMES = "technical@dav.example";
 
   /**
-   * The one per-test setup Sonar's S8745 allows: the six fixtures below, in this order,
+   * The one per-test setup Sonar's S8745 allows: the seven fixtures below, in this order,
    * each kept as its own method so its Javadoc says what it switches and why.
    */
   @BeforeEach
@@ -314,6 +315,7 @@ public class EmailBoxServiceTest {
     defaultTheAdministrationWideSyncSettingsOn();
     theProviderAnswersTheStoredAccount();
     theSyncResolvesAnAuthenticatorForItsWorkers();
+    countNothingInTheCacheByDefault();
   }
 
   /**
@@ -365,6 +367,16 @@ public class EmailBoxServiceTest {
     // must not read the database; unstubbed it answers null, which no worker could use.
     lenient().when(userEmailSettingService.authenticatorFor(any(), any())).thenReturn(new Authenticator() {
     });
+  }
+
+  /**
+   * An empty cache's folder counts for every listing in this class: the folder list
+   * reads them on each getEmailBox and getFolders, and an unstubbed mock answers null
+   * where the storage never does. Lenient like the defaults around it; the tests about
+   * the counts stub their own.
+   */
+  private void countNothingInTheCacheByDefault() {
+    lenient().when(emailBoxStorage.getFolderCounts(anyString())).thenReturn(new FolderMessageCounts(Map.of(), Map.of()));
   }
 
   /**
@@ -516,6 +528,37 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage, times(1)).getThreadSummaries(TEST_USER, "testEmail");
     assertEquals(summary, emailBox.getThreadSummaries().get("thread-1"));
     assertTrue(emailBox.getThreadSummaries().get("thread-1").hasDraft());
+  }
+
+  /**
+   * The listing's folder list carries each folder's unread mail beside its total, from
+   * the one grouped read of the cache -- what the full-screen folder column shows on the
+   * inbox and the spam (EXO-90415), with no endpoint of its own.
+   */
+  @Test
+  void getEmailBoxCarriesEachFoldersUnreadMail() throws Exception {
+    UserEmailSetting userEmailSetting = userEmailSetting();
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailBoxStorage.getFolderCounts(TEST_USER)).thenReturn(new FolderMessageCounts(Map.of(MailFolder.INBOX, 10,
+                                                                                               MailFolder.JUNK, 3,
+                                                                                               MailFolder.DRAFTS, 2),
+                                                                                        Map.of(MailFolder.INBOX, 4,
+                                                                                               MailFolder.JUNK, 3)));
+
+    EmailBox emailBox = emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX);
+
+    Map<String, MailFolderView> views = emailBox.getFolders()
+                                                .stream()
+                                                .collect(java.util.stream.Collectors.toMap(MailFolderView::getKey, view -> view));
+    assertEquals(4, views.get(MailFolder.INBOX).getUnreadCount());
+    assertEquals(10, views.get(MailFolder.INBOX).getCount());
+    assertEquals(3, views.get(MailFolder.JUNK).getUnreadCount());
+    assertEquals(0, views.get(MailFolder.DRAFTS).getUnreadCount(), "a folder with nothing unread says 0");
+    assertEquals(2, views.get(MailFolder.DRAFTS).getCount());
+    assertEquals(Map.of(MailFolder.INBOX, 10, MailFolder.JUNK, 3, MailFolder.DRAFTS, 2), emailBox.getFolderCounts(),
+                 "the legacy per-folder totals are the same read's");
+    verify(emailBoxStorage, never()).getFolderMessageCounts(anyString());
   }
 
   /**
@@ -9193,7 +9236,8 @@ public class EmailBoxServiceTest {
     state.setJunkFolderName("[Gmail]/Spam");
     doReturn(SettingValue.create(JsonUtils.toJsonString(state))).when(settingService)
                                                                 .get(any(Context.class), any(Scope.class), eq("emailBoxSyncState"));
-    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of(MailFolder.INBOX, 3, "CUSTOM:5", 2));
+    when(emailBoxStorage.getFolderCounts(TEST_USER)).thenReturn(new FolderMessageCounts(Map.of(MailFolder.INBOX, 3, "CUSTOM:5", 2),
+                                                                                    Map.of(MailFolder.INBOX, 1, "CUSTOM:5", 2)));
     EmailFolder factures = registeredFolder(5L, "Customers/Acme", true);
     factures.setDisplayName("Acme");
     when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(factures, registeredFolder(6L, "Projets", false)));
@@ -9207,6 +9251,9 @@ public class EmailBoxServiceTest {
     assertEquals("Acme", acme.getDisplayName());
     assertEquals("Customers/Acme", acme.getPath());
     assertEquals(2, acme.getCount());
+    assertEquals(2, acme.getUnreadCount());
+    assertEquals(1, list.getFolders().get(0).getUnreadCount(), "the inbox's unread mail rides the folder list (EXO-90415)");
+    assertEquals(0, list.getFolders().get(1).getUnreadCount(), "a folder with no cached mail has none unread");
     assertTrue(acme.isSyncEnabled());
     assertFalse(list.getFolders().get(3).isSyncEnabled());
     assertEquals(10, list.getMaxCustomFolders());
@@ -9672,7 +9719,6 @@ public class EmailBoxServiceTest {
     lenient().when(factures.getName()).thenReturn("Factures");
     IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
     Folder defaultFolder = givenAMailboxListing(factures, junk);
-    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
 
     MailFolderList list = emailBoxService.getFolders(TEST_USER, true);
 
@@ -9704,7 +9750,6 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new IllegalStateException("refused"));
-    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
     when(emailFolderStorage.getFolders(TEST_USER)).thenReturn(List.of(registeredFolder(5L, "Factures", true)));
 
     MailFolderList list = emailBoxService.getFolders(TEST_USER, true);
@@ -9774,7 +9819,6 @@ public class EmailBoxServiceTest {
     when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
     IMAPFolder junk = aHiddenFolder(new String[] { "\\Junk" }, "[Gmail]/Spam");
     givenAMailboxListing(junk);
-    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
     java.util.concurrent.atomic.AtomicReference<String> stored = new java.util.concurrent.atomic.AtomicReference<>(null);
     doAnswer(invocation -> stored.get() == null ? null : SettingValue.create(stored.get())).when(settingService)
                                                                                          .get(any(Context.class),
@@ -9815,7 +9859,6 @@ public class EmailBoxServiceTest {
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
     when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
     when(emailFolderStorage.getFolder(TEST_USER, 5L)).thenReturn(registeredFolder(5L, "Factures", true));
-    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of());
 
     for (org.junit.jupiter.api.function.Executable refused : List.<org.junit.jupiter.api.function.Executable> of(
         () -> emailBoxService.setCustomFolderSync(TEST_USER, 5L, true),
@@ -11483,7 +11526,7 @@ public class EmailBoxServiceTest {
   @Test
   void theScheduledViewFollowsDraftsOnlyWhenSomethingIsScheduled() throws Exception {
     givenAUsableMailbox();
-    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of(MailFolder.DRAFTS, 2));
+    when(emailBoxStorage.getFolderCounts(TEST_USER)).thenReturn(new FolderMessageCounts(Map.of(MailFolder.DRAFTS, 2), Map.of()));
     when(emailScheduledSendStorage.countListedAndAttention(TEST_USER)).thenReturn(new long[] { 3, 1 });
 
     List<MailFolderView> views = emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX).getFolders();
