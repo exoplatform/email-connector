@@ -664,10 +664,13 @@ export function linkEmailsToCategory(mailRemoteIds, categoryId, folder) {
  *
  * @param {Array<Number>} mailRemoteIds the messages to untag
  * @param {Number} categoryId the category id
+ * @param {String} folder the folder the ids are numbered in; INBOX when omitted
+ *   (EXO-90421, see linkEmailsToCategory)
  * @returns {Promise} resolves with the count of untagged emails
  */
-export function unlinkEmailsFromCategory(mailRemoteIds, categoryId) {
-  return fetch(`/email-connector/rest/email-box/categories/${categoryId}`, {
+export function unlinkEmailsFromCategory(mailRemoteIds, categoryId, folder) {
+  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box/categories/${categoryId}${query}`, {
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     method: 'DELETE',

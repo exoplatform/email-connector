@@ -28,7 +28,7 @@ import {
   hasDragPayload,
   startDrag,
 } from '../EmailConnectorMailBoxDragAndDrop.js';
-import { linkEmailsToCategory } from '../EmailConnectorMailBoxService.js';
+import { linkEmailsToCategory, unlinkEmailsFromCategory } from '../EmailConnectorMailBoxService.js';
 
 const FOLDERS = [
   { key: 'INBOX', type: 'BUILT_IN', syncEnabled: true },
@@ -130,6 +130,10 @@ describe('what a dragged row carries (EXO-90421)', () => {
     expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'JUNK' })).toBeNull();
     expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'DRAFTS' })).toBeNull();
   });
+
+  it('an All Mail hit is not dragged: the server moves nothing out of it and categorizes nothing in it', () => {
+    expect(dragPayloadOfSearchHit({ mailRemoteId: 4, folder: 'ALL_MAIL' })).toBeNull();
+  });
 });
 
 describe('where dragged mail may land (EXO-90421)', () => {
@@ -209,5 +213,17 @@ describe('the category assignment a drop sends (EXO-90421)', () => {
       '/email-connector/rest/email-box/categories/11',
     ]);
     expect(global.fetch.mock.calls[0][1]).toMatchObject({ method: 'POST', body: '[4]' });
+  });
+
+  it('removes a category in the folder named too, the inbox\'s request unchanged', async () => {
+    global.fetch = jest.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ unlinked: 1 }) }));
+
+    await unlinkEmailsFromCategory([4], 11, 'ARCHIVE');
+    await unlinkEmailsFromCategory([4], 11);
+
+    expect(global.fetch.mock.calls.map(([url, init]) => [url, init.method])).toEqual([
+      ['/email-connector/rest/email-box/categories/11?folder=ARCHIVE', 'DELETE'],
+      ['/email-connector/rest/email-box/categories/11', 'DELETE'],
+    ]);
   });
 });
