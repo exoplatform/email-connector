@@ -82,9 +82,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <!-- eslint-disable vuejs-accessibility/no-static-element-interactions -->
         <!-- data-thread-key is how the arrow keys find the row they stand on, and
              aria-current tells a screen reader which conversation the reader shows --
-             the one it shows, not the one the keyboard highlight is passing over. -->
+             the one it shows, not the one the keyboard highlight is passing over. No
+             outline: the arrow keys focus the row, and the row's own grey background
+             (lit on focus, see isHover) is the cue; the browser's ring drawn over it
+             read as a stray blue box. Inline because this webapp bundles no CSS. -->
         <div
           class="clickable"
+          style="outline: none;"
           tabindex="0"
           :data-thread-key="threadKey"
           :aria-current="inReader ? 'true' : null"
