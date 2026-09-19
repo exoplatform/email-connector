@@ -21,6 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="selectMode"
       :indeterminate="indeterminate"
       color="#707070"
+      :background-color="selectAllBackground"
       hide-details
       :label="$t('emailConnector.mailBox.list.drawer.selectAll')"
       v-model="selectedAll"
@@ -83,6 +84,18 @@ export default {
       set(value) {
         this.onSelectAllChange(value);
       }
+    },
+    /**
+     * The select-all row's background: none in full screen, where the list sits on the
+     * drawer's grey pane and the platform paints every input slot of a drawer white
+     * (its drawer mixin's .v-input__slot) -- Vuetify's transparent class outranks that.
+     * The row scrolls with the list, so it needs no opaque background. The narrow
+     * layout keeps the drawer's own, as it always had (EXO-90415).
+     *
+     * @returns {String} the Vuetify background colour, or null for the default
+     */
+    selectAllBackground() {
+      return this.expanded ? 'transparent' : null;
     },
   },
   methods: {
