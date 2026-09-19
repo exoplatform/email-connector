@@ -24,6 +24,9 @@ import { shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxScheduledList from '../EmailConnectorMailBoxScheduledList.vue';
 import EmailConnectorMailBoxScheduledListItem from '../EmailConnectorMailBoxScheduledListItem.vue';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
+import EmailConnectorMailBoxDrawerThreadDraft from '../EmailConnectorMailBoxDrawerThreadDraft.vue';
+import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
+import EmailConnectorMailBoxDrawerListItemDetail from '../EmailConnectorMailBoxDrawerListItemDetail.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 
 Vue.config.ignoredElements.push(/^email-connector-/, 'extension-registry-components', 'exo-confirm-dialog', 'exo-drawer', 'exo-modal');
@@ -45,6 +48,7 @@ function serviceStub(overrides) {
     scheduledStateLine: emailConnectorMailBoxService.scheduledStateLine,
     scheduledActions: emailConnectorMailBoxService.scheduledActions,
     scheduledErrorMessage: emailConnectorMailBoxService.scheduledErrorMessage,
+    scheduledReaderRow: emailConnectorMailBoxService.scheduledReaderRow,
     folderLabel: emailConnectorMailBoxService.folderLabel,
     folderIcon: emailConnectorMailBoxService.folderIcon,
     formatCount: emailConnectorMailBoxService.formatCount,
@@ -111,6 +115,14 @@ async function mountList(answers = {}, propsData = {}) {
   return { wrapper, service, emitted };
 }
 
+// A row's Vuetify parts as plain elements that still bubble: the item listens natively,
+// the button and the menu's items emit their click as Vuetify's do.
+const ROW_STUBS = {
+  'v-menu': { template: '<div><slot name="activator" :on="{}" :attrs="{}" /><slot /></div>' },
+  'v-btn': { template: '<button type="button" v-bind="$attrs" @click="$emit(\'click\', $event)"><slot /></button>' },
+  'v-list-item': { template: '<div v-bind="$attrs" @click="$emit(\'click\', $event)"><slot /></div>' },
+};
+
 /**
  * Mounts a row.
  *
@@ -121,10 +133,7 @@ function mountRow(propsData) {
   return shallowMount(EmailConnectorMailBoxScheduledListItem, {
     propsData,
     mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService },
-    stubs: {
-      'v-menu': { template: '<div><slot name="activator" :on="{}" :attrs="{}" /><slot /></div>' },
-      'v-btn': { template: '<button type="button" v-bind="$attrs" @click="$emit(\'click\', $event)"><slot /></button>' },
-    },
+    stubs: ROW_STUBS,
   });
 }
 
@@ -187,5 +196,163 @@ describe('the Scheduled view sits on the pane\'s background and has no loading b
     wrapper.findComponent(listStub).vm.$emit('loading', true);
     await wrapper.vm.$nextTick();
     expect(drawer.props('loading')).toBe(true);
+  });
+});
+
+describe('a row of the Scheduled view opens its mail read-only, as a folder row opens its mail (EXO-90434)', () => {
+  it('opens on a click, on Enter and on Space, and not from its menu', async () => {
+    const row = mountRow({ scheduled: scheduledRow('d1') });
+    await row.trigger('click');
+    await row.trigger('keydown.enter');
+    await row.trigger('keydown.space');
+    expect(row.emitted('open')).toEqual([[row.props('scheduled')], [row.props('scheduled')], [row.props('scheduled')]]);
+
+    await row.find('.scheduled-email-menu').trigger('click');
+    await row.find('.scheduled-email-menu').trigger('keydown.enter');
+    expect(row.emitted('open')).toHaveLength(3);
+    expect(row.attributes('tabindex')).toBe('0');
+    expect(row.attributes('aria-label')).toBe('emailConnector.mailBox.scheduled.open|Subject d1');
+  });
+
+  it('is lit like a folder row: under the pointer, and while the full-screen reader shows it', async () => {
+    const row = mountRow({ scheduled: scheduledRow('d1'), expanded: true });
+    expect(row.classes()).not.toContain('grey-lighten1-background-opacity-3');
+    await row.setProps({ opened: true });
+    expect(row.classes()).toContain('grey-lighten1-background-opacity-3');
+    expect(row.attributes('aria-current')).toBe('true');
+    const narrow = mountRow({ scheduled: scheduledRow('d1') });
+    await narrow.trigger('mouseenter');
+    expect(narrow.classes()).toContain('light-grey-background-color');
+  });
+
+  it('opens beside the list in full screen, in the mail drawer otherwise, on the draft, read-only, with its row', async () => {
+    const full = await mountList({}, { compact: true });
+    full.wrapper.vm.open(scheduledRow('d1'));
+    const [event, row] = full.emitted[full.emitted.length - 1];
+    expect(event).toBe('open-email-thread-content');
+    expect(row).toEqual(expect.objectContaining({
+      draftLocalId: 'd1', subject: 'Subject d1', scheduled: true, scheduledStatus: 'SCHEDULED', read: true,
+      scheduledTimeZone: 'Europe/Paris', scheduledRow: scheduledRow('d1'),
+    }));
+    expect(row.content.body).toBe('Snippet d1');
+    expect(full.wrapper.vm.openedId).toBe('d1');
+
+    const narrow = await mountList();
+    narrow.wrapper.vm.open(scheduledRow('d2'));
+    const [narrowEvent, narrowRow, narrowRows] = narrow.emitted[narrow.emitted.length - 1];
+    expect(narrowEvent).toBe('open-email-thread-drawer');
+    expect(narrowRows).toEqual([narrowRow]);
+  });
+
+  it('escapes the snippet it shows as the body, and reads the conversation when the row names it', () => {
+    const row = emailConnectorMailBoxService.scheduledReaderRow(scheduledRow('d1', { snippet: 'a <b> & c', threadId: 't1' }));
+    expect(row.content.body).toBe('a &lt;b&gt; &amp; c');
+    expect(row.threadId).toBe('t1');
+  });
+
+  it('tells the reader what became of the opened mail, and forgets it once it left the view', async () => {
+    let rows = [scheduledRow('d1'), scheduledRow('d2')];
+    const { wrapper, emitted } = await mountList({ getScheduledEmails: jest.fn(() => Promise.resolve(rows)) }, { compact: true });
+    wrapper.vm.open(scheduledRow('d1'));
+    rows = [scheduledRow('d1', { status: 'FAILED', lastError: 'NETWORK' }), scheduledRow('d2')];
+    await wrapper.vm.reload();
+    const updated = emitted.filter(event => event[0] === 'scheduled-email-updated');
+    expect(updated[0][1]).toBe('d1');
+    expect(updated[0][2].scheduledStatus).toBe('FAILED');
+
+    rows = [scheduledRow('d2')];
+    await wrapper.vm.reload();
+    expect(emitted.filter(event => event[0] === 'scheduled-email-updated').pop()).toEqual(['scheduled-email-updated', 'd1', null]);
+    expect(wrapper.vm.openedId).toBeNull();
+  });
+
+  it('runs the actions the reader offers for the opened mail, as its own', async () => {
+    const { wrapper, emitted } = await mountList();
+    wrapper.vm.$root.$emit('scheduled-email-action', 'edit', scheduledRow('d1'));
+    expect(emitted).toContainEqual(['edit-scheduled-email', { draftLocalId: 'd1', scheduledDate: Date.UTC(2026, 9, 1, 6, 0) }]);
+  });
+});
+
+describe('the opened scheduled mail in the reader (EXO-90434, PO decision (a))', () => {
+  const DRAFT = {
+    draftLocalId: 'd1',
+    to: [{ address: 'bob@host' }],
+    content: { body: '<p>See you on Monday, with the slides</p>', attachments: [{ name: 'slides.pdf' }] },
+    scheduled: true,
+    scheduledDate: Date.UTC(2026, 9, 1, 6, 0),
+    scheduledTimeZone: 'Europe/Paris',
+    scheduledStatus: 'FAILED',
+  };
+
+  /**
+   * Mounts the draft strip.
+   *
+   * @param {Object} propsData its props
+   * @returns {Object} the wrapper
+   */
+  function mountStrip(propsData) {
+    return shallowMount(EmailConnectorMailBoxDrawerThreadDraft, {
+      propsData,
+      mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+      stubs: ROW_STUBS,
+    });
+  }
+
+  it('shows the whole text, the attachments, when it goes and why it was not sent, with the row\'s actions', async () => {
+    const scheduledRowOfIt = scheduledRow('d1', { status: 'FAILED', lastError: 'NETWORK' });
+    const strip = mountStrip({ draft: DRAFT, scheduledRow: scheduledRowOfIt });
+    expect(strip.find('.scheduled-draft-text').text()).toBe('See you on Monday, with the slides');
+    expect(strip.find('.scheduled-draft-attachment').text()).toBe('fa-paperclip slides.pdf');
+    expect(strip.find('.scheduled-draft-state').text())
+      .toBe('emailConnector.mailBox.scheduled.notSent|emailConnector.mailBox.scheduled.error.NETWORK');
+    expect(strip.find('.scheduled-draft-edit').exists()).toBe(false);
+    const actions = strip.findAll('.scheduled-draft-action');
+    expect(actions.wrappers.map(action => action.attributes('data-action'))).toEqual(['retry', 'edit', 'reschedule', 'moveToDrafts', 'discard']);
+    await actions.at(2).trigger('click');
+    expect(strip.emitted('action')).toEqual([['reschedule']]);
+  });
+
+  it('stays the conversation\'s compact strip, with its lone Edit, when not opened from the view', () => {
+    const strip = mountStrip({ draft: DRAFT });
+    expect(strip.find('.scheduled-draft-menu').exists()).toBe(false);
+    expect(strip.find('.scheduled-draft-edit').exists()).toBe(true);
+    expect(strip.find('.scheduled-draft-attachment').exists()).toBe(false);
+  });
+
+  it('gives the view\'s row to the opened draft only, and hands its actions to the view', () => {
+    const emitted = [];
+    const row = scheduledRow('d1');
+    const vm = { email: { draftLocalId: 'd1', scheduledRow: row }, $root: { $emit: (...args) => emitted.push(args) } };
+    const { scheduledRowOf, onScheduledAction } = EmailConnectorMailBoxDrawerThreadContent.methods;
+    expect(scheduledRowOf.call(vm, { draftLocalId: 'd1' })).toBe(row);
+    expect(scheduledRowOf.call(vm, { draftLocalId: 'd9' })).toBeNull();
+    expect(scheduledRowOf.call({ email: { draftLocalId: 'd1' } }, { draftLocalId: 'd1' })).toBeNull();
+    onScheduledAction.call(vm, 'sendNow');
+    expect(emitted).toEqual([['scheduled-email-action', 'sendNow', row]]);
+  });
+
+  it('follows the mail in the full-screen reader, and lets it go once it left the view', () => {
+    const { onScheduledEmailUpdated } = EmailConnectorMailBoxDrawer.methods;
+    const opened = { draftLocalId: 'd1', scheduledRow: scheduledRow('d1') };
+    const vm = { expanded: true, email: opened, pinnedEmail: true, selectEmailPlaceHolder: false };
+    const moved = { draftLocalId: 'd1', scheduledRow: scheduledRow('d1', { status: 'FAILED' }) };
+    onScheduledEmailUpdated.call(vm, 'd1', moved);
+    expect(vm.email).toBe(moved);
+    onScheduledEmailUpdated.call(vm, 'd2', null);
+    expect(vm.email).toBe(moved);
+    onScheduledEmailUpdated.call(vm, 'd1', null);
+    expect(vm).toEqual(expect.objectContaining({ email: null, pinnedEmail: false, selectEmailPlaceHolder: true }));
+  });
+
+  it('follows the mail in the mail drawer, which closes once it left the view', () => {
+    const { onScheduledEmailUpdated } = EmailConnectorMailBoxDrawerListItemDetail.methods;
+    const close = jest.fn();
+    const vm = { emailDetailDrawer: true, email: { draftLocalId: 'd1', scheduledRow: scheduledRow('d1') }, emails: [], close };
+    const moved = { draftLocalId: 'd1', scheduledRow: scheduledRow('d1') };
+    onScheduledEmailUpdated.call(vm, 'd1', moved);
+    expect(vm.email).toBe(moved);
+    expect(vm.emails).toEqual([moved]);
+    onScheduledEmailUpdated.call(vm, 'd1', null);
+    expect(close).toHaveBeenCalled();
   });
 });

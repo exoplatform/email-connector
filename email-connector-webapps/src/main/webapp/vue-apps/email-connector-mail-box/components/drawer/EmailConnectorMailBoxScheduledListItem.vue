@@ -17,11 +17,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- One mail of the "Scheduled" view (EXO-90434): who it goes to, what it says, when
        it goes, and where it stands. No checkbox, no category, no drag: a scheduled mail
-       is acted on one at a time, through its own menu. -->
+       is acted on one at a time, through its own menu. A click, Enter or Space opens it
+       read-only in the reader, as a folder's row opens its mail; the listeners are
+       native so the item does not turn into a Vuetify link with a hover tint of its own:
+       its background follows a folder row's (backgroundClass). No outline, for the same
+       reason as a folder row: the grey lit on focus is the cue. -->
   <v-list-item
     :data-draft-local-id="scheduled.draftLocalId"
-    class="px-3 py-1 scheduled-email-row"
-    two-line>
+    :class="backgroundClass"
+    :aria-current="opened ? 'true' : null"
+    :aria-label="openLabel"
+    class="px-3 py-1 clickable scheduled-email-row"
+    style="outline: none;"
+    tabindex="0"
+    two-line
+    @mouseenter.native="hover = true"
+    @mouseleave.native="hover = false"
+    @focusin.native="hover = true"
+    @focusout.native="hover = false"
+    @click.native="open"
+    @keydown.native.enter="onKey"
+    @keydown.native.space="onKey">
     <v-list-item-icon class="me-3 my-auto">
       <v-icon size="18" :class="stateLine ? stateLine.color : 'icon-default-color'">fa-clock</v-icon>
     </v-list-item-icon>
@@ -59,7 +75,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             icon
             small
             v-bind="attrs"
-            v-on="on">
+            v-on="on"
+            @click.stop
+            @keydown.stop>
             <v-icon size="16" class="icon-default-color">fas fa-ellipsis-v</v-icon>
           </v-btn>
         </template>
@@ -83,19 +101,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { personLabel } from '../../js/EmailRecipientDisplay.js';
-
-// Each action's icon and label key; the menu shows the ones the mail's state offers
-// (scheduledActions), in that order.
-const ACTIONS = {
-  edit: { icon: 'fa-pen', label: 'emailConnector.mailBox.scheduled.action.edit' },
-  reschedule: { icon: 'fa-calendar-alt', label: 'emailConnector.mailBox.scheduled.action.reschedule' },
-  sendNow: { icon: 'fa-paper-plane', label: 'emailConnector.mailBox.scheduled.action.sendNow' },
-  retry: { icon: 'fa-redo', label: 'emailConnector.mailBox.scheduled.action.retry' },
-  sendAgain: { icon: 'fa-redo', label: 'emailConnector.mailBox.scheduled.action.sendAgain' },
-  cancel: { icon: 'fa-ban', label: 'emailConnector.mailBox.scheduled.action.cancel' },
-  moveToDrafts: { icon: 'fa-file-alt', label: 'emailConnector.mailBox.scheduled.action.moveToDrafts' },
-  discard: { icon: 'fa-trash', label: 'emailConnector.mailBox.scheduled.action.discard' },
-};
+import { SCHEDULED_ACTIONS } from '../../js/EmailConnectorScheduledSendService.js';
 
 export default {
   props: {
@@ -110,11 +116,41 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Whether the reader shows this mail.
+    opened: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether it sits in the full-screen list column, where the opened row stays lit.
+    expanded: {
+      type: Boolean,
+      default: false,
+    },
   },
   data: () => ({
     menu: false,
+    hover: false,
   }),
   computed: {
+    /**
+     * The row's background, a folder row's own (EmailConnectorMailBoxDrawerListItem):
+     * nothing at rest, so the pane shows through; lit under the pointer or the focus,
+     * and in full screen while the reader shows it.
+     *
+     * @returns {String} the background class, or nothing
+     */
+    backgroundClass() {
+      if (this.expanded && (this.hover || this.opened)) {
+        return 'grey-lighten1-background-opacity-3';
+      }
+      return this.hover ? 'light-grey-background-color' : '';
+    },
+    /**
+     * @returns {String} what a screen reader announces the row as: opening it
+     */
+    openLabel() {
+      return this.$t('emailConnector.mailBox.scheduled.open', { 0: this.subject });
+    },
     /**
      * Who the mail goes to, or a placeholder when nobody -- which the server refuses to
      * schedule, but a row read back from a damaged draft must still render.
@@ -164,7 +200,31 @@ export default {
      */
     actions() {
       return this.$emailConnectorMailBoxService.scheduledActions(this.scheduled)
-        .map(name => ({ name, icon: ACTIONS[name].icon, label: this.$t(ACTIONS[name].label) }));
+        .map(name => ({ name, icon: SCHEDULED_ACTIONS[name].icon, label: this.$t(SCHEDULED_ACTIONS[name].label) }));
+    },
+  },
+  methods: {
+    /**
+     * Opens the mail read-only in the reader.
+     *
+     * @returns {void}
+     */
+    open() {
+      this.$emit('open', this.scheduled);
+    },
+    /**
+     * Opens the mail on Enter or Space pressed on the row itself -- not on its menu
+     * button, whose own keys open the menu.
+     *
+     * @param {KeyboardEvent} event the key
+     * @returns {void}
+     */
+    onKey(event) {
+      if (event.target !== event.currentTarget) {
+        return;
+      }
+      event.preventDefault();
+      this.open();
     },
   },
 };
