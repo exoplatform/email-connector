@@ -117,9 +117,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          screen once expanded, an empty folder included: the column is how the user
          leaves it. The list -- folder or search results -- is on the pane's platform
          grey, like exo-drawer's header strip above it; the column is a shade darker
-         (the platform's grey-background, brandable), a divider between them, open and
-         as a rail; the reader beside the pane stays white. An empty list says so in the
-         list, under its chips, not in the reader. -->
+         (NAVIGATION_BACKGROUND), a divider between them, open and as a rail; the reader
+         beside the pane stays white. An empty list says so in the
+         list, under its chips, not in the reader. The chips row and the column's first
+         row share one height (LIST_TOP_ROW_HEIGHT), so they sit on one line. -->
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <div class="d-flex flex-row fill-height">
         <email-connector-mail-box-drawer-navigation
@@ -130,8 +131,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :folder-counts="folderCounts"
           :category-unread-counts="categoryUnreadCounts"
           :rail="navigationRail"
-          :style="{ width: navigationWidth, minWidth: navigationWidth }"
-          class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing grey-background" />
+          :style="{ width: navigationWidth, minWidth: navigationWidth, backgroundColor: NAVIGATION_BACKGROUND }"
+          class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing" />
         <v-divider vertical />
         <div
           ref="expandedListPane"
@@ -152,7 +153,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :category-view-id="categoryViewId"
               :favorite-only="favoriteOnly"
               :unread-only="unreadOnly"
-              class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
+              :style="{ minHeight: LIST_TOP_ROW_HEIGHT }"
+              class="full-width border-box-sizing application-border application-border-radius px-3"
               @toggle-important="toggleImportantView"
               @toggle-favorite="onToggleFavoriteFilter"
               @toggle-unread="toggleUnreadFilter" />
@@ -166,7 +168,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :indeterminate="indeterminate"
               expanded
               @update:selected-emails="selectedEmails = $event" />
-            <email-connector-mail-box-drawer-no-email v-else compact />
+            <email-connector-mail-box-drawer-no-email
+              v-else
+              :folder-name="folderLabelOf(currentFolder)"
+              :filtered="hasActiveFilters"
+              compact
+              @clear-filters="clearFilters" />
             <div
               v-if="customFolderWindow"
               class="caption text-sub-title text-center py-2">
@@ -265,6 +272,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import { LIST_TOP_ROW_HEIGHT } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 
 // The drawer's width in its narrow layout, and the list's in the full-screen left pane:
@@ -294,6 +302,16 @@ const TOTAL_COUNTED_FOLDERS = ['DRAFTS'];
 // folder created or renamed (its name drawer), one deleted or opted in or out, the
 // drawer closed.
 const FOLDERS_CHANGED_EVENTS = ['email-folders-list-changed', 'email-folders-saved', 'email-folders-updated'];
+
+// The folder column's shade: a light grey veil over the pane, so the column is darker
+// than the list in any branding -- the platform's default grey-lighten1 (#707070) at the
+// 8 % of its greyColorLighten1Opacity2 tint, the family of the opened row's 20 %.
+// Spelled out rather than read from the brandable variable, which a branding could set
+// to anything, and inline, as the add-on has no CSS loader and no platform helper class
+// carries this tint. Nor could a class have done it: the column's v-list carried
+// Vuetify's .transparent, whose .v-application rule outranked grey-background and left
+// the column the pane's own grey (EXO-90415, PO feedback).
+const NAVIGATION_BACKGROUND = 'rgba(112, 112, 112, 0.08)';
 
 // Where the user's own choice of column or rail is kept, in this browser only.
 const NAVIGATION_RAIL_STORAGE_KEY = 'emailConnector.mailBox.navigationRail';
@@ -394,6 +412,9 @@ export default {
       layoutExpanded: false,
       // Whether the full-screen folder column is folded to an icon rail (EXO-90415).
       navigationRail: initialNavigationRail(),
+      NAVIGATION_BACKGROUND,
+      // The chips row's height, which the folder column's first row shares.
+      LIST_TOP_ROW_HEIGHT,
       // The unread mail read or unread here since the folder list was last loaded, by
       // folder: the counts the server gave move with the user's own reads until the
       // next load brings its own.
@@ -937,6 +958,15 @@ export default {
     // The category the list is switched to, or null outside any category view.
     categoryView() {
       return this.emailCategories.find(category => category.id === this.categoryViewId) || null;
+    },
+    /**
+     * Whether a chip or a category view narrows the list: the full-screen empty list
+     * then says so, and offers to clear them (EXO-90415).
+     *
+     * @returns {Boolean} true when a filter is on
+     */
+    hasActiveFilters() {
+      return this.favoriteOnly || this.unreadOnly || !!this.categoryViewId;
     },
     // The header filter is the platform's own (exo-drawer); it hides the go-back
     // button, so it steps aside while select mode needs that button.
@@ -2065,6 +2095,24 @@ export default {
     openCategoryView(categoryId) {
       this.filtersTouched = true;
       this.categoryViewId = this.categoryViewId === categoryId ? null : categoryId;
+    },
+    /**
+     * Clears every filter narrowing the list -- the category view, the Unread and
+     * Favorites chips -- through the very toggles the chips and the view use, so the
+     * list is listed again as the folder holds it (the empty list's "Clear filters").
+     *
+     * @returns {void}
+     */
+    clearFilters() {
+      if (this.categoryViewId) {
+        this.openCategoryView(this.categoryViewId);
+      }
+      if (this.unreadOnly) {
+        this.toggleUnreadFilter();
+      }
+      if (this.favoriteOnly) {
+        this.onToggleFavoriteFilter();
+      }
     },
     // "Select several" from the ⋮ menu: enter the same multi-select mode a row
     // checkbox starts, with nothing selected yet.
