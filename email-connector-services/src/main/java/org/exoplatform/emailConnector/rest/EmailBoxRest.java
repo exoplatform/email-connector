@@ -1088,10 +1088,22 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Removes a category from emails. The UIDs are numbered within {@code folder}
+   * (EXO-90421), so a category is taken off the mail it was put on, not off the inbox
+   * mail that happens to carry the same number.
+   *
+   * @param request the caller
+   * @param categoryId the category to unlink
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}
+   * @param folder the folder the UIDs are numbered in; INBOX when omitted
+   * @return how many emails were unlinked, as {@code unlinked}
+   */
   @DeleteMapping("/categories/{categoryId}")
   @Secured("users")
-  @Operation(summary = "Removes a category from emails", method = "DELETE", description = "Unlinks the given emails (by IMAP id) from a category")
+  @Operation(summary = "Removes a category from emails", method = "DELETE", description = "Unlinks the given emails (IMAP UIDs numbered within the folder parameter, INBOX when omitted) from a category. Answers 400 emailConnector.folder.notBrowsable for a folder that is not a listable one")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "A folder that is not a listable one"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
   public Map<String, Integer> unlinkEmailsFromCategory(HttpServletRequest request,
                                                        @Parameter(description = "Category id", required = true)
@@ -1099,14 +1111,19 @@ public class EmailBoxRest {
                                                        long categoryId,
                                                        @Parameter(description = "Email remote ids", required = true)
                                                        @RequestBody
-                                                       List<Long> mailRemoteIds) {
+                                                       List<Long> mailRemoteIds,
+                                                       @Parameter(description = "The folder the UIDs are numbered in; INBOX when omitted")
+                                                       @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                       String folder) {
     try {
-      int unlinked = emailBoxService.unlinkEmailsFromCategory(mailRemoteIds, categoryId, request.getRemoteUser());
+      int unlinked = emailBoxService.unlinkEmailsFromCategory(mailRemoteIds, categoryId, request.getRemoteUser(), folder);
       Map<String, Integer> response = new HashMap<>();
       response.put("unlinked", unlinked);
       return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 

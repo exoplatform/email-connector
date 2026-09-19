@@ -2850,11 +2850,15 @@ export default {
         this.stopAutoRefreshWhenIdle();
       }
     },
-    // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
-    // A category was assigned/removed from the detail view, or by a drop on the folder
-    // column; patch the matching emails the main list holds so the categories filter
-    // reflects it live. A drop names the folder its UIDs are numbered in, and only that
-    // folder's rows are patched (EXO-90421): the same UID elsewhere is another message.
+    /**
+     * A category was assigned or removed -- from the reader's category bar, or by a drop
+     * on the folder column: patches the matching rows the list holds, so the categories
+     * filter reflects it live. Only the rows of the folder the UIDs are numbered in, when
+     * the emitter names it (EXO-90421): the same UID elsewhere is another message.
+     *
+     * @param {Object} update {mailRemoteIds, categoryId, assign, folder}
+     * @returns {void}
+     */
     onCategoriesUpdated({ mailRemoteIds, categoryId, assign, folder }) {
       const targetIds = new Set(mailRemoteIds || []);
       (this.emailBox?.emails || []).forEach(email => {

@@ -6441,10 +6441,17 @@ public class EmailBoxService {
    * as the given user (the category ACL is enforced by CategoryLinkService). Emails
    * already in the category are skipped. Returns the number of emails newly linked.
    * <p>
-   * INBOX-scoped, and said out loud rather than defaulted: categories are offered on
-   * the inbox listing only. A UID from another folder finds no row here and is skipped
-   * — a mislabelled or unlabelled message, never a wrong write to the mail server, so
-   * this stayed out of EXO-89367's reach.
+   * The UIDs are the INBOX's, said out loud rather than defaulted: this is the call the
+   * AI categorizer and the MCP tool make, both on inbox mail. A caller holding UIDs of
+   * another folder -- the reader's category bar, a drop on the folder column -- says
+   * which with {@link #linkEmailsToCategory(List, long, String, String)} (EXO-90421),
+   * because a UID resolved in the wrong folder labels another message.
+   *
+   * @param mailRemoteIds the INBOX UIDs to tag
+   * @param categoryId the category id
+   * @param username the mailbox owner, acting
+   * @return the number of emails newly linked
+   * @throws IllegalAccessException if the user may not read their mailbox or use the category
    */
   public int linkEmailsToCategory(List<Long> mailRemoteIds, long categoryId, String username) throws IllegalAccessException {
     return linkEmailsToCategory(mailRemoteIds, categoryId, username, MailFolder.INBOX);
@@ -6516,15 +6523,48 @@ public class EmailBoxService {
    * given user. Emails not currently in the category are skipped. Returns the number
    * of emails effectively unlinked.
    * <p>
-   * INBOX-scoped for the reason {@link #linkEmailsToCategory} gives.
+   * The UIDs are the INBOX's, for the reason {@link #linkEmailsToCategory(List, long, String)}
+   * gives; {@link #unlinkEmailsFromCategory(List, long, String, String)} takes another folder's.
+   *
+   * @param mailRemoteIds the INBOX UIDs to untag
+   * @param categoryId the category id
+   * @param username the mailbox owner, acting
+   * @return the number of emails effectively unlinked
+   * @throws IllegalAccessException if the user may not read their mailbox or use the category
    */
   public int unlinkEmailsFromCategory(List<Long> mailRemoteIds, long categoryId, String username) throws IllegalAccessException {
+    return unlinkEmailsFromCategory(mailRemoteIds, categoryId, username, MailFolder.INBOX);
+  }
+
+  /**
+   * {@link #unlinkEmailsFromCategory(List, long, String)} for UIDs numbered in a given
+   * folder: the other half of {@link #linkEmailsToCategory(List, long, String, String)}
+   * (EXO-90421). A category put on an Archive or custom-folder mail is taken off THAT
+   * mail, never off the inbox mail that carries the same number.
+   *
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to untag
+   * @param categoryId the category id
+   * @param username the mailbox owner, acting
+   * @param folder the folder the UIDs are numbered in; blank means INBOX
+   * @return the number of emails effectively unlinked
+   * @throws IllegalAccessException if the user may not read their mailbox or use the category
+   * @throws IllegalArgumentException {@code emailConnector.folder.notBrowsable} for a
+   *           folder that is not a listable one
+   */
+  public int unlinkEmailsFromCategory(List<Long> mailRemoteIds,
+                                      long categoryId,
+                                      String username,
+                                      String folder) throws IllegalAccessException {
+    String actingFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+    if (!MailFolder.isBrowsable(actingFolder)) {
+      throw new IllegalArgumentException("emailConnector.folder.notBrowsable");
+    }
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
       return 0;
     }
     int unlinked = 0;
     for (Long mailRemoteId : mailRemoteIds) {
-      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, MailFolder.INBOX, false, false, false, false);
+      Email email = getEmailByMailRemoteIdAndUserId(mailRemoteId, username, actingFolder, false, false, false, false);
       if (email == null) {
         continue;
       }

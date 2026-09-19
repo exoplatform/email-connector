@@ -42,7 +42,6 @@ export default {
     },
   },
   created() {
-    this.onEmailDragStart = payload => this.emailDrag = payload || null;
     this.$root.$on('email-drag-start', this.onEmailDragStart);
     this.$root.$on('email-drag-end', this.endEmailDrag);
     this.$root.$on('categorize-email', this.categorizeEmails);
@@ -57,6 +56,15 @@ export default {
   },
   methods: {
     /**
+     * Remembers the mail a row or a search hit started dragging.
+     *
+     * @param {Object} payload the dragged {folder, ids}
+     * @returns {void}
+     */
+    onEmailDragStart(payload) {
+      this.emailDrag = payload || null;
+    },
+    /**
      * Forgets the mail being dragged.
      *
      * @returns {void}
@@ -69,7 +77,9 @@ export default {
      * by the UIDs AND the folder they are numbered in (a UID resolved in another folder
      * is another message, EXO-90416). The mail stays where it is; its rows take the
      * category at once, and a short toast says it was done -- the drop has no other
-     * visible effect. A refused request says so, the way the other actions do.
+     * visible effect -- in the list, and in the reader when it shows that mail (the
+     * category bar follows email-categories-updated). A refused request says so, the
+     * way the other actions do.
      *
      * @param {Array<Number>} mailRemoteIds the IMAP UIDs, within `folder`
      * @param {Number} categoryId the category
@@ -80,7 +90,7 @@ export default {
       const category = (this.emailCategories || []).find(candidate => candidate.id === categoryId);
       return this.$emailConnectorMailBoxService.linkEmailsToCategory(mailRemoteIds, categoryId, folder)
         .then(() => {
-          this.onCategoriesUpdated({ mailRemoteIds, categoryId, assign: true, folder });
+          this.$root.$emit('email-categories-updated', { mailRemoteIds, categoryId, assign: true, folder });
           document.dispatchEvent(new CustomEvent('alert-message', {detail: {
             alertType: 'success',
             alertMessage: this.$t('emailConnector.mailBox.list.drawer.categorize.email.success', { 0: category?.name || '' }),
