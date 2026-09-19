@@ -109,11 +109,49 @@ export default {
     },
   },
   created() {
-    this.$root.$on('set-opened', (mailRemoteId) => {
+    this.onSetOpened = (mailRemoteId) => {
       this.openedEmailId = mailRemoteId;
-    });
+    };
+    this.$root.$on('set-opened', this.onSetOpened);
+  },
+  beforeDestroy() {
+    // The list is rebuilt each time the drawer switches between its narrow and wide
+    // layouts; a listener left on the root would keep every former list alive.
+    this.$root.$off('set-opened', this.onSetOpened);
   },
   methods: {
+    /**
+     * Brings one row into view and gives it the keyboard focus -- the arrow keys'
+     * way of walking the list (EXO-90414, see EmailConnectorMailBoxListNavigation).
+     * <p>
+     * A row beyond the rendered window is built first, and so is the next page when
+     * the row is the last one built: that is the keyboard's equivalent of scrolling
+     * the sentinel into view, so walking down never stops at the edge of the window.
+     * The focus is placed without the browser's own scroll, which would centre the
+     * row; `nearest` moves the list only as far as needed.
+     *
+     * @param {String} threadKey the row's key, as groupEmailsByThread gives it
+     * @returns {Promise<void>} resolved once the row has the focus
+     */
+    async revealThread(threadKey) {
+      const index = this.threads.findIndex(thread => String(thread.threadId) === String(threadKey));
+      if (index < 0) {
+        return;
+      }
+      if (index >= this.renderedThreadCount - 1 && this.hasMoreThreads) {
+        this.renderedThreadCount = Math.max(this.renderedThreadCount, index + 1) + THREAD_RENDER_PAGE_SIZE;
+      }
+      await this.$nextTick();
+      const row = Array.from(this.$el.querySelectorAll('[data-thread-key]'))
+        .find(element => element.getAttribute('data-thread-key') === String(threadKey));
+      if (!row) {
+        return;
+      }
+      row.focus({ preventScroll: true });
+      if (row.scrollIntoView) {
+        row.scrollIntoView({ block: 'nearest' });
+      }
+    },
     /**
      * Grows the window by one page when the sentinel comes into view.
      * <p>

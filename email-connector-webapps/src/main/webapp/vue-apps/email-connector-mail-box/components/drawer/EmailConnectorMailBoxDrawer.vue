@@ -37,6 +37,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @go-back="cancelSelectMode"
     @confirm-close="onAbortDownloadConfirmed"
     @closed="close"
+    @keydown.native="onListNavigationKeydown"
+    @mousedown.native="onListNavigationPointerDown"
     style="outline: none;"
     class="no-box-shadow">
     <template #title>
@@ -114,6 +116,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @toggle-favorite="onToggleFavoriteFilter"
           @toggle-unread="toggleUnreadFilter" />
         <email-connector-mail-box-drawer-content
+          ref="expandedListContent"
           :emails="emails"
           :email="email"
           :selected-emails="selectedEmails"
@@ -188,6 +191,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </template>
           <email-connector-mail-box-drawer-content
             v-else
+            ref="listContent"
             :emails="emails"
             :selected-emails="selectedEmails"
             :select-mode="selectMode" 
@@ -211,6 +215,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import listNavigationMixin, { firstOpenableThread, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 
 // Categorization runs after the sync reports done, in batches, and a large mailbox takes
 // several minutes. Two numbers govern how long the drawer keeps watching for the results.
@@ -247,6 +252,7 @@ const SEARCH_PAGE_SIZE = 20;
 const SEARCH_FETCH_RETRY_MS = 3000;
 
 export default {
+  mixins: [listNavigationMixin],
   data() {
     return {
       emailBoxDrawer: false,
@@ -337,7 +343,11 @@ export default {
       searchServerRunning: false,
       searchServerError: false,
       searchRequestId: 0,
-      searchOpening: false
+      searchOpening: false,
+      // The full-screen reader was opened with nothing chosen while the list was still
+      // on its way: the first mail opens as soon as it lands, unless the user chose
+      // one in the meantime (see autoSelectFirstEmail).
+      autoSelectPending: false
     };
   },
   created() {
@@ -456,90 +466,27 @@ export default {
         this.cancelSelectMode();
       }
     };
-    this.onDeleteEmail = (emails, folder) => {
-      this.deleteEmails(emails, folder);
-      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
-        return; 
-      }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-    };
-    this.onArchiveEmail = (emails, folder) => {
-      this.archiveEmails(emails, folder);
-      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
-        return; 
-      }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-    };
+    this.onDeleteEmail = (emails, folder) => this.applyListAction(emails, () => this.deleteEmails(emails, folder));
+    this.onArchiveEmail = (emails, folder) => this.applyListAction(emails, () => this.archiveEmails(emails, folder));
     // The two Trash actions, wired exactly as delete and archive are: the rows leave
     // the listing, the reader stops showing what is no longer there, and a running
     // selection ends. The confirmation for the permanent one is asked before the event
     // is emitted, where the user clicked — by the time it arrives here the answer is in.
-    this.onRestoreEmail = (emails) => {
-      this.restoreEmails(emails);
-      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
-        return;
-      }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-    };
-    this.onPurgeEmail = (emails) => {
-      this.purgeEmails(emails);
-      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
-        return;
-      }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-    };
+    this.onRestoreEmail = (emails) => this.applyListAction(emails, () => this.restoreEmails(emails));
+    this.onPurgeEmail = (emails) => this.applyListAction(emails, () => this.purgeEmails(emails));
     this.$root.$on('restore-email', this.onRestoreEmail);
     this.$root.$on('purge-email', this.onPurgeEmail);
     // The two Junk actions, wired the same way. "Mark as spam" leaves from any
     // writable folder, "Not spam" from the Spam listing; a Delete out of Spam is the
     // ordinary delete-email above, addressed to the row's own folder.
-    this.onJunkEmail = (emails, folder) => {
-      this.markAsJunk(emails, folder);
-      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
-        return;
-      }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-    };
-    this.onNotJunkEmail = (emails) => {
-      this.restoreFromJunk(emails);
-      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
-        return;
-      }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-    };
+    this.onJunkEmail = (emails, folder) => this.applyListAction(emails, () => this.markAsJunk(emails, folder));
+    this.onNotJunkEmail = (emails) => this.applyListAction(emails, () => this.restoreFromJunk(emails));
     this.$root.$on('junk-email', this.onJunkEmail);
     this.$root.$on('not-junk-email', this.onNotJunkEmail);
     // "Move to..." into one of the user's own folders, wired the same way as archive:
     // the rows leave the listing at once, the reader stops showing what is no longer
     // there, and a running selection ends. The target comes from the picker drawer.
-    this.onMoveEmail = (emails, target, folder) => {
-      this.moveEmails(emails, target, folder);
-      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
-        return;
-      }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-    };
+    this.onMoveEmail = (emails, target, folder) => this.applyListAction(emails, () => this.moveEmails(emails, target, folder));
     this.$root.$on('move-email', this.onMoveEmail);
     // A draft was saved to (or discarded from) the Drafts folder. The list is a
     // mirror of the local cache and the composer has just changed it, so it has to
@@ -553,7 +500,30 @@ export default {
     this.$root.$on('open-email-detail-drawer', () => {
       this.supersedeEmailRequest();
       this.email = null;
+      // The row the mail drawer is opened from, to give the focus back to once it
+      // closes: it takes the focus as it opens, and the arrow keys would otherwise
+      // keep reaching a closed drawer (EXO-90414).
+      // Its place too: the mail is often deleted or archived from that drawer, and
+      // then the row that took its place is the one to come back to.
+      const threadKey = document.activeElement?.closest?.('[data-thread-key]')?.getAttribute('data-thread-key');
+      this.rowToRefocus = threadKey
+        ? { threadKey, index: threadRows(this.emails).findIndex(thread => String(thread.threadId) === threadKey) }
+        : null;
     });
+    this.onEmailDetailDrawerClosed = () => {
+      const row = this.rowToRefocus;
+      this.rowToRefocus = null;
+      if (!row || !this.emailBoxDrawer || this.expanded) {
+        return;
+      }
+      const threads = threadRows(this.emails);
+      const listed = threads.find(thread => String(thread.threadId) === row.threadKey)
+        || (row.index >= 0 && threads[Math.min(row.index, threads.length - 1)]);
+      if (listed) {
+        this.revealThreadRow(listed.threadId);
+      }
+    };
+    this.$root.$on('email-detail-drawer-closed', this.onEmailDetailDrawerClosed);
     // The reader opened on a row it was handed rather than on a UID — a draft's
     // conversation. Same consequence here: this drawer is no longer the one showing a
     // message.
@@ -620,6 +590,7 @@ export default {
     document.removeEventListener('email-favorite-status-changed', this.onFavoriteStatusChangedOutside);
     this.$root.$off('refresh-email-box', this.onRefreshEmailBox);
     this.$root.$off('email-sent', this.onEmailSent);
+    this.$root.$off('email-detail-drawer-closed', this.onEmailDetailDrawerClosed);
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$off('delete-email', this.onDeleteEmail);
@@ -781,6 +752,44 @@ export default {
     canGoBack() {
       return this.selectMode && !this.expanded;
     },
+    /**
+     * The listed messages, for the arrow keys and for the reader moving on after an
+     * action (listNavigationMixin).
+     *
+     * @returns {Array} the listed messages
+     */
+    navigationEmails() {
+      return this.emails;
+    },
+    /**
+     * Whether Up and Down walk the list right now: the drawer is the one on screen (the
+     * mail drawer opened over it takes the keys), and the list is the folder's -- not a
+     * multi-selection, whose checkboxes a key must not tick, nor the search results,
+     * which are a list of their own.
+     * <p>
+     * Not cached: the mail drawer's flag is a plain property of the root, which Vue does
+     * not observe, so a cached value would keep answering from before that drawer
+     * opened or closed.
+     *
+     * @returns {Boolean} true when the arrow keys drive the list
+     */
+    canNavigateList: {
+      cache: false,
+      get() {
+        return this.emailBoxDrawer && !this.$root.isDetailDrawerActive
+          && !this.selectMode && !this.searchActive && !this.syncBlocked && this.hasEmails;
+      },
+    },
+    /**
+     * Everything a pending first-mail opening waits on, in one value to watch: the
+     * list's rows, the search's, and whether either is still loading.
+     *
+     * @returns {String} a value that changes whenever one of them does
+     */
+    autoSelectSignal() {
+      return [this.emails.length, this.mergedSearchResults.length, this.loading,
+        this.syncInProgress, this.searchServerRunning].join('|');
+    },
     emails() {
       let emails = this.emailBox?.emails || [];
       emails = emails.filter(e => !this.deletedEmailIds.includes(e.mailRemoteId));
@@ -847,6 +856,17 @@ export default {
       }
       if (this.email && !this.emails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
         this.selectEmailPlaceHolder = true;
+      }
+    },
+    /**
+     * Opens the first mail a pending full-screen opening was waiting for, as soon as
+     * the list (or the search) it waited on changes (see autoSelectFirstEmail).
+     *
+     * @returns {void}
+     */
+    autoSelectSignal() {
+      if (this.autoSelectPending) {
+        this.autoSelectFirstEmail();
       }
     },
     selectEmailPlaceHolder() {
@@ -940,7 +960,7 @@ export default {
      *
      * @param {Number} mailRemoteId the message's IMAP UID within the listed folder
      * @param {String} folder the folder it is numbered in, when the row says so
-     * @returns {void}
+     * @returns {Promise} resolved once the message is on screen (nothing for an inert row)
      */
     openEmailDetailContent(mailRemoteId, folder = null) {
       // A row an Undo put back, or a move filed here, is a snapshot: it carries the UID
@@ -952,8 +972,9 @@ export default {
         return;
       }
       // Opening from the list is the user choosing again: whatever was pinned open
-      // from elsewhere gives way to it.
+      // from elsewhere gives way to it, and so does a first mail waiting to open.
       this.pinnedEmail = false;
+      this.autoSelectPending = false;
       this.supersedeEmailRequest();
       const request = this.emailRequest;
       // The folder the UID is numbered in: the clicked row's own, which is the only
@@ -983,7 +1004,7 @@ export default {
       // may be before this answer, and it must find this one already read. In the
       // message's OWN folder (EXO-90416).
       this.updateEmailsReadStatus(true, [mailRemoteId], ownFolder);
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder).then((email) => {
+      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder).then((email) => {
         if (request !== this.emailRequest) {
           return;
         }
@@ -1078,14 +1099,23 @@ export default {
         cached: opening.cached !== false,
       };
       this.pinnedEmail = true;
+      this.autoSelectPending = false;
+      // One request among the reader's (see openEmailDetailContent): it supersedes any
+      // opening still on its way and is superseded by any later one, which also ends
+      // the loading state it holds.
+      this.supersedeEmailRequest();
+      const request = this.emailRequest;
       this.loading = true;
+      this.emailRequestHoldsLoading = true;
       try {
         if (!hit.cached) {
           await this.fetchSearchedEmail(hit);
         }
         if (this.expanded && this.emailBoxDrawer) {
           const opened = await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder);
-          this.supersedeEmailRequest();
+          if (request !== this.emailRequest) {
+            return;
+          }
           this.email = opened;
           this.selectEmailPlaceHolder = false;
           this.$root.$emit('set-opened', hit.mailRemoteId);
@@ -1103,7 +1133,9 @@ export default {
           alertMessage: this.$t(messageKey),
         }}));
       } finally {
-        this.loading = false;
+        if (request === this.emailRequest) {
+          this.releaseEmailRequest();
+        }
       }
     },
     onAbortDownloadConfirmed() {
@@ -1241,8 +1273,13 @@ export default {
       this.searchServerRunning = false;
       this.searchServerError = false;
     },
-    // Open one search hit: a cached one goes straight to the existing reader; an
-    // uncached one is first pulled into the cache through the fetch endpoint.
+    /**
+     * Opens one search hit: a cached one goes straight to the existing reader; an
+     * uncached one is first pulled into the cache through the fetch endpoint.
+     *
+     * @param {Object} result the hit ({mailRemoteId, folder, cached})
+     * @returns {Promise<void>} resolved once the hit is on screen or refused
+     */
     async openSearchResult(result) {
       if (this.searchOpening) {
         return;
@@ -1250,7 +1287,12 @@ export default {
       this.searchOpening = true;
       // What the hit was before this opening stamps its row read (markResultOpened).
       const wasRead = result.read;
+      this.autoSelectPending = false;
+      // One request among the reader's, as openMailFromOutside's.
+      this.supersedeEmailRequest();
+      const request = this.emailRequest;
       this.loading = true;
+      this.emailRequestHoldsLoading = true;
       try {
         if (!result.cached) {
           await this.fetchSearchedEmail(result);
@@ -1258,7 +1300,9 @@ export default {
         if (this.expanded) {
           this.markResultOpened(result);
           const email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(result.mailRemoteId, result.folder);
-          this.supersedeEmailRequest();
+          if (request !== this.emailRequest) {
+            return;
+          }
           this.email = email;
           this.selectEmailPlaceHolder = false;
           // Read in its own folder, as the narrow path's mail drawer reads it -- once:
@@ -1281,7 +1325,9 @@ export default {
           alertMessage: this.$t(syncing ? 'emailConnector.mailBox.search.syncInProgress' : 'emailConnector.mailBox.search.openError'),
         }}));
       } finally {
-        this.loading = false;
+        if (request === this.emailRequest) {
+          this.releaseEmailRequest();
+        }
         this.searchOpening = false;
       }
     },
@@ -1307,8 +1353,15 @@ export default {
         this.$set(serverRow, 'read', true);
       }
     },
+    /**
+     * Closes the mailbox and forgets everything the next opening must not inherit:
+     * search, filters, selection, the open mail and the optimistic removals.
+     *
+     * @returns {void}
+     */
     close() {
       this.pinnedEmail = false;
+      this.autoSelectPending = false;
       this.categoryWatchDeadline = null;
       this.refreshWatchDeadline = null;
       this.refreshWatchUntilDeadline = false;
@@ -2345,12 +2398,127 @@ export default {
       this.selectMode = false;
       this.selectedEmails = [];
     },
+    /**
+     * Follows the drawer between its narrow and full-screen layouts.
+     * <p>
+     * Full screen opens on a mail rather than on the "select an email" placeholder
+     * (EXO-90414): the one already open when there is one, otherwise the first of the
+     * list on screen (autoSelectFirstEmail). The placeholder is still set at once, so
+     * the reader never renders with nothing to read during the layout's transition.
+     *
+     * @param {Boolean} expanded whether the drawer is now full screen
+     * @returns {void}
+     */
     updateExpand(expanded) {
-      window.setTimeout(() => this.expanded = expanded, 200);
+      window.setTimeout(() => {
+        this.expanded = expanded;
+        if (expanded) {
+          this.autoSelectFirstEmail();
+        } else {
+          this.autoSelectPending = false;
+        }
+      }, 200);
       if (expanded) {
         if (!this.email) {
           this.selectEmailPlaceHolder = true;
         }
+      }
+    },
+    /**
+     * Opens the first mail of the list on screen in the full-screen reader, when the
+     * reader has nothing to show: the folder's first conversation (with its filters and
+     * view applied, as listed), or the first search hit while a search is running.
+     * <p>
+     * A mail already open stays open, and so does a multi-selection. A list still on
+     * its way -- the drawer's own load, a synchronization filling an empty mailbox, a
+     * search whose hits have not landed -- is waited for, and its first mail opened
+     * when it arrives unless the user opened one meanwhile (every opening clears the
+     * wait). A list that turns out empty keeps the placeholder.
+     *
+     * @returns {void}
+     */
+    autoSelectFirstEmail() {
+      this.autoSelectPending = false;
+      // A mail still held while the reader shows the placeholder is no longer on
+      // screen -- it left the list while the drawer was narrow, say -- and counts as
+      // nothing selected.
+      const showingEmail = this.email && !this.selectEmailPlaceHolder;
+      if (!this.expanded || showingEmail || this.selectMode || this.syncBlocked || !this.emailBoxDrawer) {
+        return;
+      }
+      if (this.searchActive) {
+        const firstResult = this.mergedSearchResults[0];
+        if (firstResult) {
+          this.openSearchResult(firstResult);
+        } else {
+          this.autoSelectPending = this.searchServerRunning;
+        }
+        return;
+      }
+      const firstThread = firstOpenableThread(threadRows(this.emails));
+      if (firstThread) {
+        this.openListedEmail(firstThread.latest);
+      } else {
+        this.autoSelectPending = this.loading || !this.emailBox || this.syncInProgress;
+      }
+    },
+    /**
+     * Opens a listed message in the full-screen reader and lights its row, as a click
+     * on the row does (see the list item's openDetail).
+     * <p>
+     * The row is lit again once the message is on screen: when the reader was showing
+     * the placeholder in between -- the opened mail had just left the list -- the
+     * placeholder's own watcher clears the highlight after this call, and the list
+     * would otherwise show no row as the one being read.
+     *
+     * @param {Object} row the listed message
+     * @returns {Promise} resolved once the message is on screen
+     */
+    openListedEmail(row) {
+      this.$root.$emit('set-opened', row.mailRemoteId);
+      return Promise.resolve(this.openEmailDetailContent(row.mailRemoteId)).then(() => {
+        if (this.email?.mailRemoteId === row.mailRemoteId) {
+          this.$root.$emit('set-opened', row.mailRemoteId);
+        }
+      }).catch(() => null);
+    },
+    /**
+     * The list on screen, for the arrow keys to reveal and focus a row in.
+     *
+     * @returns {Object} the list content component of the current layout, or null
+     */
+    navigationList() {
+      return (this.expanded ? this.$refs.expandedListContent : this.$refs.listContent) || null;
+    },
+    /**
+     * What every action that takes messages out of the listing does here (delete,
+     * archive, spam and not-spam, move, restore and purge from the Trash): the action
+     * itself, then the reader stops showing what is no longer listed and a running
+     * selection ends. In full screen the reader then moves on to the conversation that
+     * took the opened one's place (EXO-90414, openNextAfterRemoval) -- the placeholder
+     * is what is left only when the list has nothing else to open.
+     * <p>
+     * The listing is read before the action because the action is what changes it.
+     * An Undo of a move changes nothing here: the rows it puts back are inert until the
+     * server lists them again, and the reader stays on the mail it moved on to, which
+     * is still listed.
+     *
+     * @param {Array<Number>} emails the IMAP UIDs the action applies to
+     * @param {Function} action runs the action
+     * @returns {void}
+     */
+    applyListAction(emails, action) {
+      const listedBefore = this.emails;
+      action();
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return;
+      }
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
+      }
+      if (!this.searchActive && !this.pinnedEmail) {
+        this.openNextAfterRemoval(emails, listedBefore);
       }
     },
   }
