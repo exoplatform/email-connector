@@ -18,6 +18,8 @@
 
 package org.exoplatform.emailConnector.rest;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -25,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -72,7 +75,10 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.model.Email;
+import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.model.ScheduledSendStatus;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailCategory;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
@@ -83,7 +89,9 @@ import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
+import org.exoplatform.emailConnector.rest.model.ScheduleRequest;
 import org.exoplatform.emailConnector.service.EmailBoxService;
+import org.exoplatform.emailConnector.service.EmailScheduledSendService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
 import io.meeds.spring.web.security.WebSecurityConfiguration;
@@ -120,6 +128,9 @@ public class EmailBoxRestTest {
 
   @MockitoBean
   private EmailBoxService       emailBoxService;
+
+  @MockitoBean
+  private EmailScheduledSendService emailScheduledSendService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -884,5 +895,171 @@ public class EmailBoxRestTest {
                                                        .contentType(MediaType.APPLICATION_JSON)
                                                        .accept(MediaType.APPLICATION_JSON))
            .andExpect(status().isUnauthorized());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Scheduled send (EXO-90434)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Scheduling answers the scheduled mail, for the caller only: the owner is the
+   * request's remote user, and the draft is the one the path names, whatever the body
+   * claims.
+   *
+   * @throws Exception if the request fails
+   */
+  @Test
+  void schedulingADraftIsTheCallersAndNamedByThePath() throws Exception {
+    ScheduledEmail scheduled = new ScheduledEmail();
+    scheduled.setDraftLocalId("draft-1");
+    scheduled.setStatus(ScheduledSendStatus.SCHEDULED);
+    when(emailScheduledSendService.schedule(any(Email.class), eq(1_900_000_000_000L), eq("Europe/Paris"), eq(SIMPLE_USER)))
+                                                                                                                            .thenReturn(scheduled);
+    Email draft = new Email();
+    draft.setDraftLocalId("another-draft");
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(asJsonString(new ScheduleRequest(draft,
+                                                                                                               1_900_000_000_000L,
+                                                                                                               "Europe/Paris"))))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.draftLocalId").value("draft-1"))
+           .andExpect(jsonPath("$.status").value("SCHEDULED"));
+    ArgumentCaptor<Email> scheduledDraft = ArgumentCaptor.forClass(Email.class);
+    verify(emailScheduledSendService).schedule(scheduledDraft.capture(), eq(1_900_000_000_000L), eq("Europe/Paris"), eq(SIMPLE_USER));
+    assertEquals("draft-1", scheduledDraft.getValue().getDraftLocalId(), "the path names the draft");
+  }
+
+  /**
+   * Each refusal of a scheduling has its status: 400 with the code for a bad request,
+   * 401 for a mailbox the caller may not use, 404 for a draft they do not have, 409 for
+   * one already scheduled or being sent, 500 for a server copy that would not go.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aRefusedSchedulingAnswersItsStatus() throws Exception {
+    String body = asJsonString(new ScheduleRequest(new Email(), 1_900_000_000_000L, "UTC"));
+    Object[][] cases = { { new IllegalArgumentException("emailConnector.scheduled.date.tooSoon"), 400 },
+        { new IllegalAccessException("no"), 401 }, { new ObjectNotFoundException("gone"), 404 },
+        { new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED), 409 },
+        { new IllegalStateException("emailConnector.scheduled.serverCopyRemains"), 500 } };
+    for (Object[] testCase : cases) {
+      doThrow((Exception) testCase[0]).when(emailScheduledSendService).schedule(any(Email.class), anyLong(), anyString(), anyString());
+      mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                                       .content(body))
+             .andExpect(status().is((int) testCase[1]));
+    }
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts/draft-1/schedule").with(testSimpleUser())
+                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                     .content(asJsonString(new ScheduleRequest(new Email(), null, "UTC"))))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * An update of a scheduled mail's content in place reaches the service as the caller,
+   * with the draft, the files to take off and the optional date; each refusal answers
+   * its status, and a request without a draft is a 400 (EXO-90434).
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void anUpdateOfAScheduledMailsContentAnswersItsStatusForTheCallerOnly() throws Exception {
+    Email draft = new Email();
+    draft.setSubject("New subject");
+    String body = asJsonString(new ScheduleRequest(draft, null, null, List.of(7L)));
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(body))
+           .andExpect(status().isOk());
+    ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
+    verify(emailScheduledSendService).updateContent(eq("draft-1"), sent.capture(), eq(List.of(7L)), isNull(), isNull(), eq(SIMPLE_USER));
+    assertEquals("New subject", sent.getValue().getSubject());
+
+    Object[][] cases = { { new IllegalArgumentException("emailConnector.scheduled.recipientsMandatory"), 400 },
+        { new IllegalAccessException("no"), 401 }, { new ObjectNotFoundException("gone"), 404 },
+        { new ScheduledSendConflictException(ScheduledSendConflictException.SENDING), 409 } };
+    for (Object[] testCase : cases) {
+      doThrow((Exception) testCase[0]).when(emailScheduledSendService)
+                                      .updateContent(anyString(), any(Email.class), any(), any(), any(), anyString());
+      mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                        .contentType(MediaType.APPLICATION_JSON)
+                                                                        .content(body))
+             .andExpect(status().is((int) testCase[1]));
+    }
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1/content").with(testSimpleUser())
+                                                                      .contentType(MediaType.APPLICATION_JSON)
+                                                                      .content(asJsonString(new ScheduleRequest(null, null, null))))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * Reschedule, cancel and send now answer 200/204, 404 for a mail the caller has not
+   * scheduled and 409 for one being sent -- each for the caller only.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void theScheduledActionsAnswerTheirStatusForTheCallerOnly() throws Exception {
+    String body = asJsonString(new ScheduleRequest(null, 1_900_000_000_000L, "UTC"));
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/draft-1").with(testSimpleUser())
+                                                              .contentType(MediaType.APPLICATION_JSON)
+                                                              .content(body))
+           .andExpect(status().isOk());
+    verify(emailScheduledSendService).reschedule("draft-1", 1_900_000_000_000L, "UTC", SIMPLE_USER);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/scheduled/draft-1").with(testSimpleUser())).andExpect(status().isNoContent());
+    verify(emailScheduledSendService).cancel("draft-1", SIMPLE_USER);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/scheduled/draft-1/send").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailScheduledSendService).sendNow("draft-1", SIMPLE_USER);
+
+    doThrow(new ObjectNotFoundException("gone")).when(emailScheduledSendService).cancel("gone", SIMPLE_USER);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/scheduled/gone").with(testSimpleUser())).andExpect(status().isNotFound());
+    doThrow(new ScheduledSendConflictException(ScheduledSendConflictException.SENDING)).when(emailScheduledSendService)
+                                                                                        .sendNow("busy", SIMPLE_USER);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/scheduled/busy/send").with(testSimpleUser())).andExpect(status().isConflict());
+    doThrow(new ScheduledSendConflictException(ScheduledSendConflictException.SENDING)).when(emailScheduledSendService)
+                                                                                        .cancel("busy", SIMPLE_USER);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/scheduled/busy").with(testSimpleUser())).andExpect(status().isConflict());
+    doThrow(new IllegalArgumentException("emailConnector.scheduled.date.tooFar")).when(emailScheduledSendService)
+                                                                                 .reschedule("far", 1_900_000_000_000L, "UTC", SIMPLE_USER);
+    mockMvc.perform(put(EMAIL_BOX_PATH + "/scheduled/far").with(testSimpleUser())
+                                                          .contentType(MediaType.APPLICATION_JSON)
+                                                          .content(body))
+           .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * The list is the caller's, its page size bounded; the count is the caller's.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void theScheduledListAndCountAreTheCallers() throws Exception {
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/scheduled?offset=0&limit=500").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailScheduledSendService).getScheduledEmails(SIMPLE_USER, 0, 100);
+    when(emailScheduledSendService.countScheduledEmails(SIMPLE_USER)).thenReturn(3L);
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/scheduled/count").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$").value(3));
+  }
+
+  /**
+   * A scheduled draft's lock reaches the composer as 409 on its save, and a draft being
+   * sent refuses its discard with 409.
+   *
+   * @throws Exception if a request fails
+   */
+  @Test
+  void aScheduledDraftsLockAnswersConflict() throws Exception {
+    doThrow(new ScheduledSendConflictException(ScheduledSendConflictException.LOCKED)).when(emailBoxService)
+                                                                                       .saveDraft(any(Email.class), anyString(), anyBoolean());
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/drafts").with(testSimpleUser())
+                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                    .content(asJsonString(new Email())))
+           .andExpect(status().isConflict());
+    doThrow(new ScheduledSendConflictException(ScheduledSendConflictException.SENDING)).when(emailBoxService)
+                                                                                        .deleteDraft("draft-1", SIMPLE_USER);
+    mockMvc.perform(delete(EMAIL_BOX_PATH + "/drafts/draft-1").with(testSimpleUser())).andExpect(status().isConflict());
   }
 }

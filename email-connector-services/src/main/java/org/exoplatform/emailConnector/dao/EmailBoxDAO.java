@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.dao;
 
+import java.util.Collection;
 import java.util.List;
 
 import org.springframework.data.domain.Pageable;
@@ -85,6 +86,60 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   List<EmailBoxEntity> findByUserIdAndFolderWithAttachments(@Param("userId")
   String userId, @Param("folder")
   String folder);
+
+  /**
+   * The predicate that keeps a scheduled draft out of the Drafts folder: a draft with a
+   * row in the schedule table is listed and counted under "Scheduled" instead, and must
+   * not be offered for editing while it waits. Served by the unique index on
+   * {@code EMAIL_SCHEDULED_SEND.EMAIL_ID}.
+   */
+  String NOT_SCHEDULED = "NOT EXISTS (SELECT scheduled.id FROM EmailScheduledSendEntity scheduled WHERE scheduled.emailId = email.id)";
+
+  /**
+   * A folder's cached messages as the list shows them, scheduled drafts left out (see
+   * {@link #NOT_SCHEDULED}); the same read as {@link #findByUserIdAndFolderWithAttachments}
+   * otherwise.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return the rows, newest first
+   */
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.folder = :folder AND "
+      + NOT_SCHEDULED + " ORDER BY email.receivedDate DESC")
+  List<EmailBoxEntity> findUnscheduledByUserIdAndFolderWithAttachments(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
+   * How many of a folder's cached messages the list shows, scheduled drafts left out.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return the count
+   */
+  @Query("SELECT COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder AND "
+      + NOT_SCHEDULED)
+  long countUnscheduledByUserIdAndFolder(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
+
+  /**
+   * Some of a user's rows by id, for the "Scheduled" view to show what each scheduled
+   * draft says. Owner-scoped: an id that is not the user's answers nothing. The
+   * attachments are fetched with the rows, like every other read the listing mapper is
+   * given: that mapper reads them, and the view's REST thread holds no session to load
+   * them lazily. No DISTINCT, like its sibling fetch-join reads: Oracle refuses one over
+   * the CLOB columns of this table, and Hibernate already de-duplicates the rows of a
+   * collection fetch.
+   *
+   * @param userId the mailbox owner
+   * @param ids the row ids
+   * @return the rows found
+   */
+  @Query("SELECT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.id IN :ids")
+  List<EmailBoxEntity> findByUserIdAndIds(@Param("userId")
+  String userId, @Param("ids")
+  Collection<Long> ids);
 
   /**
    * The whole cached mailbox WITHOUT its attachments, for the search over cached mail.

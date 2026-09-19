@@ -144,4 +144,17 @@ public class Email {
   // the two together are what the user sees on screen.
   @JsonIgnore
   private List<EmailAttachment> storedAttachments;
+
+  // Whether this draft is scheduled to be sent at a date (EXO-90434), and then when, in
+  // which zone it was chosen, and where its sending stands. A scheduled draft is shown
+  // wherever it is shown -- in its conversation, read on its own -- but READ-ONLY: every
+  // edit of it is refused until its schedule is cancelled. Set on reads, never stored on
+  // the row: the schedule table is the only truth.
+  private boolean              scheduled;
+
+  private Long                 scheduledDate;
+
+  private String               scheduledTimeZone;
+
+  private ScheduledSendStatus  scheduledStatus;
 }
