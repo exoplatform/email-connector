@@ -124,13 +124,16 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
 
   /**
    * Some of a user's rows by id, for the "Scheduled" view to show what each scheduled
-   * draft says. Owner-scoped: an id that is not the user's answers nothing.
+   * draft says. Owner-scoped: an id that is not the user's answers nothing. The
+   * attachments are fetched with the rows, like every other read the listing mapper is
+   * given: that mapper reads them, and the view's REST thread holds no session to load
+   * them lazily.
    *
    * @param userId the mailbox owner
    * @param ids the row ids
    * @return the rows found
    */
-  @Query("SELECT email FROM EmailBoxEntity email WHERE email.userId = :userId AND email.id IN :ids")
+  @Query("SELECT DISTINCT email FROM EmailBoxEntity email LEFT JOIN FETCH email.attachments WHERE email.userId = :userId AND email.id IN :ids")
   List<EmailBoxEntity> findByUserIdAndIds(@Param("userId")
   String userId, @Param("ids")
   Collection<Long> ids);
