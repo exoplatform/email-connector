@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.storage;
 import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
@@ -1530,7 +1531,47 @@ public class EmailBoxStorage {
     for (Object[] row : emailBoxDao.countMessagesByFolder(userId)) {
       counts.put((String) row[0], ((Number) row[1]).intValue());
     }
+    if (counts.getOrDefault(MailFolder.DRAFTS, 0) > 0) {
+      // A scheduled draft is counted under "Scheduled", not here (EXO-90434). Asked
+      // only when the mailbox has drafts at all, so a mailbox without any pays nothing.
+      counts.put(MailFolder.DRAFTS, (int) emailBoxDao.countUnscheduledByUserIdAndFolder(userId, MailFolder.DRAFTS));
+    }
     return counts;
+  }
+
+  /**
+   * A folder's cached messages as the folder list shows them: {@link #getEmails(String, String)},
+   * except that the Drafts folder leaves out the drafts scheduled to be sent, which
+   * the "Scheduled" view lists instead (EXO-90434).
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return the folder's listed messages, newest first
+   */
+  public List<Email> getListedEmails(String userId, String folder) {
+    if (!MailFolder.DRAFTS.equals(folder)) {
+      return getEmails(userId, folder);
+    }
+    return toListing(emailBoxDao.findUnscheduledByUserIdAndFolderWithAttachments(userId, folder), userId);
+  }
+
+  /**
+   * Some of a user's rows by id, as a listing reads them (drafts keep their body and
+   * recipients), keyed by id: what the "Scheduled" view shows of each scheduled draft.
+   *
+   * @param userId the mailbox owner
+   * @param ids the row ids
+   * @return the rows found, by id
+   */
+  public Map<Long, Email> getListedEmailsByIds(String userId, Collection<Long> ids) {
+    if (ids == null || ids.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, Email> emails = new HashMap<>();
+    for (Email email : toListing(emailBoxDao.findByUserIdAndIds(userId, ids), userId)) {
+      emails.put(email.getId(), email);
+    }
+    return emails;
   }
 
   /**
