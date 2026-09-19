@@ -647,17 +647,20 @@ public class EmailBoxRestTest {
     ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser()));
     response.andExpect(status().isBadRequest());
 
-    when(emailBoxService.linkEmailsToCategory(anyList(), anyLong(), anyString())).thenReturn(2);
+    when(emailBoxService.linkEmailsToCategory(anyList(), anyLong(), anyString(), anyString())).thenReturn(2);
     response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
                                                                      .content(asJsonString(List.of(123L, 456L)))
                                                                      .contentType(MediaType.APPLICATION_JSON)
                                                                      .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk()).andExpect(jsonPath("$.linked").value(2));
+    // No folder: the UIDs are the inbox's, as they always were.
+    verify(emailBoxService).linkEmailsToCategory(List.of(123L, 456L), 11L, SIMPLE_USER, "INBOX");
 
     // Unknown category: the service's message code is surfaced as a 400, not a 500.
     doThrow(new IllegalArgumentException("emailConnector.category.notFound")).when(emailBoxService)
                                                                              .linkEmailsToCategory(anyList(),
                                                                                                    anyLong(),
+                                                                                                   anyString(),
                                                                                                    anyString());
     response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
                                                                      .content(asJsonString(List.of(123L)))
@@ -665,7 +668,8 @@ public class EmailBoxRestTest {
                                                                      .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isBadRequest());
 
-    doThrow(IllegalAccessException.class).when(emailBoxService).linkEmailsToCategory(anyList(), anyLong(), anyString());
+    doThrow(IllegalAccessException.class).when(emailBoxService)
+                                         .linkEmailsToCategory(anyList(), anyLong(), anyString(), anyString());
     response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
                                                                      .content(asJsonString(List.of(123L)))
                                                                      .contentType(MediaType.APPLICATION_JSON)
@@ -673,25 +677,83 @@ public class EmailBoxRestTest {
     response.andExpect(status().isUnauthorized());
   }
 
+  /**
+   * EXO-90421 -- a mail dragged onto a category from another folder than the inbox: its
+   * UIDs reach the service with the folder they are numbered in, and a folder the
+   * service refuses is a 400 carrying its message code.
+   */
+  @Test
+  void linkEmailsToCategoryInAFolder() throws Exception {
+    when(emailBoxService.linkEmailsToCategory(anyList(), anyLong(), anyString(), anyString())).thenReturn(1);
+    ResultActions response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11?folder=CUSTOM:3").with(testSimpleUser())
+                                                                                                    .content(asJsonString(List.of(5L)))
+                                                                                                    .contentType(MediaType.APPLICATION_JSON)
+                                                                                                    .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk()).andExpect(jsonPath("$.linked").value(1));
+    verify(emailBoxService).linkEmailsToCategory(List.of(5L), 11L, SIMPLE_USER, "CUSTOM:3");
+
+    doThrow(new IllegalArgumentException("emailConnector.folder.notBrowsable")).when(emailBoxService)
+                                                                               .linkEmailsToCategory(anyList(),
+                                                                                                     anyLong(),
+                                                                                                     anyString(),
+                                                                                                     eq("ALL_MAIL"));
+    response = mockMvc.perform(post(EMAIL_BOX_PATH + "/categories/11?folder=ALL_MAIL").with(testSimpleUser())
+                                                                                     .content(asJsonString(List.of(5L)))
+                                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                                     .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isBadRequest())
+            .andExpect(status().reason("emailConnector.folder.notBrowsable"));
+  }
+
   @Test
   void unlinkEmailsFromCategory() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser()));
     response.andExpect(status().isBadRequest());
 
-    when(emailBoxService.unlinkEmailsFromCategory(anyList(), anyLong(), anyString())).thenReturn(1);
+    when(emailBoxService.unlinkEmailsFromCategory(anyList(), anyLong(), anyString(), anyString())).thenReturn(1);
     response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
                                                                        .content(asJsonString(List.of(123L)))
                                                                        .contentType(MediaType.APPLICATION_JSON)
                                                                        .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isOk()).andExpect(jsonPath("$.unlinked").value(1));
+    verify(emailBoxService).unlinkEmailsFromCategory(List.of(123L), 11L, SIMPLE_USER, "INBOX");
 
-    doThrow(IllegalAccessException.class).when(emailBoxService).unlinkEmailsFromCategory(anyList(), anyLong(), anyString());
+    doThrow(IllegalAccessException.class).when(emailBoxService)
+                                         .unlinkEmailsFromCategory(anyList(), anyLong(), anyString(), anyString());
     response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/categories/11").with(testSimpleUser())
                                                                        .content(asJsonString(List.of(123L)))
                                                                        .contentType(MediaType.APPLICATION_JSON)
                                                                        .accept(MediaType.APPLICATION_JSON));
     response.andExpect(status().isUnauthorized());
   }
+
+  /**
+   * EXO-90421 -- a category taken off a mail of another folder than the inbox: its UIDs
+   * reach the service with that folder, and a folder the service refuses is a 400.
+   */
+  @Test
+  void unlinkEmailsFromCategoryInAFolder() throws Exception {
+    when(emailBoxService.unlinkEmailsFromCategory(anyList(), anyLong(), anyString(), anyString())).thenReturn(1);
+    ResultActions response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/categories/11?folder=ARCHIVE").with(testSimpleUser())
+                                                                                                     .content(asJsonString(List.of(5L)))
+                                                                                                     .contentType(MediaType.APPLICATION_JSON)
+                                                                                                     .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isOk()).andExpect(jsonPath("$.unlinked").value(1));
+    verify(emailBoxService).unlinkEmailsFromCategory(List.of(5L), 11L, SIMPLE_USER, "ARCHIVE");
+
+    doThrow(new IllegalArgumentException("emailConnector.folder.notBrowsable")).when(emailBoxService)
+                                                                               .unlinkEmailsFromCategory(anyList(),
+                                                                                                         anyLong(),
+                                                                                                         anyString(),
+                                                                                                         eq("ALL_MAIL"));
+    response = mockMvc.perform(delete(EMAIL_BOX_PATH + "/categories/11?folder=ALL_MAIL").with(testSimpleUser())
+                                                                                       .content(asJsonString(List.of(5L)))
+                                                                                       .contentType(MediaType.APPLICATION_JSON)
+                                                                                       .accept(MediaType.APPLICATION_JSON));
+    response.andExpect(status().isBadRequest())
+            .andExpect(status().reason("emailConnector.folder.notBrowsable"));
+  }
+
 
   /**
    * The forward's own address under a draft's attachments: it answers the draft plus the

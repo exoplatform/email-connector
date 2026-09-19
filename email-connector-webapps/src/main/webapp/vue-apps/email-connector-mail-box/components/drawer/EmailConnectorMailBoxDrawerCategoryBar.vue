@@ -80,6 +80,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { selectionByFolder, selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import { isListedFolder } from '../../js/EmailConnectorMailBoxService.js';
+
 export default {
   props: {
     // The conversation's messages; the category applies to the whole thread.
@@ -95,8 +98,16 @@ export default {
     };
   },
   computed: {
-    mailRemoteIds() {
-      return (this.emails || []).map(email => email.mailRemoteId);
+    /**
+     * The conversation's UIDs grouped by the folder they are numbered in: a
+     * conversation spans folders, and a UID only names a message within its own
+     * (EXO-90421, the EXO-90416 wrong-message class) -- one request per folder, none
+     * for All Mail copies, which the server does not categorize (isListedFolder).
+     *
+     * @returns {Array} [folder, ids] pairs
+     */
+    idsByFolder() {
+      return selectionByFolder((this.emails || []).map(selectionKey)).filter(([folder]) => isListedFolder(folder));
     },
     assignedCategories() {
       return this.categories.filter(category => this.assignedIds.includes(category.id));
@@ -113,45 +124,74 @@ export default {
   created() {
     this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.categories = list || []);
+    this.$root.$on('email-categories-updated', this.onCategoriesUpdated);
+  },
+  beforeDestroy() {
+    this.$root.$off('email-categories-updated', this.onCategoriesUpdated);
   },
   methods: {
+    /** @returns {void} recomputes the categories any message of the conversation carries */
     computeAssigned() {
       const ids = new Set();
       (this.emails || []).forEach(email => (email.categoryIds || []).forEach(id => ids.add(id)));
       this.assignedIds = Array.from(ids);
     },
+    /**
+     * Whether a category is on the conversation.
+     *
+     * @param {Number} id the category id
+     * @returns {Boolean} true when it is
+     */
     isAssigned(id) {
       return this.assignedIds.includes(id);
     },
-    // Tag/untag the whole conversation, then reflect it locally so chips update at once.
+    /**
+     * Follows a category assigned or removed elsewhere -- a mail dropped on a category
+     * of the folder column while the reader shows it (EXO-90421): patches this
+     * conversation's matching messages, by folder when the update names one, and the
+     * chips with them.
+     *
+     * @param {Object} update {mailRemoteIds, categoryId, assign, folder}
+     * @returns {void}
+     */
+    onCategoriesUpdated({ mailRemoteIds, categoryId, assign, folder }) {
+      const targetIds = new Set(mailRemoteIds || []);
+      const matching = (this.emails || []).filter(email => targetIds.has(email.mailRemoteId)
+        && (!folder || (email.folder || 'INBOX') === folder));
+      if (!matching.length) {
+        return;
+      }
+      matching.forEach(email => {
+        const current = email.categoryIds || [];
+        this.$set(email, 'categoryIds', assign
+          ? Array.from(new Set([...current, categoryId]))
+          : current.filter(id => id !== categoryId));
+      });
+      this.computeAssigned();
+    },
+    /**
+     * Tags or untags the whole conversation, one request per folder of its messages,
+     * each folder's update announced with its folder -- which patches this bar and the
+     * list (onCategoriesUpdated). A request that fails leaves its messages as they were.
+     *
+     * @param {Object} category the category
+     * @param {Boolean} assign true to tag, false to untag
+     * @returns {Promise} resolved once every request has answered
+     */
     toggle(category, assign) {
       const service = this.$emailConnectorMailBoxService;
-      const request = assign
-        ? service.linkEmailsToCategory(this.mailRemoteIds, category.id)
-        : service.unlinkEmailsFromCategory(this.mailRemoteIds, category.id);
-      request.then(() => {
-        if (assign && !this.assignedIds.includes(category.id)) {
-          this.assignedIds.push(category.id);
-        } else if (!assign) {
-          this.assignedIds = this.assignedIds.filter(id => id !== category.id);
-        }
-        (this.emails || []).forEach(email => {
-          const current = email.categoryIds || [];
-          this.$set(email, 'categoryIds', assign
-            ? Array.from(new Set([...current, category.id]))
-            : current.filter(id => id !== category.id));
-        });
-        // The reader works on a deduped copy of the thread, so tell the main list
-        // to patch its own email objects; otherwise the categories filter never
-        // reflects a category assigned from the detail view.
-        this.$root.$emit('email-categories-updated', {
-          mailRemoteIds: this.mailRemoteIds,
+      return Promise.all(this.idsByFolder.map(([folder, ids]) => (assign
+        ? service.linkEmailsToCategory(ids, category.id, folder)
+        : service.unlinkEmailsFromCategory(ids, category.id, folder))
+        .then(() => this.$root.$emit('email-categories-updated', {
+          mailRemoteIds: ids,
           categoryId: category.id,
           assign,
-        });
-      }).catch(() => {
-        // Leave the current chips as-is if the server call fails.
-      });
+          folder,
+        }))
+        .catch(() => {
+          // Leave that folder's messages as they are if the server call fails.
+        })));
     },
   },
 };
