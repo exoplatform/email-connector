@@ -165,6 +165,58 @@ public class MasterChangelogTest {
   }
 
   /**
+   * The notification boundary and the INBOX epoch (1.0.0-61, EXO-90418) apply on a
+   * populated EMAIL_SYNC_STATE -- the epoch NOT NULL with its default filled in on
+   * the existing rows -- roll back to a tag placed just before them, leaving the table
+   * as it was, and apply again.
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theNotificationBoundaryAndEpochColumnsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback61" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-61"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-notification-boundary");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_SYNC_STATE (USER_ID, CREATED_DATE) VALUES ('existing', CURRENT_TIMESTAMP)");
+      }
+      assertFalse(columnExists(connection, "EMAIL_SYNC_STATE", "INBOX_EPOCH"), "sanity: not there before 1.0.0-61");
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_SYNC_STATE", "NOTIFIED_UID"));
+      assertTrue(columnExists(connection, "EMAIL_SYNC_STATE", "INBOX_EPOCH"));
+      try (Statement statement = connection.createStatement();
+          ResultSet existing = statement.executeQuery("SELECT NOTIFIED_UID, INBOX_EPOCH FROM EMAIL_SYNC_STATE WHERE USER_ID = 'existing'")) {
+        assertTrue(existing.next());
+        existing.getLong(1);
+        assertTrue(existing.wasNull(), "the boundary of an existing row starts unset");
+        assertEquals(0L, existing.getLong(2), "the epoch of an existing row starts at 0");
+      }
+      liquibase.rollback("before-notification-boundary", "");
+      assertFalse(columnExists(connection, "EMAIL_SYNC_STATE", "NOTIFIED_UID"), "the rollback drops the boundary");
+      assertFalse(columnExists(connection, "EMAIL_SYNC_STATE", "INBOX_EPOCH"), "and the epoch");
+      assertTrue(tableExists(connection, "EMAIL_SYNC_STATE"), "and nothing else");
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_SYNC_STATE", "INBOX_EPOCH"), "the changeset applies again after its rollback");
+    }
+  }
+
+  /**
+   * Whether a column exists, asked of the JDBC metadata.
+   *
+   * @param connection the database
+   * @param tableName the table
+   * @param columnName the column
+   * @return true when the column is there
+   * @throws SQLException when the metadata cannot be read
+   */
+  private boolean columnExists(Connection connection, String tableName, String columnName) throws SQLException {
+    try (ResultSet columns = connection.getMetaData().getColumns(null, null, tableName, columnName)) {
+      return columns.next();
+    }
+  }
+
+  /**
    * On MySQL, and only there, the registry's REMOTE_NAME keeps its case: generated
    * through Liquibase's own MySQL dialect (an offline connection, no server), the
    * CREATE TABLE of 1.0.0-53 carries a binary collation on that one column, while the
@@ -216,7 +268,8 @@ public class MasterChangelogTest {
   // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
   // -59). They are the ones a second evaluation computes ahead of the update in the
   // pin, and nothing on this list may ever drift.
-  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56", "1.0.0-58", "1.0.0-59");
+  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56", "1.0.0-58", "1.0.0-59",
+                                                              "1.0.0-61");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,

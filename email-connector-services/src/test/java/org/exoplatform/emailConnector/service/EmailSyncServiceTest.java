@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -331,7 +332,7 @@ public class EmailSyncServiceTest {
     when(userEmailSettingService.getUserEmailSetting(BOB)).thenReturn(new UserEmailSetting("1", "b@x", "p", null, null, 0, 0L, null, null, "c", true));
     when(userEmailSettingService.getUserEmailSetting("disconnected")).thenReturn(new UserEmailSetting());
     when(emailSyncStateStorage.get(anyString())).thenReturn(null);
-    when(emailSyncStateStorage.get("known")).thenReturn(new EmailSyncState("known", null, null, new Date(), null, new Date()));
+    when(emailSyncStateStorage.get("known")).thenReturn(new EmailSyncState("known", null, null, new Date(), null, new Date(), null, 0L));
 
     emailSyncService.dispatchDueSyncs();
 
@@ -453,5 +454,20 @@ public class EmailSyncServiceTest {
     public int getActiveCount() {
       return active;
     }
+  }
+
+  /**
+   * "A sync is running" is a live claim on the mailbox's row, bounded by the stale
+   * timeout, for a consumer on any node (EXO-90418).
+   */
+  @Test
+  void aSyncIsRunningWhenTheMailboxHoldsALiveClaim() {
+    when(emailSyncStateStorage.isClaimed(eq(ALICE), any(Date.class))).thenReturn(true);
+    assertTrue(emailSyncService.isSyncRunning(ALICE));
+    assertFalse(emailSyncService.isSyncRunning(BOB));
+    ArgumentCaptor<Date> staleBefore = ArgumentCaptor.forClass(Date.class);
+    verify(emailSyncStateStorage).isClaimed(eq(ALICE), staleBefore.capture());
+    long ageMinutes = (System.currentTimeMillis() - staleBefore.getValue().getTime()) / 60_000L;
+    assertTrue(ageMinutes >= 59 && ageMinutes <= 61, "the stale bound is the claim timeout, got " + ageMinutes + " min");
   }
 }

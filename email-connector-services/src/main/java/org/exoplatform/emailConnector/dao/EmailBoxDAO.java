@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.dao;
 
 import java.util.List;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -882,4 +883,35 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String folder, @Param("mailRemoteIds")
   List<Long> mailRemoteIds);
 
+  /**
+   * The UIDs cached in one folder of a mailbox strictly between two bounds, newest
+   * (highest) first, bounded by the page: what a consumer working through the new
+   * mail of a folder in slices reads, one slice at a time.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @param aboveUid the exclusive lower bound
+   * @param belowUid the exclusive upper bound
+   * @param pageable the bound; required
+   * @return the UIDs, highest first
+   */
+  @Query("SELECT DISTINCT email.mailRemoteId FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder"
+      + " AND email.mailRemoteId > :aboveUid AND email.mailRemoteId < :belowUid ORDER BY email.mailRemoteId DESC")
+  List<Long> findUidsBetween(@Param("userId")
+  String userId, @Param("folder")
+  String folder, @Param("aboveUid")
+  long aboveUid, @Param("belowUid")
+  long belowUid, Pageable pageable);
+
+  /**
+   * The highest UID cached in one folder of a mailbox.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator
+   * @return the highest UID, or null when the folder has no cached row
+   */
+  @Query("SELECT MAX(email.mailRemoteId) FROM EmailBoxEntity email WHERE email.userId = :userId AND email.folder = :folder")
+  Long findMaxUid(@Param("userId")
+  String userId, @Param("folder")
+  String folder);
 }

@@ -85,4 +85,17 @@ public class EmailSyncStateEntity {
 
   @Column(name = "CREATED_DATE", nullable = false)
   private Date   createdDate;
+
+  // The highest INBOX UID the owner has been notified about: the new-mail
+  // notification's boundary, moved by a conditional UPDATE before each send so one
+  // range is notified once, whichever node sends. Null until initialised.
+  // Declared after every existing field: the Lombok all-args constructor is
+  // positional.
+  @Column(name = "NOTIFIED_UID")
+  private Long   notifiedUid;
+
+  // Changes when the INBOX UIDs stop meaning what they meant (a reset, a new
+  // UIDVALIDITY): a consumer's UID cursor is only valid within one epoch.
+  @Column(name = "INBOX_EPOCH", nullable = false)
+  private long   inboxEpoch;
 }
