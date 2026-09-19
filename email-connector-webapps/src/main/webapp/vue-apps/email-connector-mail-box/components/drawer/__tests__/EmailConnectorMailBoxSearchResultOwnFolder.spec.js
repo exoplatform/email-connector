@@ -444,7 +444,9 @@ describe('the mail drawer opened on search results opens, reads and removes the 
   let reads;
 
   /**
-   * Mounts the mail drawer, expanded, over a search list holding INBOX:5 and ARCHIVE:5.
+   * Mounts the mail drawer over a search list holding INBOX:5 and ARCHIVE:5. It is the
+   * narrow reader only (EXO-90415): switching rows and selecting belong to the mailbox
+   * drawer's full screen, pinned above.
    *
    * @returns {void}
    */
@@ -493,18 +495,6 @@ describe('the mail drawer opened on search results opens, reads and removes the 
     expect(emit).not.toHaveBeenCalled();
   });
 
-  it('switches to a row of its list from the row\'s folder', async () => {
-    await mountOnTwins();
-    await wrapper.setData({ emailDetailDrawer: true, expanded: true, emails: [message(5, 'INBOX'), message(5, 'ARCHIVE')] });
-
-    wrapper.vm.$root.$emit('open-email-detail-content', 5, 'ARCHIVE');
-    await flush();
-
-    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(5, 'ARCHIVE');
-    // With what the list knows of it: read already, so nothing is pushed again.
-    expect(reads).toEqual([[true, [5], 'ARCHIVE', true]]);
-  });
-
   it('retries a result that could not be read in its own folder', async () => {
     mountOnTwins();
     await wrapper.setData({ emailDetailDrawer: true, detachedFromList: true,
@@ -516,18 +506,9 @@ describe('the mail drawer opened on search results opens, reads and removes the 
     expect(service.getEmailByRemoteId).toHaveBeenCalledWith(5, 'ARCHIVE');
   });
 
-  it('keeps its selection by folder and UID', async () => {
-    mountOnTwins();
-    await wrapper.setData({ emailDetailDrawer: true });
-
-    wrapper.vm.$root.$emit('select-email', { emailId: 5, folder: 'ARCHIVE', selected: true });
-
-    expect(wrapper.vm.selectedEmails).toEqual(['ARCHIVE:5']);
-  });
-
   it('removes only the hit acted on from its list, and turns only it read', async () => {
     await mountOnTwins();
-    await wrapper.setData({ emailDetailDrawer: true, expanded: true,
+    await wrapper.setData({ emailDetailDrawer: true,
       emails: [message(5, 'INBOX', { read: false }), message(5, 'ARCHIVE', { read: false })] });
 
     wrapper.vm.$root.$emit('update-email-read-status', true, [5], 'ARCHIVE');

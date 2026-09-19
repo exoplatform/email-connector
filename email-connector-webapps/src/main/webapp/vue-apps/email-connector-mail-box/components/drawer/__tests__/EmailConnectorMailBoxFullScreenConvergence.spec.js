@@ -402,6 +402,26 @@ describe('a draft\'s conversation opens in the full-screen reader (EXO-90415)', 
     expect(fixture.service.getEmailByRemoteId).not.toHaveBeenCalled();
   });
 
+  it('shows it over an arrow-key opening answering last', async () => {
+    const draft = message(4, 'DRAFTS', { draftLocalId: 'local-4', threadId: 'thread-1' });
+    let answer;
+    fixture = await mountBoth([message(1), message(3), draft], {
+      getEmailByRemoteId: jest.fn(mailRemoteId => new Promise(resolve => {
+        answer = () => resolve(full(message(mailRemoteId)));
+      })),
+    });
+    fixture.mailbox.expanded = true;
+    fixture.mailbox.openAutomatically(fixture.mailbox.emails.find(email => email.mailRemoteId === 3));
+
+    fixture.host.vm.$root.$emit('open-email-thread-content', draft);
+    answer();
+    await flush();
+
+    expect(fixture.mailbox.email).toBe(draft);
+    expect(fixture.mailbox.loadingEmail).toBe(false);
+    expect(fixture.mailbox.autoOpenReadPending).toBe(false);
+  });
+
   it('leaves it to the mail drawer in the narrow layout', async () => {
     const draft = message(4, 'DRAFTS', { draftLocalId: 'local-4', threadId: 'thread-1' });
     fixture = await mountBoth([message(1), draft]);
