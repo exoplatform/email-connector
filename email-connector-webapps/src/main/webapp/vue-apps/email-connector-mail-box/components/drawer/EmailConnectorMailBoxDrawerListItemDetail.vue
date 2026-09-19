@@ -114,6 +114,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+
 // The dimmed page behind a drawer that opened on its own; kept by id so a second
 // open can never leave two of them stacked.
 const BACKDROP_ID = 'emailDetailDrawerBackdrop';
@@ -284,18 +286,21 @@ export default {
         this.selectMode = true;
       }
     });
-    this.$root.$on('select-email', ({ emailId, selected }) => {
+    this.$root.$on('select-email', ({ emailId, folder, selected }) => {
       if (!this.emailDetailDrawer) {
         return;
       }
       this.selectMode = true;
+      // Kept by folder and UID (EXO-90416): in a list of search results one number may
+      // be two messages, and ticking one must not tick the other.
+      const key = selectionKey({ mailRemoteId: emailId, folder });
       if (selected) {
-        if (!this.selectedEmails.includes(emailId)) {
-          this.selectedEmails.push(emailId);
+        if (!this.selectedEmails.includes(key)) {
+          this.selectedEmails.push(key);
         }
       }
       else {
-        this.selectedEmails = this.selectedEmails.filter(id => id !== emailId);
+        this.selectedEmails = this.selectedEmails.filter(selected => selected !== key);
       }
     });
     this.$root.$on('synchronize-in-progress', () => {
@@ -407,7 +412,10 @@ export default {
       this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
       this.$root.isDetailDrawerActive = true;
-      this.$root.$emit('update-email-read-status', true, [mailRemoteId], this.folderOf(mailRemoteId, folder));
+      const ownFolder = this.folderOf(mailRemoteId, folder);
+      // With what the list knows of it, so a message already read is not pushed again.
+      const listed = (emails || []).find(e => e.mailRemoteId === mailRemoteId && (e.folder || 'INBOX') === ownFolder);
+      this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, listed?.read);
       this.fetchEmail(mailRemoteId, folder);
     },
     /**
@@ -564,7 +572,7 @@ export default {
       const ownFolder = this.folderOf(mailRemoteId, folder);
       this.fetchEmail(mailRemoteId, folder).then(email => {
         if (email) {
-          this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder);
+          this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, email?.read);
           // After the emit, as it always was: the read-status handler recomputes the
           // placeholder for the list it was handed, and in the wide layout that
           // answer is "show the placeholder" for the very message just opened.

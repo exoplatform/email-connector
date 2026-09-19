@@ -38,6 +38,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+
 export default {
   props: {
     emails: {
@@ -91,7 +93,7 @@ export default {
       // A row the server has not listed yet (refreshPending: one an Undo put back, one
       // a move filed here) is not selectable: it carries a UID the server has
       // renumbered, or a placeholder, and any action on it would be counted a failure.
-      const newSelection = value ? this.emails.filter(e => !e.refreshPending).map(e => e.mailRemoteId) : [];
+      const newSelection = value ? this.emails.filter(e => !e.refreshPending).map(selectionKey) : [];
       this.$emit('update:selected-emails', newSelection);
     }
   }

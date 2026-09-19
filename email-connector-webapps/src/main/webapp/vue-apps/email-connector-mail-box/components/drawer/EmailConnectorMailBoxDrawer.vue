@@ -211,6 +211,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+
 // Categorization runs after the sync reports done, in batches, and a large mailbox takes
 // several minutes. Two numbers govern how long the drawer keeps watching for the results.
 
@@ -277,6 +279,7 @@ export default {
       webmailUrl: null,
       refreshInterval: null,
       activeDownload: null,
+      // The selected messages, as selection keys (folder and UID, see selectionKey).
       selectedEmails: [],
       selectMode: false,
       expanded: false,
@@ -467,8 +470,8 @@ export default {
       }
       this.openEmailDetailContent(mailRemoteId, folder);
     };
-    this.onUpdateEmailReadStatus = (read, emails, folder) => {
-      this.updateEmailsReadStatus(read, emails, folder);
+    this.onUpdateEmailReadStatus = (read, emails, folder, knownRead) => {
+      this.updateEmailsReadStatus(read, emails, folder, knownRead);
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
@@ -613,18 +616,21 @@ export default {
     this.$root.$on('attachment-download-finished', () => {
       this.activeDownload = null;
     });
-    this.$root.$on('select-email', ({ emailId, selected }) => {
+    this.$root.$on('select-email', ({ emailId, folder, selected }) => {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return;
       }
       this.selectMode = true;
+      // Kept by folder and UID (EXO-90416): in a list of search results one number may
+      // be two messages, and ticking one must not tick the other.
+      const key = selectionKey({ mailRemoteId: emailId, folder });
       if (selected) {
-        if (!this.selectedEmails.includes(emailId)) {
-          this.selectedEmails.push(emailId);
+        if (!this.selectedEmails.includes(key)) {
+          this.selectedEmails.push(key);
         }
       }
       else {
-        this.selectedEmails = this.selectedEmails.filter(id => id !== emailId);
+        this.selectedEmails = this.selectedEmails.filter(selected => selected !== key);
       }
     });
     this.$root.$on('synchronize-in-progress', () => {
@@ -1269,6 +1275,8 @@ export default {
         return;
       }
       this.searchOpening = true;
+      // What the hit was before this opening stamps its row read (markResultOpened).
+      const wasRead = result.read;
       this.loading = true;
       try {
         if (!result.cached) {
@@ -1280,6 +1288,9 @@ export default {
           this.supersedeEmailRequest();
           this.email = email;
           this.selectEmailPlaceHolder = false;
+          // Read in its own folder, as the narrow path's mail drawer reads it -- once:
+          // not when it already was (EXO-90416).
+          this.updateEmailsReadStatus(true, [result.mailRemoteId], result.folder || 'INBOX', wasRead);
           this.$root.$emit('set-opened', result.mailRemoteId);
         } else {
           this.$root.$emit('open-email-detail-drawer', result.mailRemoteId, this.mergedSearchResults, this.syncInProgress, this.webmailUrl, true, false, result.folder);
@@ -1383,17 +1394,24 @@ export default {
      * that folder the listing does not hold is pushed all the same, its search row
      * stamped.
      *
+     * Such a message is pushed only when it is not known to be in that state already:
+     * the caller may say (knownRead, what it holds of the message), else the search row
+     * or the opened message of that folder does. Opening a message outside the listing
+     * -- from outside the mailbox, from a search -- reads it, once, in its own folder.
+     *
      * @param {Boolean} read the status to apply
      * @param {Array} emailIds the IMAP UIDs to apply it to
      * @param {String} folder the folder they are numbered in, when the caller knows it
+     * @param {Boolean} knownRead the read status the caller knows those messages to have
      * @returns {void}
      */
-    updateEmailsReadStatus(read, emailIds = [], folder = null) {
+    updateEmailsReadStatus(read, emailIds = [], folder = null, knownRead = null) {
       const unlisted = [];
       const emailIdsToUpdate = emailIds.filter(id => {
         const email = this.emails.find(e => e.mailRemoteId === id && (!folder || (e.folder || 'INBOX') === folder));
         if (!email) {
-          if (folder && !this.$emailConnectorMailBoxService.isReadOnlyFolder(folder)) {
+          if (folder && !this.$emailConnectorMailBoxService.isReadOnlyFolder(folder)
+              && this.knownReadStatus(id, folder, knownRead) !== read) {
             unlisted.push(id);
           }
           return false;
@@ -1435,6 +1453,30 @@ export default {
      */
     folderOfEmail(mailRemoteId, folder = null) {
       return folder || this.rowOfEmail(mailRemoteId)?.folder || 'INBOX';
+    },
+    /**
+     * What this drawer knows of a message's read status outside the listing: the
+     * caller's word first, then the search row, then the opened message, of that folder.
+     *
+     * @param {Number} mailRemoteId the message's IMAP UID
+     * @param {String} folder the folder it is numbered in
+     * @param {Boolean} knownRead the caller's word, if any
+     * @returns {Boolean} the status, or null when unknown
+     */
+    knownReadStatus(mailRemoteId, folder, knownRead) {
+      if (typeof knownRead === 'boolean') {
+        return knownRead;
+      }
+      const result = (this.searchServerResults || [])
+        .find(row => row.mailRemoteId === mailRemoteId && (row.folder || 'INBOX') === folder);
+      if (result && typeof result.read === 'boolean') {
+        return result.read;
+      }
+      if (this.email?.mailRemoteId === mailRemoteId && (this.email.folder || 'INBOX') === folder
+          && typeof this.email.read === 'boolean') {
+        return this.email.read;
+      }
+      return null;
     },
     /**
      * The row this drawer holds for a message id, from the three places it holds rows
