@@ -39,6 +39,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 import javax.mail.Message;
@@ -52,6 +53,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -66,12 +68,14 @@ import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptAction;
+import org.exoplatform.emailConnector.model.ReadReceiptAnswerOrigin;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 
 import io.meeds.social.util.JsonUtils;
 
@@ -91,6 +95,10 @@ class ReadReceiptServiceTest {
 
   private static final long       EMAIL_ID    = 12L;
 
+  private static final long       ANSWER_ID   = 34L;
+
+  private static final String     MESSAGE_ID  = "<original@partner.example>";
+
   @Mock
   private EmailBoxService         emailBoxService;
 
@@ -103,6 +111,9 @@ class ReadReceiptServiceTest {
   @Mock
   private SettingService          settingService;
 
+  @Mock
+  private EmailReadReceiptAnswerStorage answerStorage;
+
   @InjectMocks
   private ReadReceiptService      readReceiptService;
 
@@ -112,6 +123,9 @@ class ReadReceiptServiceTest {
     UserEmailSetting setting = new UserEmailSetting();
     setting.setEmailAddress(OWN_ADDRESS);
     lenient().when(userEmailSettingService.getUserEmailSetting(USER)).thenReturn(setting);
+    // The answer store lets the first answer of a message through, as it does on a
+    // message nobody answered yet.
+    lenient().when(answerStorage.claim(eq(USER), anyString(), any(), any(), any())).thenReturn(ANSWER_ID);
   }
 
   /** The administrator switch goes back to its default after each test. */
@@ -320,7 +334,7 @@ class ReadReceiptServiceTest {
     assertEquals(ReadReceiptPrompt.ASK, safe.getReadReceiptPrompt());
   }
 
-  /** Decorating reads the preferences once, and not at all when nothing asks. */
+  /** Decorating reads the preferences once, and neither them nor the answer store when nothing asks. */
   @Test
   void decoratingAThreadReadsThePreferencesOnce() {
     Email plain = incoming();
@@ -328,6 +342,7 @@ class ReadReceiptServiceTest {
     readReceiptService.decorate(List.of(plain), USER);
     assertEquals(ReadReceiptPrompt.NONE, plain.getReadReceiptPrompt());
     verify(settingService, never()).get(any(), any(), anyString());
+    verify(answerStorage, never()).findAnswers(anyString(), any());
 
     Email first = incoming();
     Email second = incoming();
@@ -543,6 +558,123 @@ class ReadReceiptServiceTest {
                               () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false)).getMessage());
     verify(emailBoxStorage, org.mockito.Mockito.times(3)).releaseReadReceipt(USER, email, ReadReceiptState.SENT);
     verify(serverCopy, org.mockito.Mockito.times(1)).addKeyword(anyString());
+    // The answer store follows the rows: given back three times, kept for UNCONFIRMED.
+    verify(answerStorage, org.mockito.Mockito.times(3)).release(USER, ANSWER_ID);
+  }
+
+  // ---------------------------------------------------------------------------------
+  // The answer store (phase 2): an answer outlives the cached rows
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The answer is decided by the answer store, keyed by user and Message-ID, before the
+   * cached copies follow: the store's insert first, as a LOCAL answer, then the rows.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void theAnswerStoreDecidesBeforeTheRowsFollow() throws Exception {
+    Email email = incoming();
+    when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
+    when(emailBoxStorage.claimReadReceipt(USER, email, ReadReceiptState.IGNORED)).thenReturn(true);
+    serverCopy();
+
+    readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.IGNORE, false);
+
+    InOrder order = org.mockito.Mockito.inOrder(answerStorage, emailBoxStorage);
+    order.verify(answerStorage).claim(eq(USER), eq(MESSAGE_ID), eq(ReadReceiptState.IGNORED), eq(ReadReceiptAnswerOrigin.LOCAL), any());
+    order.verify(emailBoxStorage).claimReadReceipt(USER, email, ReadReceiptState.IGNORED);
+  }
+
+  /**
+   * The case the store exists for: the message's rows were re-created (a move, an
+   * archive, a reset) on a mailbox that stores no keywords, so the row reads pending,
+   * but the user answered before. Nothing is sent, the conflict is reported, and the
+   * pending copies are brought in line with the stored answer.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aStoredAnswerOutlivesItsRows() throws Exception {
+    storedSettings(new ReadReceiptSettings(false, ReadReceiptPolicy.ALWAYS, false));
+    Email email = incoming();
+    when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
+    when(answerStorage.claim(eq(USER), eq(MESSAGE_ID), any(), any(), any())).thenReturn(null);
+    when(answerStorage.findAnswers(USER, List.of(MESSAGE_ID))).thenReturn(Map.of(EmailReadReceiptAnswerStorage.messageIdHash(MESSAGE_ID),
+                                                                                  ReadReceiptState.IGNORED));
+
+    assertEquals(ReadReceiptConflictException.ALREADY_HANDLED,
+                 assertThrows(ReadReceiptConflictException.class,
+                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, true)).getMessage());
+    verify(emailBoxStorage).claimReadReceipt(USER, email, ReadReceiptState.IGNORED);
+    verify(emailBoxStorage, never()).claimReadReceipt(USER, email, ReadReceiptState.SENT);
+    verify(emailBoxService, never()).openServerCopy(anyString(), any());
+    verify(emailBoxService, never()).transmitAsUser(anyString(), any());
+  }
+
+  /**
+   * The store took the answer, but a cached copy says the request was answered a moment
+   * ago (the sync mirrored another client's $MDNSent): nothing is sent, and the store's
+   * record stays -- the request is answered, whoever answered it.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void anAnsweredCopyStopsTheReceiptEvenWhenTheStoreLetItThrough() throws Exception {
+    Email email = incoming();
+    when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
+    when(emailBoxStorage.claimReadReceipt(USER, email, ReadReceiptState.SENT)).thenReturn(false);
+
+    assertThrows(ReadReceiptConflictException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false));
+    verify(emailBoxService, never()).transmitAsUser(anyString(), any());
+    verify(answerStorage, never()).release(anyString(), org.mockito.ArgumentMatchers.anyLong());
+  }
+
+  /**
+   * A message with no Message-ID of its own -- none, or the placeholder this add-on
+   * synthesized -- has nothing to be recognised by once its row is gone: the store is
+   * not consulted, and its cached copies decide, as before the store.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void aMessageWithoutItsOwnMessageIdIsDecidedByItsRows() throws Exception {
+    for (String messageId : java.util.Arrays.asList(null, "<7.alice@email-connector.local>")) {
+      Email email = incoming();
+      email.setMailHeaderId(messageId);
+      when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
+      when(emailBoxStorage.claimReadReceipt(USER, email, ReadReceiptState.IGNORED)).thenReturn(true);
+      serverCopy();
+
+      readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.IGNORE, false);
+
+      verify(emailBoxStorage).claimReadReceipt(USER, email, ReadReceiptState.IGNORED);
+    }
+    verify(answerStorage, never()).claim(anyString(), any(), any(), any(), any());
+  }
+
+  /**
+   * The prompt reads the store too, once for the pending requests of a page: a request
+   * answered before its row was re-created is not offered again, not even under
+   * ALWAYS; one the store does not know is offered as before.
+   */
+  @Test
+  void thePromptReadsTheAnswerStore() {
+    storedSettings(new ReadReceiptSettings(false, ReadReceiptPolicy.ALWAYS, false));
+    Email answered = incoming();
+    Email fresh = incoming();
+    fresh.setMailHeaderId("<fresh@partner.example>");
+    Email plain = incoming();
+    plain.setReadReceiptRequested(false);
+    when(answerStorage.findAnswers(eq(USER), any())).thenReturn(Map.of(EmailReadReceiptAnswerStorage.messageIdHash(MESSAGE_ID),
+                                                                       ReadReceiptState.SENT));
+
+    readReceiptService.decorate(List.of(answered, fresh, plain), USER);
+
+    assertEquals(ReadReceiptPrompt.NONE, answered.getReadReceiptPrompt());
+    assertEquals(ReadReceiptPrompt.AUTO, fresh.getReadReceiptPrompt());
+    assertEquals(ReadReceiptPrompt.NONE, plain.getReadReceiptPrompt());
+    verify(answerStorage).findAnswers(USER, List.of(MESSAGE_ID, "<fresh@partner.example>"));
   }
 
   // ---------------------------------------------------------------------------------

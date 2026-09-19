@@ -1401,4 +1401,83 @@
       <dropColumn tableName="EMAIL_BOX" columnName="READ_RECEIPT_REQUESTED"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-67" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The read-receipt answer store's sequence (EXO-90435, phase 2), on the vendors that
+      have sequences, created before its table for the reason 1.0.0-43 records. 1.0.0-66
+      is phase 1's (the read-receipt columns of EMAIL_BOX), so this starts at 67.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_RR_ANSWER_ID" startValue="1"/>
+    <rollback>
+      <dropSequence sequenceName="SEQ_EMAIL_RR_ANSWER_ID"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-68">
+    <comment>
+      The durable answer to a read-receipt request (EXO-90435, PO decision of
+      2026-09-19): one row per user and message the user answered, whatever became of
+      the message's cached EMAIL_BOX rows since. EMAIL_BOX.READ_RECEIPT_STATE mirrors the
+      answer on the rows, and $MDNSent on the server where the mailbox stores keywords;
+      on one that does not (Exchange), a row the sync re-creates after a move, an
+      archive, a reset or a trip out of the sync window would otherwise ask again, and
+      under the ALWAYS policy a second receipt could leave. So this is a record and not
+      a cache: no foreign key to EMAIL_BOX, nothing cascades into it, and neither a
+      cache reset nor a disconnection deletes it.
+
+      MESSAGE_ID_HASH is the SHA-256 of the message's own Message-ID, in lower-case hex:
+      a Message-ID is case-sensitive and up to 1024 characters in EMAIL_BOX, and a
+      unique index on it would neither hold under MySQL's case-insensitive collation
+      nor fit its key length. A Message-ID this add-on synthesized for a message that had
+      none is never a key here. STATE is SENT or IGNORED; ORIGIN is LOCAL (answered in
+      this add-on) or SERVER (the sync found $MDNSent, set by another client).
+
+      The unique index UQ_EMAIL_READ_RECEIPT_ANSWER on (USER_ID, MESSAGE_ID_HASH) is the
+      at-most-once decision of a receipt: the answer is an INSERT, and the second one,
+      from a racing tab, node or sync, is refused. It also serves every read, which is by
+      user and hashes. Not the table the plan named EMAIL_READ_RECEIPT: that one is to
+      hold the receipts that arrive for the user's own sent mail (tracking, later),
+      keyed by message AND reporter, a different key. Rolled back explicitly, index
+      then table.
+    </comment>
+    <createTable tableName="EMAIL_READ_RECEIPT_ANSWER">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_READ_RECEIPT_ANSWER"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="MESSAGE_ID_HASH" type="VARCHAR(64)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="STATE" type="VARCHAR(20)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ORIGIN" type="VARCHAR(20)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ANSWERED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <createIndex tableName="EMAIL_READ_RECEIPT_ANSWER" indexName="UQ_EMAIL_READ_RECEIPT_ANSWER" unique="true">
+      <column name="USER_ID"/>
+      <column name="MESSAGE_ID_HASH"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_READ_RECEIPT_ANSWER" indexName="UQ_EMAIL_READ_RECEIPT_ANSWER"/>
+      <dropTable tableName="EMAIL_READ_RECEIPT_ANSWER"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-69" dbms="mysql">
+    <comment>
+      The table options every table of this file gets on MySQL (InnoDB, utf8mb4, the
+      accent-insensitive 0900 collation), applied to EMAIL_READ_RECEIPT_ANSWER as literal
+      SQL for the checksum reason 1.0.0-53 gives. Nothing here needs a binary collation:
+      MESSAGE_ID_HASH is lower-case hex by construction. The rollback is explicit and
+      empty on purpose, as 1.0.0-59's is: sql has no automatic rollback, and the table
+      goes with 1.0.0-68's.
+    </comment>
+    <sql>ALTER TABLE EMAIL_READ_RECEIPT_ANSWER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <rollback/>
+  </changeSet>
 </databaseChangeLog>
