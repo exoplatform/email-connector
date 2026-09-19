@@ -444,9 +444,14 @@ export default {
      * Whether the composer holds anything at all — which is also what makes a draft
      * worth saving and a Discard button worth offering.
      *
+     * <p>
+     * Named hasContent, as every reader of it calls it: the drafts work (EXO-89337)
+     * renamed its readers from confirmClose and the computed itself kept the old name,
+     * so this.hasContent read undefined -- no autosave, no save on close, no Discard.
+     *
      * @returns {boolean} true when the composer holds anything
      */
-    confirmClose() {
+    hasContent() {
       // A recipient typed but not yet a chip is work too: closing over it used
       // to discard it silently, which is the same loss the pending term was
       // introduced to notice.
