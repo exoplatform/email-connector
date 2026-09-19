@@ -291,6 +291,35 @@ describe('dragging a mail onto the folder column (EXO-90421)', () => {
     expect(fixture.service.undoMoveEmails).toHaveBeenCalledWith(['<INBOX-2@host>'], 'CUSTOM:1', 'INBOX');
   });
 
+  it('two selected rows of three messages each say "Move 2 emails", and move all six messages', async () => {
+    const conversation = (threadId, uids) => uids.map(uid => ({ ...row(uid), threadId }));
+    fixture = await mountDrawer([...conversation('a', [1, 2, 3]), ...conversation('b', [4, 5, 6]), row(7)]);
+    const selectedEmails = ['INBOX:1', 'INBOX:2', 'INBOX:3', 'INBOX:4', 'INBOX:5', 'INBOX:6'];
+    await fixture.wrapper.setData({ selectMode: true, selectedEmails });
+    const thread = emailConnectorMailBoxService.groupEmailsByThread(fixture.wrapper.vm.emails)
+      .find(candidate => candidate.threadId === 'a');
+    const item = mountRow(fixture, thread.latest.mailRemoteId,
+      { thread, selectMode: true, selectedEmails, emails: fixture.wrapper.vm.emails });
+    const start = dragEvent('dragstart', []);
+
+    item.element.dispatchEvent(start);
+
+    const [image] = start.dataTransfer.setDragImage.mock.calls[0];
+    expect(image.textContent).toBe('emailConnector.mailBox.list.drawer.drag.emails|2');
+    expect([...fixture.wrapper.vm.emailDrag.ids].sort()).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('a single row of three messages says "Move 1 email"', async () => {
+    fixture = await mountDrawer([1, 2, 3].map(uid => ({ ...row(uid), threadId: 'a' })));
+    const thread = emailConnectorMailBoxService.groupEmailsByThread(fixture.wrapper.vm.emails)[0];
+    const start = dragEvent('dragstart', []);
+
+    mountRow(fixture, thread.latest.mailRemoteId, { thread, emails: fixture.wrapper.vm.emails }).element.dispatchEvent(start);
+
+    expect(start.dataTransfer.setDragImage.mock.calls[0][0].textContent).toBe('emailConnector.mailBox.list.drawer.drag.email');
+    expect(fixture.wrapper.vm.emailDrag.ids).toHaveLength(3);
+  });
+
   it('a selected row drags the selection, one move from its folder, and ends the selection', async () => {
     fixture = await mountDrawer([row(1), row(2), row(3)]);
     await fixture.wrapper.setData({ selectMode: true, selectedEmails: ['INBOX:1', 'INBOX:3'] });
