@@ -111,9 +111,22 @@ export default {
     chooseDirection(event) {
       const button = event && event.currentTarget;
       const rect = button && button.getBoundingClientRect();
-      // a rough menu height (per row) is enough to know whether it would overflow
-      const estimatedHeight = 40 * this.actions.length + 16;
+      // a rough menu height (per row) is enough to know whether it would overflow;
+      // a contributed component may render several rows, and says how many
+      const rows = this.actions.reduce((count, action) => count + this.rowsOf(action), 0);
+      const estimatedHeight = 40 * rows + 16;
       this.openUpward = !!rect && (rect.bottom + estimatedHeight) > window.innerHeight;
+    },
+    /**
+     * How many menu rows an action renders: one, unless a contributed component
+     * declares otherwise through rows(attachment).
+     *
+     * @param {Object} action the action descriptor
+     * @returns {Number} the number of rows it takes in the menu
+     */
+    rowsOf(action) {
+      const rows = typeof action.rows === 'function' ? Number(action.rows(this.attachment)) : 1;
+      return Number.isFinite(rows) && rows >= 0 ? rows : 1;
     },
     /**
      * Recomputes what this attachment can be done with. Also done when the menu is
@@ -133,9 +146,9 @@ export default {
      * Documents add-on is there can change while the mail stays on screen.
      * storeInMailAttachments is the one capability that is not tied to the row's own
      * UI: it stores the attachment where opening it already does (Mail
-     * Attachments/Received in the user's Drive) through the very same call, so the
-     * copy opening made is reused rather than stored twice, and resolves the id of
-     * the document. It is null when the Documents add-on is not installed, since there
+     * Attachments/Received in the user's Drive) through the very same call, so within
+     * the page the copy opening made is reused rather than stored again, and resolves
+     * the id of the document. It is null when the Documents add-on is not installed, since there
      * is then nowhere to store it: a contributor needing a document hides itself.
      *
      * @returns {Object} the action context of this attachment row
