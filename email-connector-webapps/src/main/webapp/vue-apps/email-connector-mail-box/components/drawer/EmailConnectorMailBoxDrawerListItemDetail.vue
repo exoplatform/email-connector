@@ -114,6 +114,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+
 // The dimmed page behind a drawer that opened on its own; kept by id so a second
 // open can never leave two of them stacked.
 const BACKDROP_ID = 'emailDetailDrawerBackdrop';
@@ -171,36 +173,41 @@ export default {
     // "Retry" on a message whose full copy could not be read.
     this.onRetryEmailRead = (email) => {
       if (this.emailDetailDrawer && this.email?.unavailable && email?.mailRemoteId === this.email.mailRemoteId) {
-        this.fetchEmail(email.mailRemoteId);
+        // Re-read in the folder the opened message is numbered in (EXO-90416).
+        this.fetchEmail(email.mailRemoteId, this.email.folder || null);
       }
     };
     this.$root.$on('retry-email-read', this.onRetryEmailRead);
-    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList, standalone) => {
+    // Each opening and each action below may say which folder its UIDs are numbered in,
+    // as its last argument: this drawer's list may be a search's, holding several
+    // folders where one number may be several messages, and a bare UID used to open --
+    // or read, or act on -- the wrong one (EXO-90416).
+    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList, standalone, folder) => {
       this.detachedFromList = !!detachedFromList;
       // Opened with the mailbox behind it, this drawer sits on an already-dimmed page
       // and the platform's shared overlay covers it. Opened on its own -- from the
       // platform's search, or from the Favorites drawer -- nothing is dimming the
       // page underneath, so it draws its own.
       this.standalone = !!standalone;
-      this.open(mailRemoteId, emails, syncInProgress, webmailUrl);
+      this.open(mailRemoteId, emails, syncInProgress, webmailUrl, folder);
     };
     this.onCloseEmailDetailDrawer = () => {
       if (!this.expanded) {
         this.close();
       }
     };
-    this.onOpenEmailDetailContent = (mailRemoteId) => {
+    this.onOpenEmailDetailContent = (mailRemoteId, folder) => {
       if (!this.emailDetailDrawer) {
         return; 
       }
-      this.openEmailDetailContent(mailRemoteId);
+      this.openEmailDetailContent(mailRemoteId, folder);
     };
-    this.onUpdateEmailReadStatus = (read, emails) => {
+    this.onUpdateEmailReadStatus = (read, emails, folder) => {
       if (!this.emailDetailDrawer) {
         return; 
       }
       emails.filter(id => {
-        const email = this.emails.find(e => e.mailRemoteId === id);
+        const email = this.emails.find(e => e.mailRemoteId === id && (!folder || (e.folder || 'INBOX') === folder));
         // A row in a read-only folder is left bold. The mailbox drawer refuses to
         // push a read status for one (see its updateEmailsReadStatus), so showing it
         // turn read here would show a state nothing is saving — and opening a mail
@@ -215,11 +222,11 @@ export default {
         this.cancelSelectMode();
       }
     };
-    this.onDeleteOrArchiveEmail = (emails) => {
+    this.onDeleteOrArchiveEmail = (emails, folder) => {
       if (!this.emailDetailDrawer) {
         return; 
       }
-      this.refreshEmails(emails);
+      this.refreshEmails(emails, folder);
       this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
       if (this.selectMode) {
         this.cancelSelectMode();
@@ -279,18 +286,21 @@ export default {
         this.selectMode = true;
       }
     });
-    this.$root.$on('select-email', ({ emailId, selected }) => {
+    this.$root.$on('select-email', ({ emailId, folder, selected }) => {
       if (!this.emailDetailDrawer) {
         return;
       }
       this.selectMode = true;
+      // Kept by folder and UID (EXO-90416): in a list of search results one number may
+      // be two messages, and ticking one must not tick the other.
+      const key = selectionKey({ mailRemoteId: emailId, folder });
       if (selected) {
-        if (!this.selectedEmails.includes(emailId)) {
-          this.selectedEmails.push(emailId);
+        if (!this.selectedEmails.includes(key)) {
+          this.selectedEmails.push(key);
         }
       }
       else {
-        this.selectedEmails = this.selectedEmails.filter(id => id !== emailId);
+        this.selectedEmails = this.selectedEmails.filter(selected => selected !== key);
       }
     });
     this.$root.$on('synchronize-in-progress', () => {
@@ -385,15 +395,28 @@ export default {
     }
   },
   methods: {
-    open(mailRemoteId, emails, syncInProgress, webmailUrl) {
+    /**
+     * Opens the drawer on one message of a list.
+     *
+     * @param {Number} mailRemoteId the message's IMAP UID
+     * @param {Array} emails the list it was opened from
+     * @param {Boolean} syncInProgress whether a synchronization is running
+     * @param {String} webmailUrl the account's webmail, for the toolbar
+     * @param {String} folder the folder the UID is numbered in, when the opener knows it
+     * @returns {void}
+     */
+    open(mailRemoteId, emails, syncInProgress, webmailUrl, folder = null) {
       this.emailDetailDrawer = true;
       this.selectEmailPlaceHolder = false;
       this.emails = emails;
       this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
       this.$root.isDetailDrawerActive = true;
-      this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
-      this.fetchEmail(mailRemoteId);
+      const ownFolder = this.folderOf(mailRemoteId, folder);
+      // With what the list knows of it, so a message already read is not pushed again.
+      const listed = (emails || []).find(e => e.mailRemoteId === mailRemoteId && (e.folder || 'INBOX') === ownFolder);
+      this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, listed?.read);
+      this.fetchEmail(mailRemoteId, folder);
     },
     /**
      * Opens the reader on a message and fetches the server's full copy of it.
@@ -409,12 +432,16 @@ export default {
      * message back on screen, or end the loading bar while the current one is pending.
      *
      * @param {number} mailRemoteId - the IMAP UID of the message to open
+     * @param {String} folder - the folder the UID is numbered in, when the caller knows
+     *        it; the row the reader opens on is looked up in that folder too, because
+     *        this drawer's list may be a search's (EXO-90416)
      * @returns {Promise<object|null>} the full message, or null when the request was
      *          superseded or failed
      */
-    fetchEmail(mailRemoteId) {
+    fetchEmail(mailRemoteId, folder = null) {
       const request = ++this.emailRequest;
-      const row = !this.detachedFromList && this.listedEmail(mailRemoteId) || null;
+      const ownFolder = this.folderOf(mailRemoteId, folder);
+      const row = !this.detachedFromList && this.listedEmail(mailRemoteId, ownFolder) || null;
       // Clicking the message already open keeps its full copy on screen while it is
       // re-read, rather than stepping back to the bare list row.
       const alreadyOpen = row && this.email && !this.email.unavailable && !this.$emailConnectorMailBoxService.isListingRow(this.email)
@@ -429,7 +456,7 @@ export default {
         this.selectEmailPlaceHolder = false;
       }
       this.loadingEmail = true;
-      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, this.folderOf(mailRemoteId))
+      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder)
         .then(email => {
           if (request !== this.emailRequest) {
             return null;
@@ -481,13 +508,17 @@ export default {
       }
     },
     /**
-     * The row of the list this drawer was handed for a message, if it holds one.
+     * The row of the list this drawer was handed for a message, if it holds one --
+     * in the given folder, when one is known: the list may be a search's, where the
+     * same UID may be two messages (EXO-90416).
      *
      * @param {number} mailRemoteId - the IMAP UID of the message
+     * @param {String} folder - the folder the UID is numbered in, when known
      * @returns {object|undefined} the list row
      */
-    listedEmail(mailRemoteId) {
-      return (this.emails || []).find(e => e.mailRemoteId === mailRemoteId);
+    listedEmail(mailRemoteId, folder = null) {
+      return (this.emails || []).find(e => e.mailRemoteId === mailRemoteId
+        && (!folder || (e.folder || 'INBOX') === folder));
     },
     /**
      * Opens the reader on a row the caller already holds in full, without going back
@@ -518,7 +549,13 @@ export default {
     },
     // IMAP UIDs are per-folder, so opening a Sent/Archive message needs its folder,
     // taken from the currently-listed emails.
-    folderOf(mailRemoteId) {
+    //
+    // A folder the caller gives wins: in a search list the first row carrying the number
+    // may be another folder's message (EXO-90416).
+    folderOf(mailRemoteId, folder = null) {
+      if (folder) {
+        return folder;
+      }
       const email = (this.emails || []).find(e => e.mailRemoteId === mailRemoteId);
       return email && email.folder || 'INBOX';
     },
@@ -527,13 +564,15 @@ export default {
      * click on a row beside it.
      *
      * @param {number} mailRemoteId - the IMAP UID of the message to open
+     * @param {String} folder - the folder it is numbered in, when the row says so
      * @returns {void}
      */
-    openEmailDetailContent(mailRemoteId) {
+    openEmailDetailContent(mailRemoteId, folder = null) {
       this.selectEmailPlaceHolder = false;
-      this.fetchEmail(mailRemoteId).then(email => {
+      const ownFolder = this.folderOf(mailRemoteId, folder);
+      this.fetchEmail(mailRemoteId, folder).then(email => {
         if (email) {
-          this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
+          this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, email?.read);
           // After the emit, as it always was: the read-status handler recomputes the
           // placeholder for the list it was handed, and in the wide layout that
           // answer is "show the placeholder" for the very message just opened.
@@ -541,9 +580,17 @@ export default {
         }
       });
     },
-    refreshEmails(emailIds = []) {
+    /**
+     * Takes messages out of this drawer's list -- only the given folder's when the
+     * emitter says which: a search list holds several folders (EXO-90416).
+     *
+     * @param {Array<Number>} emailIds the IMAP UIDs
+     * @param {String} folder the folder they are numbered in, when known
+     * @returns {void}
+     */
+    refreshEmails(emailIds = [], folder = null) {
       this.emails = this.emails.filter(
-        e => !emailIds.includes(e.mailRemoteId)
+        e => !emailIds.includes(e.mailRemoteId) || (folder && (e.folder || 'INBOX') !== folder)
       );
     },
     cancelSelectMode() {
