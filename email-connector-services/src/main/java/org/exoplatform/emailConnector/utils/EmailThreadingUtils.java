@@ -37,6 +37,10 @@ import org.exoplatform.emailConnector.model.Email;
  */
 public class EmailThreadingUtils {
 
+  // The domain part of every Message-ID synthesizeMessageId mints, closing bracket
+  // included: a local placeholder that never left this add-on.
+  private static final String  SYNTHESIZED_MESSAGE_ID_SUFFIX = "@email-connector.local>";
+
   // A message id is an angle-bracketed token, e.g. <abc.123@host>. Headers may carry
   // several, whitespace- or comma-separated; anything outside the brackets is ignored.
   private static final Pattern MESSAGE_ID_PATTERN = Pattern.compile("<[^<>\\s]+>");
@@ -210,7 +214,19 @@ public class EmailThreadingUtils {
    * @return a synthesized angle-bracketed message id
    */
   public static String synthesizeMessageId(long mailRemoteId, String userId) {
-    return "<" + mailRemoteId + "." + userId + "@email-connector.local>";
+    return "<" + mailRemoteId + "." + userId + SYNTHESIZED_MESSAGE_ID_SUFFIX;
+  }
+
+  /**
+   * Whether a Message-ID is one {@link #synthesizeMessageId} minted: it names a cached
+   * row (its IMAP UID) rather than a message, never left this add-on, and must never
+   * be quoted back to anybody nor used as the identity of a message.
+   *
+   * @param messageId the Message-ID, may be null
+   * @return true for a synthesized id
+   */
+  public static boolean isSynthesizedMessageId(String messageId) {
+    return messageId != null && messageId.trim().endsWith(SYNTHESIZED_MESSAGE_ID_SUFFIX);
   }
 
   /**
