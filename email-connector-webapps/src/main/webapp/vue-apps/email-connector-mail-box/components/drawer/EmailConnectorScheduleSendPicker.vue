@@ -41,6 +41,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="flex-grow-0 me-3" />
       </div>
       <v-btn
+        v-if="!hideConfirm"
         :disabled="disabled || !scheduledDateTime"
         :loading="loading"
         :aria-label="confirmLabel || $t('emailConnector.mailBox.newEmail.drawer.schedule.confirm')"
@@ -114,6 +115,13 @@ export default {
       type: String,
       default: null,
     },
+    // Whether the check is left out: the picker sits in a popup whose own button
+    // confirms, through confirm() (the Scheduled view's Reschedule). The picker then
+    // tells whether an instant is picked (the valid event), for that button to wait.
+    hideConfirm: {
+      type: Boolean,
+      default: false,
+    },
   },
   data: () => ({
     scheduledDate: null,
@@ -183,6 +191,12 @@ export default {
       immediate: true,
       handler() {
         this.reset();
+      },
+    },
+    scheduledDateTime: {
+      immediate: true,
+      handler(dateTime) {
+        this.$emit('valid', !!dateTime);
       },
     },
   },
