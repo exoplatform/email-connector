@@ -526,6 +526,19 @@ describe('Edit keeps a mail scheduled until Update, Outlook\'s way (EXO-90434)',
   });
 });
 
+describe('the composer knows when it holds something (EXO-89337, found with EXO-90434)', () => {
+  it('offers Discard and saves the draft on close once it holds text: hasContent is defined', async () => {
+    const { wrapper, service } = await mountComposer();
+    expect(wrapper.vm.hasContent).toBe(true);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain('emailConnector.mailBox.newEmail.drawer.discard.label');
+    wrapper.vm.close();
+    await flush();
+    expect(service.saveDraft).toHaveBeenCalledTimes(1);
+    expect(service.saveDraft.mock.calls[0][0].subject).toBe('Hello');
+  });
+});
+
 describe('the no-subject question serves a schedule too (EXO-90434)', () => {
   it('runs the asking action instead of handing a send payload back, in its words', () => {
     const wrapper = shallowMount(EmailConnectorNewEmailDrawerNoSubjectConfirmPopup, {
