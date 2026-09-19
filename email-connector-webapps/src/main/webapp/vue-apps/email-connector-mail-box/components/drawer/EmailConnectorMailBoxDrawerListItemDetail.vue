@@ -26,7 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     right
     :allow-expand="!standalone"
     @expand-updated="updateExpand"
-    :loading="loading"
+    :loading="waitingForEmail || readerLoading || waitingForPartialEmail || (expanded && syncInProgress)"
     go-back-button
     :confirm-close="activeDownload"
     :confirm-close-labels="{
@@ -68,7 +68,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          sent. When the conversation was opened FROM its draft, the draft is what this
          toolbar would act on, so it stays away, exactly as the row's own swipe and
          context menu already do. -->
-    <template v-if="!loading" #titleIcons>
+    <template v-if="!waitingForEmail" #titleIcons>
       <email-connector-mail-box-drawer-list-item-detail-actions
         v-if="email && !email.draftLocalId && (!expanded || !selectEmailPlaceHolder)"
         :email="email"
@@ -88,7 +88,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @update:selected-emails="selectedEmails = $event"
         expanded />
     </template>
-    <template v-if="emailDetailDrawer && !loading" #content>
+    <template v-if="emailDetailDrawer && !waitingForEmail" #content>
       <email-connector-mail-box-drawer-multi-select-email
         v-if="selectMode"
         :emails="filteredEmails"
@@ -104,7 +104,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :email="email"
             :emails="filteredEmails"
             :expanded-drawer="expanded"
-            @thread-context="threadContext = $event" />
+            @thread-context="threadContext = $event"
+            @loading="readerLoading = $event"
+            @opened-partial="readerPartial = $event" />
         </template>
       </template>
     </template>
@@ -120,7 +122,15 @@ export default {
   data() {
     return {
       emailDetailDrawer: false,
-      loading: false,
+      // The opened message's own request is on its way. It only holds the reader back
+      // (and shows the loading bar) when there is nothing to open the reader on yet —
+      // see waitingForEmail.
+      loadingEmail: false,
+      // The reader is reading the conversation: the one wait the user sees once the
+      // reader is open, relayed here so the drawer's own header bar shows it.
+      readerLoading: false,
+      // The reader shows the opened message as its list row only (no body yet).
+      readerPartial: false,
       email: null,
       expanded: false,
       activeDownload: null,
@@ -144,6 +154,27 @@ export default {
     };
   },
   created() {
+    // Which request for the opened message is current. Opening another message before
+    // the previous one answered must neither paint the previous one over it nor turn
+    // the loading bar off while the new one is still on its way. Not reactive.
+    this.emailRequest = 0;
+    // Leaving the opened message for the "select an email" placeholder — a delete, an
+    // archive, a move, a spam report, the message dropping out of the list — drops the
+    // request still reading it, whichever handler did it: its answer would otherwise
+    // put the removed message straight back on screen. Synchronous, so no answer can
+    // land between the switch and the drop.
+    this.$watch('selectEmailPlaceHolder', placeholder => {
+      if (placeholder) {
+        this.supersedeEmailRequest();
+      }
+    }, { sync: true });
+    // "Retry" on a message whose full copy could not be read.
+    this.onRetryEmailRead = (email) => {
+      if (this.emailDetailDrawer && this.email?.unavailable && email?.mailRemoteId === this.email.mailRemoteId) {
+        this.fetchEmail(email.mailRemoteId);
+      }
+    };
+    this.$root.$on('retry-email-read', this.onRetryEmailRead);
     this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList, standalone) => {
       this.detachedFromList = !!detachedFromList;
       // Opened with the mailbox behind it, this drawer sits on an already-dimmed page
@@ -179,7 +210,7 @@ export default {
           this.$set(email, 'read', read);
         }
       });
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      this.selectEmailPlaceHolder = this.placeholderAfterReadStatus(read, emails);
       if (this.selectMode) {
         this.cancelSelectMode();
       }
@@ -220,6 +251,8 @@ export default {
       if (!this.emailDetailDrawer) {
         return;
       }
+      // Nothing to fetch: whatever message request was still on its way is superseded.
+      this.supersedeEmailRequest();
       this.email = email;
       this.selectEmailPlaceHolder = false;
     };
@@ -278,6 +311,7 @@ export default {
   },
   beforeDestroy() {
     this.hideStandaloneBackdrop();
+    this.$root.$off('retry-email-read', this.onRetryEmailRead);
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
@@ -289,6 +323,20 @@ export default {
     this.$root.$off('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
   },
   computed: {
+    // Nothing to open the reader on yet: the message was not found in the list the
+    // drawer was handed (a search hit, a favorite), so the reader waits for the
+    // server's copy of it, under the loading bar.
+    waitingForEmail() {
+      return this.loadingEmail && !this.email;
+    },
+    // The reader still shows the opened message as its bare list row while this
+    // drawer's request for it is pending: that body is what the user is waiting for.
+    // Asked of the reader rather than of `email`, which stays the list row until this
+    // request answers even when the conversation already brought the message in full.
+    // Ends with the request either way, so a failed fetch cannot leave the bar stuck.
+    waitingForPartialEmail() {
+      return this.loadingEmail && this.readerPartial;
+    },
     title() {
       if (!this.selectMode) {
         return this.$t('emailConnector.mailBox.list.drawer.title');
@@ -338,21 +386,108 @@ export default {
   },
   methods: {
     open(mailRemoteId, emails, syncInProgress, webmailUrl) {
-      this.loading = true;
       this.emailDetailDrawer = true;
-      this.email = null;
       this.selectEmailPlaceHolder = false;
       this.emails = emails;
       this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
       this.$root.isDetailDrawerActive = true;
       this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, this.folderOf(mailRemoteId)).then((email) => {
-        this.email = email;
+      this.fetchEmail(mailRemoteId);
+    },
+    /**
+     * Opens the reader on a message and fetches the server's full copy of it.
+     * <p>
+     * The reader opens AT ONCE on the list row when the drawer holds one: the row
+     * carries the subject, the conversation id and what each collapsed strip shows,
+     * so the reader starts reading the conversation in parallel with this request
+     * instead of after it. The full copy replaces the row when it answers. Only a
+     * message the list does not hold — a search hit, a favorite, both detached from
+     * the list — has to wait for it, and that wait is the loading bar.
+     * <p>
+     * A response to an earlier request is dropped: it would otherwise put the previous
+     * message back on screen, or end the loading bar while the current one is pending.
+     *
+     * @param {number} mailRemoteId - the IMAP UID of the message to open
+     * @returns {Promise<object|null>} the full message, or null when the request was
+     *          superseded or failed
+     */
+    fetchEmail(mailRemoteId) {
+      const request = ++this.emailRequest;
+      const row = !this.detachedFromList && this.listedEmail(mailRemoteId) || null;
+      // Clicking the message already open keeps its full copy on screen while it is
+      // re-read, rather than stepping back to the bare list row.
+      const alreadyOpen = row && this.email && !this.email.unavailable && !this.$emailConnectorMailBoxService.isListingRow(this.email)
+        && this.email.mailRemoteId === row.mailRemoteId && (this.email.folder || 'INBOX') === (row.folder || 'INBOX');
+      if (!alreadyOpen) {
+        this.email = row;
+      }
+      if (row) {
+        // The reader is showing this message from now on, so the placeholder is down —
+        // and leaving the message again (a delete, a move) is a real switch the
+        // request drop above can see.
         this.selectEmailPlaceHolder = false;
-      }).finally(() => {
-        this.loading = false;
-      });
+      }
+      this.loadingEmail = true;
+      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, this.folderOf(mailRemoteId))
+        .then(email => {
+          if (request !== this.emailRequest) {
+            return null;
+          }
+          this.email = email;
+          this.selectEmailPlaceHolder = false;
+          return email;
+        })
+        .catch(() => {
+          if (request === this.emailRequest && row) {
+            this.settleFailedRow(row);
+          }
+          return null;
+        })
+        .finally(() => {
+          if (request === this.emailRequest) {
+            this.loadingEmail = false;
+          }
+        });
+    },
+    /**
+     * Drops whatever request for the opened message is still on its way, so its answer
+     * can neither put a message the user has left back on screen nor end the loading
+     * state of a later one.
+     *
+     * @returns {void}
+     */
+    supersedeEmailRequest() {
+      this.emailRequest++;
+      this.loadingEmail = false;
+    },
+    /**
+     * The full copy of the opened message could not be read. When the reader was
+     * still waiting on it for the body, say so, and let the row stand as the message
+     * rather than as a skeleton of it that nothing will ever fill.
+     *
+     * @param {object} row - the list row the reader was opened on
+     * @returns {void}
+     */
+    settleFailedRow(row) {
+      if (this.readerPartial) {
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: 'error',
+          alertMessage: this.$t('emailConnector.mailBox.search.openError'),
+        }}));
+      }
+      if (this.email === row) {
+        this.email = this.$emailConnectorMailBoxService.settleListingRow(row);
+      }
+    },
+    /**
+     * The row of the list this drawer was handed for a message, if it holds one.
+     *
+     * @param {number} mailRemoteId - the IMAP UID of the message
+     * @returns {object|undefined} the list row
+     */
+    listedEmail(mailRemoteId) {
+      return (this.emails || []).find(e => e.mailRemoteId === mailRemoteId);
     },
     /**
      * Opens the reader on a row the caller already holds in full, without going back
@@ -372,7 +507,8 @@ export default {
      */
     openThreadOn(email, emails, syncInProgress, webmailUrl) {
       this.emailDetailDrawer = true;
-      this.loading = false;
+      // Nothing to fetch: whatever message request was still on its way is superseded.
+      this.supersedeEmailRequest();
       this.emails = emails;
       this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
@@ -386,14 +522,23 @@ export default {
       const email = (this.emails || []).find(e => e.mailRemoteId === mailRemoteId);
       return email && email.folder || 'INBOX';
     },
+    /**
+     * Switches the open reader to another message of the list, the wide layout's
+     * click on a row beside it.
+     *
+     * @param {number} mailRemoteId - the IMAP UID of the message to open
+     * @returns {void}
+     */
     openEmailDetailContent(mailRemoteId) {
-      this.loading = true;
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, this.folderOf(mailRemoteId)).then((email) => {
-        this.email = email;
-        this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
-        this.selectEmailPlaceHolder = false;
-      }).finally(() => {
-        this.loading = false;
+      this.selectEmailPlaceHolder = false;
+      this.fetchEmail(mailRemoteId).then(email => {
+        if (email) {
+          this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
+          // After the emit, as it always was: the read-status handler recomputes the
+          // placeholder for the list it was handed, and in the wide layout that
+          // answer is "show the placeholder" for the very message just opened.
+          this.selectEmailPlaceHolder = false;
+        }
       });
     },
     refreshEmails(emailIds = []) {
@@ -404,6 +549,29 @@ export default {
     cancelSelectMode() {
       this.selectMode = false;
       this.selectedEmails = [];
+    },
+    /**
+     * Whether the wide layout shows the "select an email" placeholder after a read
+     * status was applied to some messages.
+     * <p>
+     * Marking UNREAD is the "mark unread and put it away" intent, and puts away the
+     * opened message when it is among them. Marking READ never does: it is what
+     * opening a message does to its conversation — this drawer marks the opened
+     * message read as it opens it, and the reader marks the rest read as soon as the
+     * conversation lands, possibly before the opened message's own request has
+     * answered. Sending the reader to the placeholder then dropped that request and
+     * left the user facing "Select an email". It only shows the placeholder when
+     * nothing is open.
+     *
+     * @param {boolean} read - the read status applied
+     * @param {Array<Number>} emails - the messages it was applied to
+     * @returns {boolean} whether to show the placeholder
+     */
+    placeholderAfterReadStatus(read, emails) {
+      if (read) {
+        return this.selectEmailPlaceHolder || (this.expanded && !this.email);
+      }
+      return this.canDisplaySelectEmailPlaceHolder(emails);
     },
     canDisplaySelectEmailPlaceHolder(emails) {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
@@ -485,6 +653,10 @@ export default {
       document.getElementById(BACKDROP_ID)?.remove();
     },
     close() {
+      // A message request still on its way belongs to a reader that is gone.
+      this.supersedeEmailRequest();
+      this.readerLoading = false;
+      this.readerPartial = false;
       this.detachedFromList = false;
       this.standalone = false;
       this.hideStandaloneBackdrop();

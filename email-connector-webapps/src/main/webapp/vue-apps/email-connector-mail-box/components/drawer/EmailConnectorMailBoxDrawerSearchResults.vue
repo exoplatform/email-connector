@@ -16,12 +16,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <div>
-    <!-- Quiet indicator that the whole-mailbox server search is still running,
-         while the instant local matches are already listed below. -->
-    <v-progress-linear
-      v-if="serverSearching"
-      indeterminate
-      height="2" />
+    <!-- The whole-mailbox server search still running, while the instant local matches
+         are already listed below, shows as the drawer's own header loading bar — the
+         platform's indicator — rather than a thinner bar of this list's own. -->
     <div
       v-if="statusLine"
       class="px-4 pt-2 pb-1 caption text-light-color">

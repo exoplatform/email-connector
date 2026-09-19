@@ -87,7 +87,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.actions') }}
     </div>
-    <!-- Synchronize now (progress is shown by the header spinner while it runs). -->
+    <!-- Synchronize now (progress is shown by the drawer's header bar while it runs). -->
     <v-list-item
       class="height-auto"
       :disabled="syncInProgress"
