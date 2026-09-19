@@ -168,8 +168,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :indeterminate="indeterminate"
               expanded
               @update:selected-emails="selectedEmails = $event" />
+            <!-- Not before the list has answered: expanding before the first load
+                 must not flash "No email in Inbox". -->
             <email-connector-mail-box-drawer-no-email
-              v-else
+              v-else-if="emailBox && !loading"
               :folder-name="folderLabelOf(currentFolder)"
               :filtered="hasActiveFilters"
               compact
@@ -304,14 +306,11 @@ const TOTAL_COUNTED_FOLDERS = ['DRAFTS'];
 const FOLDERS_CHANGED_EVENTS = ['email-folders-list-changed', 'email-folders-saved', 'email-folders-updated'];
 
 // The folder column's shade: a light grey veil over the pane, so the column is darker
-// than the list in any branding -- the platform's default grey-lighten1 (#707070) at the
-// 8 % of its greyColorLighten1Opacity2 tint, the family of the opened row's 20 %.
-// Spelled out rather than read from the brandable variable, which a branding could set
-// to anything, and inline, as the add-on has no CSS loader and no platform helper class
-// carries this tint. Nor could a class have done it: the column's v-list carried
-// Vuetify's .transparent, whose .v-application rule outranked grey-background and left
-// the column the pane's own grey (EXO-90415, PO feedback).
-const NAVIGATION_BACKGROUND = 'rgba(112, 112, 112, 0.08)';
+// than the list -- the platform's greyColorLighten1Opacity2 tint (its default: #707070
+// at 8 %, the family of the opened row's 20 %), read from the skin's variable as the
+// centralized skin wants, its default spelled out. Inline, as the add-on has no CSS
+// loader and no platform helper class carries this tint (EXO-90415, PO feedback).
+const NAVIGATION_BACKGROUND = 'var(--allPagesGreyColorLighten1Opacity2, rgba(112, 112, 112, 0.08))';
 
 // Where the user's own choice of column or rail is kept, in this browser only.
 const NAVIGATION_RAIL_STORAGE_KEY = 'emailConnector.mailBox.navigationRail';
@@ -538,6 +537,10 @@ export default {
     // renders them.
     this.folderLoading = false;
     this.folderLoads = 0;
+    // The folders drawer's re-read in flight, and whether another is owed (see
+    // onFoldersChanged). Plain: nothing renders them.
+    this.foldersReload = null;
+    this.foldersReloadAgain = false;
     // Plain instance field: a pending timeout id needs no reactivity.
     this.searchDebounceTimer = null;
     // Which hit openSearchResult is opening, so a repeat of it is ignored while another
@@ -2098,21 +2101,41 @@ export default {
     },
     /**
      * Clears every filter narrowing the list -- the category view, the Unread and
-     * Favorites chips -- through the very toggles the chips and the view use, so the
-     * list is listed again as the folder holds it (the empty list's "Clear filters").
+     * Favorites chips -- as one navigation: the folder listed again as it holds it,
+     * then its first mail opened in full screen (the empty list's "Clear filters").
      *
-     * @returns {void}
+     * @returns {Promise<void>} resolved once the list is listed again
      */
     clearFilters() {
-      if (this.categoryViewId) {
-        this.openCategoryView(this.categoryViewId);
+      this.filtersTouched = true;
+      this.cancelSelectMode();
+      if (this.expanded) {
+        this.pinnedEmail = false;
+        this.selectEmailPlaceHolder = true;
       }
-      if (this.unreadOnly) {
-        this.toggleUnreadFilter();
+      // One navigation, whichever filters were on: the list is re-listed -- reloaded
+      // when Favorites narrowed it, since that subset is the server's -- and then its
+      // first mail opens once, as after a folder switch; the folder-switch flag keeps
+      // the category view's own opening from firing on the list still narrowed.
+      const reload = this.favoriteOnly;
+      const load = ++this.folderLoads;
+      this.folderLoading = true;
+      this.categoryViewId = null;
+      this.selectedCategoryIds = [];
+      this.unreadOnly = false;
+      this.favoriteOnly = false;
+      if (reload) {
+        this.loading = true;
       }
-      if (this.favoriteOnly) {
-        this.onToggleFavoriteFilter();
-      }
+      return (reload ? this.loadEmailBox() : Promise.resolve()).catch(() => null).finally(() => {
+        if (reload) {
+          this.loading = false;
+        }
+        if (load === this.folderLoads) {
+          this.folderLoading = false;
+          this.openFirstAfterNavigation();
+        }
+      });
     },
     // "Select several" from the ⋮ menu: enter the same multi-select mode a row
     // checkbox starts, with nothing selected yet.
@@ -2801,9 +2824,25 @@ export default {
       const folder = (this.folders || []).find(candidate => candidate.key === key);
       return folder ? this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)) : key;
     },
+    /**
+     * Reads the listed folder -- with the Favorites subset when that chip is on -- and
+     * everything the listing carries (the folder list, the sync status, the webmail).
+     * <p>
+     * An answer for another listing than the one now wanted -- the user switched folder
+     * or toggled Favorites while it was on its way, a poll answered late -- is dropped:
+     * it would put that listing's rows under the folder now named (EXO-90415).
+     *
+     * @returns {Promise<void>} resolved once the listing is applied, or dropped
+     */
     async loadEmailBox() {
       const wasSyncing = this.syncInProgress;
-      this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
+      const folder = this.currentFolder;
+      const favoriteOnly = this.favoriteOnly;
+      const emailBox = await this.$emailConnectorMailBoxService.getEmailBox(folder, favoriteOnly);
+      if (folder !== this.currentFolder || favoriteOnly !== this.favoriteOnly) {
+        return;
+      }
+      this.emailBox = emailBox;
       // The folder list's unread counts are the server's again, the reads made here
       // included.
       this.unreadAdjustments = {};
@@ -2969,14 +3008,37 @@ export default {
      * Re-reads the folder list after the settings' folders drawer changed it
      * (EXO-90415), so the column and the menu show it at once. A listed folder that is
      * gone -- deleted, opted out, missing on the server, or refused by the listing --
-     * gives way to the inbox.
+     * gives way to the inbox. Coalesced: one re-read in flight, at most one to follow.
      *
      * @returns {Promise<void>} resolved once the list is re-read
      */
-    async onFoldersChanged() {
+    onFoldersChanged() {
       if (!this.emailBoxDrawer) {
-        return;
+        return Promise.resolve();
       }
+      // One re-read at a time, and at most one more for whatever changed meanwhile: an
+      // opt-in switched, a delete, then the close each say so, and each used to cost a
+      // whole listing, racing the others.
+      if (this.foldersReload) {
+        this.foldersReloadAgain = true;
+        return this.foldersReload;
+      }
+      this.foldersReload = this.reloadFolders().finally(() => {
+        this.foldersReload = null;
+        if (this.foldersReloadAgain) {
+          this.foldersReloadAgain = false;
+          return this.onFoldersChanged();
+        }
+      });
+      return this.foldersReload;
+    },
+    /**
+     * The re-read behind onFoldersChanged: the listing again, and the inbox when the
+     * listed folder is gone.
+     *
+     * @returns {Promise<void>} resolved once done
+     */
+    async reloadFolders() {
       let listed = true;
       try {
         await this.loadEmailBox();
