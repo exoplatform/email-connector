@@ -15,18 +15,19 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- Expanding puts the mailbox list beside the message. Opened on its own — from
-       the platform's search, or the Favorites drawer — there is no list to put there,
-       so the wide layout has nothing to show on its left half and expanding is not
-       offered. -->
+  <!-- There is one full-screen layout, the mailbox drawer's (EXO-90415): this drawer's
+       expand button hands the mail over to it and closes, rather than widening this
+       drawer -- exo-drawer's own expand is off, or the drawer would go to full width
+       and then close under the user. Opened on its own -- from the platform's search,
+       or the Favorites drawer -- there is no mailbox behind it to hand the mail to, and
+       expanding is not offered. -->
   <exo-drawer
     id="emailDetailDrawer"
     ref="emailDetailDrawer"
     v-model="emailDetailDrawer"
     right
-    :allow-expand="!standalone"
-    @expand-updated="updateExpand"
-    :loading="loading"
+    :allow-expand="false"
+    :loading="waitingForEmail || readerLoading || waitingForPartialEmail"
     go-back-button
     :confirm-close="activeDownload"
     :confirm-close-labels="{
@@ -41,71 +42,37 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template #title>
       <span></span>
     </template>
-    <template v-if="expanded" #fullAppLeftTitle>
-      <v-btn
-        v-if="selectMode"
-        icon
-        @click="cancelSelectMode">
-        <v-icon size="20">
-          {{ $vuetify.rtl && 'fa fa-arrow-right' || 'fa fa-arrow-left' }}
-        </v-icon>
-      </v-btn>
-      <div class="d-flex align-center justify-space-between width-full">
-        <span :class="{ 'text-body': selectMode }">
-          {{ title }}
-        </span>
-        <email-connector-mail-box-drawer-actions
-          class="d-flex align-center"
-          :emails="filteredEmails"
-          :webmail-url="webmailUrl"
-          :selected-emails="selectedEmails"
-          :select-mode="selectMode" 
-          :sync-in-progress="syncInProgress" />
-      </div>
-    </template>
     <!-- Unread, archive and delete all address a message by its IMAP UID, which a
          draft may not have — and none of them means anything for a message nobody has
          sent. When the conversation was opened FROM its draft, the draft is what this
          toolbar would act on, so it stays away, exactly as the row's own swipe and
          context menu already do. -->
-    <template v-if="!loading" #titleIcons>
+    <template v-if="!waitingForEmail" #titleIcons>
       <email-connector-mail-box-drawer-list-item-detail-actions
-        v-if="email && !email.draftLocalId && (!expanded || !selectEmailPlaceHolder)"
+        v-if="email && !email.draftLocalId"
         :email="email"
         :thread="threadContext" />
+      <v-btn
+        v-if="canExpandInMailBox"
+        :title="$t('label.expand')"
+        icon
+        @click="expandInMailBox">
+        <v-icon size="20">fas fa-expand-alt</v-icon>
+      </v-btn>
     </template>
-    <template v-if="expanded" #fullAppLeftContent>
-      <categories-filter
-        v-model="selectedCategoryId"
-        class="full-width border-box-sizing application-border application-border-radius py-3 pe-4 ps-7"
-        object-type="email"
-        hide-on-empty />
-      <email-connector-mail-box-drawer-content
-        :emails="filteredEmails"
-        :selected-emails="selectedEmails"
-        :select-mode="selectMode"
-        :email="email"
-        @update:selected-emails="selectedEmails = $event"
-        expanded />
-    </template>
-    <template v-if="emailDetailDrawer && !loading" #content>
-      <email-connector-mail-box-drawer-multi-select-email
-        v-if="selectMode"
-        :emails="filteredEmails"
-        :selected-emails="selectedEmails" />
+    <template v-if="emailDetailDrawer && !waitingForEmail" #content>
+      <email-connector-mail-box-drawer-no-email v-if="emails.length === 0" />
       <template v-else>
-        <email-connector-mail-box-drawer-no-email v-if="filteredEmails.length === 0" />
-        <template v-else>
-          <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
-          <!-- The reader tells the header which conversation it is showing; this drawer
-               holds both and is the only place the value can pass between them. -->
-          <email-connector-mail-box-drawer-thread-content
-            v-else
-            :email="email"
-            :emails="filteredEmails"
-            :expanded-drawer="expanded"
-            @thread-context="threadContext = $event" />
-        </template>
+        <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
+        <!-- The reader tells the header which conversation it is showing; this drawer
+             holds both and is the only place the value can pass between them. -->
+        <email-connector-mail-box-drawer-thread-content
+          v-else
+          :email="email"
+          :emails="emails"
+          @thread-context="threadContext = $event"
+          @loading="readerLoading = $event"
+          @opened-partial="readerPartial = $event" />
       </template>
     </template>
   </exo-drawer>
@@ -116,13 +83,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 // open can never leave two of them stacked.
 const BACKDROP_ID = 'emailDetailDrawerBackdrop';
 
+// The mail drawer is the narrow reader only: its full screen is the mailbox drawer's,
+// which its expand button hands the mail over to (EXO-90415). The list, the selection,
+// the category filter and the arrow keys it carried for a full screen of its own are
+// the mailbox drawer's alone.
 export default {
   data() {
     return {
       emailDetailDrawer: false,
-      loading: false,
+      // The opened message's own request is on its way. It only holds the reader back
+      // (and shows the loading bar) when there is nothing to open the reader on yet —
+      // see waitingForEmail.
+      loadingEmail: false,
+      // The reader is reading the conversation: the one wait the user sees once the
+      // reader is open, relayed here so the drawer's own header bar shows it.
+      readerLoading: false,
+      // The reader shows the opened message as its list row only (no body yet).
+      readerPartial: false,
       email: null,
-      expanded: false,
       activeDownload: null,
       emails: [],
       // The list on screen is a set of search results rather than the folder's
@@ -130,46 +108,58 @@ export default {
       // routinely outside the window and must not be reconciled against it.
       detachedFromList: false,
       standalone: false,
-      selectedEmails: [],
       syncInProgress: false,
       webmailUrl: null,
-      selectMode: false,
       selectEmailPlaceHolder: false,
       // The conversation the reader below is showing — {threadId, messages, subject} —
       // relayed to the toolbar in the title bar, which is a sibling of the reader and
       // would otherwise only ever see the single opened message.
       threadContext: null,
-      selectedCategoryId: null,
-      selectedCategoryIds: [],
     };
   },
   created() {
-    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList, standalone) => {
+    // Which request for the opened message is current. Opening another message before
+    // the previous one answered must neither paint the previous one over it nor turn
+    // the loading bar off while the new one is still on its way. Not reactive.
+    this.emailRequest = 0;
+    // Leaving the opened message for the "select an email" placeholder — a delete, an
+    // archive, a move, a spam report, the message dropping out of the list — drops the
+    // request still reading it, whichever handler did it: its answer would otherwise
+    // put the removed message straight back on screen. Synchronous, so no answer can
+    // land between the switch and the drop.
+    this.$watch('selectEmailPlaceHolder', placeholder => {
+      if (placeholder) {
+        this.supersedeEmailRequest();
+      }
+    }, { sync: true });
+    // "Retry" on a message whose full copy could not be read.
+    this.onRetryEmailRead = (email) => {
+      if (this.emailDetailDrawer && this.email?.unavailable && email?.mailRemoteId === this.email.mailRemoteId) {
+        // In the message's own folder: the list may hold another under its number.
+        this.fetchEmail(email.mailRemoteId, { folder: this.email.folder });
+      }
+    };
+    this.$root.$on('retry-email-read', this.onRetryEmailRead);
+    // Each opening and each action below may say which folder its UIDs are numbered in,
+    // as its last argument: this drawer's list may be a search's, holding several
+    // folders where one number may be several messages, and a bare UID used to open --
+    // or read, or act on -- the wrong one (EXO-90416).
+    this.onOpenEmailDetailDrawer = (mailRemoteId, emails, syncInProgress, webmailUrl, detachedFromList, standalone, folder) => {
       this.detachedFromList = !!detachedFromList;
       // Opened with the mailbox behind it, this drawer sits on an already-dimmed page
       // and the platform's shared overlay covers it. Opened on its own -- from the
       // platform's search, or from the Favorites drawer -- nothing is dimming the
       // page underneath, so it draws its own.
       this.standalone = !!standalone;
-      this.open(mailRemoteId, emails, syncInProgress, webmailUrl);
+      this.open(mailRemoteId, emails, syncInProgress, webmailUrl, folder);
     };
-    this.onCloseEmailDetailDrawer = () => {
-      if (!this.expanded) {
-        this.close();
-      }
-    };
-    this.onOpenEmailDetailContent = (mailRemoteId) => {
-      if (!this.emailDetailDrawer) {
-        return; 
-      }
-      this.openEmailDetailContent(mailRemoteId);
-    };
-    this.onUpdateEmailReadStatus = (read, emails) => {
+    this.onCloseEmailDetailDrawer = () => this.close();
+    this.onUpdateEmailReadStatus = (read, emails, folder) => {
       if (!this.emailDetailDrawer) {
         return; 
       }
       emails.filter(id => {
-        const email = this.emails.find(e => e.mailRemoteId === id);
+        const email = this.emails.find(e => e.mailRemoteId === id && (!folder || (e.folder || 'INBOX') === folder));
         // A row in a read-only folder is left bold. The mailbox drawer refuses to
         // push a read status for one (see its updateEmailsReadStatus), so showing it
         // turn read here would show a state nothing is saving — and opening a mail
@@ -179,20 +169,21 @@ export default {
           this.$set(email, 'read', read);
         }
       });
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
+      // Marking unread puts the message away -- the toolbar closes this drawer right
+      // after -- and brings no placeholder up; marking read is what opening a message
+      // does, and leaves the reader as it is.
+      if (!read) {
+        this.selectEmailPlaceHolder = false;
       }
     };
-    this.onDeleteOrArchiveEmail = (emails) => {
+    // The toolbar closes this drawer after a delete or an archive; its list loses the
+    // messages meanwhile, and the reader keeps no placeholder up.
+    this.onDeleteOrArchiveEmail = (emails, folder) => {
       if (!this.emailDetailDrawer) {
         return; 
       }
-      this.refreshEmails(emails);
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
+      this.refreshEmails(emails, folder);
+      this.selectEmailPlaceHolder = false;
     };
     // Mirror favorite changes (and their rollback after a refused push) onto this
     // drawer's own copies: the list it was opened with — a snapshot when it
@@ -209,25 +200,16 @@ export default {
         this.$set(this.email, 'starred', favorite);
       }
     };
-    // The same two openings, for a row the caller already holds in full — a draft,
-    // which the UID-addressed pair above cannot open because it may have no UID.
+    // The same opening, for a row the caller already holds in full — a draft, which
+    // the UID-addressed one above cannot open because it may have no UID.
     this.onOpenEmailThreadDrawer = (email, emails, syncInProgress, webmailUrl) => {
       this.detachedFromList = false;
       this.standalone = false;
       this.openThreadOn(email, emails, syncInProgress, webmailUrl);
     };
-    this.onOpenEmailThreadContent = (email) => {
-      if (!this.emailDetailDrawer) {
-        return;
-      }
-      this.email = email;
-      this.selectEmailPlaceHolder = false;
-    };
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
-    this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$on('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
-    this.$root.$on('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$on('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
@@ -238,27 +220,6 @@ export default {
     });
     this.$root.$on('attachment-download-finished', () => {
       this.activeDownload = null;
-    });
-    // "Select several" from the ⋮ menu: when this drawer is the one on screen,
-    // enter its multi-select mode (the mailbox drawer ignores the event then).
-    this.$root.$on('enter-select-mode', () => {
-      if (this.emailDetailDrawer) {
-        this.selectMode = true;
-      }
-    });
-    this.$root.$on('select-email', ({ emailId, selected }) => {
-      if (!this.emailDetailDrawer) {
-        return;
-      }
-      this.selectMode = true;
-      if (selected) {
-        if (!this.selectedEmails.includes(emailId)) {
-          this.selectedEmails.push(emailId);
-        }
-      }
-      else {
-        this.selectedEmails = this.selectedEmails.filter(id => id !== emailId);
-      }
     });
     this.$root.$on('synchronize-in-progress', () => {
       this.syncInProgress = true;
@@ -278,9 +239,8 @@ export default {
   },
   beforeDestroy() {
     this.hideStandaloneBackdrop();
-    this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
+    this.$root.$off('retry-email-read', this.onRetryEmailRead);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
-    this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$off('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
@@ -289,28 +249,33 @@ export default {
     this.$root.$off('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
   },
   computed: {
-    title() {
-      if (!this.selectMode) {
-        return this.$t('emailConnector.mailBox.list.drawer.title');
-      }
-      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ? 
-        this.$t('emailConnector.mailBox.list.drawer.emailSelected') : 
-        this.$t('emailConnector.mailBox.list.drawer.emailsSelected')}`;
+    // Nothing to open the reader on yet: the message was not found in the list the
+    // drawer was handed (a search hit, a favorite), so the reader waits for the
+    // server's copy of it, under the loading bar.
+    waitingForEmail() {
+      return this.loadingEmail && !this.email;
     },
-    filteredEmails() {
-      let filteredEmails = this.emails || [];
-      if (this.selectedCategoryIds.length > 0) {
-        filteredEmails = filteredEmails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
-      }
-      return filteredEmails;
-    }
+    // The reader still shows the opened message as its bare list row while this
+    // drawer's request for it is pending: that body is what the user is waiting for.
+    // Asked of the reader rather than of `email`, which stays the list row until this
+    // request answers even when the conversation already brought the message in full.
+    // Ends with the request either way, so a failed fetch cannot leave the bar stuck.
+    waitingForPartialEmail() {
+      return this.loadingEmail && this.readerPartial;
+    },
+    /**
+     * Whether the expand button is offered: opened over the mailbox list, where the
+     * mailbox drawer's full screen can take the mail over, and not on a phone, where
+     * no drawer expands (EXO-90415).
+     *
+     * @returns {Boolean} true when the mail can be expanded into the mailbox
+     */
+    canExpandInMailBox() {
+      return !this.standalone && !this.$vuetify?.breakpoint?.smAndDown;
+    },
   },
   watch: {
-    async selectedCategoryId(val) {
-      this.cancelSelectMode();
-      this.selectedCategoryIds = val && await this.$emailConnectorMailBoxService.getSubcategoryIds(val) || [];
-    },
-    filteredEmails() {
+    emails() {
       // A message opened from outside this list -- a search hit, or one picked from
       // the global Favorites drawer -- comes from the whole mailbox, so its absence
       // here means nothing and must not send the reader back to the placeholder,
@@ -318,7 +283,7 @@ export default {
       if (this.detachedFromList) {
         return;
       }
-      if (this.email && !this.filteredEmails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
+      if (this.email && !(this.emails || []).some(e => e.mailRemoteId === this.email.mailRemoteId)) {
         this.selectEmailPlaceHolder = true;
       }
     },
@@ -327,32 +292,128 @@ export default {
         this.$root.$emit('set-opened', null);
       }
     },
-    selectMode() {
-      if (this.selectMode) {
-        this.$root.$emit('set-opened', null);
-      }
-      else if (!this.selectEmailPlaceHolder) {
-        this.$root.$emit('set-opened', this.email.mailRemoteId);
-      }
-    }
   },
   methods: {
-    open(mailRemoteId, emails, syncInProgress, webmailUrl) {
-      this.loading = true;
+    /**
+     * Opens the drawer on one message of a list.
+     *
+     * @param {Number} mailRemoteId the message's IMAP UID
+     * @param {Array} emails the list it was opened from
+     * @param {Boolean} syncInProgress whether a synchronization is running
+     * @param {String} webmailUrl the account's webmail, for the toolbar
+     * @param {String} folder the folder the UID is numbered in, when the opener knows it
+     * @returns {void}
+     */
+    open(mailRemoteId, emails, syncInProgress, webmailUrl, folder = null) {
       this.emailDetailDrawer = true;
-      this.email = null;
       this.selectEmailPlaceHolder = false;
       this.emails = emails;
       this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
       this.$root.isDetailDrawerActive = true;
-      this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, this.folderOf(mailRemoteId)).then((email) => {
-        this.email = email;
+      const ownFolder = this.folderOf(mailRemoteId, folder);
+      // With what the list knows of it, so a message already read is not pushed again.
+      const listed = (emails || []).find(e => e.mailRemoteId === mailRemoteId && (e.folder || 'INBOX') === ownFolder);
+      this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, listed?.read);
+      this.fetchEmail(mailRemoteId, { folder: ownFolder });
+    },
+    /**
+     * Opens the reader on a message and fetches the server's full copy of it.
+     * <p>
+     * The reader opens AT ONCE on the list row when the drawer holds one: the row
+     * carries the subject, the conversation id and what each collapsed strip shows,
+     * so the reader starts reading the conversation in parallel with this request
+     * instead of after it. The full copy replaces the row when it answers. Only a
+     * message the list does not hold — a search hit, a favorite, both detached from
+     * the list — has to wait for it, and that wait is the loading bar.
+     * <p>
+     * A response to an earlier request is dropped: it would otherwise put the previous
+     * message back on screen, or end the loading bar while the current one is pending.
+     *
+     * @param {number} mailRemoteId - the IMAP UID of the message to open
+     * @param {object} options - {folder}: the folder it is numbered in, when the caller
+     *          knows it (EXO-90416: a search list holds several folders)
+     * @returns {Promise<object|null>} the full message, or null when the request was
+     *          superseded or failed
+     */
+    fetchEmail(mailRemoteId, options = {}) {
+      const request = ++this.emailRequest;
+      const ownFolder = this.folderOf(mailRemoteId, options.folder);
+      const row = !this.detachedFromList && this.listedEmail(mailRemoteId, ownFolder) || null;
+      // Clicking the message already open keeps its full copy on screen while it is
+      // re-read, rather than stepping back to the bare list row.
+      const alreadyOpen = row && this.email && !this.email.unavailable && !this.$emailConnectorMailBoxService.isListingRow(this.email)
+        && this.email.mailRemoteId === row.mailRemoteId && (this.email.folder || 'INBOX') === (row.folder || 'INBOX');
+      if (!alreadyOpen) {
+        this.email = row;
+      }
+      if (row) {
+        // The reader is showing this message from now on, so the placeholder is down —
+        // and leaving the message again (a delete, a move) is a real switch the
+        // request drop above can see.
         this.selectEmailPlaceHolder = false;
-      }).finally(() => {
-        this.loading = false;
-      });
+      }
+      this.loadingEmail = true;
+      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder)
+        .then(email => {
+          if (request !== this.emailRequest) {
+            return null;
+          }
+          this.email = email;
+          this.selectEmailPlaceHolder = false;
+          return email;
+        })
+        .catch(() => {
+          if (request === this.emailRequest && row) {
+            this.settleFailedRow(row);
+          }
+          return null;
+        })
+        .finally(() => {
+          if (request === this.emailRequest) {
+            this.loadingEmail = false;
+          }
+        });
+    },
+    /**
+     * Drops whatever request for the opened message is still on its way, so its answer
+     * can neither put a message the user has left back on screen nor end the loading
+     * state of a later one.
+     *
+     * @returns {void}
+     */
+    supersedeEmailRequest() {
+      this.emailRequest++;
+      this.loadingEmail = false;
+    },
+    /**
+     * The full copy of the opened message could not be read. When the reader was
+     * still waiting on it for the body, say so, and let the row stand as the message
+     * rather than as a skeleton of it that nothing will ever fill.
+     *
+     * @param {object} row - the list row the reader was opened on
+     * @returns {void}
+     */
+    settleFailedRow(row) {
+      if (this.readerPartial) {
+        document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+          alertType: 'error',
+          alertMessage: this.$t('emailConnector.mailBox.search.openError'),
+        }}));
+      }
+      if (this.email === row) {
+        this.email = this.$emailConnectorMailBoxService.settleListingRow(row);
+      }
+    },
+    /**
+     * The row of the list this drawer was handed for a message, if it holds one.
+     *
+     * @param {number} mailRemoteId - the IMAP UID of the message
+     * @param {string} folder - the folder it is numbered in, when known
+     * @returns {object|undefined} the list row
+     */
+    listedEmail(mailRemoteId, folder = null) {
+      return (this.emails || []).find(e => e.mailRemoteId === mailRemoteId && (!folder || (e.folder || 'INBOX') === folder));
     },
     /**
      * Opens the reader on a row the caller already holds in full, without going back
@@ -372,7 +433,8 @@ export default {
      */
     openThreadOn(email, emails, syncInProgress, webmailUrl) {
       this.emailDetailDrawer = true;
-      this.loading = false;
+      // Nothing to fetch: whatever message request was still on its way is superseded.
+      this.supersedeEmailRequest();
       this.emails = emails;
       this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
@@ -382,31 +444,28 @@ export default {
     },
     // IMAP UIDs are per-folder, so opening a Sent/Archive message needs its folder,
     // taken from the currently-listed emails.
-    folderOf(mailRemoteId) {
+    //
+    // A folder the caller gives wins: in a search list the first row carrying the number
+    // may be another folder's message (EXO-90416).
+    folderOf(mailRemoteId, folder = null) {
+      if (folder) {
+        return folder;
+      }
       const email = (this.emails || []).find(e => e.mailRemoteId === mailRemoteId);
       return email && email.folder || 'INBOX';
     },
-    openEmailDetailContent(mailRemoteId) {
-      this.loading = true;
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, this.folderOf(mailRemoteId)).then((email) => {
-        this.email = email;
-        this.$root.$emit('update-email-read-status', true, [mailRemoteId]);
-        this.selectEmailPlaceHolder = false;
-      }).finally(() => {
-        this.loading = false;
-      });
-    },
-    refreshEmails(emailIds = []) {
+    /**
+     * Takes messages out of this drawer's list -- only the given folder's when the
+     * emitter says which: a search list holds several folders (EXO-90416).
+     *
+     * @param {Array<Number>} emailIds the IMAP UIDs
+     * @param {String} folder the folder they are numbered in, when known
+     * @returns {void}
+     */
+    refreshEmails(emailIds = [], folder = null) {
       this.emails = this.emails.filter(
-        e => !emailIds.includes(e.mailRemoteId)
+        e => !emailIds.includes(e.mailRemoteId) || (folder && (e.folder || 'INBOX') !== folder)
       );
-    },
-    cancelSelectMode() {
-      this.selectMode = false;
-      this.selectedEmails = [];
-    },
-    canDisplaySelectEmailPlaceHolder(emails) {
-      return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
@@ -485,22 +544,41 @@ export default {
       document.getElementById(BACKDROP_ID)?.remove();
     },
     close() {
+      // A message request still on its way belongs to a reader that is gone.
+      this.supersedeEmailRequest();
+      this.readerLoading = false;
+      this.readerPartial = false;
       this.detachedFromList = false;
       this.standalone = false;
       this.hideStandaloneBackdrop();
       this.emailDetailDrawer = false;
-      this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
       this.email = null;
       this.threadContext = null;
       this.$root.isDetailDrawerActive = false;
       this.$root.$emit('email-detail-drawer-closed');
-      this.selectedCategoryId = null;
-      this.selectedCategoryIds = [];
     },
-    updateExpand(expanded) {
-      window.setTimeout(() => this.expanded = expanded, 200);
-      if (!expanded && (this.selectEmailPlaceHolder || this.selectMode)) {
+    /**
+     * Expands the mail into the mailbox drawer's full screen, the one full-screen
+     * layout (EXO-90415): the mailbox drawer opens that mail in its reader and expands,
+     * then this drawer closes.
+     * <p>
+     * Closed without exo-drawer's confirmation: an attachment download still running is
+     * not given up by expanding -- the mailbox drawer tracks the same download and asks
+     * before its own close -- and a "give up the download?" question would read as the
+     * expand button closing the mail.
+     *
+     * @returns {void}
+     */
+    expandInMailBox() {
+      this.$root.$emit('expand-mail-box-on-email', {
+        email: this.email,
+        folder: this.email && (this.email.folder || 'INBOX'),
+      });
+      const drawer = this.$refs.emailDetailDrawer;
+      if (drawer?.closeEffectively) {
+        drawer.closeEffectively();
+      } else {
         this.close();
       }
     },

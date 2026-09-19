@@ -522,9 +522,25 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Reads one message of the current user's mailbox.
+   *
+   * @param request the caller's request, for the acting user
+   * @param mailRemoteId the message's IMAP UID within {@code folder}
+   * @param folder the folder that UID is numbered in; INBOX when omitted
+   * @param broadcast whether this read counts as the user opening the message (the
+   *          {@code OPEN_EMAIL} event): true when omitted, which is every explicit
+   *          opening. The mailbox reader passes false when it opens a message on its own
+   *          -- the first mail of a list, the next one after an action, the one the
+   *          arrow keys stopped on -- and signals the opening through
+   *          {@link #broadcastOpenEmail} once the user has stayed on it (EXO-90414).
+   * @param ifNoneMatch the eTag the caller already holds
+   * @return the message, or 304 when the caller's copy is current
+   */
   @GetMapping("/{mailRemoteId}")
   @Secured("users")
-  @Operation(summary = "Gets remote email by id", method = "GET", description = "This will get remote email by id")
+  @Operation(summary = "Gets remote email by id", method = "GET",
+      description = "This will get remote email by id. With broadcast=false the read does not count as the user opening the message (no open-email event).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -537,13 +553,18 @@ public class EmailBoxRest {
                                                   @Parameter(description = "Folder the message is in: INBOX, SENT or ARCHIVE")
                                                   @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
                                                   String folder,
+                                                  @Parameter(description = "Whether this read counts as the user opening the message (open-email event); true when omitted")
+                                                  @RequestParam(value = "broadcast", required = false, defaultValue = "true")
+                                                  boolean broadcast,
                                                   @RequestHeader(value = "If-None-Match", required = false)
                                                   String ifNoneMatch) {
     try {
       // UIDs are per-folder, so the folder is part of the message identity / eTag.
       String eTag = "\"" + Objects.hash(mailRemoteId, folder, request.getRemoteUser()) + "\"";
       if (ifNoneMatch != null && ifNoneMatch.replace("W/", "").equals(eTag)) {
-        emailBoxService.broadcastOpenEmail(request.getRemoteUser());
+        if (broadcast) {
+          emailBoxService.broadcastOpenEmail(request.getRemoteUser());
+        }
         return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(eTag).build();
       }
       Email email = emailBoxService.getEmailByMailRemoteIdAndUserId(mailRemoteId,
@@ -552,7 +573,7 @@ public class EmailBoxRest {
                                                                     true,
                                                                     true,
                                                                     true,
-                                                                    true);
+                                                                    broadcast);
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
@@ -637,6 +658,29 @@ public class EmailBoxRest {
     try {
       emailBoxService.requestThreadAiSummary(threadId, request.getRemoteUser());
       return ResponseEntity.accepted().build();
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    }
+  }
+
+  /**
+   * Counts one opening of a message by the current user (the {@code OPEN_EMAIL} event),
+   * for a message the mailbox reader opened on its own and read with
+   * {@code broadcast=false}: sent once the user has stayed on it (EXO-90414). The event
+   * is the user's, not a message's -- it carries the user and their connector, as the
+   * read's own broadcast always has -- so there is no message to name here.
+   *
+   * @param request the caller's request, for the acting user
+   */
+  @PostMapping("/open/broadcast")
+  @Secured("users")
+  @Operation(summary = "Broadcasts an email opening", method = "POST",
+      description = "Counts one opening of a message by the current user (open-email event), for a message the reader read with broadcast=false")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public void broadcastOpenEmail(HttpServletRequest request) {
+    try {
+      emailBoxService.broadcastOpenEmail(request.getRemoteUser());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
@@ -1005,11 +1049,22 @@ public class EmailBoxRest {
     return emailBoxService.getAvailableEmailCategories(request.getRemoteUser(), request.getLocale());
   }
 
+  /**
+   * Tags emails with a category. The UIDs are numbered within {@code folder} (EXO-90421):
+   * a mail dragged onto a category from another folder than the inbox is labelled, not
+   * the inbox mail that happens to carry the same number.
+   *
+   * @param request the caller
+   * @param categoryId the category to link
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}
+   * @param folder the folder the UIDs are numbered in; INBOX when omitted
+   * @return how many emails were newly linked, as {@code linked}
+   */
   @PostMapping("/categories/{categoryId}")
   @Secured("users")
-  @Operation(summary = "Tags emails with a category", method = "POST", description = "Links the given emails (by IMAP id) to an existing category; use it to categorize a whole conversation by passing its message ids")
+  @Operation(summary = "Tags emails with a category", method = "POST", description = "Links the given emails (IMAP UIDs numbered within the folder parameter, INBOX when omitted) to an existing category; use it to categorize a whole conversation by passing its message ids. Answers 400 emailConnector.category.notFound for an unknown category and 400 emailConnector.folder.notBrowsable for a folder that is not a listable one")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Unknown category"),
+      @ApiResponse(responseCode = "400", description = "Unknown category, or a folder that is not a listable one"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
   public Map<String, Integer> linkEmailsToCategory(HttpServletRequest request,
                                                    @Parameter(description = "Category id", required = true)
@@ -1017,9 +1072,12 @@ public class EmailBoxRest {
                                                    long categoryId,
                                                    @Parameter(description = "Email remote ids", required = true)
                                                    @RequestBody
-                                                   List<Long> mailRemoteIds) {
+                                                   List<Long> mailRemoteIds,
+                                                   @Parameter(description = "The folder the UIDs are numbered in; INBOX when omitted")
+                                                   @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                   String folder) {
     try {
-      int linked = emailBoxService.linkEmailsToCategory(mailRemoteIds, categoryId, request.getRemoteUser());
+      int linked = emailBoxService.linkEmailsToCategory(mailRemoteIds, categoryId, request.getRemoteUser(), folder);
       Map<String, Integer> response = new HashMap<>();
       response.put("linked", linked);
       return response;
@@ -1030,10 +1088,22 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Removes a category from emails. The UIDs are numbered within {@code folder}
+   * (EXO-90421), so a category is taken off the mail it was put on, not off the inbox
+   * mail that happens to carry the same number.
+   *
+   * @param request the caller
+   * @param categoryId the category to unlink
+   * @param mailRemoteIds the IMAP UIDs, within {@code folder}
+   * @param folder the folder the UIDs are numbered in; INBOX when omitted
+   * @return how many emails were unlinked, as {@code unlinked}
+   */
   @DeleteMapping("/categories/{categoryId}")
   @Secured("users")
-  @Operation(summary = "Removes a category from emails", method = "DELETE", description = "Unlinks the given emails (by IMAP id) from a category")
+  @Operation(summary = "Removes a category from emails", method = "DELETE", description = "Unlinks the given emails (IMAP UIDs numbered within the folder parameter, INBOX when omitted) from a category. Answers 400 emailConnector.folder.notBrowsable for a folder that is not a listable one")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "A folder that is not a listable one"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
   public Map<String, Integer> unlinkEmailsFromCategory(HttpServletRequest request,
                                                        @Parameter(description = "Category id", required = true)
@@ -1041,14 +1111,19 @@ public class EmailBoxRest {
                                                        long categoryId,
                                                        @Parameter(description = "Email remote ids", required = true)
                                                        @RequestBody
-                                                       List<Long> mailRemoteIds) {
+                                                       List<Long> mailRemoteIds,
+                                                       @Parameter(description = "The folder the UIDs are numbered in; INBOX when omitted")
+                                                       @RequestParam(value = "folder", required = false, defaultValue = "INBOX")
+                                                       String folder) {
     try {
-      int unlinked = emailBoxService.unlinkEmailsFromCategory(mailRemoteIds, categoryId, request.getRemoteUser());
+      int unlinked = emailBoxService.unlinkEmailsFromCategory(mailRemoteIds, categoryId, request.getRemoteUser(), folder);
       Map<String, Integer> response = new HashMap<>();
       response.put("unlinked", unlinked);
       return response;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 

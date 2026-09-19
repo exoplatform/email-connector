@@ -23,12 +23,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :email="thread.latest"
       :thread="thread"
       :opened-email-id="openedEmailId"
+      :reader-email-id="currentEmail && currentEmail.mailRemoteId"
       :emails="emails"
       :webmail-url="webmailUrl"
       :sync-in-progress="syncInProgress"
       :selected-emails="selectedEmails"
       :select-mode="selectMode"
-      :expanded="expanded" />
+      :expanded="expanded"
+      :drag-source="dragSource" />
     <!-- Sits directly under the last rendered row: scrolling it into view is what asks
          for the next slice. An empty div rather than a "load more" button, because the
          mail is already in memory — there is nothing to fetch and nothing for the user
@@ -70,6 +72,11 @@ export default {
       type: Boolean,
       default: false,
     },
+    // The mail being dragged from the list, for its rows to fade (EXO-90421).
+    dragSource: {
+      type: Object,
+      default: null,
+    },
     syncInProgress: {
       type: Boolean,
       default: false,
@@ -109,11 +116,49 @@ export default {
     },
   },
   created() {
-    this.$root.$on('set-opened', (mailRemoteId) => {
+    this.onSetOpened = (mailRemoteId) => {
       this.openedEmailId = mailRemoteId;
-    });
+    };
+    this.$root.$on('set-opened', this.onSetOpened);
+  },
+  beforeDestroy() {
+    // The list is rebuilt each time the drawer switches between its narrow and wide
+    // layouts; a listener left on the root would keep every former list alive.
+    this.$root.$off('set-opened', this.onSetOpened);
   },
   methods: {
+    /**
+     * Brings one row into view and gives it the keyboard focus -- the arrow keys'
+     * way of walking the list (EXO-90414, see EmailConnectorMailBoxListNavigation).
+     * <p>
+     * A row beyond the rendered window is built first, and so is the next page when
+     * the row is the last one built: that is the keyboard's equivalent of scrolling
+     * the sentinel into view, so walking down never stops at the edge of the window.
+     * The focus is placed without the browser's own scroll, which would centre the
+     * row; `nearest` moves the list only as far as needed.
+     *
+     * @param {String} threadKey the row's key, as groupEmailsByThread gives it
+     * @returns {Promise<void>} resolved once the row has the focus
+     */
+    async revealThread(threadKey) {
+      const index = this.threads.findIndex(thread => String(thread.threadId) === String(threadKey));
+      if (index < 0) {
+        return;
+      }
+      if (index >= this.renderedThreadCount - 1 && this.hasMoreThreads) {
+        this.renderedThreadCount = Math.max(this.renderedThreadCount, index + 1) + THREAD_RENDER_PAGE_SIZE;
+      }
+      await this.$nextTick();
+      const row = Array.from(this.$el.querySelectorAll('[data-thread-key]'))
+        .find(element => element.getAttribute('data-thread-key') === String(threadKey));
+      if (!row) {
+        return;
+      }
+      row.focus({ preventScroll: true });
+      if (row.scrollIntoView) {
+        row.scrollIntoView({ block: 'nearest' });
+      }
+    },
     /**
      * Grows the window by one page when the sentinel comes into view.
      * <p>

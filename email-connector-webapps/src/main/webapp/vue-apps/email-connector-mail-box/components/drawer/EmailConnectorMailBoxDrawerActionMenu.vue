@@ -49,7 +49,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :categories="categories"
         :category-view-id="categoryViewId"
         :sync-in-progress="syncInProgress"
-        :has-webmail-access="hasWebmailAccess" />
+        :has-webmail-access="hasWebmailAccess"
+        :hide-views="hideViews" />
     </v-menu>
   </v-list-item-action>
 </template>
@@ -81,6 +82,12 @@ export default {
       default: false,
     },
     hasWebmailAccess: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether FOLDERS and CATEGORIES are left out: the full-screen folder column holds
+    // them (EXO-90415).
+    hideViews: {
       type: Boolean,
       default: false,
     },
