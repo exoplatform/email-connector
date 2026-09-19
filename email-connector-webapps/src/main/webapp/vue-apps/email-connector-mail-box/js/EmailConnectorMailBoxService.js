@@ -297,6 +297,21 @@ export function folderPath(folder) {
   return folder.delimiter ? folder.path.split(folder.delimiter).join(' / ') : folder.path;
 }
 
+// Folders the server keeps rows of but lists to nobody: All Mail is a thread-completion
+// cache. Nothing is moved out of it or categorized in it (MailFolder.isBrowsable).
+const UNLISTED_FOLDERS = ['ALL_MAIL'];
+
+/**
+ * Whether a folder is one the server lists, and so acts in: every folder a row can be
+ * listed in, but not All Mail, whose rows only complete a conversation (EXO-90421).
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when actions addressed to that folder can be honoured
+ */
+export function isListedFolder(folder) {
+  return !UNLISTED_FOLDERS.includes(folder || 'INBOX');
+}
+
 /**
  * The folders a message may be moved INTO from a given folder: the user's own,
  * mirrored and present, minus the folder the message is already in.
@@ -640,10 +655,13 @@ export function getAvailableEmailCategories() {
  *
  * @param {Array<Number>} mailRemoteIds the messages to tag
  * @param {Number} categoryId the category id
+ * @param {String} folder the folder the ids are numbered in; INBOX when omitted -- a UID
+ *   only numbers a message within its folder (EXO-90421)
  * @returns {Promise} resolves with the count of newly-tagged emails
  */
-export function linkEmailsToCategory(mailRemoteIds, categoryId) {
-  return fetch(`/email-connector/rest/email-box/categories/${categoryId}`, {
+export function linkEmailsToCategory(mailRemoteIds, categoryId, folder) {
+  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box/categories/${categoryId}${query}`, {
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     method: 'POST',
@@ -661,10 +679,13 @@ export function linkEmailsToCategory(mailRemoteIds, categoryId) {
  *
  * @param {Array<Number>} mailRemoteIds the messages to untag
  * @param {Number} categoryId the category id
+ * @param {String} folder the folder the ids are numbered in; INBOX when omitted
+ *   (EXO-90421, see linkEmailsToCategory)
  * @returns {Promise} resolves with the count of untagged emails
  */
-export function unlinkEmailsFromCategory(mailRemoteIds, categoryId) {
-  return fetch(`/email-connector/rest/email-box/categories/${categoryId}`, {
+export function unlinkEmailsFromCategory(mailRemoteIds, categoryId, folder) {
+  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+  return fetch(`/email-connector/rest/email-box/categories/${categoryId}${query}`, {
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     method: 'DELETE',

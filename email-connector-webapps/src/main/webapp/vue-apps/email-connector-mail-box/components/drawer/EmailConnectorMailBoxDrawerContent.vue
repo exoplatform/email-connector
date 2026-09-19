@@ -34,6 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :select-mode="selectMode"
       :sync-in-progress="syncInProgress"
       :expanded="expanded"
+      :drag-source="dragSource"
       :webmail-url="webmailUrl" />
   </div>
 </template>
@@ -62,6 +63,11 @@ export default {
     expanded: {
       type: Boolean,
       default: false,
+    },
+    // The mail being dragged from the list, for its rows to fade (EXO-90421).
+    dragSource: {
+      type: Object,
+      default: null,
     },
     syncInProgress: {
       type: Boolean,

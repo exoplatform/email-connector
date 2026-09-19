@@ -15,8 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- Full-screen folder column (EXO-90415): the menu's FOLDERS/CATEGORIES, same events
-       and highlight; the pen opens the settings' folders drawer. No SFC style. -->
+  <!-- Full-screen folder column (EXO-90415): the menu's FOLDERS/CATEGORIES, same events and
+       highlight; a drop zone for dragged mail (EXO-90421, folderDropMixin). No SFC style. -->
   <v-list
     :class="rail ? 'px-1' : 'px-2'"
     :style="{ paddingTop: rail ? RAIL_TOP_PADDING : 0 }"
@@ -57,40 +57,43 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-for="entry in section.entries"
           :key="entry.value"
           :disabled="!rail"
+          :value="rail && dropTarget === entry.value"
           right>
           <template #activator="{ on, attrs }">
-            <v-list-item
-              :value="entry.value"
-              :aria-label="entry.ariaLabel"
-              :aria-selected="String(entry.value === activeKey)"
-              :title="rail ? null : entry.tooltip"
-              role="option"
-              v-bind="rail ? attrs : {}"
-              v-on="rail ? on : {}"
-              @click="entry.select">
-              <v-list-item-icon :class="rail ? 'mx-auto' : 'ms-0 me-2'" class="my-auto align-self-center align-center">
-                <v-badge
-                  :value="rail && entry.unread"
-                  color="primary"
-                  dot
-                  overlap>
-                  <v-icon size="16">{{ entry.icon }}</v-icon>
-                </v-badge>
-              </v-list-item-icon>
-              <template v-if="!rail">
-                <v-list-item-content>
-                  <v-list-item-title :class="{ 'font-weight-bold': entry.unread }">
-                    {{ entry.label }}
-                  </v-list-item-title>
-                </v-list-item-content>
-                <v-list-item-action-text
-                  v-if="entry.count"
-                  :class="{ 'font-weight-bold': entry.unread }"
-                  class="text-body-2">
-                  {{ $emailConnectorMailBoxService.formatCount(entry.count) }}
-                </v-list-item-action-text>
-              </template>
-            </v-list-item>
+            <div :style="dropStyle(entry)" v-on="dropListeners(entry)">
+              <v-list-item
+                :value="entry.value"
+                :aria-label="entry.ariaLabel"
+                :aria-selected="String(entry.value === activeKey)"
+                :title="rail ? null : entry.tooltip"
+                role="option"
+                v-bind="rail ? attrs : {}"
+                v-on="rail ? on : {}"
+                @click="entry.select">
+                <v-list-item-icon :class="rail ? 'mx-auto' : 'ms-0 me-2'" class="my-auto align-self-center align-center">
+                  <v-badge
+                    :value="rail && entry.unread"
+                    color="primary"
+                    dot
+                    overlap>
+                    <v-icon size="16">{{ entry.icon }}</v-icon>
+                  </v-badge>
+                </v-list-item-icon>
+                <template v-if="!rail">
+                  <v-list-item-content>
+                    <v-list-item-title :class="{ 'font-weight-bold': entry.unread }">
+                      {{ entry.label }}
+                    </v-list-item-title>
+                  </v-list-item-content>
+                  <v-list-item-action-text
+                    v-if="entry.count"
+                    :class="{ 'font-weight-bold': entry.unread }"
+                    class="text-body-2">
+                    {{ $emailConnectorMailBoxService.formatCount(entry.count) }}
+                  </v-list-item-action-text>
+                </template>
+              </v-list-item>
+            </div>
           </template>
           <span>{{ entry.tooltip }}</span>
         </v-tooltip>
@@ -102,8 +105,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 // The first row sits on the list's chips row (the FOLDERS header, or the rail's first entry).
 import { LIST_TOP_ROW_HEIGHT as TOP_ROW_HEIGHT, RAIL_TOP_PADDING } from '../../js/EmailConnectorMailBoxService.js';
+import folderDropMixin from '../../js/EmailConnectorMailBoxFolderDropMixin.js';
 
 export default {
+  mixins: [folderDropMixin],
   data: () => ({ TOP_ROW_HEIGHT, RAIL_TOP_PADDING }),
   props: {
     // The menu's folders, categories, listed folder, open view; counts by key / id.
@@ -133,24 +138,20 @@ export default {
       return this.folders.map(folder => {
         const counted = this.folderCounts[folder.key];
         const count = counted?.count > 0 ? counted.count : 0;
-        return this.buildEntry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
+        return { ...this.buildEntry(`folder:${folder.key}`, this.$emailConnectorMailBoxService.folderIcon(folder),
           this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)), count, !!(count && counted.unread),
-          () => this.switchFolder(folder.key));
+          () => this.switchFolder(folder.key)), folderKey: folder.key };
       });
     },
     /** @returns {Array} the categories, each with its unread mail */
     categoryEntries() {
       return this.categories.map(category => {
         const count = this.categoryUnreadCounts[category.id] > 0 ? this.categoryUnreadCounts[category.id] : 0;
-        return this.buildEntry(`category:${category.id}`, category.icon || 'fa-tag', category.name, count, count > 0,
-          () => this.openCategoryView(category.id));
+        return { ...this.buildEntry(`category:${category.id}`, category.icon || 'fa-tag', category.name, count, count > 0,
+          () => this.openCategoryView(category.id)), categoryId: category.id };
       });
     },
-    /**
-     * The column's sections: the folders, then the categories when there are any.
-     *
-     * @returns {Array} {key, title, entries}
-     */
+    /** @returns {Array} the column's sections, {key, title, entries}: folders, then any categories */
     sections() {
       const sections = [{ key: 'folders', title: this.$t('emailConnector.mailBox.list.drawer.menu.folders'), entries: this.folderEntries }];
       if (this.categoryEntries.length) {
@@ -194,7 +195,6 @@ export default {
     openCategoryView(categoryId) {
       this.$root.$emit('open-category-view', categoryId);
     },
-
   },
 };
 </script>

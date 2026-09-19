@@ -15,9 +15,15 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
+  <!-- In full screen the row is dragged onto a folder of the column (EXO-90421), and
+       fades while its messages are the ones dragged. No draggable attribute otherwise:
+       the narrow layout keeps the browser's default for what the row holds. -->
   <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
   <div
-    :style="email.refreshPending ? 'pointer-events: none; opacity: 0.6;' : null"
+    :style="email.refreshPending ? 'pointer-events: none; opacity: 0.6;' : (dragged ? 'opacity: 0.5;' : null)"
+    v-bind="canDrag ? { draggable: 'true' } : {}"
+    @dragstart="onDragStart"
+    @dragend="onDragEnd"
     @mouseenter="!isMobile && (isHover = true)"
     @mouseleave="!isMobile && (isHover = false)"
     @focusin="!isMobile && (isHover = true)"
@@ -173,6 +179,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import { canDragFrom, dragLabel, dragPayloadOfRow, draggedRowCount, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
 
 export default {
   data() {
@@ -230,8 +237,33 @@ export default {
       type: String,
       default: null,
     },
+    // The mail being dragged from the list, {folder, ids}, null when none is (EXO-90421).
+    dragSource: {
+      type: Object,
+      default: null,
+    },
   },
   computed: {
+    /**
+     * Whether the row may be dragged onto a folder: in full screen only, never on a
+     * phone (its touch gestures stay the swipe and the long press), and only a row the
+     * move, delete and spam actions are offered on (canDragFrom).
+     *
+     * @returns {Boolean} true when the row is draggable
+     */
+    canDrag() {
+      return this.expanded && !this.isMobile && canDragFrom(this.email.folder, this.email);
+    },
+    /**
+     * Whether the row's messages are among the ones being dragged, to fade it.
+     *
+     * @returns {Boolean} true while they are
+     */
+    dragged() {
+      const drag = this.dragSource;
+      return !!drag && drag.folder === (this.email.folder || 'INBOX')
+        && this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread).some(id => drag.ids.includes(id));
+    },
     gapSize() {
       return Math.abs(this.left);
     },
@@ -588,7 +620,41 @@ export default {
     },
     onSelectChange(value) {
       this.emitSelect(value);
-    }
+    },
+    /**
+     * Starts dragging the row -- or the selection it belongs to (dragPayloadOfRow) --
+     * and tells the drawer what is dragged, which the folder column needs during the
+     * drag. A row that may not be dragged now (a selection across folders) refuses.
+     *
+     * @param {DragEvent} event the dragstart event
+     * @returns {void}
+     */
+    onDragStart(event) {
+      const row = {
+        email: this.email,
+        thread: this.thread,
+        selectMode: this.selectMode,
+        selectedEmails: this.selectedEmails,
+        emails: this.emails,
+      };
+      const payload = this.canDrag && dragPayloadOfRow(row);
+      if (!payload) {
+        event.preventDefault();
+        return;
+      }
+      // The picture counts the rows the user dragged, the payload every message they hold.
+      startDrag(event, payload, dragLabel(draggedRowCount(row), this.$t.bind(this)));
+      this.$root.$emit('email-drag-start', payload);
+    },
+    /**
+     * Ends the drag, dropped or not; the pointer is no longer over the row.
+     *
+     * @returns {void}
+     */
+    onDragEnd() {
+      this.isHover = false;
+      this.$root.$emit('email-drag-end');
+    },
   }
 };
 </script>

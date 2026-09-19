@@ -131,6 +131,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :folder-counts="folderCounts"
           :category-unread-counts="categoryUnreadCounts"
           :rail="navigationRail"
+          :drag-source="emailDrag"
           :style="{ width: navigationWidth, minWidth: navigationWidth, backgroundColor: NAVIGATION_BACKGROUND }"
           class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing" />
         <v-divider vertical />
@@ -146,6 +147,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :total-matches="searchTotalMatches"
             :server-searching="searchServerRunning"
             :server-error="searchServerError"
+            draggable-hits
             @open-result="openSearchResult" />
           <template v-else>
             <email-connector-mail-box-drawer-filter-chips
@@ -166,6 +168,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :selected-emails="selectedEmails"
               :select-mode="selectMode"
               :indeterminate="indeterminate"
+              :drag-source="emailDrag"
               expanded
               @update:selected-emails="selectedEmails = $event" />
             <!-- Not before the list has answered: expanding before the first load
@@ -276,6 +279,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
 import { LIST_TOP_ROW_HEIGHT } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
+import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 
 // The drawer's width in its narrow layout, and the list's in the full-screen left pane:
 // exo-drawer's own default, which both layouts kept until the folder column came.
@@ -388,7 +392,7 @@ const SEARCH_PAGE_SIZE = 20;
 const SEARCH_FETCH_RETRY_MS = 3000;
 
 export default {
-  mixins: [listNavigationMixin],
+  mixins: [listNavigationMixin, emailDragMixin],
   data() {
     return {
       emailBoxDrawer: false,
@@ -1862,6 +1866,7 @@ export default {
       this.unjunkedEmailIds = [];
       this.movedEmailIds = [];
       this.refreshPendingRows = [];
+      this.endEmailDrag();
     },
     checkSetting() {
       this.$root.$emit('open-user-setting-drawer');
@@ -2465,7 +2470,7 @@ export default {
      *
      * @param {Number} failures how many messages the action could not be applied to
      * @param {String} action 'delete', 'archive', 'restore', 'purge', 'junk', 'notJunk',
-     *        'move' or 'undoMove', which picks the message
+     *        'move', 'undoMove' or 'categorize', which picks the message
      * @returns {void}
      */
     alertOnActionFailures(failures, action) {
@@ -2909,13 +2914,19 @@ export default {
         this.stopAutoRefreshWhenIdle();
       }
     },
-    // Switch the listed folder (Inbox / Sent / Archive) from the ⋮ menu and reload.
-    // A category was assigned/removed from the detail view; patch the matching
-    // emails the main list holds so the categories filter reflects it live.
-    onCategoriesUpdated({ mailRemoteIds, categoryId, assign }) {
+    /**
+     * A category was assigned or removed -- from the reader's category bar, or by a drop
+     * on the folder column: patches the matching rows the list holds, so the categories
+     * filter reflects it live. Only the rows of the folder the UIDs are numbered in, when
+     * the emitter names it (EXO-90421): the same UID elsewhere is another message.
+     *
+     * @param {Object} update {mailRemoteIds, categoryId, assign, folder}
+     * @returns {void}
+     */
+    onCategoriesUpdated({ mailRemoteIds, categoryId, assign, folder }) {
       const targetIds = new Set(mailRemoteIds || []);
       (this.emailBox?.emails || []).forEach(email => {
-        if (!targetIds.has(email.mailRemoteId)) {
+        if (!targetIds.has(email.mailRemoteId) || (folder && (email.folder || 'INBOX') !== folder)) {
           return;
         }
         const current = email.categoryIds || [];

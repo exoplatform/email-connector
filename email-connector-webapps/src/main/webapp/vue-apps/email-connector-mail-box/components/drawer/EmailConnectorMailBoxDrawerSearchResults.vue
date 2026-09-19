@@ -31,6 +31,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :result="result"
         :row-key="rowKey(result)"
         :opened="rowKey(result) === openedKey"
+        :draggable-hit="draggableHits"
         @open="$emit('open-result', result)" />
     </template>
     <div
@@ -53,6 +54,11 @@ export default {
     openedKey: {
       type: String,
       default: null,
+    },
+    // Whether the hits may be dragged onto the folder column: in full screen (EXO-90421).
+    draggableHits: {
+      type: Boolean,
+      default: false,
     },
     // The full server-side match count, to say 'showing 20 of 1,234'.
     totalMatches: {

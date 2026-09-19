@@ -3104,6 +3104,101 @@ public class EmailBoxServiceTest {
     assertThrows(IllegalArgumentException.class, () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
   }
 
+  /**
+   * EXO-90421 -- a mail dragged onto a category from a folder other than the inbox is
+   * looked up in THAT folder: resolved in the inbox, its UID would label whichever inbox
+   * mail carries the same number (the EXO-90416 wrong-message class). The three-argument
+   * assignment keeps reading the inbox, and a folder that is not a listable one is
+   * refused before anything is looked up.
+   */
+  @Test
+  @SneakyThrows
+  void linkEmailsToCategoryLooksTheUidsUpInTheirOwnFolder() {
+    when(categoryService.getCategory(5L)).thenReturn(new Category());
+    Email archived = email(TEST_USER);
+    archived.setId(9l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.ARCHIVE),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(archived);
+
+    assertEquals(1, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER, MailFolder.ARCHIVE));
+    ArgumentCaptor<CategoryObject> objectCaptor = ArgumentCaptor.forClass(CategoryObject.class);
+    verify(categoryLinkService).link(eq(5L), objectCaptor.capture(), eq(TEST_USER));
+    assertEquals("9", objectCaptor.getValue().getId());
+    verify(emailBoxStorage, never()).getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                                     anyString(),
+                                                                     any(),
+                                                                     eq(MailFolder.INBOX),
+                                                                     anyBoolean(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean());
+
+    // No folder, or the three-argument call: the inbox, where the archived UID is nothing.
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER, null));
+    assertEquals(0, emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER));
+    verify(emailBoxStorage, times(2)).getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                                      eq(TEST_USER),
+                                                                      any(),
+                                                                      eq(MailFolder.INBOX),
+                                                                      anyBoolean(),
+                                                                      anyBoolean(),
+                                                                      anyBoolean());
+
+    // Not a listable folder: refused up front, nothing looked up, nothing linked.
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.linkEmailsToCategory(List.of(1212l), 5L, TEST_USER, "ALL_MAIL"));
+    verify(categoryLinkService, times(1)).link(anyLong(), any(CategoryObject.class), anyString());
+  }
+
+  /**
+   * EXO-90421 -- the other half of the folder-aware assignment: a category is taken off
+   * the mail of the folder named, never off the inbox mail carrying the same UID; the
+   * three-argument removal keeps reading the inbox; a non-listable folder is refused.
+   */
+  @Test
+  @SneakyThrows
+  void unlinkEmailsFromCategoryLooksTheUidsUpInTheirOwnFolder() {
+    Email archived = email(TEST_USER);
+    archived.setId(9l);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq(MailFolder.ARCHIVE),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(archived);
+
+    assertEquals(1, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER, MailFolder.ARCHIVE));
+    ArgumentCaptor<CategoryObject> objectCaptor = ArgumentCaptor.forClass(CategoryObject.class);
+    verify(categoryLinkService).unlink(eq(5L), objectCaptor.capture(), eq(TEST_USER));
+    assertEquals("9", objectCaptor.getValue().getId());
+    verify(emailBoxStorage, never()).getEmailByMailRemoteIdAndUserId(anyLong(),
+                                                                     anyString(),
+                                                                     any(),
+                                                                     eq(MailFolder.INBOX),
+                                                                     anyBoolean(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean());
+
+    assertEquals(0, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER, null));
+    assertEquals(0, emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER));
+    verify(emailBoxStorage, times(2)).getEmailByMailRemoteIdAndUserId(eq(1212l),
+                                                                      eq(TEST_USER),
+                                                                      any(),
+                                                                      eq(MailFolder.INBOX),
+                                                                      anyBoolean(),
+                                                                      anyBoolean(),
+                                                                      anyBoolean());
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> emailBoxService.unlinkEmailsFromCategory(List.of(1212l), 5L, TEST_USER, "ALL_MAIL"));
+    verify(categoryLinkService, times(1)).unlink(anyLong(), any(CategoryObject.class), anyString());
+  }
+
   @Test
   @SneakyThrows
   void synchronizePrefetchesBodiesOverParallelConnections() {
