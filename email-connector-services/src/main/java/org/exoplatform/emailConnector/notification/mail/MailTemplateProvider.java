@@ -25,11 +25,14 @@ import org.exoplatform.emailConnector.utils.NotificationConstants;
 import org.exoplatform.services.resources.ResourceBundleService;
 
 @TemplateConfigs(templates = {
-    @TemplateConfig(pluginId = NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/NewEmailsNotificationPlugin.gtmpl") })
+    @TemplateConfig(pluginId = NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/NewEmailsNotificationPlugin.gtmpl"),
+    @TemplateConfig(pluginId = NotificationConstants.SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/ScheduledEmailFailedNotificationPlugin.gtmpl") })
 public class MailTemplateProvider extends TemplateProvider {
 
   public MailTemplateProvider(InitParams initParams, ResourceBundleService resourceBundleService) {
     super(initParams);
     this.templateBuilders.put(PluginKey.key(NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN), new MailTemplateBuilder(this));
+    this.templateBuilders.put(PluginKey.key(NotificationConstants.SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN),
+                              new MailTemplateBuilder(this));
   }
 }

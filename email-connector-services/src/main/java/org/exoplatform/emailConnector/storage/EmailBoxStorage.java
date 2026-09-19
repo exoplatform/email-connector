@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.storage;
 import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -1499,7 +1500,43 @@ public class EmailBoxStorage {
     for (Object[] row : emailBoxDao.countMessagesByFolder(userId)) {
       counts.put((String) row[0], ((Number) row[1]).intValue());
     }
+    if (counts.getOrDefault(MailFolder.DRAFTS, 0) > 0) {
+      // A scheduled draft is counted under "Scheduled", not here (EXO-90434). Asked
+      // only when the mailbox has drafts at all, so a mailbox without any pays nothing.
+      counts.put(MailFolder.DRAFTS, (int) emailBoxDao.countUnscheduledByUserIdAndFolder(userId, MailFolder.DRAFTS));
+    }
     return counts;
+  }
+
+  /**
+   * The Drafts folder as the folder list shows it: {@link #getEmails(String, String)} of
+   * DRAFTS, less the drafts scheduled to be sent, which the "Scheduled" view lists
+   * instead (EXO-90434).
+   *
+   * @param userId the mailbox owner
+   * @return the unscheduled drafts, newest first
+   */
+  public List<Email> getUnscheduledDrafts(String userId) {
+    return toListing(emailBoxDao.findUnscheduledByUserIdAndFolderWithAttachments(userId, MailFolder.DRAFTS), userId);
+  }
+
+  /**
+   * Some of a user's rows by id, as a listing reads them (drafts keep their body and
+   * recipients), keyed by id: what the "Scheduled" view shows of each scheduled draft.
+   *
+   * @param userId the mailbox owner
+   * @param ids the row ids
+   * @return the rows found, by id
+   */
+  public Map<Long, Email> getListedEmailsByIds(String userId, Collection<Long> ids) {
+    if (ids == null || ids.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, Email> emails = new HashMap<>();
+    for (Email email : toListing(emailBoxDao.findByUserIdAndIds(userId, ids), userId)) {
+      emails.put(email.getId(), email);
+    }
+    return emails;
   }
 
   /**
@@ -2064,7 +2101,7 @@ public class EmailBoxStorage {
                               // content.attachments like every other attachment of a
                               // row; this field exists only so the send path can hand
                               // the draft's own files to the message builder.
-                              null);
+                              null, false, null, null, null);
 
       // A draft carries its recipients on EVERY read, whatever the caller asked for.
       //

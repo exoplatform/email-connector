@@ -114,6 +114,15 @@ import javax.mail.search.MessageIDTerm;
 import javax.mail.search.SearchTerm;
 import javax.mail.search.SubjectTerm;
 
+import java.util.function.Function;
+import javax.mail.AuthenticationFailedException;
+import javax.mail.SendFailedException;
+import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
+import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
+import org.exoplatform.emailConnector.model.EmailScheduledSend;
+import org.exoplatform.emailConnector.model.ScheduledSendError;
+import org.exoplatform.emailConnector.model.ScheduledSendStatus;
+import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -171,6 +180,7 @@ import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -257,6 +267,14 @@ public class EmailBoxServiceTest {
 
   @MockitoBean
   private EmailCredentialsResolver emailCredentialsResolver;
+
+  // Scheduled send (EXO-90434): the schedule table, read by the draft lock and the
+  // "Scheduled" view, and the two-step transmitter only the scheduled send uses.
+  @MockitoBean
+  private EmailScheduledSendStorage emailScheduledSendStorage;
+
+  @MockitoBean
+  private SmtpTransmitter         smtpTransmitter;
 
   @Autowired
   private EmailBoxService         emailBoxService;
@@ -471,7 +489,7 @@ public class EmailBoxServiceTest {
     draft.setFolder(MailFolder.DRAFTS);
     draft.setDraftLocalId("draft-1");
     draft.setThreadId("thread-1");
-    when(emailBoxStorage.getEmails(TEST_USER, MailFolder.DRAFTS)).thenReturn(List.of(draft));
+    when(emailBoxStorage.getUnscheduledDrafts(TEST_USER)).thenReturn(List.of(draft));
     when(emailBoxStorage.getThreadSummaries(TEST_USER, "testEmail")).thenReturn(Map.of("thread-1",
                                                                                               new ThreadSummary("thread-1",
                                                                                                                 2,
@@ -8345,7 +8363,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null,
-                     null, null);
+                     null, null, false, null, null, null);
   }
 
   private EmailConnector emailConnector() {
@@ -10668,5 +10686,456 @@ public class EmailBoxServiceTest {
     folder.setSyncEnabled(enabled);
     folder.setEnabledDate(enabled ? new Date(id * 1_000L) : null);
     return folder;
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Scheduled send (EXO-90434): the draft-side half -- the stored send, the lock, the
+  // freezing of a draft, the "Scheduled" view.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A stored draft goes out as the draft it is: body, recipients and subject from the
+   * row, its pinned Message-ID, its stored threading headers, its inline picture as a
+   * {@code cid:} part -- on a session whose socket timeouts are bounded -- and it is
+   * transmitted ONCE; the "transmitted" record runs right after, before the draft row
+   * is taken apart.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aStoredDraftIsSentAsTheDraftItIsAndRecordedBeforeItsCleanup() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    stored.setInReplyTo("<parent@host>");
+    stored.setMailReferences("<root@host> <parent@host>");
+    stored.setContent(new EmailContent("<p>look</p><img src=\"/email-connector/rest/email-box/drafts/draft-1/attachments/7\">",
+                                       null,
+                                       null));
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    EmailAttachment picture = new EmailAttachment(7L, null, null, "screenshot.png", "image/png", null, MailFolder.DRAFTS, 77L, 21L, null);
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of(picture));
+    when(emailBoxStorage.attachmentFileExists(77L)).thenReturn(true);
+    when(emailBoxStorage.getAttachmentFileItem(77L)).thenAnswer(invocation -> fileItemOf("the bytes of a picture"));
+    List<MimeMessage> transmitted = new ArrayList<>();
+    doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
+    Runnable onTransmitted = mock(Runnable.class);
+    // At the moment the record runs, nothing of the draft has been taken apart yet.
+    doAnswer(invocation -> {
+      verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+      return null;
+    }).when(onTransmitted).run();
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted);
+
+    assertEquals(1, transmitted.size(), "transmitted once");
+    MimeMessage sent = transmitted.get(0);
+    sent.saveChanges();
+    assertEquals("<draft@example.org>", sent.getHeader("Message-ID")[0], "the draft's own Message-ID");
+    assertEquals("<parent@host>", sent.getHeader("In-Reply-To")[0]);
+    assertEquals("<root@host> <parent@host>", sent.getHeader("References")[0]);
+    assertEquals("half a subject", sent.getSubject());
+    assertEquals("bob@example.org", ((InternetAddress) sent.getRecipients(Message.RecipientType.TO)[0]).getAddress());
+    Multipart related = (Multipart) sent.getContent();
+    assertTrue(((String) related.getBodyPart(0).getContent()).contains("cid:email-inline-7@exo"), "the picture is inline");
+    assertArrayEquals(new String[] { "<email-inline-7@exo>" }, related.getBodyPart(1).getHeader("Content-ID"));
+    assertEquals(String.valueOf(EmailBoxService.SCHEDULED_SMTP_IO_TIMEOUT_MS), sent.getSession().getProperty("mail.smtp.timeout"),
+                 "a scheduled send cannot hang past its claim");
+    InOrder order = inOrder(smtpTransmitter, onTransmitted, emailBoxStorage);
+    order.verify(smtpTransmitter).transmit(any(MimeMessage.class));
+    order.verify(onTransmitted).run();
+    order.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    verify(emailBoxStorage, times(1)).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * The record of a transmitted mail failing does not fail the send, nor stop the
+   * cleanup: the mail is out, and a draft of an already-sent mail must not stay.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSentMailWhoseRecordFailsIsStillCleanedUpAndNotReportedAsFailed() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+
+    assertDoesNotThrow(() -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+      throw new IllegalStateException("the database is away");
+    }));
+    verify(smtpTransmitter, times(1)).transmit(any(MimeMessage.class));
+    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
+  /**
+   * Every way a transmission can fail is classified by what may have reached the mail
+   * server, and none of them records the mail as sent or takes the draft apart.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void eachTransmissionFailureIsClassifiedByWhatMayHaveReachedTheServer() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    InternetAddress bob = new InternetAddress("bob@example.org");
+    Object[][] cases = {
+        { SmtpTransmitter.Phase.PREPARE, new MessagingException("cannot save"), ScheduledSendFailure.Kind.PERMANENT,
+            ScheduledSendError.INTERNAL },
+        { SmtpTransmitter.Phase.CONNECT, new MessagingException("Could not connect to SMTP host"),
+            ScheduledSendFailure.Kind.TRANSIENT, ScheduledSendError.NETWORK },
+        { SmtpTransmitter.Phase.CONNECT, new AuthenticationFailedException("535 bad credentials"),
+            ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.AUTHENTICATION },
+        { SmtpTransmitter.Phase.SEND,
+            new SendFailedException("550 no such user", null, new Address[0], null, new Address[] { bob }),
+            ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.RECIPIENT_REFUSED },
+        { SmtpTransmitter.Phase.SEND, new SendFailedException("552 message too big"), ScheduledSendFailure.Kind.PERMANENT,
+            ScheduledSendError.REFUSED },
+        { SmtpTransmitter.Phase.SEND,
+            new SendFailedException("partial", null, new Address[] { bob }, null, new Address[] { bob }),
+            ScheduledSendFailure.Kind.AMBIGUOUS, ScheduledSendError.UNCONFIRMED },
+        { SmtpTransmitter.Phase.SEND, new MessagingException("Exception reading response"), ScheduledSendFailure.Kind.AMBIGUOUS,
+            ScheduledSendError.UNCONFIRMED } };
+    for (Object[] testCase : cases) {
+      doThrow(new SmtpTransmitter.TransmissionException((SmtpTransmitter.Phase) testCase[0], (Exception) testCase[1]))
+                                                                                                                     .when(smtpTransmitter)
+                                                                                                                     .transmit(any(MimeMessage.class));
+      Runnable onTransmitted = mock(Runnable.class);
+      ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                  () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", onTransmitted));
+      assertEquals(testCase[2], failure.getKind(), testCase[1].toString());
+      assertEquals(testCase[3], failure.getError(), testCase[1].toString());
+      verify(onTransmitted, never()).run();
+    }
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * A stored draft that cannot carry a file it shows, or whose owner can no longer use
+   * their mailbox, is refused for good before anything is transmitted.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aStoredDraftThatCannotBeSentAsItIsIsRefusedBeforeAnythingIsTransmitted() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of(attachmentRow()));
+    ScheduledSendFailure gone = assertThrows(ScheduledSendFailure.class,
+                                             () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                                             }));
+    assertEquals(ScheduledSendError.ATTACHMENT_GONE, gone.getError());
+    assertEquals(ScheduledSendFailure.Kind.PERMANENT, gone.getKind());
+
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    ScheduledSendFailure disconnected = assertThrows(ScheduledSendFailure.class,
+                                                     () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                                                     }));
+    assertEquals(ScheduledSendError.DISCONNECTED, disconnected.getError());
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+  }
+
+  /**
+   * A scheduling that carries a file still held as a session upload is refused before
+   * anything is written: the scheduled send builds from the stored row, and the file
+   * would be silently missing from the mail.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSchedulingCarryingAnUnstoredFileIsRefusedBeforeAnythingIsWritten() throws Exception {
+    givenAUsableMailbox();
+    Email draft = draft("draft-1");
+    draft.setAttachments(List.of(new EmailOutgoingAttachment("upload-1", "a.pdf", "application/pdf", 3L)));
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailBoxService.scheduleDraft(draft, TEST_USER, saved -> null));
+    assertEquals("emailConnector.scheduled.attachmentsNotStored", refused.getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * A stored send never transmits a draft an interactive send has claimed: it is retried
+   * later, never sent alongside.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aStoredSendNeverTransmitsADraftAnInteractiveSendHolds() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setDraftState(DraftState.SENDING);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                                                }));
+    assertEquals(ScheduledSendFailure.Kind.TRANSIENT, failure.getKind());
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+  }
+
+  /**
+   * A scheduled draft is frozen: an autosave, an attachment added or removed, a
+   * forward's files and an interactive send are all refused, and nothing is written.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledDraftIsLockedAgainstEditsAndInteractiveSends() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+
+    assertLocked(() -> emailBoxService.saveDraft(draft("draft-1"), TEST_USER, true));
+    assertLocked(() -> emailBoxService.addDraftAttachment("draft-1",
+                                                          TEST_USER,
+                                                          new EmailOutgoingAttachment("upload-1", "a.pdf", "application/pdf", 3L)));
+    assertLocked(() -> emailBoxService.removeDraftAttachment("draft-1", TEST_USER, 3L));
+    assertLocked(() -> emailBoxService.addForwardedAttachments("draft-1", TEST_USER, 12L, MailFolder.INBOX));
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      assertLocked(() -> emailBoxService.sendDraft(draft("draft-1"), TEST_USER));
+      transportMock.verifyNoInteractions();
+    }
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).removeDraftAttachment(anyString(), anyString(), anyLong());
+    verify(emailBoxStorage, never()).addDraftAttachment(anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A scheduled draft may be discarded (the schedule goes with it through the cascade),
+   * but not while it is being sent.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledDraftMayBeDiscardedButNotWhileItIsBeingSent() throws Exception {
+    givenAUsableMailbox();
+    Email stored = draft("draft-1");
+    stored.setId(9L);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    // Being sent: the schedule's conditional cancel does not land, and the row is there.
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    when(emailScheduledSendStorage.cancel(TEST_USER, "draft-1")).thenReturn(false);
+    ScheduledSendConflictException sending = assertThrows(ScheduledSendConflictException.class,
+                                                          () -> emailBoxService.deleteDraft("draft-1", TEST_USER));
+    assertEquals(ScheduledSendConflictException.SENDING, sending.getMessage());
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+
+    // Not being sent: the schedule goes first, through its conditional statement, and
+    // only then the draft -- so no claim can land between the two.
+    when(emailScheduledSendStorage.cancel(TEST_USER, "draft-1")).thenReturn(true);
+    assertTrue(emailBoxService.deleteDraft("draft-1", TEST_USER));
+    InOrder order = inOrder(emailScheduledSendStorage, emailBoxStorage);
+    order.verify(emailScheduledSendStorage, org.mockito.Mockito.atLeastOnce()).cancel(TEST_USER, "draft-1");
+    order.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
+  /**
+   * A server Drafts copy a scheduled draft still points at (a crash between the schedule
+   * and the removal, or an autosave on another node) is removed before the send, so no
+   * other client can send it too.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aLeftoverServerCopyIsRemovedBeforeTheScheduledSend() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    });
+
+    InOrder order = inOrder(serverCopy, emailBoxStorage, smtpTransmitter);
+    order.verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
+    order.verify(emailBoxStorage).detachDraftFromServerCopy(TEST_USER, "draft-1");
+    order.verify(smtpTransmitter).transmit(any(MimeMessage.class));
+  }
+
+  /**
+   * Scheduling a draft saves the text on screen, creates the schedule, then removes the
+   * draft's copy from the server's Drafts folder and detaches the row from it -- in that
+   * order, so no other mail client can send what is scheduled here.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void schedulingADraftSavesItsTextThenRemovesItsServerCopy() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    EmailScheduledSend created = new EmailScheduledSend();
+    created.setId(31L);
+    @SuppressWarnings("unchecked")
+    Function<Email, EmailScheduledSend> scheduler = mock(Function.class);
+    when(scheduler.apply(any(Email.class))).thenReturn(created);
+
+    assertSame(created, emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, scheduler));
+
+    InOrder order = inOrder(emailBoxStorage, scheduler, serverCopy);
+    order.verify(emailBoxStorage).saveDraft(any(Email.class));
+    order.verify(scheduler).apply(any(Email.class));
+    order.verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
+    order.verify(emailBoxStorage).detachDraftFromServerCopy(TEST_USER, "draft-1");
+    verify(emailScheduledSendStorage, never()).delete(anyLong());
+  }
+
+  /**
+   * A server copy that cannot be removed refuses the scheduling and takes the new
+   * schedule row back: a copy another client can send is the double send this exists
+   * to prevent. An already scheduled draft is refused before anything is written.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSchedulingThatCannotRemoveTheServerCopyIsRefusedAndUndone() throws Exception {
+    givenAUsableMailbox();
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    doThrow(new MessagingException("no")).when(draftsFolder).open(Folder.READ_WRITE);
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    EmailScheduledSend created = new EmailScheduledSend();
+    created.setId(31L);
+
+    IllegalStateException refused = assertThrows(IllegalStateException.class,
+                                                 () -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, saved -> created));
+    assertEquals("emailConnector.scheduled.serverCopyRemains", refused.getMessage());
+    verify(emailScheduledSendStorage).delete(31L);
+    verify(emailBoxStorage, never()).detachDraftFromServerCopy(anyString(), anyString());
+
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    assertLocked(() -> emailBoxService.scheduleDraft(draft("draft-1"), TEST_USER, saved -> created));
+  }
+
+  /**
+   * The "Scheduled" view is listed right after Drafts, only when something is
+   * scheduled, with its count and whether a mail in it needs attention.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void theScheduledViewFollowsDraftsOnlyWhenSomethingIsScheduled() throws Exception {
+    givenAUsableMailbox();
+    when(emailBoxStorage.getFolderMessageCounts(TEST_USER)).thenReturn(Map.of(MailFolder.DRAFTS, 2));
+    when(emailScheduledSendStorage.countListedAndAttention(TEST_USER)).thenReturn(new long[] { 3, 1 });
+
+    List<MailFolderView> views = emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX).getFolders();
+    List<String> keys = views.stream().map(MailFolderView::getKey).toList();
+    assertEquals(keys.indexOf(MailFolder.DRAFTS) + 1, keys.indexOf(MailFolder.SCHEDULED), "right after Drafts: " + keys);
+    MailFolderView scheduled = views.get(keys.indexOf(MailFolder.SCHEDULED));
+    assertEquals(3, scheduled.getCount());
+    assertTrue(scheduled.isAttention());
+
+    when(emailScheduledSendStorage.countListedAndAttention(TEST_USER)).thenReturn(new long[] { 0, 0 });
+    assertFalse(emailBoxService.getEmailBox(TEST_USER, MailFolder.INBOX)
+                               .getFolders()
+                               .stream()
+                               .anyMatch(view -> MailFolder.SCHEDULED.equals(view.getKey())));
+  }
+
+  /**
+   * An uncertain mail is looked up in the Sent folder by the Message-ID the draft was
+   * pinned with, and only there.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void theSentFolderIsSearchedForThePinnedMessageId() throws Exception {
+    givenAUsableMailbox();
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder defaultFolder = mock(Folder.class);
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    IMAPFolder sentFolder = mock(IMAPFolder.class);
+    lenient().when(sentFolder.exists()).thenReturn(true);
+    when(sentFolder.getAttributes()).thenReturn(new String[] { "\\Sent" });
+    lenient().when(sentFolder.getFullName()).thenReturn("Sent");
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { sentFolder });
+    ArgumentCaptor<SearchTerm> term = ArgumentCaptor.forClass(SearchTerm.class);
+    when(sentFolder.search(term.capture())).thenReturn(new Message[] { mock(Message.class) }, new Message[0]);
+
+    assertTrue(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
+    assertTrue(term.getValue() instanceof HeaderTerm);
+    assertEquals("Message-ID", ((HeaderTerm) term.getValue()).getHeaderName());
+    assertEquals("<draft@example.org>", ((HeaderTerm) term.getValue()).getPattern());
+    assertFalse(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
+    verify(sentFolder, times(2)).open(Folder.READ_ONLY);
+  }
+
+  /**
+   * A scheduled draft reads as scheduled in its conversation and when read on its own --
+   * with its date, zone and status -- so the reader shows it read-only; the schedules of
+   * every draft of a conversation come in one read, and a read with no draft asks for
+   * none.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledDraftReadsAsScheduledWhereverItIsShown() throws Exception {
+    givenAUsableMailbox();
+    Email message = new Email();
+    message.setId(1L);
+    Email scheduledDraft = draft("draft-1");
+    scheduledDraft.setId(9L);
+    scheduledDraft.setUserId(TEST_USER);
+    Email plainDraft = draft("draft-2");
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, "thread-1", "testEmail")).thenReturn(List.of(message,
+                                                                                                    scheduledDraft,
+                                                                                                    plainDraft));
+    EmailScheduledSend schedule = new EmailScheduledSend();
+    schedule.setDraftLocalId("draft-1");
+    schedule.setScheduledDate(new Date(1_900_000_000_000L));
+    schedule.setTimeZone("Europe/Paris");
+    schedule.setStatus(ScheduledSendStatus.FAILED);
+    when(emailScheduledSendStorage.getByDraftLocalIds(eq(TEST_USER), any())).thenReturn(Map.of("draft-1", schedule));
+
+    List<Email> conversation = emailBoxService.getThread("thread-1", TEST_USER);
+
+    assertTrue(conversation.get(1).isScheduled());
+    assertEquals(1_900_000_000_000L, conversation.get(1).getScheduledDate());
+    assertEquals("Europe/Paris", conversation.get(1).getScheduledTimeZone());
+    assertEquals(ScheduledSendStatus.FAILED, conversation.get(1).getScheduledStatus());
+    assertFalse(conversation.get(0).isScheduled(), "a message is not a scheduled draft");
+    assertFalse(conversation.get(2).isScheduled(), "nor is a draft with no schedule");
+    verify(emailScheduledSendStorage, times(1)).getByDraftLocalIds(TEST_USER, List.of("draft-1", "draft-2"));
+
+    when(emailBoxStorage.getEmailById(9L, TEST_USER, "testEmail")).thenReturn(scheduledDraft);
+    scheduledDraft.setScheduled(false);
+    assertTrue(emailBoxService.getOwnedEmailById(9L, TEST_USER).isScheduled(), "read on its own too");
+
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, "thread-2", "testEmail")).thenReturn(List.of(message));
+    emailBoxService.getThread("thread-2", TEST_USER);
+    verify(emailScheduledSendStorage, times(2)).getByDraftLocalIds(eq(TEST_USER), any());
+  }
+
+  /**
+   * Asserts a call is refused because the draft is scheduled.
+   *
+   * @param call the call
+   */
+  private void assertLocked(org.junit.jupiter.api.function.Executable call) {
+    ScheduledSendConflictException locked = assertThrows(ScheduledSendConflictException.class, call);
+    assertEquals(ScheduledSendConflictException.LOCKED, locked.getMessage());
   }
 }
