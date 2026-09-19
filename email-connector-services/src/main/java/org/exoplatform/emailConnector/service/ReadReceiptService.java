@@ -74,6 +74,14 @@ import io.meeds.social.util.JsonUtils;
  * <p>
  * The rules are re-checked on the server at every answer, whatever the reader was
  * told: the prompt is advice to the reader, never an authorisation.
+ * <p>
+ * <b>Known limit, pending a decision (EXO-90435 review, round 1).</b> The answer is
+ * kept on the cached rows of the message and, where the mailbox stores keywords, as
+ * {@code $MDNSent} on the server. On a mailbox that stores no keywords (Exchange), a
+ * row the sync deletes and later re-creates -- a move, an archive, a reset, a message
+ * leaving and re-entering the sync window -- comes back unanswered, and the request is
+ * offered again. Making the answer survive its rows needs a store keyed by user and
+ * Message-ID, a schema decision left to phase 2's receipt table.
  */
 @Service
 public class ReadReceiptService {
