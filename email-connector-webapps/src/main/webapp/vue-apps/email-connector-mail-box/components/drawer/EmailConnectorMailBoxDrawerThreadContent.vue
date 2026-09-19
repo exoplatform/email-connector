@@ -102,7 +102,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :key="item.key"
         :draft="item.message"
         @resume="resumeDraft(item.message)"
-        @discard="discardDraft(item.message)" />
+        @discard="discardDraft(item.message)"
+        @edit="editScheduledDraft(item.message)" />
       <email-connector-mail-box-drawer-thread-message
         v-else
         :key="item.key"
@@ -527,6 +528,16 @@ export default {
      */
     resumeDraft(draft) {
       this.$root.$emit('resume-draft', draft);
+    },
+    /**
+     * Edits a reply scheduled to be sent, the Scheduled view's way (EXO-90434): the
+     * composer takes it out of its schedule first, then opens it with its time ready.
+     *
+     * @param {object} draft - the scheduled draft row
+     * @returns {void}
+     */
+    editScheduledDraft(draft) {
+      this.$root.$emit('edit-scheduled-email', { draftLocalId: draft.draftLocalId, scheduledDate: draft.scheduledDate });
     },
     /**
      * Throws a draft away from inside the conversation it sits in.
