@@ -8607,7 +8607,7 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null,
-                     null, null);
+                     null, null, false, null, null, null);
   }
 
   private EmailConnector emailConnector() {
@@ -11325,6 +11325,52 @@ public class EmailBoxServiceTest {
     assertEquals("<draft@example.org>", ((HeaderTerm) term.getValue()).getPattern());
     assertFalse(emailBoxService.isInSentFolder(TEST_USER, "<draft@example.org>"));
     verify(sentFolder, times(2)).open(Folder.READ_ONLY);
+  }
+
+  /**
+   * A scheduled draft reads as scheduled in its conversation and when read on its own --
+   * with its date, zone and status -- so the reader shows it read-only; the schedules of
+   * every draft of a conversation come in one read, and a read with no draft asks for
+   * none.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledDraftReadsAsScheduledWhereverItIsShown() throws Exception {
+    givenAUsableMailbox();
+    Email message = new Email();
+    message.setId(1L);
+    Email scheduledDraft = draft("draft-1");
+    scheduledDraft.setId(9L);
+    scheduledDraft.setUserId(TEST_USER);
+    Email plainDraft = draft("draft-2");
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, "thread-1", "testEmail")).thenReturn(List.of(message,
+                                                                                                    scheduledDraft,
+                                                                                                    plainDraft));
+    EmailScheduledSend schedule = new EmailScheduledSend();
+    schedule.setDraftLocalId("draft-1");
+    schedule.setScheduledDate(new Date(1_900_000_000_000L));
+    schedule.setTimeZone("Europe/Paris");
+    schedule.setStatus(ScheduledSendStatus.FAILED);
+    when(emailScheduledSendStorage.getByDraftLocalIds(eq(TEST_USER), any())).thenReturn(Map.of("draft-1", schedule));
+
+    List<Email> conversation = emailBoxService.getThread("thread-1", TEST_USER);
+
+    assertTrue(conversation.get(1).isScheduled());
+    assertEquals(1_900_000_000_000L, conversation.get(1).getScheduledDate());
+    assertEquals("Europe/Paris", conversation.get(1).getScheduledTimeZone());
+    assertEquals(ScheduledSendStatus.FAILED, conversation.get(1).getScheduledStatus());
+    assertFalse(conversation.get(0).isScheduled(), "a message is not a scheduled draft");
+    assertFalse(conversation.get(2).isScheduled(), "nor is a draft with no schedule");
+    verify(emailScheduledSendStorage, times(1)).getByDraftLocalIds(TEST_USER, List.of("draft-1", "draft-2"));
+
+    when(emailBoxStorage.getEmailById(9L, TEST_USER, "testEmail")).thenReturn(scheduledDraft);
+    scheduledDraft.setScheduled(false);
+    assertTrue(emailBoxService.getOwnedEmailById(9L, TEST_USER).isScheduled(), "read on its own too");
+
+    when(emailBoxStorage.getEmailsByThreadId(TEST_USER, "thread-2", "testEmail")).thenReturn(List.of(message));
+    emailBoxService.getThread("thread-2", TEST_USER);
+    verify(emailScheduledSendStorage, times(2)).getByDraftLocalIds(eq(TEST_USER), any());
   }
 
   /**
