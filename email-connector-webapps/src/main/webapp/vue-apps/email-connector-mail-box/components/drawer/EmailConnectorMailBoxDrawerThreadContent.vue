@@ -101,9 +101,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-else-if="item.type === 'draft'"
         :key="item.key"
         :draft="item.message"
+        :scheduled-row="scheduledRowOf(item.message)"
         @resume="resumeDraft(item.message)"
         @discard="discardDraft(item.message)"
-        @edit="editScheduledDraft(item.message)" />
+        @edit="editScheduledDraft(item.message)"
+        @action="onScheduledAction" />
       <email-connector-mail-box-drawer-thread-message
         v-else
         :key="item.key"
@@ -538,6 +540,29 @@ export default {
      */
     editScheduledDraft(draft) {
       this.$root.$emit('edit-scheduled-email', { draftLocalId: draft.draftLocalId, scheduledDate: draft.scheduledDate });
+    },
+    /**
+     * The Scheduled view's row of a draft, when the reader was opened on that draft from
+     * the view (EXO-90434): the draft then offers the row's actions, and says why it was
+     * not sent from the row's reason. Kept on the row the reader was opened on, so it
+     * outlives the conversation's own copy of the draft replacing it.
+     *
+     * @param {object} draft - a draft of the conversation
+     * @returns {object} the Scheduled view's row, or null
+     */
+    scheduledRowOf(draft) {
+      return (this.email?.scheduledRow && draft.draftLocalId === this.email.draftLocalId && this.email.scheduledRow) || null;
+    },
+    /**
+     * Hands an action chosen on the opened scheduled mail to the Scheduled view, which
+     * runs it as it does from its own row -- its questions and its reschedule popup
+     * included.
+     *
+     * @param {string} action - the action name (see scheduledActions)
+     * @returns {void}
+     */
+    onScheduledAction(action) {
+      this.$root.$emit('scheduled-email-action', action, this.email.scheduledRow);
     },
     /**
      * Throws a draft away from inside the conversation it sits in.

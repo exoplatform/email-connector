@@ -32,6 +32,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :key="scheduled.draftLocalId"
           :scheduled="scheduled"
           :busy="busyIds.includes(scheduled.draftLocalId)"
+          :opened="openedId === scheduled.draftLocalId"
+          :expanded="compact"
+          @open="open"
           @action="onAction" />
       </template>
     </v-list>
@@ -122,6 +125,8 @@ export default {
     rescheduling: false,
     // The question the confirmation dialog is asking: {title, message, okLabel, run}.
     confirmation: null,
+    // The mail the reader was opened on from this view, by its draft's local id.
+    openedId: null,
   }),
   computed: {
     /**
@@ -150,10 +155,19 @@ export default {
     // renders it.
     this.readRequest = 0;
     this.$root.$on('scheduled-emails-changed', this.reload);
+    // The reader offers the opened mail's actions; they run here, where their questions
+    // and their dialog are.
+    this.$root.$on('scheduled-email-action', this.onAction);
+    // The reader moved off the mail, or its drawer closed: no row stays lit.
+    this.$root.$on('set-opened', this.onSetOpened);
+    this.$root.$on('email-detail-drawer-closed', this.onReaderClosed);
     this.reload();
   },
   beforeDestroy() {
     this.$root.$off('scheduled-emails-changed', this.reload);
+    this.$root.$off('scheduled-email-action', this.onAction);
+    this.$root.$off('set-opened', this.onSetOpened);
+    this.$root.$off('email-detail-drawer-closed', this.onReaderClosed);
     // Gone with its wait: the drawer's bar must not stay on for a list nobody sees.
     this.$emit('loading', false);
   },
@@ -206,6 +220,7 @@ export default {
             this.items = [...this.items, ...rows.filter(row => !listed.has(row.draftLocalId))];
           }
           this.hasMore = rows.length === limit;
+          this.followOpened();
         })
         .catch(() => {
           if (request === this.readRequest) {
@@ -218,6 +233,62 @@ export default {
             this.loaded = true;
           }
         });
+    },
+    /**
+     * Opens a mail read-only in the reader, the way a folder's row opens its mail: in
+     * the full-screen reader beside the list, else in the mail drawer. The reader shows
+     * the draft in its conversation, read-only (PO decision (a)), with this row's
+     * actions (see scheduledReaderRow).
+     *
+     * @param {Object} scheduled the scheduled mail
+     * @returns {void}
+     */
+    open(scheduled) {
+      const row = this.$emailConnectorMailBoxService.scheduledReaderRow(scheduled);
+      if (this.compact) {
+        this.$root.$emit('open-email-thread-content', row);
+      } else {
+        this.$root.$emit('open-email-thread-drawer', row, [row], false, null);
+      }
+      // After the opening: it clears the lit row (set-opened) before lighting its own.
+      this.openedId = scheduled.draftLocalId;
+    },
+    /**
+     * Tells the reader what became of the mail it shows, once the view was read again:
+     * its new date or state, or that it is no longer scheduled -- sent, cancelled,
+     * discarded, taken to the composer -- and the reader then lets it go.
+     *
+     * @returns {void}
+     */
+    followOpened() {
+      if (!this.openedId) {
+        return;
+      }
+      const scheduled = this.items.find(item => item.draftLocalId === this.openedId);
+      this.$root.$emit('scheduled-email-updated', this.openedId,
+        scheduled ? this.$emailConnectorMailBoxService.scheduledReaderRow(scheduled) : null);
+      if (!scheduled) {
+        this.openedId = null;
+      }
+    },
+    /**
+     * Forgets the opened mail when the full-screen reader shows nothing any more.
+     *
+     * @param {Number} mailRemoteId what the reader now shows, nothing for nothing
+     * @returns {void}
+     */
+    onSetOpened(mailRemoteId) {
+      if (mailRemoteId == null) {
+        this.openedId = null;
+      }
+    },
+    /**
+     * Forgets the opened mail when the mail drawer showing it closed.
+     *
+     * @returns {void}
+     */
+    onReaderClosed() {
+      this.openedId = null;
     },
     /**
      * Runs a row's action, asking first for the ones that send or lose something.
