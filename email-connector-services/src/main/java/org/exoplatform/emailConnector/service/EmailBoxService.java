@@ -7816,11 +7816,14 @@ public class EmailBoxService {
       if (stored == null) {
         return false;
       }
-      // A scheduled draft may be discarded (its schedule goes with it, through the
-      // database's cascade) -- but not while it is on its way, or already gone out.
-      EmailScheduledSend schedule = emailScheduledSendStorage.get(username, draftLocalId);
-      if (schedule != null
-          && (schedule.getStatus() == ScheduledSendStatus.SENDING || schedule.getStatus() == ScheduledSendStatus.SENT)) {
+      // A scheduled draft may be discarded -- but not while it is on its way, or already
+      // gone out. Decided by the schedule's own conditional DELETE, never by a read: a
+      // read that says SCHEDULED may be stale a millisecond later, when another node's
+      // dispatcher claims the row, and the draft deleted after it would go out anyway.
+      // Once the schedule row is gone no claim can land on it, so the draft may follow.
+      if (emailScheduledSendStorage.isScheduled(username, draftLocalId)
+          && !emailScheduledSendStorage.cancel(username, draftLocalId)
+          && emailScheduledSendStorage.isScheduled(username, draftLocalId)) {
         throw new ScheduledSendConflictException(ScheduledSendConflictException.SENDING);
       }
       // Again the UID and not the state: a LOCAL_ONLY row that carries one has a copy
@@ -7868,6 +7871,10 @@ public class EmailBoxService {
    * double send this step exists to prevent;</li>
    * <li>the row detached from the copy that is gone (LOCAL_ONLY, no UID).</li>
    * </ol>
+   * One state is not covered by that ordering: a node stopping between the schedule row
+   * and the removal leaves a scheduled draft whose server copy still exists. The
+   * scheduled send removes such a leftover copy before it transmits (see
+   * {@link #sendStoredDraft}), which closes the window at the latest at the send.
    *
    * @param draft the draft as the composer shows it, carrying its local id
    * @param username the mailbox owner
@@ -7983,6 +7990,11 @@ public class EmailBoxService {
       } catch (IllegalStateException e) {
         throw new ScheduledSendFailure(ScheduledSendFailure.Kind.PERMANENT, ScheduledSendError.ATTACHMENT_GONE, e);
       }
+      // A copy in the server's Drafts folder that scheduling did not get to remove (its
+      // node stopped in between, or an autosave on another node pushed one just before
+      // the lock landed): taken away before the send, so no other client can send it
+      // too. Not a reason to refuse: the cleanup after the send retries its removal.
+      removeLeftoverServerCopy(stored, username, userEmailSetting);
       MimeMessage message = buildScheduledMessage(stored, storedAttachments, username, userEmailSetting, emailConnector);
       try {
         smtpTransmitter.transmit(message);
@@ -8020,6 +8032,29 @@ public class EmailBoxService {
       if (sent) {
         draftLocks.remove(lockKey);
       }
+    }
+  }
+
+  /**
+   * Removes a scheduled draft's copy from the server's Drafts folder when the row still
+   * points at one, and detaches the row from it once it is gone. Never fails the send.
+   *
+   * @param stored the draft's row
+   * @param username the mailbox owner
+   * @param userEmailSetting the user's connector binding
+   */
+  private void removeLeftoverServerCopy(Email stored, String username, UserEmailSetting userEmailSetting) {
+    long serverCopyUid = serverDraftCopyUid(stored);
+    if (serverCopyUid <= 0 || !isServerDraftsEnabled()) {
+      return;
+    }
+    try {
+      if (removeServerDraftCopy(serverCopyUid, stored.getMailHeaderId(), username, userEmailSetting)) {
+        emailBoxStorage.detachDraftFromServerCopy(username, stored.getDraftLocalId());
+        stored.setMailRemoteId(null);
+      }
+    } catch (RuntimeException e) {
+      LOG.warn("The Drafts copy of a scheduled mail of user {} could not be removed before its send", username, e);
     }
   }
 
