@@ -1363,6 +1363,11 @@ export default {
       const quiet = options.automatic || options.handover;
       if (!quiet) {
         this.updateEmailsReadStatus(true, [mailRemoteId], ownFolder);
+        // Opened by the user, so displayed to them: a read receipt its sender asked for
+        // may leave on its own (EXO-90435) -- said here for the mail already on screen,
+        // which the reader does not load again (a click ending an automatic opening's
+        // wait), since a new one counts as displayed when it loads.
+        this.$root.$emit('email-read-on-display', { mailRemoteId, folder: ownFolder });
       }
       const read = quiet
         ? this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder, { broadcast: false })

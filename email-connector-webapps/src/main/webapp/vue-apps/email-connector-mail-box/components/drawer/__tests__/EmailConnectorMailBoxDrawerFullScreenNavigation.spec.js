@@ -871,6 +871,29 @@ describe('an automatically opened mail is read only once the user stayed on it (
     expect(fixture.service.broadcastOpenEmail).not.toHaveBeenCalled();
   });
 
+  it('says when a mail counts as displayed, for its read receipt (EXO-90435): stayed on or clicked, never walked past', async () => {
+    await mountOnFirst();
+    const displayed = jest.fn();
+    fixture.wrapper.vm.$root.$on('email-read-on-display', displayed);
+
+    press(fixture, 'ArrowDown');
+    await tick(KEY_OPEN_DELAY_MS);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS - 100);
+    press(fixture, 'ArrowDown', { target: inDrawer(fixture, '<div data-thread-key="<2@host>" tabindex="0"></div>') });
+    await tick(KEY_OPEN_DELAY_MS);
+    expect(displayed).not.toHaveBeenCalled();
+
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+    await tick(AUTO_OPEN_MARK_READ_DELAY_MS);
+    expect(displayed).toHaveBeenCalledTimes(1);
+    expect(displayed.mock.calls[0][0].mailRemoteId).toBe(3);
+
+    fixture.wrapper.vm.openEmailDetailContent(2);
+    await tick(0);
+    expect(displayed).toHaveBeenCalledTimes(2);
+    expect(displayed.mock.calls[1][0]).toEqual({ mailRemoteId: 2, folder: 'INBOX' });
+  });
+
   it('does not read a mail opened automatically once the user clicked another one', async () => {
     await mountOnFirst();
 

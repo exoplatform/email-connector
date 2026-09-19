@@ -43,6 +43,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.scheduled.action.edit') }}
       </v-btn>
     </div>
+    <!-- The sender asked to be notified when this message is read (EXO-90435): the
+         banner, or the automatic answer once the message counts as displayed. -->
+    <email-connector-read-receipt-banner
+      v-if="!scheduled"
+      :email="email"
+      :auto-allowed="receiptAutoAllowed" />
     <v-list-item
       :class="['height-auto', recipientsClass]">
       <email-connector-mail-box-drawer-list-item-detail-sender-avatar 
@@ -228,6 +234,13 @@ export default {
     scheduledRow: {
       type: Object,
       default: null,
+    },
+    // Whether this message counts as displayed to the user, so a read receipt its
+    // sender asked for may leave on its own under the ALWAYS policy (EXO-90435): false
+    // unless the reader says so, as a message it only shows in passing is not read.
+    receiptAutoAllowed: {
+      type: Boolean,
+      default: false,
     },
   },
   computed: {
