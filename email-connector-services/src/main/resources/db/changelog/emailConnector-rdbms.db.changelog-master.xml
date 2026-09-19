@@ -1361,4 +1361,44 @@
       <dropForeignKeyConstraint baseTableName="EMAIL_SCHEDULED_SEND" constraintName="FK_EMAIL_SCHED_SEND_EMAIL"/>
     </rollback>
   </changeSet>
+  <changeSet author="email-connector" id="1.0.0-66">
+    <comment>
+      Read receipts (EXO-90435, RFC 8098 MDN), on the mail row itself. 1.0.0-61 is
+      EXO-90418's and 62 to 65 are the scheduled send's (EXO-90434), so this starts at 66.
+
+      READ_RECEIPT_REQUESTED: on a draft the author's choice, which scheduled sends and
+      resumed drafts keep; on Sent "I asked"; on a received message "they ask" (it
+      carries a Disposition-Notification-To header). NOT NULL, false on every existing
+      row: no message cached before this column asked for anything we know of.
+      READ_RECEIPT_TO: where a received request asks the receipt to go, as the header
+      says it; null elsewhere. READ_RECEIPT_STATE: SENT or IGNORED once the request is
+      answered, null while pending -- the local mirror of the IMAP $MDNSent keyword,
+      needed because Exchange cannot store keywords, and the column whose conditional
+      UPDATE makes a receipt go out at most once. READ_RECEIPT_RETURN_PATH_MATCH:
+      whether the message's Return-Path named the address the receipt would go to,
+      decided at sync from headers the cache does not otherwise keep; a receipt only
+      ever leaves without asking when it is true, so its default is the safe answer.
+
+      No index: these columns are read with the row they belong to, and written by
+      the user and Message-ID (the same answer on every cached copy of one message),
+      a lookup bounded by IDX_EMAIL_BOX_USER_ID exactly as the existing Message-ID
+      lookups of this table are. Rolled back explicitly, column by column.
+    </comment>
+    <addColumn tableName="EMAIL_BOX">
+      <column name="READ_RECEIPT_REQUESTED" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="READ_RECEIPT_TO" type="NVARCHAR(1000)"/>
+      <column name="READ_RECEIPT_STATE" type="NVARCHAR(20)"/>
+      <column name="READ_RECEIPT_RETURN_PATH_MATCH" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_BOX" columnName="READ_RECEIPT_RETURN_PATH_MATCH"/>
+      <dropColumn tableName="EMAIL_BOX" columnName="READ_RECEIPT_STATE"/>
+      <dropColumn tableName="EMAIL_BOX" columnName="READ_RECEIPT_TO"/>
+      <dropColumn tableName="EMAIL_BOX" columnName="READ_RECEIPT_REQUESTED"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

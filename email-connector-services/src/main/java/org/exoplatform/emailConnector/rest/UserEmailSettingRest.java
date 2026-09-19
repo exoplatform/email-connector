@@ -42,8 +42,10 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
+import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -70,6 +72,9 @@ public class UserEmailSettingRest {
 
   @Autowired
   private EmailSignatureService   emailSignatureService;
+
+  @Autowired
+  private ReadReceiptService      readReceiptService;
 
   /**
    * Connects the caller to a connector whose provider asks them for nothing - the
@@ -181,6 +186,46 @@ public class UserEmailSettingRest {
                                            @RequestBody
                                            UserEmailSetting userEmailSetting) {
     userEmailSettingService.updateAddressBookAutoPublish(request.getRemoteUser(), userEmailSetting.getCarddavAutoPublish());
+  }
+
+  /**
+   * The caller's read-receipt preferences.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the effective preferences
+   */
+  @GetMapping("/read-receipts")
+  @Secured("users")
+  @Operation(summary = "Gets the caller's read-receipt preferences", method = "GET",
+             description = "Answers whether the composer requests a read receipt by default (requestByDefault, false unless chosen), what to do when a received message asks for one (responsePolicy: ASK, the default; NEVER; ALWAYS), and whether the administrator allows ALWAYS (alwaysAllowed; when not, a stored ALWAYS is answered as ASK).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public ReadReceiptSettings getReadReceiptSettings(HttpServletRequest request) {
+    return readReceiptService.getSettings(request.getRemoteUser());
+  }
+
+  /**
+   * Stores the caller's read-receipt preferences.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param settings the preferences
+   * @return the preferences as they now stand
+   */
+  @PutMapping("/read-receipts")
+  @Secured("users")
+  @Operation(summary = "Stores the caller's read-receipt preferences", method = "PUT",
+             description = "Stores requestByDefault and responsePolicy (a missing policy is stored as ASK; alwaysAllowed is ignored). ALWAYS is refused while the administrator disables it (email.connector.readReceipt.allowAlways=false). Even under ALWAYS a receipt is only sent without asking when the request's Return-Path matches its one address, the caller is a To or Cc recipient, and the message came through no mailing list and was not machine-generated; every other case still asks.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "ALWAYS while the administrator disables it, or no body (emailConnector.readReceipt.notAllowed)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
+  public ReadReceiptSettings saveReadReceiptSettings(HttpServletRequest request,
+                                                     @RequestBody
+                                                     ReadReceiptSettings settings) {
+    try {
+      return readReceiptService.saveSettings(request.getRemoteUser(), settings);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
   }
 
   @DeleteMapping()
