@@ -86,6 +86,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20" class="error--text">fa-trash</v-icon>
       </v-btn>
       <v-btn
+        v-if="canDiscardSelection"
+        :title="$t('emailConnector.mailBox.list.drawer.detail.discard.label')"
+        @click="discardDrafts()"
+        icon>
+        <v-icon size="20" class="error--text">fa-trash</v-icon>
+      </v-btn>
+      <v-btn
         v-if="canApplyJunkActions"
         :title="$t('emailConnector.mailBox.list.drawer.detail.notJunk.label')"
         @click="restoreFromJunk()"
@@ -194,6 +201,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }} </span>
       </v-btn>
       <v-btn
+        v-if="canDiscardSelection"
+        @click="discardDrafts()"
+        outlined
+        class="btn error font-weight-bold">
+        <v-icon size="16" class="error--text pe-3">fa-trash</v-icon>
+        <span class="error--text"> {{ $t('emailConnector.mailBox.list.drawer.detail.discard.label') }} </span>
+      </v-btn>
+      <v-btn
         v-if="canApplyJunkActions"
         @click="restoreFromJunk()"
         outlined
@@ -297,7 +312,9 @@ export default {
     },
   },
   computed: {
-    // The listed rows by selection key (folder and UID), the way the selection names them.
+    // The listed rows by selection key -- the folder, and the id the row is named by in
+    // it: its UID, or its local id when it is a draft, which may have no UID at all
+    // (selectionKey).
     emailsMap() {
       return Object.fromEntries(this.emails.map(e => [selectionKey(e), e]));
     },
@@ -311,20 +328,68 @@ export default {
      * Whether the selected messages may be acted on at all.
      *
      * Read off the SELECTED ROWS rather than off the listed folder, because this
-     * toolbar is mounted twice — once over the mailbox list, once over the reader —
-     * and only one of the two is told which folder is listed. The rows always carry
-     * their own, and they are what the action would be sent for.
+     * toolbar is mounted in four places — the mailbox drawer's header and its title
+     * icons, the reader, and the multi-select banner — and two of them are never told
+     * which folder is listed. The rows always carry their own, and they are what the
+     * action would be sent for.
      *
      * Any read-only row disqualifies the whole selection: a listing holds one
      * folder's rows, so in practice it is all of them or none, and the conservative
      * reading is the one that cannot offer a Trash message an action the server will
      * refuse.
      *
+     * A DRAFT row disqualifies it for the same reason and a different cause
+     * (EXO-90438): Drafts is a WRITABLE folder, so the read-only test above said yes
+     * and the bar offered Delete, Archive and read/unread there. Delete and Archive the
+     * server refuses on purpose — an unsent draft is discarded rather than filed away
+     * (EmailBoxService#canMoveOutOf) — and answered with a failure count nobody showed.
+     * Read/unread is withheld for a reason of its own, and it is a product decision
+     * rather than the server's hand: a draft is the user's own text, stored read and
+     * never announced as new mail, so there is no read state there worth pushing. (The
+     * server does not refuse it: updateEmailReadStatus never consults canMoveOutOf, so
+     * the push lands for a draft that HAS been uploaded, and only fails — silently, one
+     * more uncounted failure — for one that has not.) What Drafts gets is Discard.
+     *
      * @returns {Boolean} true when archive/delete/read-status may be offered
      */
     canMutateSelection() {
-      return !this.selectedEmails.some(emailId =>
-        this.$emailConnectorMailBoxService.isReadOnlyFolder(this.emailsMap[emailId]?.folder));
+      return !this.selectedEmails.some(emailId => {
+        const folder = this.emailsMap[emailId]?.folder;
+        return this.$emailConnectorMailBoxService.isReadOnlyFolder(folder)
+          || this.$emailConnectorMailBoxService.isDraftsFolder(folder);
+      });
+    },
+    /**
+     * The selected DRAFT rows — the rows Discard acts on, resolved from the listing
+     * rather than carried by the selection.
+     *
+     * The discard addresses a draft by its LOCAL id, which the selection does not carry
+     * -- it carries a selection key (selectionKey), whose id half is derived from that
+     * local id precisely because a draft may have no UID to be keyed by. So the keys are
+     * matched back to their rows and the rows are what is handed on; a row without a
+     * local id is not a draft and is left out.
+     *
+     * Rows, not ids, for the second reason too: the confirmation has to tell scheduled
+     * drafts from ordinary ones, and that is a property of the row.
+     *
+     * @returns {Array<Object>} the selected draft rows, in listing order
+     */
+    selectedDraftRows() {
+      const selected = new Set(this.selectedEmails);
+      return this.emails.filter(email => email.draftLocalId && selected.has(selectionKey(email)));
+    },
+    /**
+     * Whether Discard may be offered: the selection is drafts, and the listing holds a
+     * discardable row for it. Read off the rows like every other answer in this bar,
+     * which is mounted in four places and told the listed folder in only two.
+     *
+     * @returns {Boolean} true when Discard belongs on the bar
+     */
+    canDiscardSelection() {
+      return this.hasSelectedEmails
+        && this.selectedEmails.every(emailId =>
+          this.$emailConnectorMailBoxService.isDraftsFolder(this.emailsMap[emailId]?.folder))
+        && this.selectedDraftRows.length > 0;
     },
     /**
      * Whether the selection may be restored or permanently deleted.
@@ -419,10 +484,16 @@ export default {
      * The selected UIDs, for the actions whose folder is fixed server-side (restore
      * and purge out of the Trash, "Not spam" out of the Spam folder).
      *
+     * A draft key names no UID and is dropped rather than sent as a null (EXO-90438).
+     * Nothing should reach here holding one -- those three actions are offered only on
+     * Trash and Spam rows, and a draft is in neither -- so this is the belt to
+     * canApplyTrashActions' braces, in the one place a key is turned back into an id a
+     * request is addressed by.
+     *
      * @returns {Array<Number>} the UIDs
      */
     selectedIds() {
-      return this.selectedEmails.map(key => parseSelectionKey(key).id);
+      return this.selectedEmails.map(key => parseSelectionKey(key).id).filter(id => id !== null);
     },
     /**
      * The folder the selected rows are listed in -- a listing holds one folder's rows,
@@ -468,9 +539,22 @@ export default {
     emitPerFolder(event, ...before) {
       this.selectionByFolder.forEach(([folder, ids]) => this.$root.$emit(event, ...before, ids, folder));
     },
+    /**
+     * Marks the whole selection read or unread. The push and its outcome belong to the
+     * mailbox drawer, which holds the rows and shows the count the server answers.
+     *
+     * @param {Boolean} read the status to apply
+     * @returns {void}
+     */
     updateEmailsReadStatus(read) {
       this.emitPerFolder('update-email-read-status', read);
     },
+    /**
+     * Files the whole selection into the Archive. No confirmation — an archive is
+     * undone by moving the messages back.
+     *
+     * @returns {void}
+     */
     archiveEmails() {
       this.emitPerFolder('archive-email');
     },
@@ -519,8 +603,27 @@ export default {
     purgeEmails() {
       this.$root.$emit('open-purge-email-confirm-popup', this.selectedIds);
     },
+    /**
+     * Files the whole selection into the Trash. No confirmation: the Trash is where it
+     * is taken back from, and the permanent delete is the one that asks (purgeEmails).
+     * Offered twice in the bar — on an ordinary selection and on a Spam one, which is
+     * the one folder whose Delete still means this reversible move.
+     *
+     * @returns {void}
+     */
     deleteEmails() {
       this.emitPerFolder('delete-email');
+    },
+    /**
+     * Asks first, then throws the selected drafts away. The confirmation is opened
+     * from here, where the click happened, exactly as the permanent delete's is, and it
+     * is handed the ROWS: it has to name how many drafts are going and hold back the
+     * ones a scheduled send has frozen.
+     *
+     * @returns {void}
+     */
+    discardDrafts() {
+      this.$root.$emit('open-discard-drafts-confirm-popup', this.selectedDraftRows);
     },
     synchronize() {
       this.$root.$emit('synchronize-in-progress');

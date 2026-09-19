@@ -199,6 +199,27 @@ export function hasJunkActions(folder) {
 }
 
 /**
+ * Whether a folder holds unsent drafts rather than mail.
+ *
+ * A fourth answer beside the three lists above, and the reason it is its own: the
+ * Drafts folder is neither read-only nor a hidden folder with a pair of actions of its
+ * own — it is WRITABLE, and the ordinary mail actions are withheld there all the same,
+ * because none of them means anything for a message that was never sent. The server
+ * says exactly that and counts every such request as a failure
+ * (EmailBoxService#canMoveOutOf), so a client that offers Delete, Archive, "Mark as
+ * spam" or "Move to..." on a draft is offering a button that cannot work.
+ *
+ * Read by the bulk toolbar and the row menu, which is what keeps the one answer in one
+ * place: Discard is offered exactly where these four are withheld.
+ *
+ * @param {String} folder the folder a row carries; blank means INBOX
+ * @returns {Boolean} true when those rows are drafts
+ */
+export function isDraftsFolder(folder) {
+  return (folder || 'INBOX') === 'DRAFTS';
+}
+
+/**
  * Whether a row may be marked as spam: any writable folder's rows, minus the drafts —
  * exactly the rows the delete and archive are offered on.
  *
@@ -206,7 +227,7 @@ export function hasJunkActions(folder) {
  * @returns {Boolean} true when "Mark as spam" may be offered on those messages
  */
 export function canMarkAsJunk(folder) {
-  return !isReadOnlyFolder(folder) && (folder || 'INBOX') !== 'DRAFTS';
+  return !isReadOnlyFolder(folder) && !isDraftsFolder(folder);
 }
 
 /**
@@ -673,15 +694,34 @@ export function groupEmailsByThread(emails) {
  * @returns {Array<Number>} the IMAP UIDs the action applies to
  */
 export function threadIdsInFolder(email, thread) {
+  return threadRowsInFolder(email, thread).map(message => message.mailRemoteId);
+}
+
+/**
+ * The same messages as {@link threadIdsInFolder}, as ROWS rather than as UIDs.
+ *
+ * The one definition of "the messages this action applies to" lives here, and the ids
+ * above are read off it -- because a UID is not the only thing a caller needs of those
+ * messages. The SELECTION needs each row's key, which for a draft is derived from its
+ * local id and not from a UID it may not have (EXO-90438,
+ * `EmailConnectorMailBoxSelection.selectionKey`), and the row menu's Discard needs that
+ * local id itself. Reading them off a list of UIDs is what let a collapsed conversation
+ * of two drafts discard one of them, and what let every unsent draft answer to one key.
+ *
+ * @param {Object} email the row's own message -- used alone when there is no thread,
+ *   and for its folder (the acting folder) always
+ * @param {Object} thread the conversation, in either of the two shapes
+ *   {@link threadIdsInFolder} documents; null/undefined for a lone message
+ * @returns {Array<Object>} the messages the action applies to, in the acting folder
+ */
+export function threadRowsInFolder(email, thread) {
   const messages = thread?.emails || thread?.messages;
   if (!messages?.length) {
-    return [email.mailRemoteId];
+    return [email];
   }
   const actingFolder = email.folder || 'INBOX';
-  const scoped = messages
-    .filter(message => (message.folder || 'INBOX') === actingFolder)
-    .map(message => message.mailRemoteId);
-  return scoped.length ? scoped : [email.mailRemoteId];
+  const scoped = messages.filter(message => (message.folder || 'INBOX') === actingFolder);
+  return scoped.length ? scoped : [email];
 }
 
 /**
@@ -1271,8 +1311,15 @@ export function getDraftAttachmentUrl(draftLocalId, attachmentId) {
 /**
  * Discards a draft.
  *
+ * The refusal carries the HTTP status on the Error, because not every refusal means
+ * the same thing to the user: a 409 says the mail is on its way out (a scheduled send
+ * has already claimed the draft) and nothing the user does here will change that,
+ * while anything else is an ordinary failure they can retry. The callers that only
+ * ever discard one draft ignore the field and keep showing their one message.
+ *
  * @param {string} draftLocalId the draft's local id
- * @returns {Promise} resolves once the draft is gone
+ * @returns {Promise} resolves once the draft is gone; rejects with an Error carrying
+ *          `status`, the HTTP status the server answered
  */
 export function deleteDraft(draftLocalId) {
   return fetch(`/email-connector/rest/email-box/drafts/${encodeURIComponent(draftLocalId)}`, {
@@ -1305,6 +1352,74 @@ export function broadcastOpenEmail() {
       throw new Error('Error when broadcasting an email opening');
     }
   });
+}
+
+// How many discards travel at once.
+//
+// A discard opens its own IMAP session server-side: removeServerDraftCopy connects,
+// removes the copy in the Drafts folder and closes, once per draft. This bound caps how
+// many of those exist AT ONE MOMENT; it does not reduce how many there are, which is
+// one per draft as long as the endpoint is per-draft. A server-side bulk discard
+// sharing one store is the only thing that would, and that is a decision for the
+// add-on's owner, not for this loop.
+//
+// Four is a judgement, not a measurement: comfortably under the concurrent-connection
+// limit of the providers this add-on connects to, on top of whatever the user's sync
+// job holds, and enough that a mailbox clean-up does not feel serialised. A provider
+// that throttles will surface as the ratio the alert shows ("4 of 6 discarded").
+const DISCARD_CONCURRENCY = 4;
+
+/**
+ * Discards several drafts — the bulk Discard of the selection toolbar.
+ *
+ * There is no bulk endpoint on purpose: discarding a draft is not a folder move but a
+ * per-draft operation, taken under that draft's own lock, that removes the copy in the
+ * mail server's Drafts folder before the local row (EmailBoxService#deleteDraft). The
+ * loop here is the honest shape of that, bounded so a large selection does not open one
+ * IMAP session per draft at once.
+ *
+ * Nothing is aborted when one draft fails: the remaining ones are still the user's to
+ * throw away, and the outcome says how many of each kind there were so the caller can
+ * report "4 of 6" rather than "it failed".
+ *
+ * @param {Array<String>} draftLocalIds the drafts' local ids; blanks are ignored
+ * @param {Number} concurrency how many requests travel at once
+ * @returns {Promise<Object>} resolves with { discarded, failed, conflicted } — the last
+ *          being the drafts the server refused with a 409 because their scheduled send
+ *          is already under way
+ */
+export function discardDrafts(draftLocalIds, concurrency = DISCARD_CONCURRENCY) {
+  const queue = (draftLocalIds || []).filter(draftLocalId => !!draftLocalId);
+  const outcome = { discarded: 0, failed: 0, conflicted: 0 };
+  if (!queue.length) {
+    return Promise.resolve(outcome);
+  }
+  let next = 0;
+  // A worker pulls the next id off the queue until there is none left, rather than a
+  // loop awaiting each request: the same bound, without serialising the batch and
+  // without holding a whole selection's promises open at once.
+  const runNext = () => {
+    if (next >= queue.length) {
+      return Promise.resolve();
+    }
+    const draftLocalId = queue[next++];
+    return deleteDraft(draftLocalId)
+      .then(() => {
+        outcome.discarded++;
+      }, error => {
+        if (error?.status === 409) {
+          outcome.conflicted++;
+        } else {
+          outcome.failed++;
+        }
+      })
+      .then(runNext);
+  };
+  const workers = [];
+  for (let worker = 0; worker < Math.min(concurrency, queue.length); worker++) {
+    workers.push(runNext());
+  }
+  return Promise.all(workers).then(() => outcome);
 }
 
 export function broadcastAccessWebmail() {

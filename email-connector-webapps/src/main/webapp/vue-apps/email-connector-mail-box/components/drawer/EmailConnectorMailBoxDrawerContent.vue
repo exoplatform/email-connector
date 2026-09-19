@@ -125,6 +125,9 @@ export default {
       // A row the server has not listed yet (refreshPending: one an Undo put back, one
       // a move filed here) is not selectable: it carries a UID the server has
       // renumbered, or a placeholder, and any action on it would be counted a failure.
+      //
+      // By selection key rather than by UID, which a draft may not have (EXO-90438):
+      // outside Drafts the key's id half is that UID, unchanged.
       const newSelection = value ? this.emails.filter(e => !e.refreshPending).map(selectionKey) : [];
       this.$emit('update:selected-emails', newSelection);
     }

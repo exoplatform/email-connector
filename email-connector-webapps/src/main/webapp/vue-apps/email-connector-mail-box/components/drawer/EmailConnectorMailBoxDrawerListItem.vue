@@ -428,16 +428,20 @@ export default {
     },
     /**
      * What selecting the row selects: the conversation's messages in the row's own
-     * folder -- the ones its ⋮ menu's "Select" and its actions reach (threadIdsInFolder)
-     * -- keyed by that folder. A row of a search list may gather a conversation's hits
+     * folder -- the ones its ⋮ menu's "Select" and its actions reach (threadRowsInFolder)
+     * -- each under its own key. A row of a search list may gather a conversation's hits
      * from several folders; the others are rows of their own folders' concern.
+     *
+     * Off the ROWS rather than off their UIDs (EXO-90438): a key is not always made of a
+     * UID. A DRAFT may have none at all -- and when the mailbox does not upload drafts to
+     * the mail server none of them has one, so keyed by UID every unsent draft answered
+     * to DRAFTS:null and ticking one lit them all. The row carries the local id the key
+     * is built from; a list of UIDs has thrown it away.
      *
      * @returns {Array<String>} the selection keys
      */
     selectionKeys() {
-      const folder = this.email.folder || 'INBOX';
-      return this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread)
-        .map(mailRemoteId => selectionKey({ mailRemoteId, folder }));
+      return this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread).map(selectionKey);
     },
     opened() {
       return this.openedEmailId === this.email.mailRemoteId;
@@ -487,10 +491,18 @@ export default {
     },
     emitSelect(selected) {
       // A thread selects/deselects as a whole, in the row's folder (see selectionKeys):
-      // one select-email per message, with that folder.
+      // one select-email per message, with that folder -- and with the draft's own local
+      // id when it has one, because that, not a UID it may not have, is what keys it
+      // (EXO-90438). The event names the MESSAGE; the drawer builds the key from it, so
+      // a key is still built in the one place that knows how.
       const folder = this.email.folder || 'INBOX';
-      this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread)
-        .forEach(emailId => this.$root.$emit('select-email', { emailId, folder, selected }));
+      this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread)
+        .forEach(message => this.$root.$emit('select-email', {
+          emailId: message.mailRemoteId,
+          draftLocalId: message.draftLocalId,
+          folder,
+          selected,
+        }));
     },
     // Favorite/unfavorite the whole row, i.e. every listed message of the thread —
     // matching how the row's read/unread action treats a conversation.
@@ -548,12 +560,17 @@ export default {
       }
     },
     openActionMenuDrawer() {
-      // Every action in that menu — reply, forward, archive, delete, categorize —
-      // addresses a message by its IMAP UID, which a draft may not have yet, and none
-      // of them means anything for an unsent message anyway.
-      if (this.isDraft) {
-        return;
-      }
+      // The long press is a phone's only way into the row menu — the ⋮ is not rendered
+      // there (see the template) — so what it may open is what the menu has to offer.
+      //
+      // For a draft that used to be nothing: every action in that menu addressed a
+      // message by its IMAP UID, which a draft may not have, and none of them meant
+      // anything for an unsent message. Discard changed that (EXO-90438): it addresses
+      // the draft by its local id and is the one action that does mean something here,
+      // so a draft row opens the menu again — with Discard, and with the Select that
+      // leads to the same Discard on the bar. The menu itself withholds the rest on a
+      // draft (canMove, canFavorite, inDrafts there), which is why the refusal does not
+      // need repeating in this guard.
       if (!this.selectMode && !this.isSwiping) {
         this.$root.$emit('open-email-action-menu-drawer', this.email, this.thread);
       }

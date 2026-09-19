@@ -665,8 +665,29 @@ export default {
     // is emitted, where the user clicked — by the time it arrives here the answer is in.
     this.onRestoreEmail = (emails) => this.applyListAction(emails, () => this.restoreEmails(emails));
     this.onPurgeEmail = (emails) => this.applyListAction(emails, () => this.purgeEmails(emails));
+    // Discard, the Drafts folder's own destructive action (EXO-90438), wired like the
+    // permanent delete: the confirmation is asked before the event is emitted, where
+    // the user clicked, so by the time it arrives here the answer is in.
+    //
+    // NOT through applyListAction, which the mail actions above share: everything that
+    // helper does afterwards -- the placeholder (canDisplaySelectEmailPlaceHolder) and
+    // the next row to open (openNextAfterRemoval) -- reads its argument as a list of
+    // IMAP UIDs, and what a discard carries is a list of LOCAL draft ids. Handing them
+    // over would have the drawer look for messages at those numbers. There is nothing
+    // to lose by staying out: a draft has no reader to close -- clicking one opens the
+    // composer -- so there is nothing on the right left showing something that is gone.
+    this.onDiscardDrafts = (draftLocalIds) => {
+      this.discardDrafts(draftLocalIds);
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return;
+      }
+      if (this.selectMode) {
+        this.cancelSelectMode();
+      }
+    };
     this.$root.$on('restore-email', this.onRestoreEmail);
     this.$root.$on('purge-email', this.onPurgeEmail);
+    this.$root.$on('discard-drafts', this.onDiscardDrafts);
     // The two Junk actions, wired the same way. "Mark as spam" leaves from any
     // writable folder, "Not spam" from the Spam listing; a Delete out of Spam is the
     // ordinary delete-email above, addressed to the row's own folder.
@@ -773,14 +794,17 @@ export default {
     this.$root.$on('attachment-download-finished', () => {
       this.activeDownload = null;
     });
-    this.$root.$on('select-email', ({ emailId, folder, selected }) => {
+    this.$root.$on('select-email', ({ emailId, draftLocalId, folder, selected }) => {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return;
       }
       this.selectMode = true;
-      // Kept by folder and UID (EXO-90416): in a list of search results one number may
-      // be two messages, and ticking one must not tick the other.
-      const key = selectionKey({ mailRemoteId: emailId, folder });
+      // Kept by folder and by the id the message is named by there (EXO-90416,
+      // EXO-90438): in a list of search results one UID may be two messages and ticking
+      // one must not tick the other, and an unsent draft has no UID to be named by at
+      // all -- keyed by that absent number, every one of them was the same row. The
+      // event names the message; the key is built here, in the one place that builds one.
+      const key = selectionKey({ mailRemoteId: emailId, draftLocalId, folder });
       if (selected) {
         if (!this.selectedEmails.includes(key)) {
           this.selectedEmails.push(key);
@@ -811,6 +835,7 @@ export default {
     this.$root.$off('archive-email', this.onArchiveEmail);
     this.$root.$off('restore-email', this.onRestoreEmail);
     this.$root.$off('purge-email', this.onPurgeEmail);
+    this.$root.$off('discard-drafts', this.onDiscardDrafts);
     this.$root.$off('junk-email', this.onJunkEmail);
     this.$root.$off('not-junk-email', this.onNotJunkEmail);
     this.$root.$off('move-email', this.onMoveEmail);
@@ -2007,13 +2032,27 @@ export default {
         }
         return false;
       });
-      this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) =>
-        this.$emailConnectorMailBoxService.updateEmailsReadStatus(ids, read, ownFolder));
+      // The answer's count is shown, like every other action's (EXO-90438). It used to
+      // be dropped on the floor: the row was flipped here optimistically, the server
+      // reverted its own copy of the ones it could not push, and the interface went on
+      // showing a state the next synchronization silently took back -- the same silence
+      // the Drafts Delete was reported for, on the one action that had not yet been
+      // wired to alertOnActionFailures. A rejected request is the whole batch failing,
+      // which is also what stops it from being an unhandled rejection in the console.
+      //
+      // Once per request, and a read status may take two: the listed rows go folder by
+      // folder (byOwnFolder), and the search hits the listing does not hold go on their
+      // own, below. A request that succeeds says nothing, so nothing is said twice.
+      const pushReadStatus = (ids, ownFolder) =>
+        this.$emailConnectorMailBoxService.updateEmailsReadStatus(ids, read, ownFolder)
+          .then(result => result?.failedUpdates ?? 0, () => ids.length)
+          .then(failures => this.alertOnActionFailures(failures, read && 'read' || 'unread'));
+      this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) => pushReadStatus(ids, ownFolder));
       if (unlisted.length) {
         this.searchServerResults
           .filter(result => unlisted.includes(result.mailRemoteId) && (result.folder || 'INBOX') === folder)
           .forEach(result => this.$set(result, 'read', read));
-        this.$emailConnectorMailBoxService.updateEmailsReadStatus(unlisted, read, folder);
+        pushReadStatus(unlisted, folder);
       }
     },
     /**
@@ -2054,6 +2093,85 @@ export default {
         Promise.resolve(this.$emailConnectorMailBoxService.getSubcategoryIds(category.id))
           .catch(() => null)
           .then(ids => this.$set(this.categorySubtrees, category.id, ids?.length ? ids : [category.id]))));
+    },
+    /**
+     * Throws the selected drafts away — the Drafts folder's own destructive action
+     * (EXO-90438), where Delete, Archive, "Mark as spam" and "Move to..." are withheld
+     * because the server refuses all four on a draft and counts them as failures.
+     *
+     * One request per draft, bounded (see the service's discardDrafts): discarding is a
+     * per-draft operation taken under that draft's own lock, not a folder move, so
+     * there is no bulk endpoint to prefer to it.
+     *
+     * The list is re-read ONCE when the whole batch has answered, rather than the rows
+     * being hidden as the mail actions hide theirs: a draft that has never been pushed
+     * to the mail server carries no UID, and the optimistic-hiding machinery here is
+     * keyed by UID throughout. Re-reading is both correct and honest — what the user
+     * sees afterwards is what the server holds.
+     *
+     * Through refresh-email-box rather than by calling loadEmailBox() here, and that is
+     * not a detail: a conversation open beside the list renders its draft strip from
+     * its own fetched messages, and that event is the ONE signal it reloads them on
+     * (EmailConnectorMailBoxDrawerThreadContent) — which is why the composer's Discard
+     * and the strip's own both emit it. Calling loadEmailBox() directly refreshed the
+     * listing and left the strip showing a draft that no longer exists, with a Resume
+     * button that would write it back under the same local id.
+     *
+     * @param {Array<String>} draftLocalIds the drafts to discard
+     * @returns {void}
+     */
+    discardDrafts(draftLocalIds = []) {
+      if (!draftLocalIds.length) {
+        return;
+      }
+      this.$emailConnectorMailBoxService.discardDrafts(draftLocalIds)
+        .then(outcome => this.alertOnDiscardOutcome(outcome, draftLocalIds.length))
+        .finally(() => this.$root.$emit('refresh-email-box'));
+    },
+    /**
+     * Says what became of a bulk discard, and says nothing when everything went.
+     *
+     * A partial failure is reported as a ratio rather than as a bare count of failures:
+     * "4 of 6 discarded" is what the user needs to hear when they are looking at a list
+     * that still holds two rows they asked to be rid of, and a count on its own reads as
+     * if the whole thing had failed.
+     *
+     * A draft the server refused with a 409 is counted and named apart: it means the
+     * mail is already on its way out, which is not something a retry fixes, and telling
+     * the user to try again would be wrong. When that is the ONLY thing that happened,
+     * it is said on its own — "1 draft cannot be discarded" in front of it would be a
+     * second sentence about the same draft.
+     *
+     * No "See" link, unlike alertOnActionFailures: that one offers to reload because it
+     * leaves the listing showing rows the server has put back, and this one has already
+     * re-read the list by the time it is read.
+     *
+     * @param {Object} outcome the service's { discarded, failed, conflicted }
+     * @param {Number} total how many drafts were sent
+     * @returns {void}
+     */
+    alertOnDiscardOutcome({ discarded = 0, failed = 0, conflicted = 0 } = {}, total = 0) {
+      if (failed + conflicted <= 0) {
+        return;
+      }
+      const sendingKey = `emailConnector.mailBox.list.drawer.discard.${conflicted === 1 && 'sending' || 'sendings'}.error`;
+      const sending = conflicted > 0 && this.$t(sendingKey, { 0: conflicted });
+      let message;
+      if (discarded === 0 && failed === 0) {
+        message = sending;
+      } else if (discarded > 0) {
+        message = this.$t('emailConnector.mailBox.list.drawer.discard.partial.error', { 0: discarded, 1: total });
+      } else {
+        const key = `emailConnector.mailBox.list.drawer.discard.${failed === 1 && 'email' || 'emails'}.error`;
+        message = this.$t(key, { 0: failed });
+      }
+      if (sending && message !== sending) {
+        message = `${message} ${sending}`;
+      }
+      document.dispatchEvent(new CustomEvent('alert-message', {detail: {
+        alertType: 'error',
+        alertMessage: message,
+      }}));
     },
     /**
      * The folder a message id belongs to — the ROW's own, which is the only one the
@@ -2533,10 +2651,12 @@ export default {
      * partial-failure story is told: a selection can fail halfway, the earlier messages
      * having already moved, so the count is what is shown rather than "it failed".
      *
-     * One alert for all four rather than a copy per action, because the count they are
-     * reporting only recently started meaning the same thing in all of them: a delete or
-     * an archive the mail server did not perform used to be counted as nothing at all
-     * and shown as a success (EXO-89367). The four i18n keys differ only by the verb.
+     * One alert for all of them rather than a copy per action, because the count they
+     * are reporting only recently started meaning the same thing in all of them: a
+     * delete or an archive the mail server did not perform used to be counted as nothing
+     * at all and shown as a success (EXO-89367). The i18n keys differ only by the verb,
+     * which is what made read/unread cheap to add once it turned out to be the last
+     * action still throwing its own count away (EXO-90438).
      *
      * Nothing is put back into the listing on failure. The failed rows are back in the
      * database (the backend re-created them), so the honest way to see them again is the
@@ -2545,7 +2665,8 @@ export default {
      *
      * @param {Number} failures how many messages the action could not be applied to
      * @param {String} action 'delete', 'archive', 'restore', 'purge', 'junk', 'notJunk',
-     *        'move', 'undoMove' or 'categorize', which picks the message
+     *        'move', 'undoMove', 'categorize', 'read' or 'unread', which picks the
+     *        message
      * @returns {void}
      */
     alertOnActionFailures(failures, action) {
