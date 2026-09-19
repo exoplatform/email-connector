@@ -146,6 +146,29 @@ export function rescheduleEmail(draftLocalId, scheduledDate, timeZone) {
 }
 
 /**
+ * Replaces a scheduled mail's content in place, and its date when one is given, in one
+ * step the server runs in one transaction (PUT /scheduled/{id}/content): the mail stays
+ * scheduled (EXO-90434).
+ *
+ * @param {String} draftLocalId the draft's local id
+ * @param {Object} draft the edited mail: recipients, subject, body, new files as uploads
+ * @param {Array<Number>} removedAttachmentIds its stored files to take off
+ * @param {Number} scheduledDate a new instant, epoch milliseconds, or null to keep it
+ * @param {String} timeZone the zone it was chosen in, with a new instant
+ * @returns {Promise<Object>} the scheduled mail
+ */
+export function updateScheduledEmailContent(draftLocalId, draft, removedAttachmentIds, scheduledDate, timeZone) {
+  return fetch(`${SCHEDULED_REST}/${encodeURIComponent(draftLocalId)}/content`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({ draft, removedAttachmentIds: removedAttachmentIds || [], scheduledDate, timeZone }),
+  }).then(resp => (resp?.ok ? resp.json() : refusal(resp, 'Error when updating the scheduled email')));
+}
+
+/**
  * Cancels a schedule: the mail goes back to Drafts, its content kept
  * (DELETE /scheduled/{id}).
  *

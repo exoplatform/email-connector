@@ -354,73 +354,175 @@ describe('scheduling runs Send\'s checks, then stores the draft and freezes it (
   });
 });
 
-describe('Edit takes a mail out of its schedule first, Gmail\'s way (EXO-90434)', () => {
-  const DRAFT = { draftLocalId: 'draft-7', subject: 'Later', to: [{ address: 'bob@host' }], content: { body: '<p>x</p>', attachments: [] } };
+describe('Edit keeps a mail scheduled until Update, Outlook\'s way (EXO-90434)', () => {
+  const DATE = Date.UTC(2026, 9, 1, 6, 0);
+  const DRAFT = {
+    draftLocalId: 'draft-7',
+    threadId: 'thread-7',
+    subject: 'Later',
+    to: [{ address: 'bob@host' }],
+    content: { body: '<p>x</p>', attachments: [{ id: 5, name: 'kept.pdf', mimeType: 'application/pdf', size: 3 }] },
+    scheduled: true,
+    scheduledDate: DATE,
+    scheduledTimeZone: 'Europe/Paris',
+    draftRevision: 4,
+  };
 
-  it('cancels the schedule, then opens the draft from Drafts with its time ready and the banner', async () => {
-    const date = Date.now() + 2 * DAY_MS;
-    const { wrapper, service } = await mountComposer({
-      cancelScheduledEmail: jest.fn(() => Promise.resolve()),
-      getEmailBox: jest.fn(() => Promise.resolve({ emails: [{ draftLocalId: 'other' }, DRAFT] })),
+  /**
+   * Opens the composer on the scheduled mail, as the reader hands it over.
+   *
+   * @param {Object} answers the mailbox service's functions under test
+   * @returns {Promise<Object>} {wrapper, service, emitted}
+   */
+  async function editing(answers = {}) {
+    const mounted = await mountComposer({
+      updateScheduledEmailContent: jest.fn((id, draft, removed, date, zone) => Promise.resolve({
+        draftLocalId: id, scheduledDate: date || DATE, timeZone: zone || 'Europe/Paris', status: 'SCHEDULED',
+      })),
+      sendScheduledEmailNow: jest.fn(() => Promise.resolve({ status: 'SENT' })),
+      ...answers,
     });
-    await wrapper.setData({ newEmailDrawer: false });
-    await wrapper.vm.editScheduledEmail({ draftLocalId: 'draft-7', scheduledDate: date });
+    await mounted.wrapper.setData({ newEmailDrawer: false });
+    await mounted.wrapper.vm.editScheduledEmail({ draftLocalId: 'draft-7', scheduledDate: DATE, timeZone: 'Europe/Paris', draft: DRAFT });
+    await mounted.wrapper.vm.$nextTick();
+    await mounted.wrapper.vm.$nextTick();
+    mounted.emitted.length = 0;
+    return mounted;
+  }
 
-    expect(service.cancelScheduledEmail).toHaveBeenCalledWith('draft-7');
-    expect(service.cancelScheduledEmail.mock.invocationCallOrder[0]).toBeLessThan(service.getEmailBox.mock.invocationCallOrder[0]);
-    expect(service.getEmailBox).toHaveBeenCalledWith('DRAFTS');
+  const REQUESTS = ['cancelScheduledEmail', 'saveDraft', 'deleteDraft', 'addDraftAttachment', 'removeDraftAttachment',
+    'updateScheduledEmailContent', 'sendScheduledEmailNow', 'sendDraft', 'sendEmail', 'scheduleDraft'];
+  const requestsMade = service => REQUESTS.filter(name => service[name].mock.calls.length > 0);
+
+  it('opens the mail still scheduled: no cancel, "Scheduled for {date}", Update, Send now and Change time', async () => {
+    const { wrapper, service } = await editing();
+    expect(requestsMade(service)).toEqual([]);
     expect(wrapper.vm.newEmailDrawer).toBe(true);
-    expect(wrapper.vm.draftSession.localId).toBe('draft-7');
+    expect(wrapper.vm.title).toBe('emailConnector.mailBox.newEmail.drawer.scheduled.title');
+    expect(wrapper.find('.scheduled-edit-banner').text())
+      .toBe(`emailConnector.mailBox.newEmail.drawer.schedule.scheduledFor|date:${DATE}`);
+    const button = wrapper.find('.composer-send-button');
+    expect(button.text()).toBe('emailConnector.mailBox.newEmail.drawer.scheduled.update');
+    expect(button.attributes('disabled')).toBe('disabled');
+    expect(wrapper.find('.scheduled-edit-send-now').exists()).toBe(true);
+    expect(wrapper.find('.schedule-send-action').text()).toContain('emailConnector.mailBox.newEmail.drawer.scheduled.changeTime');
+  });
+
+  it('reads the mail from its conversation when the caller does not hold its row', async () => {
+    const { wrapper, service } = await mountComposer({ getThreadByThreadId: jest.fn(() => Promise.resolve([{ draftLocalId: 'x' }, DRAFT])) });
+    await wrapper.vm.editScheduledEmail({ draftLocalId: 'draft-7', scheduledDate: DATE, threadId: 'thread-7' });
+    expect(service.getThreadByThreadId).toHaveBeenCalledWith('thread-7', 'DRAFTS');
     expect(wrapper.vm.email.subject).toBe('Later');
-    expect(wrapper.vm.previousScheduledDate).toBe(date);
-    await wrapper.vm.$nextTick();
-    expect(wrapper.find('.unscheduled-banner').text()).toBe('emailConnector.mailBox.newEmail.drawer.schedule.unscheduled');
-    // The picker starts on the previous time.
-    await wrapper.setData({ scheduleMode: true });
-    expect(wrapper.find('.picker-stub').exists()).toBe(true);
-    expect(wrapper.find('.picker-stub').vm.$props.value).toBe(date);
+    expect(service.cancelScheduledEmail).not.toHaveBeenCalled();
   });
 
-  it('opens nothing while the mail is being sent, and says why', async () => {
-    const { wrapper, service, emitted } = await mountComposer({
-      cancelScheduledEmail: jest.fn(() => {
-        const error = new Error('emailConnector.scheduled.sending');
-        error.code = 'emailConnector.scheduled.sending';
-        error.status = 409;
-        return Promise.reject(error);
-      }),
-    });
-    await wrapper.setData({ newEmailDrawer: false });
-    await wrapper.vm.editScheduledEmail({ draftLocalId: 'draft-7', scheduledDate: 1 });
+  it('closes without a change leaving it exactly as it was: no request at all', async () => {
+    const { wrapper, service } = await editing();
+    expect(wrapper.find('[data-slot]').element.parentElement.getAttribute('confirm-close')).toBeNull();
+    wrapper.vm.close();
+    await flush();
+    expect(requestsMade(service)).toEqual([]);
+    expect(wrapper.vm.scheduledEdit).toBeNull();
+  });
 
-    expect(service.getEmailBox).not.toHaveBeenCalled();
+  it('saves nothing while edited -- no autosave, no attach, no detach -- and asks before closing over the edits', async () => {
+    const { wrapper, service } = await editing();
+    await wrapper.setData({ email: { ...wrapper.vm.email, subject: 'Sooner' } });
+    expect(wrapper.vm.localSaveTimer).toBeNull();
+    expect(await wrapper.vm.persistAttachment({ uploadId: 'up-1', name: 'new.pdf', mimeType: 'application/pdf', size: 2 })).toBeNull();
+    await wrapper.vm.unpersistAttachment({ id: 5, stored: true });
+    expect(wrapper.vm.scheduledEdit.removedIds).toEqual([5]);
+    expect(wrapper.vm.scheduledChanged).toBe(true);
+    expect(wrapper.find('.composer-send-button').attributes('disabled')).toBeUndefined();
+    expect(wrapper.find('[data-slot]').element.parentElement.getAttribute('confirm-close')).toBe('true');
+    wrapper.vm.saveDraft(true);
+    expect(requestsMade(service)).toEqual([]);
+
+    // Discard changes: the edits go, the mail stays as it was.
+    wrapper.vm.discardScheduledChanges();
+    await flush();
+    expect(requestsMade(service)).toEqual([]);
     expect(wrapper.vm.newEmailDrawer).toBe(false);
-    expect(alerts(emitted)).toEqual([['emailConnector.scheduled.sending', 'error']]);
   });
 
-  it('still opens the draft when its schedule was already gone', async () => {
-    const { wrapper } = await mountComposer({
-      cancelScheduledEmail: jest.fn(() => Promise.reject(Object.assign(new Error('gone'), { status: 404 }))),
-      getEmailBox: jest.fn(() => Promise.resolve({ emails: [DRAFT] })),
+  it('Update sends the edits in one atomic call with the same date, files taken off and added with them', async () => {
+    const { wrapper, service, emitted } = await editing();
+    await wrapper.setData({
+      email: { ...wrapper.vm.email, subject: 'Sooner' },
+      attachments: [{ key: 'u', uploadId: 'up-1', name: 'new.pdf', mimeType: 'application/pdf', size: 2 }],
     });
-    await wrapper.vm.editScheduledEmail({ draftLocalId: 'draft-7', scheduledDate: 1 });
-    expect(wrapper.vm.draftSession.localId).toBe('draft-7');
+    await wrapper.vm.unpersistAttachment({ id: 5, stored: true });
+    await wrapper.find('.composer-send-button').trigger('click');
+    await flush();
+
+    expect(requestsMade(service)).toEqual(['updateScheduledEmailContent']);
+    const [id, draft, removed, date, zone] = service.updateScheduledEmailContent.mock.calls[0];
+    expect([id, removed, date, zone]).toEqual(['draft-7', [5], null, null]);
+    expect(draft.subject).toBe('Sooner');
+    expect(draft.to).toEqual([{ address: 'bob@host' }]);
+    expect(draft.attachments).toEqual([{ uploadId: 'up-1', name: 'new.pdf', mimeType: 'application/pdf', size: 2 }]);
+    expect(alerts(emitted)).toEqual([[`emailConnector.mailBox.newEmail.drawer.scheduled.updated|date:${DATE}`, 'success']]);
+    expect(emitted.map(event => event[0])).toEqual(expect.arrayContaining(['scheduled-emails-changed', 'refresh-email-box']));
+    expect(wrapper.vm.newEmailDrawer).toBe(false);
   });
 
-  it('never resumes a draft still scheduled in place: it is frozen', async () => {
+  it('Change time sends the edits with the new date, in the same one call', async () => {
+    const { wrapper, service } = await editing();
+    await wrapper.find('.schedule-send-action').trigger('click');
+    expect(wrapper.find('.picker-stub').vm.$props.value).toBe(DATE);
+    const later = DATE + DAY_MS;
+    await wrapper.vm.onScheduleConfirmed(later, 'UTC');
+    expect(requestsMade(service)).toEqual(['updateScheduledEmailContent']);
+    expect(service.updateScheduledEmailContent.mock.calls[0].slice(3)).toEqual([later, 'UTC']);
+    expect(service.scheduleDraft).not.toHaveBeenCalled();
+  });
+
+  it('Send now writes the edits first, then sends; unchanged, it only sends', async () => {
+    const { wrapper, service, emitted } = await editing();
+    await wrapper.setData({ email: { ...wrapper.vm.email, subject: 'Now' } });
+    await wrapper.find('.scheduled-edit-send-now').trigger('click');
+    await flush();
+    expect(requestsMade(service)).toEqual(['updateScheduledEmailContent', 'sendScheduledEmailNow']);
+    expect(service.updateScheduledEmailContent.mock.invocationCallOrder[0])
+      .toBeLessThan(service.sendScheduledEmailNow.mock.invocationCallOrder[0]);
+    expect(alerts(emitted)).toEqual([['emailConnector.mailBox.scheduled.sendNow.success', 'success']]);
+
+    const unchanged = await editing();
+    await unchanged.wrapper.vm.sendScheduledNow();
+    expect(requestsMade(unchanged.service)).toEqual(['sendScheduledEmailNow']);
+  });
+
+  it('a mail that went out meanwhile (409) keeps the edits as a new draft, and says so', async () => {
+    const conflict = Object.assign(new Error('emailConnector.scheduled.sending'), { status: 409, code: 'emailConnector.scheduled.sending' });
+    const { wrapper, service, emitted } = await editing({ updateScheduledEmailContent: jest.fn(() => Promise.reject(conflict)) });
+    await wrapper.setData({ email: { ...wrapper.vm.email, subject: 'Too late' } });
+    await wrapper.vm.updateScheduled();
+    await flush();
+
+    expect(alerts(emitted)).toEqual([['emailConnector.mailBox.newEmail.drawer.scheduled.alreadySent', 'warning']]);
+    expect(wrapper.vm.scheduledEdit).toBeNull();
+    expect(wrapper.vm.newEmailDrawer).toBe(true);
+    expect(service.saveDraft).toHaveBeenCalledTimes(1);
+    const saved = service.saveDraft.mock.calls[0][0];
+    expect(saved.draftLocalId).toBeFalsy();
+    expect(saved.subject).toBe('Too late');
+    expect(wrapper.vm.draftSession.localId).toBe('draft-1');
+  });
+
+  it('never resumes a draft still scheduled as an ordinary draft: it is frozen', async () => {
     const { wrapper, emitted } = await mountComposer();
     await wrapper.setData({ newEmailDrawer: false });
-    wrapper.vm.resume({ ...DRAFT, scheduled: true });
-
+    wrapper.vm.resume(DRAFT);
     expect(wrapper.vm.newEmailDrawer).toBe(false);
     expect(alerts(emitted)).toEqual([['emailConnector.scheduled.locked', 'info']]);
   });
 
-  it('forgets the previous time once the composer opens on something else', async () => {
-    const { wrapper } = await mountComposer();
-    await wrapper.setData({ previousScheduledDate: 123 });
-    wrapper.vm.resume(DRAFT);
-    expect(wrapper.vm.previousScheduledDate).toBeNull();
+  it('forgets the scheduled mail once the composer opens on something else', async () => {
+    const { wrapper } = await editing();
+    wrapper.vm.resume({ ...DRAFT, scheduled: false });
+    expect(wrapper.vm.scheduledEdit).toBeNull();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('.composer-send-button').text()).toBe('emailConnector.mailBox.newEmail.drawer.send.label');
   });
 });
 
