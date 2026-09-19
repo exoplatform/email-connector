@@ -780,13 +780,22 @@ export default {
       return deduped;
     },
     // Opening a conversation reads all of its messages, via the existing bulk endpoint.
+    //
+    // The conversation's own rows, not every row whose number it holds -- and sent per
+    // folder, with the folder: the list may be a search's, whose rows come from several
+    // folders, and a bare UID is resolved in the listed folder, where the same number is
+    // another message that would be marked read on the mail server (EXO-90416).
     markThreadRead() {
-      const unread = (this.emails || [])
-        .filter(e => this.threadMailRemoteIds.includes(e.mailRemoteId) && !e.read)
-        .map(e => e.mailRemoteId);
-      if (unread.length) {
-        this.$root.$emit('update-email-read-status', true, unread);
-      }
+      const key = this.email && this.threadKey(this.email);
+      const conversation = (this.emails || []).filter(e => this.threadKey(e) === key);
+      const rows = conversation.length ? conversation : (this.emails || []).filter(e => this.email
+        && e.mailRemoteId === this.email.mailRemoteId && (e.folder || 'INBOX') === (this.email.folder || 'INBOX'));
+      const unreadByFolder = new Map();
+      rows.filter(e => !e.read).forEach(e => {
+        const folder = e.folder || 'INBOX';
+        unreadByFolder.set(folder, (unreadByFolder.get(folder) || []).concat(e.mailRemoteId));
+      });
+      unreadByFolder.forEach((unread, folder) => this.$root.$emit('update-email-read-status', true, unread, folder));
     },
     // Reveal a folded run: its messages render as individual strips from now on.
     revealBubble(bubble) {
