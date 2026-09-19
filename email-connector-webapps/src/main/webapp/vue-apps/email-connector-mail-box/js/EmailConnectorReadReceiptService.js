@@ -85,6 +85,8 @@ export function answerReadReceiptAutomatically(email) {
  * What the reader does with a refused answer: {prompt, messageKey, alertType}.
  * <ul>
  * <li>409: the request was answered elsewhere; the banner goes, silently.</li>
+ * <li>404: the message is gone (moved or deleted since it was shown); nothing is left
+ *   to answer here, and the banner goes, silently.</li>
  * <li>400 askFirst: the server will not answer on its own; the banner shows.</li>
  * <li>400 notAllowed / notRequested: nothing to answer; the banner goes, with a word.</li>
  * <li>500 unconfirmed: the receipt may be out and is not sent again; the banner goes.</li>
@@ -98,7 +100,7 @@ export function answerReadReceiptAutomatically(email) {
  */
 export function readReceiptOutcome(error, currentPrompt) {
   const code = error?.code;
-  if (error?.status === 409) {
+  if (error?.status === 409 || error?.status === 404) {
     return { prompt: 'NONE', messageKey: null, alertType: null };
   }
   if (code === ASK_FIRST) {
