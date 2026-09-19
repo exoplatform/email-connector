@@ -17,16 +17,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <!-- The "Scheduled" view (EXO-90434), in place of a folder's list: the mails waiting
        to be sent at a date, soonest first, read from their own endpoint -- they are
-       drafts, frozen, and no folder listing holds them. -->
+       drafts, frozen, and no folder listing holds them. On the pane's own background,
+       like a folder's rows (EXO-90415): nothing here paints a white surface over it. No
+       loading bar of its own either (EXO-90412): what it waits on is told to the drawer
+       (the loading event), whose header bar is the only one. -->
   <div class="scheduled-email-list">
-    <v-progress-linear
-      v-if="loading && !items.length"
-      color="primary"
-      height="2"
-      indeterminate />
     <v-list
       v-if="items.length"
-      class="py-0"
+      class="py-0 transparent"
       dense>
       <template v-for="(scheduled, index) in items">
         <v-divider v-if="index > 0" :key="`divider-${scheduled.draftLocalId}`" />
@@ -117,7 +115,7 @@ export default {
     // than derived from the rows' number, which a dropped duplicate leaves off a page
     // boundary -- and the server floors an offset to its page.
     pagesRead: 0,
-    // The mails an action is running on: their menu waits, a bar says so.
+    // The mails an action is running on: their menu waits, the drawer's bar says so.
     busyIds: [],
     rescheduleDialog: false,
     rescheduled: null,
@@ -125,9 +123,26 @@ export default {
     // The question the confirmation dialog is asking: {title, message, okLabel, run}.
     confirmation: null,
   }),
+  computed: {
+    /**
+     * Whether the view is waiting on the server: a read, an action on a row, a
+     * reschedule. Told to the drawer, whose header bar shows it (EXO-90412).
+     *
+     * @returns {Boolean} true while something is on its way
+     */
+    waiting() {
+      return this.loading || this.rescheduling || this.busyIds.length > 0;
+    },
+  },
   watch: {
     signal() {
       this.reload();
+    },
+    waiting: {
+      immediate: true,
+      handler(waiting) {
+        this.$emit('loading', waiting);
+      },
     },
   },
   created() {
@@ -139,6 +154,8 @@ export default {
   },
   beforeDestroy() {
     this.$root.$off('scheduled-emails-changed', this.reload);
+    // Gone with its wait: the drawer's bar must not stay on for a list nobody sees.
+    this.$emit('loading', false);
   },
   methods: {
     /**

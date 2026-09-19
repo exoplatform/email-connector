@@ -43,12 +43,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         class="caption text-wrap scheduled-email-state">
         {{ stateText }}
       </v-list-item-subtitle>
-      <v-progress-linear
-        v-if="busy"
-        class="mt-1"
-        color="primary"
-        height="2"
-        indeterminate />
     </v-list-item-content>
     <v-list-item-action class="my-auto ms-1">
       <v-menu
@@ -110,7 +104,8 @@ export default {
       type: Object,
       required: true,
     },
-    // Whether an action on it is running: its menu waits, a bar says so.
+    // Whether an action on it is running: its menu waits; the drawer's header bar says
+    // so (EXO-90412: no loading bar of the view's own).
     busy: {
       type: Boolean,
       default: false,
