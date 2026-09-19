@@ -41,13 +41,25 @@ import * as service from './EmailConnectorMailBoxService.js';
  * cannot do anything is worse than an absent one. A contributor needing more than a
  * label and a click (an asynchronous availability check, a badge, its own loader)
  * registers a `vueComponent` name instead of labelKey/icon/click; it is rendered in
- * place with the attachment as a prop and decides on its own whether to show.
+ * place with the `attachment` and the `context` below as props, and decides on its
+ * own whether to show.
  *
- * The `context` handed to click() carries what only the row itself can do:
+ * The `context` handed to click() (and to a vueComponent) carries what only the row
+ * itself can do:
  * - download(): download to the device, with the row's progress and abort handling;
  * - openInEditor(mode): store the attachment in the Drive then open the editor on it;
  * - saveInDocuments(attachments): open the Documents folder picker and, on the folder
- *   the user picks, save the given attachments there, reporting the outcome as a toast.
+ *   the user picks, save the given attachments there, reporting the outcome as a toast;
+ * - storeInMailAttachments(): store the attachment under Mail Attachments/Received in
+ *   the user's Drive and resolve the id of that document, for an action that works on
+ *   a document rather than on a mail part. It goes through the very call opening the
+ *   attachment uses, so within the page the copy either of them made is reused rather
+ *   than stored again; after a reload, like opening, it stores a new copy. Null when
+ *   the Documents add-on is not installed.
+ *
+ * A vueComponent that renders more than one menu row declares how many through
+ * `rows: attachment => n` (one when absent), so the menu can tell whether it has room
+ * to open downward.
  */
 const EXTENSION_TYPE = 'emailConnector';
 
@@ -108,9 +120,8 @@ extensionRegistry.registerExtension(EXTENSION_TYPE, EXTENSION_NAME, {
 // the editor (see EmailConnectorAttachmentOpenMixin), so a menu entry doing the same
 // would only be a duplicate. Editing means Save in Documents first.
 
-// "Analyse with AI" is deliberately absent. The AI add-on binds a menu action by
-// reading its UX bindings for an application (aiUxBindingService.getUxBindings) then
-// opening its chat on the object, and there is no binding for a document or a file:
-// the Documents add-on exposes no AI action at all, so there is nothing to reuse
-// here. It belongs on this extension point the day such a binding exists, contributed
-// as a vueComponent by whoever owns that binding rather than guessed at from here.
+// No AI action here either: this app knows nothing of the AI add-on. "Ask AI" with
+// the document AI actions (the Documents "files" UX bindings) is contributed onto
+// this extension point by the add-on that owns that coupling, as a vueComponent that
+// stores the attachment through context.storeInMailAttachments() and then opens the
+// AI panel on the stored document, as Documents does on a file.
