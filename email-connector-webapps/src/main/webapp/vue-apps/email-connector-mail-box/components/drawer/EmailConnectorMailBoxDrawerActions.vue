@@ -30,7 +30,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :categories="categories"
       :category-view-id="categoryViewId"
       :sync-in-progress="syncInProgress"
-      :has-webmail-access="hasWebmailAccess" />
+      :has-webmail-access="hasWebmailAccess"
+      :hide-views="hideViews" />
   </div>
   <div v-else-if="hasSelectedEmails">
     <template v-if="top">
@@ -287,7 +288,13 @@ export default {
     top: {
       type: Boolean,
       default: true,
-    }
+    },
+    // Whether the ⋮ menu leaves FOLDERS and CATEGORIES out: in full screen the folder
+    // column beside the list holds them (EXO-90415).
+    hideViews: {
+      type: Boolean,
+      default: false,
+    },
   },
   computed: {
     // The listed rows by selection key (folder and UID), the way the selection names them.
