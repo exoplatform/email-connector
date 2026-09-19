@@ -624,6 +624,11 @@ class ReadReceiptServiceTest {
     Email email = incoming();
     when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
     when(emailBoxStorage.claimReadReceipt(USER, email, ReadReceiptState.SENT)).thenReturn(false);
+    // Stubbed leniently although this call must never reach it: without the stub,
+    // dropping the guard below fails on the mock's null server copy instead of on the
+    // receipt that left, and the pin would be killing its mutant for the wrong reason.
+    lenient().when(emailBoxService.openServerCopy(eq(USER), any(Email.class)))
+             .thenReturn(mock(EmailBoxService.ServerCopy.class));
 
     assertThrows(ReadReceiptConflictException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false));
     verify(emailBoxService, never()).transmitAsUser(anyString(), any());
