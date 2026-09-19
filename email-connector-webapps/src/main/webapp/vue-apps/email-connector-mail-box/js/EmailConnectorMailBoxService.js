@@ -15,6 +15,11 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+// Scheduled send (EXO-90434), reached like everything else here through
+// this.$emailConnectorMailBoxService.
+export * from './EmailConnectorScheduledSendService.js';
+import { refusal } from './EmailConnectorScheduledSendService.js';
+
 const presentation = {
   class: 'fas fa-file-powerpoint',
   color: '#CB4B32',
@@ -218,9 +223,50 @@ export function folderLabel(folder, translate) {
     return '';
   }
   if (folder.type === 'CUSTOM') {
-    return folder.displayName || folder.path || '';
+    const name = folder.displayName || folder.path || '';
+    // The mail server's own "Scheduled" folder (Gmail's, Outlook's) is not the view of
+    // the mails scheduled here (EXO-90434): it is never touched, and it says whose it
+    // is so the two are never read as one.
+    return isServerScheduledFolderName(name, translate)
+      ? translate('emailConnector.mailBox.list.drawer.folder.custom.serverScheduled', { 0: name })
+      : name;
   }
   return translate(`emailConnector.mailBox.list.drawer.folder.${(folder.key || 'INBOX').toLowerCase()}`);
+}
+
+/**
+ * Whether one of the user's own folders bears the name of the "Scheduled" view: in
+ * English, or as the view is called in the user's language.
+ *
+ * @param {String} name the folder's name, as the mail server gives it
+ * @param {Function} translate the component's $t
+ * @returns {Boolean} true when the two could be taken for one another
+ */
+function isServerScheduledFolderName(name, translate) {
+  const normalized = (name || '').trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const viewName = translate(`emailConnector.mailBox.list.drawer.folder.${SCHEDULED_VIEW.toLowerCase()}`);
+  return normalized === 'scheduled' || normalized === (viewName || '').trim().toLowerCase();
+}
+
+/**
+ * The key of the "Scheduled" view (EXO-90434): the drafts waiting to be sent at a date.
+ * A view the server lists among the folders, right after Drafts and only when it holds
+ * something, but no folder of the mail server: its mails are listed by their own
+ * endpoint, never by the folder listing.
+ */
+export const SCHEDULED_VIEW = 'SCHEDULED';
+
+/**
+ * Whether a folder key is the "Scheduled" view.
+ *
+ * @param {String} folder the folder key
+ * @returns {Boolean} true for the view
+ */
+export function isScheduledView(folder) {
+  return folder === SCHEDULED_VIEW;
 }
 
 // The icon of each built-in folder; a folder of the user's own gets the plain folder.
@@ -233,6 +279,7 @@ const BUILT_IN_FOLDER_ICONS = {
   DRAFTS: 'fa-file-alt',
   JUNK: 'fa-ban',
   TRASH: 'fa-trash',
+  SCHEDULED: 'fa-clock',
 };
 
 /**
@@ -1231,7 +1278,9 @@ export function deleteDraft(draftLocalId) {
     method: 'DELETE'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when deleting draft');
+      // With the server's code: a scheduled draft being sent is refused with one
+      // (emailConnector.scheduled.sending, EXO-90434).
+      return refusal(resp, 'Error when deleting draft');
     }
   });
 }

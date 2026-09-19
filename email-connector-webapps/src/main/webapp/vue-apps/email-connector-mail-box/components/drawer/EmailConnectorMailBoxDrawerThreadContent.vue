@@ -27,7 +27,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          / Notification) and show the ones already applied. Drafts are kept out of it:
          categories are assigned by IMAP UID, which a draft may not have, and an unsent
          message is not a thing anyone means to categorise. -->
-    <email-connector-mail-box-drawer-category-bar :emails="categorizableMessages" />
+    <!-- Not over a draft alone -- a scheduled mail opened from its view, or a draft
+         answering nothing: there is no mail to categorise (EXO-90434). -->
+    <email-connector-mail-box-drawer-category-bar
+      v-if="categorizableMessages.length"
+      :emails="categorizableMessages" />
     <!-- Room for somebody else to say something about this conversation as a whole:
          under its subject and its categories, and above everything that is about the
          individual messages — the same seam the mail toolbars already offer, in the
@@ -98,11 +102,26 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <!-- The reply in progress, in place at the bottom of the conversation it
            answers — the whole point of keeping drafts in the same table as mail. -->
       <email-connector-mail-box-drawer-thread-draft
-        v-else-if="item.type === 'draft'"
+        v-else-if="item.type === 'draft' && !item.message.scheduled"
         :key="item.key"
         :draft="item.message"
         @resume="resumeDraft(item.message)"
         @discard="discardDraft(item.message)" />
+      <!-- A draft scheduled to be sent (EXO-90434, PO decision (a)) is rendered as any
+           message of the conversation is -- sender, recipients, body, attachments --
+           read-only: when it goes in place of a date, and its Edit (and, opened from
+           the Scheduled view, that row's actions) in place of a message's. -->
+      <email-connector-mail-box-drawer-list-item-detail-content
+        v-else-if="item.type === 'draft'"
+        :key="item.key"
+        :email="item.message"
+        :expanded-drawer="expandedDrawer"
+        :in-thread="isThread"
+        :scheduled-row="scheduledRowOf(item.message)"
+        hide-subject
+        class="scheduled-mail"
+        @edit="editScheduledDraft(item.message)"
+        @scheduled-action="onScheduledAction" />
       <email-connector-mail-box-drawer-thread-message
         v-else
         :key="item.key"
@@ -527,6 +546,47 @@ export default {
      */
     resumeDraft(draft) {
       this.$root.$emit('resume-draft', draft);
+    },
+    /**
+     * Edits a reply scheduled to be sent, the Scheduled view's way (EXO-90434): the
+     * composer takes it out of its schedule first, then opens it with its time ready.
+     *
+     * @param {object} draft - the scheduled draft row
+     * @returns {void}
+     */
+    editScheduledDraft(draft) {
+      this.$root.$emit('edit-scheduled-email', {
+        draftLocalId: draft.draftLocalId,
+        scheduledDate: draft.scheduledDate,
+        timeZone: draft.scheduledTimeZone,
+        threadId: draft.threadId,
+        // The conversation's row is whole: the composer opens on it without reading it
+        // again. The Scheduled view's own row (its body a snippet) is not handed over.
+        draft: draft.scheduledRow ? null : draft,
+      });
+    },
+    /**
+     * The Scheduled view's row of a draft, when the reader was opened on that draft from
+     * the view (EXO-90434): the draft then offers the row's actions, and says why it was
+     * not sent from the row's reason. Kept on the row the reader was opened on, so it
+     * outlives the conversation's own copy of the draft replacing it.
+     *
+     * @param {object} draft - a draft of the conversation
+     * @returns {object} the Scheduled view's row, or null
+     */
+    scheduledRowOf(draft) {
+      return (this.email?.scheduledRow && draft.draftLocalId === this.email.draftLocalId && this.email.scheduledRow) || null;
+    },
+    /**
+     * Hands an action chosen on the opened scheduled mail to the Scheduled view, which
+     * runs it as it does from its own row -- its questions and its reschedule popup
+     * included.
+     *
+     * @param {string} action - the action name (see scheduledActions)
+     * @returns {void}
+     */
+    onScheduledAction(action) {
+      this.$root.$emit('scheduled-email-action', action, this.email.scheduledRow);
     },
     /**
      * Throws a draft away from inside the conversation it sits in.
