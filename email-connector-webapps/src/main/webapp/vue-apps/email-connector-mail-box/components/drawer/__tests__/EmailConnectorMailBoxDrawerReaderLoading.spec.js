@@ -19,10 +19,22 @@
 // folder list's rows and fills it in as the server answers; the drawer's header bar is
 // on only while the user is waiting for something they opened; and an answer to a
 // message or a conversation the user has already left is dropped, never painted.
+// A running sync is signalled on the same bar, not by a spinner of the toolbar's own.
+
+/**
+ * The platform drawer, reduced to the one prop these tests read.
+ */
+const ExoDrawerStub = {
+  name: 'ExoDrawer',
+  props: ['loading'],
+  template: '<div><slot name="fullAppLeftTitle" /><slot name="content" /></div>',
+};
 
 import { shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 import EmailConnectorMailBoxDrawerListItemDetail from '../EmailConnectorMailBoxDrawerListItemDetail.vue';
+import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
+import EmailConnectorMailBoxDrawerActions from '../EmailConnectorMailBoxDrawerActions.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 
 /**
@@ -288,6 +300,63 @@ describe('EmailConnectorMailBoxDrawerListItemDetail — opening a message', () =
     expect(emailConnectorMailBoxService.isListingRow(wrapper.vm.email)).toBe(false);
     expect(wrapper.vm.email.mailRemoteId).toBe(2);
     expect(wrapper.vm.loadingEmail).toBe(false);
+    wrapper.destroy();
+  });
+});
+
+describe('a running sync — the drawer bar, and no spinner of its own', () => {
+  it('the mailbox drawer shows a running sync on its header bar', async () => {
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawer, {
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: serviceStub({
+          getEmailBox: jest.fn(() => Promise.resolve({ emails: [], folders: [], emailSyncStatus: 'SUCCESS' })),
+          getAvailableEmailCategories: jest.fn(() => Promise.resolve([])),
+        }),
+        $emailConnectorCommonService: serviceStub({}),
+        $vuetify: { breakpoint: {}, rtl: false },
+      },
+      stubs: { 'exo-drawer': ExoDrawerStub },
+    });
+    await wrapper.setData({ syncInProgress: false });
+    expect(wrapper.findComponent(ExoDrawerStub).props('loading')).toBeFalsy();
+    await wrapper.setData({ syncInProgress: true });
+    expect(wrapper.findComponent(ExoDrawerStub).props('loading')).toBe(true);
+    wrapper.vm.stopAutoRefresh();
+    wrapper.destroy();
+  });
+
+  it('the detail drawer shows it too once widened, where the mailbox toolbar sits in its title', async () => {
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetail, {
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: serviceStub({}),
+        $vuetify: { breakpoint: {}, rtl: false },
+      },
+      stubs: { 'exo-drawer': ExoDrawerStub },
+    });
+    await wrapper.setData({ syncInProgress: true, expanded: false });
+    expect(wrapper.findComponent(ExoDrawerStub).props('loading')).toBeFalsy();
+    await wrapper.setData({ expanded: true });
+    expect(wrapper.findComponent(ExoDrawerStub).props('loading')).toBe(true);
+    wrapper.destroy();
+  });
+
+  it('the mailbox toolbar renders no sync spinner while a sync runs', () => {
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerActions, {
+      propsData: { emails: [], selectedEmails: [], syncInProgress: true },
+      // Renders a tooltip's activator, where the spinner used to sit: left as an
+      // unknown element, its scoped slot would never render and this test could not
+      // tell the spinner from its absence.
+      stubs: { 'v-tooltip': { template: '<div><slot name="activator" :on="{}" :attrs="{}" /><slot /></div>' } },
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: serviceStub({}),
+        $vuetify: { breakpoint: {}, rtl: false },
+      },
+    });
+    expect(wrapper.html()).not.toContain('email-box-sync-loader');
+    expect(wrapper.html()).toContain('email-connector-mail-box-drawer-action-menu');
     wrapper.destroy();
   });
 });
