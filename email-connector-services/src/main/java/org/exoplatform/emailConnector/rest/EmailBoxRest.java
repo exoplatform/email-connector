@@ -1163,9 +1163,9 @@ public class EmailBoxRest {
   @PostMapping("/{emailId}/read-receipt")
   @Secured("users")
   @Operation(summary = "Answers a message's read-receipt request", method = "POST",
-             description = "The reader's answer to a message that asks to be notified when it is read (RFC 8098): SEND transmits a read receipt ('displayed', never 'denied') to the requested address, as the caller, over their own mail connector, with no copy in Sent; IGNORE sends nothing. Either answer is final for the message: it is recorded on every cached copy of it and, where the mailbox stores keywords, as $MDNSent on the server so the caller's other clients do not ask again. Call it only when a person has the message on screen -- the banner's buttons, or, when the message's readReceiptPrompt is AUTO, its display. Everything is checked again here, whatever readReceiptPrompt said: a message of Sent, Drafts, Junk or Trash, the caller's own mail, or a request naming no address is refused, and SEND is refused under the NEVER policy. A message is addressed by its technical id, as the favorites read does.")
+             description = "The reader's answer to a message that asks to be notified when it is read (RFC 8098): SEND transmits a read receipt ('displayed', never 'denied') to the requested address, as the caller, over their own mail connector, with no copy in Sent; IGNORE sends nothing. Either answer is final for the message: it is recorded on every cached copy of it and, where the mailbox stores keywords, as $MDNSent on the server so the caller's other clients do not ask again. Call it only when a person has the message on screen: the banner's buttons (automatic false), or, when the message's readReceiptPrompt is AUTO, its display (automatic true, which the receipt reports as sent automatically). An automatic SEND is refused with emailConnector.readReceipt.askFirst unless the request is to be answered automatically right now -- the reader then shows the banner. Everything is checked again here, whatever readReceiptPrompt said: a message of Sent, Drafts, Junk or Trash, the caller's own mail, or a request naming no address is refused, and SEND is refused under the NEVER policy. A message is addressed by its technical id, as the favorites read does.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Answered"),
-      @ApiResponse(responseCode = "400", description = "The message asks for no receipt (emailConnector.readReceipt.notRequested), cannot be answered (emailConnector.readReceipt.notAllowed), or no valid action was given (emailConnector.readReceipt.invalidAction)"),
+      @ApiResponse(responseCode = "400", description = "The message asks for no receipt (emailConnector.readReceipt.notRequested), cannot be answered (emailConnector.readReceipt.notAllowed), or no valid action was given (emailConnector.readReceipt.invalidAction), or an automatic SEND for a request that must now be asked about (emailConnector.readReceipt.askFirst)"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation: the caller's mailbox connector is not usable"),
       @ApiResponse(responseCode = "404", description = "No such message of the caller's"),
       @ApiResponse(responseCode = "409", description = "Already answered, here or in another client (emailConnector.readReceipt.alreadyHandled)"),
@@ -1178,7 +1178,10 @@ public class EmailBoxRest {
                                                    @RequestBody
                                                    ReadReceiptRequest answer) {
     try {
-      readReceiptService.respond(emailId, request.getRemoteUser(), answer == null ? null : answer.getAction());
+      readReceiptService.respond(emailId,
+                                 request.getRemoteUser(),
+                                 answer == null ? null : answer.getAction(),
+                                 answer != null && answer.isAutomatic());
       return ResponseEntity.noContent().build();
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND);

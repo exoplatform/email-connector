@@ -23,7 +23,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * The body of an answer to a read-receipt request: SEND or IGNORE.
+ * The body of an answer to a read-receipt request: SEND or IGNORE, and whether the
+ * reader answers on its own -- SEND on display, because it was told AUTO -- rather
+ * than because a person clicked.
  */
 @Data
 @NoArgsConstructor
@@ -31,4 +33,6 @@ import lombok.NoArgsConstructor;
 public class ReadReceiptRequest {
 
   private ReadReceiptAction action;
+
+  private boolean           automatic;
 }

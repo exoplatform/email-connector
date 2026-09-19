@@ -992,15 +992,21 @@ public class EmailBoxStorage {
 
   /**
    * Records as answered the pending read-receipt requests among the given messages of
-   * one folder, whose server copies carry {@code $MDNSent}: one statement, however many.
+   * one folder, whose server copies carry {@code $MDNSent} -- and on every other cached
+   * copy of the same messages, by Message-ID, since one message has one answer. Two
+   * statements at most, however many messages.
    *
    * @param userId the mailbox owner
    * @param folder the folder discriminator scoping the UIDs
    * @param mailRemoteIds the UIDs carrying the keyword
+   * @param mailHeaderIds their Message-IDs, those they have
    */
-  public void markReadReceiptsAnswered(String userId, String folder, List<Long> mailRemoteIds) {
+  public void markReadReceiptsAnswered(String userId, String folder, List<Long> mailRemoteIds, List<String> mailHeaderIds) {
     if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
       emailBoxDao.markReadReceiptsAnswered(userId, folder, mailRemoteIds, ReadReceiptState.SENT);
+    }
+    if (mailHeaderIds != null && !mailHeaderIds.isEmpty()) {
+      emailBoxDao.markReadReceiptsAnsweredByMailHeaderIds(userId, mailHeaderIds, ReadReceiptState.SENT);
     }
   }
 
