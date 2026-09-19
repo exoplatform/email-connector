@@ -26,7 +26,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     right
     :allow-expand="!standalone"
     @expand-updated="updateExpand"
-    :loading="waitingForEmail || readerLoading || waitingForPartialEmail"
+    :loading="waitingForEmail || readerLoading || waitingForPartialEmail || (expanded && syncInProgress)"
     go-back-button
     :confirm-close="activeDownload"
     :confirm-close-labels="{
