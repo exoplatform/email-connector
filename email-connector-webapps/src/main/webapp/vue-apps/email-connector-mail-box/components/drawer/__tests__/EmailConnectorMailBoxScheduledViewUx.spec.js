@@ -24,7 +24,7 @@ import { shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxScheduledList from '../EmailConnectorMailBoxScheduledList.vue';
 import EmailConnectorMailBoxScheduledListItem from '../EmailConnectorMailBoxScheduledListItem.vue';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
-import EmailConnectorMailBoxDrawerThreadDraft from '../EmailConnectorMailBoxDrawerThreadDraft.vue';
+import EmailConnectorMailBoxDrawerListItemDetailContent from '../EmailConnectorMailBoxDrawerListItemDetailContent.vue';
 import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 import EmailConnectorMailBoxDrawerListItemDetail from '../EmailConnectorMailBoxDrawerListItemDetail.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
@@ -286,39 +286,114 @@ describe('the opened scheduled mail in the reader (EXO-90434, PO decision (a))',
     scheduledStatus: 'FAILED',
   };
 
+  // The message's parts, stubbed to read what they are given.
+  const BODY = { props: ['emailBody', 'htmlBody'], template: '<div />' };
+  const ATTACHMENTS = { props: ['emailAttachments'], template: '<div />' };
+  const AVATAR = { props: ['email'], template: '<div />' };
+
   /**
-   * Mounts the draft strip.
+   * Mounts the message renderer the conversation renders a scheduled draft with.
    *
    * @param {Object} propsData its props
    * @returns {Object} the wrapper
    */
-  function mountStrip(propsData) {
-    return shallowMount(EmailConnectorMailBoxDrawerThreadDraft, {
-      propsData,
-      mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService },
-      stubs: ROW_STUBS,
+  function mountMessage(propsData) {
+    return shallowMount(EmailConnectorMailBoxDrawerListItemDetailContent, {
+      propsData: { hideSubject: true, ...propsData },
+      mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService, $vuetify: { breakpoint: {} } },
+      stubs: {
+        ...ROW_STUBS,
+        'email-connector-mail-box-drawer-list-item-detail-body': BODY,
+        'email-connector-mail-box-drawer-list-item-detail-attachments': ATTACHMENTS,
+        'email-connector-mail-box-drawer-list-item-detail-sender-avatar': AVATAR,
+      },
     });
   }
 
-  it('shows the whole text, the attachments, when it goes and why it was not sent, with the row\'s actions', async () => {
-    const scheduledRowOfIt = scheduledRow('d1', { status: 'FAILED', lastError: 'NETWORK' });
-    const strip = mountStrip({ draft: DRAFT, scheduledRow: scheduledRowOfIt });
-    expect(strip.find('.scheduled-draft-text').text()).toBe('See you on Monday, with the slides');
-    expect(strip.find('.scheduled-draft-attachment').text()).toBe('fa-paperclip slides.pdf');
-    expect(strip.find('.scheduled-draft-state').text())
-      .toBe('emailConnector.mailBox.scheduled.notSent|emailConnector.mailBox.scheduled.error.NETWORK');
-    expect(strip.find('.scheduled-draft-edit').exists()).toBe(false);
-    const actions = strip.findAll('.scheduled-draft-action');
-    expect(actions.wrappers.map(action => action.attributes('data-action'))).toEqual(['retry', 'edit', 'reschedule', 'moveToDrafts', 'discard']);
-    await actions.at(2).trigger('click');
-    expect(strip.emitted('action')).toEqual([['reschedule']]);
+  it('is a message: the user as sender, its recipients, its whole body and its attachments as any mail\'s', () => {
+    window.eXo = { env: { portal: { userName: 'root' } } };
+    const message = mountMessage({ email: { ...DRAFT, sender: { name: 'Root Root', address: 'root@host' } } });
+    expect(message.text()).toContain('Root Root');
+    expect(message.text()).toContain('emailConnector.mailBox.list.drawer.detail.to bob@host');
+    expect(message.findComponent(BODY).props('emailBody')).toBe(DRAFT.content.body);
+    expect(message.findComponent(ATTACHMENTS).props('emailAttachments')).toEqual([{ name: 'slides.pdf' }]);
+    // The user's own platform avatar: a draft's sender carries no picture.
+    expect(message.findComponent(AVATAR).props('email').sender.avatarUrl).toBe('/portal/rest/v1/social/users/root/avatar');
+    // Read-only, said in one slim line with its Edit; no dashed box, no centring.
+    expect(message.find('.scheduled-mail-read-only').text()).toContain('emailConnector.mailBox.scheduled.readOnly');
+    expect(message.html()).not.toContain('dashed');
+    expect(message.html()).not.toContain('text-center');
+    delete window.eXo;
   });
 
-  it('stays the conversation\'s compact strip, with its lone Edit, when not opened from the view', () => {
-    const strip = mountStrip({ draft: DRAFT });
-    expect(strip.find('.scheduled-draft-menu').exists()).toBe(false);
-    expect(strip.find('.scheduled-draft-edit').exists()).toBe(true);
-    expect(strip.find('.scheduled-draft-attachment').exists()).toBe(false);
+  it('says "Me" and cannot fail on a row that carries only what the Scheduled view lists', () => {
+    const row = emailConnectorMailBoxService.scheduledReaderRow(scheduledRow('d1'));
+    const message = mountMessage({ email: row, scheduledRow: row.scheduledRow });
+    expect(message.text()).toContain('emailConnector.mailBox.list.drawer.detail.me');
+    expect(message.text()).toContain('emailConnector.mailBox.list.drawer.detail.to Bob');
+  });
+
+  it('says when it goes in place of the date, in its state\'s colour, why it was not sent, and offers the row\'s actions in its ⋮', async () => {
+    const message = mountMessage({ email: DRAFT, scheduledRow: scheduledRow('d1', { status: 'FAILED', lastError: 'NETWORK' }) });
+    const date = message.find('.scheduled-mail-date');
+    expect(date.text()).toContain('emailConnector.mailBox.scheduled.at|');
+    expect(date.classes()).toContain('error--text');
+    expect(message.find('.scheduled-mail-state').text())
+      .toBe('emailConnector.mailBox.scheduled.notSent|emailConnector.mailBox.scheduled.error.NETWORK');
+    const actions = message.findAll('.scheduled-mail-action');
+    expect(actions.wrappers.map(action => action.attributes('data-action'))).toEqual(['retry', 'edit', 'reschedule', 'moveToDrafts', 'discard']);
+    await actions.at(2).trigger('click');
+    expect(message.emitted('scheduled-action')).toEqual([['reschedule']]);
+    expect(message.emitted('edit')).toBeFalsy();
+  });
+
+  it('offers only its Edit in a conversation opened elsewhere, where the view does not run the others', () => {
+    const message = mountMessage({ email: DRAFT });
+    expect(message.find('.scheduled-mail-menu').exists()).toBe(false);
+    expect(message.find('.scheduled-mail-edit').exists()).toBe(true);
+  });
+
+  it('renders a scheduled draft of a conversation as its messages, an unsent one as its strip, and no category bar over a draft alone', async () => {
+    const detailStub = { props: { email: Object, scheduledRow: Object, hideSubject: Boolean }, template: '<div class="detail-stub" />' };
+    const draftStub = { props: ['draft'], template: '<div class="draft-stub" />' };
+    const categoryStub = { props: ['emails'], template: '<div class="category-stub" />' };
+    const row = emailConnectorMailBoxService.scheduledReaderRow(scheduledRow('d1', { threadId: 't1' }));
+    const mountReader = conversation => shallowMount(EmailConnectorMailBoxDrawerThreadContent, {
+      propsData: { email: row, emails: [] },
+      mocks: {
+        $t: translate,
+        $emailConnectorMailBoxService: serviceStub({
+          getThreadByThreadId: jest.fn(() => Promise.resolve(conversation)),
+          completeThreadByThreadId: jest.fn(() => Promise.resolve(null)),
+          isListingRow: emailConnectorMailBoxService.isListingRow,
+          formatDateString: () => 'date',
+        }),
+      },
+      stubs: {
+        'email-connector-mail-box-drawer-list-item-detail-content': detailStub,
+        'email-connector-mail-box-drawer-thread-draft': draftStub,
+        'email-connector-mail-box-drawer-category-bar': categoryStub,
+        'email-connector-mail-box-drawer-thread-message': true,
+      },
+    });
+    const alone = mountReader([{ ...DRAFT, threadId: 't1', receivedDate: 1 }]);
+    await flush();
+    const detail = alone.findComponent(detailStub);
+    expect(detail.props('email').content.body).toBe(DRAFT.content.body);
+    expect(detail.props('scheduledRow')).toBe(row.scheduledRow);
+    expect(detail.props('hideSubject')).toBe(true);
+    expect(alone.findComponent(draftStub).exists()).toBe(false);
+    expect(alone.findComponent(categoryStub).exists()).toBe(false);
+
+    const withMail = mountReader([
+      { mailRemoteId: 7, folder: 'INBOX', threadId: 't1', receivedDate: 1, to: [], sender: { name: 'Bob' }, content: { body: 'x' } },
+      { ...DRAFT, threadId: 't1', receivedDate: 2 },
+      { draftLocalId: 'd2', threadId: 't1', receivedDate: 3, to: [], content: { body: 'wip' } },
+    ]);
+    await flush();
+    expect(withMail.findAllComponents(detailStub).length).toBe(1);
+    expect(withMail.findAllComponents(draftStub).length).toBe(1);
+    expect(withMail.findComponent(categoryStub).props('emails').map(email => email.mailRemoteId)).toEqual([7]);
   });
 
   it('gives the view\'s row to the opened draft only, and hands its actions to the view', () => {
@@ -401,5 +476,97 @@ describe('Reschedule is the platform\'s popup, and it applies the new time (EXO-
     await wrapper.vm.$nextTick();
     wrapper.find('.modal').vm.$emit('dialog-closed');
     expect(wrapper.vm.rescheduled).toBeNull();
+  });
+});
+
+describe('every action of both menus -- the row\'s and the reader\'s -- runs its own handler (EXO-90434)', () => {
+  // What each action must do, and in which state the menus offer it.
+  const CASES = [
+    { action: 'edit', status: 'SCHEDULED', event: 'edit-scheduled-email' },
+    { action: 'reschedule', status: 'SCHEDULED', modal: true },
+    { action: 'sendNow', status: 'SCHEDULED', confirmTitle: 'emailConnector.mailBox.scheduled.sendNow.confirm.title', call: 'sendScheduledEmailNow' },
+    { action: 'retry', status: 'FAILED', confirmTitle: 'emailConnector.mailBox.scheduled.sendNow.confirm.title', call: 'sendScheduledEmailNow' },
+    { action: 'sendAgain', status: 'UNCERTAIN', confirmTitle: 'emailConnector.mailBox.scheduled.sendNow.confirm.title', call: 'sendScheduledEmailNow' },
+    { action: 'cancel', status: 'SCHEDULED', confirmTitle: 'emailConnector.mailBox.scheduled.cancel.confirm.title', call: 'cancelScheduledEmail' },
+    { action: 'moveToDrafts', status: 'FAILED', confirmTitle: 'emailConnector.mailBox.scheduled.cancel.confirm.title', call: 'cancelScheduledEmail' },
+    { action: 'discard', status: 'SCHEDULED', confirmTitle: 'emailConnector.mailBox.scheduled.discard.confirm.title', call: 'deleteDraft' },
+  ];
+  const CALLS = ['sendScheduledEmailNow', 'cancelScheduledEmail', 'deleteDraft', 'rescheduleEmail'];
+
+  /**
+   * Mounts the Scheduled view with its real rows, their menus rendered in place.
+   *
+   * @param {Object} row the one scheduled mail
+   * @returns {Promise<Object>} {wrapper, service, emitted, modal, confirm}
+   */
+  async function mountView(row) {
+    const modal = { open: jest.fn(), close: jest.fn() };
+    const confirm = { open: jest.fn() };
+    const answers = { getScheduledEmails: jest.fn(() => Promise.resolve([row])) };
+    CALLS.forEach(name => answers[name] = jest.fn(() => Promise.resolve(null)));
+    const service = serviceStub(answers);
+    const wrapper = shallowMount(EmailConnectorMailBoxScheduledList, {
+      mocks: { $t: translate, $te: () => false, $emailConnectorMailBoxService: service },
+      stubs: {
+        ...ROW_STUBS,
+        'email-connector-mail-box-scheduled-list-item': EmailConnectorMailBoxScheduledListItem,
+        'exo-confirm-dialog': { props: ['title'], template: '<div class="confirm" />', methods: confirm },
+        'exo-modal': { template: '<div class="modal"><slot /></div>', methods: modal },
+      },
+    });
+    const emitted = [];
+    const emit = wrapper.vm.$root.$emit.bind(wrapper.vm.$root);
+    wrapper.vm.$root.$emit = (...args) => {
+      emitted.push(args);
+      return emit(...args);
+    };
+    await flush();
+    return { wrapper, service, emitted, modal, confirm };
+  }
+
+  /**
+   * Checks what one action did: its own effect, and none of the others'.
+   *
+   * @param {Object} testCase the expected effect
+   * @param {Object} mounted the mounted view
+   * @returns {Promise<void>} resolved once checked
+   */
+  async function expectHandled(testCase, { wrapper, service, emitted, modal, confirm }) {
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+    const events = emitted.map(event => event[0]);
+    expect(events.includes('edit-scheduled-email')).toBe(testCase.event === 'edit-scheduled-email');
+    expect(modal.open.mock.calls.length).toBe(testCase.modal ? 1 : 0);
+    expect(confirm.open.mock.calls.length).toBe(testCase.confirmTitle ? 1 : 0);
+    if (testCase.confirmTitle) {
+      expect(wrapper.find('.confirm').props('title')).toBe(testCase.confirmTitle);
+      wrapper.vm.runConfirmed();
+      await flush();
+    }
+    CALLS.forEach(name => expect([name, service[name].mock.calls.length]).toEqual([name, name === testCase.call ? 1 : 0]));
+  }
+
+  CASES.forEach(testCase => {
+    it(`runs "${testCase.action}" from the row's menu`, async () => {
+      const row = scheduledRow('d1', { status: testCase.status });
+      const mounted = await mountView(row);
+      await mounted.wrapper.find(`.scheduled-email-action[data-action="${testCase.action}"]`).trigger('click');
+      await expectHandled(testCase, mounted);
+    });
+
+    it(`runs "${testCase.action}" from the reader's menu`, async () => {
+      const row = scheduledRow('d1', { status: testCase.status });
+      const mounted = await mountView(row);
+      const reader = { email: emailConnectorMailBoxService.scheduledReaderRow(row), $root: mounted.wrapper.vm.$root };
+      const message = shallowMount(EmailConnectorMailBoxDrawerListItemDetailContent, {
+        propsData: { email: reader.email, scheduledRow: row, hideSubject: true },
+        mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService, $vuetify: { breakpoint: {} } },
+        stubs: ROW_STUBS,
+      });
+      // The conversation relays the message's choice (ThreadContent's @scheduled-action).
+      message.vm.$on('scheduled-action', action => EmailConnectorMailBoxDrawerThreadContent.methods.onScheduledAction.call(reader, action));
+      await message.find(`.scheduled-mail-action[data-action="${testCase.action}"]`).trigger('click');
+      await expectHandled(testCase, mounted);
+    });
   });
 });
