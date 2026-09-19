@@ -1236,7 +1236,11 @@ describe('the list reveals the row the keys go to', () => {
   });
 });
 
-describe('the mail drawer, expanded beside its list, moves the same way (EXO-90414)', () => {
+// The mail drawer used to carry a full screen of its own, with the list beside the
+// reader and the same moves as the mailbox's. There is one full-screen layout now, the
+// mailbox drawer's (EXO-90415): the mail drawer is the narrow reader only, and hands
+// its mail over to that full screen. What it still owes is to stay out of the way.
+describe('the mail drawer is the narrow reader only (EXO-90415)', () => {
   let wrapper;
   let service;
 
@@ -1246,13 +1250,13 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
   });
 
   /**
-   * Mounts the mail drawer, expanded, with one mail of its list open.
+   * Mounts the mail drawer, open on one mail of its list.
    *
-   * @param {Array} emails the list beside the reader
+   * @param {Array} emails the list it was opened from
    * @param {Number} opened the UID open in the reader
    * @returns {Promise<void>} resolved once mounted
    */
-  async function mountExpanded(emails, opened) {
+  async function mountOpen(emails, opened) {
     service = serviceStub({
       isReadOnlyFolder: emailConnectorMailBoxService.isReadOnlyFolder,
       getEmailByRemoteId: jest.fn((mailRemoteId, folder) => Promise.resolve({ mailRemoteId, folder })),
@@ -1269,126 +1273,11 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
       },
       stubs: { 'exo-drawer': true },
     });
-    await wrapper.setData({ emailDetailDrawer: true, expanded: true, emails, email: { mailRemoteId: opened, folder: 'INBOX' } });
+    await wrapper.setData({ emailDetailDrawer: true, emails, email: { mailRemoteId: opened, folder: 'INBOX' } });
   }
 
-  it('opens the mail that took the deleted one\'s place', async () => {
-    await mountExpanded([row(1), row(2), row(3)], 2);
-
-    wrapper.vm.$root.$emit('delete-email', [2]);
-    await flush();
-
-    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(3, 'INBOX', { broadcast: false });
-    expect(wrapper.vm.email.mailRemoteId).toBe(3);
-    expect(wrapper.vm.selectEmailPlaceHolder).toBe(false);
-  });
-
-  it.each(['junk-email', 'not-junk-email', 'restore-email', 'purge-email', 'move-email'])(
-    'moves on after %s too, which its toolbar offers as well', async event => {
-      await mountExpanded([row(1), row(2), row(3)], 2);
-
-      // As the toolbar and the move picker emit them: the folder the ids are numbered in
-      // last, after a move's target.
-      if (event === 'move-email') {
-        wrapper.vm.$root.$emit(event, [2], 'CUSTOM:1', 'INBOX');
-      } else {
-        wrapper.vm.$root.$emit(event, [2], 'INBOX');
-      }
-      await flush();
-
-      expect(wrapper.vm.email.mailRemoteId).toBe(3);
-    });
-
-  it('follows the arrow keys', async () => {
-    await mountExpanded([row(1), row(2), row(3)], 2);
-
-    wrapper.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
-    await settle();
-
-    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(1, 'INBOX', { broadcast: false });
-  });
-
-  it('walks search results too, and moves on after an action there', async () => {
-    await mountExpanded([row(1), row(2), row(3)], 2);
-    await wrapper.setData({ detachedFromList: true });
-
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
-    await settle();
-    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(1, 'INBOX', { broadcast: false });
-
-    wrapper.vm.$root.$emit('archive-email', [1]);
-    await flush();
-    expect(service.getEmailByRemoteId).toHaveBeenLastCalledWith(2, 'INBOX', { broadcast: false });
-  });
-
-  it('lets the reader read a mail the user clicked at once, even while an automatic one waited', async () => {
-    await mountExpanded([row(1), row(2), row(3)], 2);
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
-    await settle();
-    expect(wrapper.vm.autoOpenReadPending).toBe(true);
-
-    wrapper.vm.openEmailDetailContent(3);
-
-    expect(wrapper.vm.autoOpenReadPending).toBe(false);
-  });
-
-  it('opens a search hit from its own folder, and removes only it after an action', async () => {
-    // Two different messages under one number, in two folders (another Message-ID).
-    const twin = { ...row(5), folder: 'ARCHIVE', mailHeaderId: '<5-archived@host>' };
-    await mountExpanded([row(4), row(5), twin], 4);
-    await wrapper.setData({ detachedFromList: true });
-
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
-    await settle();
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
-    await settle();
-    expect(service.getEmailByRemoteId).toHaveBeenLastCalledWith(5, 'ARCHIVE', { broadcast: false });
-
-    wrapper.vm.$root.$emit('delete-email', [5], 'ARCHIVE');
-    await flush();
-    expect(wrapper.vm.emails.map(email => `${email.folder}:${email.mailRemoteId}`)).toEqual(['INBOX:4', 'INBOX:5']);
-  });
-
-  it('reads each message of an automatically opened conversation in its own folder', async () => {
-    // A row of a search list gathering a conversation's hits from two folders.
-    const archived = { ...row(7), folder: 'ARCHIVE', threadId: 't', read: false };
-    const inboxed = { ...row(9), folder: 'INBOX', threadId: 't', read: false };
-    await mountExpanded([row(1), inboxed, archived], 1);
-    await wrapper.setData({ detachedFromList: true });
-    const reads = [];
-    wrapper.vm.$root.$on('update-email-read-status', (read, ids, folder) => reads.push([read, ids, folder]));
-
-    wrapper.vm.markAutoOpenedEmailRead(inboxed);
-
-    expect(reads).toEqual([[true, [9], 'INBOX'], [true, [7], 'ARCHIVE']]);
-  });
-
-  it('reads an automatically opened mail only once the user stayed on it', async () => {
-    const unread = { ...row(1), read: false };
-    await mountExpanded([unread, row(2), row(3)], 2);
-    const reads = [];
-    wrapper.vm.$root.$on('update-email-read-status', (read, ids) => reads.push([read, ids]));
-    jest.useFakeTimers();
-    try {
-      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
-      jest.advanceTimersByTime(KEY_OPEN_DELAY_MS);
-      // The wait starts once the mail is on screen: let its opening land.
-      for (let i = 0; i < 8; i++) {
-        await Promise.resolve(); // eslint-disable-line no-await-in-loop
-      }
-      jest.advanceTimersByTime(AUTO_OPEN_MARK_READ_DELAY_MS - 100);
-      expect(reads).toEqual([]);
-      jest.advanceTimersByTime(100);
-      expect(reads).toEqual([[true, [1]]]);
-      expect(service.broadcastOpenEmail).toHaveBeenCalledTimes(1);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it('keeps showing the mail after a move in the narrow layout, as it did before', async () => {
-    await mountExpanded([row(1), row(2), row(3)], 2);
-    await wrapper.setData({ expanded: false });
+  it('keeps showing the mail after a move, as it did before', async () => {
+    await mountOpen([row(1), row(2), row(3)], 2);
 
     wrapper.vm.$root.$emit('move-email', [2], 'CUSTOM:1');
     await flush();
@@ -1398,20 +1287,26 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
     expect(service.getEmailByRemoteId).not.toHaveBeenCalled();
   });
 
-  it('shows a reply draft opened from the list over an arrow-key opening answering last', async () => {
-    await mountExpanded([row(1), row(2), row(3)], 2);
-    let answer;
-    service.getEmailByRemoteId.mockImplementationOnce(mailRemoteId =>
-      new Promise(resolve => answer = () => resolve({ mailRemoteId, folder: 'INBOX' })));
+  it('opens nothing on its own after a delete: its toolbar closes it', async () => {
+    await mountOpen([row(1), row(2), row(3)], 2);
 
-    wrapper.vm.openEmailDetailContent(3);
-    const draft = { mailRemoteId: null, draftLocalId: 'd1', threadId: 't9' };
-    wrapper.vm.$root.$emit('open-email-thread-content', draft);
-    answer();
+    wrapper.vm.$root.$emit('delete-email', [2], 'INBOX');
     await flush();
 
-    expect(wrapper.vm.email).toBe(draft);
-    expect(wrapper.vm.loadingEmail).toBe(false);
+    expect(wrapper.vm.emails.map(e => e.mailRemoteId)).toEqual([1, 3]);
+    expect(wrapper.vm.email.mailRemoteId).toBe(2);
+    expect(service.getEmailByRemoteId).not.toHaveBeenCalled();
+  });
+
+  it('never takes the arrow keys: the list they walk is the mailbox drawer\'s', async () => {
+    await mountOpen([row(1), row(2), row(3)], 2);
+
+    const event = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    await settle();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(service.getEmailByRemoteId).not.toHaveBeenCalled();
   });
 });
 
