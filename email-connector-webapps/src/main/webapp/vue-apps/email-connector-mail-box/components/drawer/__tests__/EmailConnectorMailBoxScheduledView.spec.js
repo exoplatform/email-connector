@@ -396,10 +396,23 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
     expect(ids.length).toBe(120);
   });
 
-  it('drops a mail already listed when a page brings it again', async () => {
-    const { wrapper } = await mountList({ getScheduledEmails: jest.fn(offset => Promise.resolve(offset ? [scheduledRow('d2'), scheduledRow('d3')] : [scheduledRow('d1'), scheduledRow('d2')])) });
+  it('drops a mail already listed when a page brings it again, and still reads the next page after it', async () => {
+    // 60 rows served by page; one row moves ahead of the window between two reads.
+    let rows = Array.from({ length: 60 }, (value, index) => scheduledRow(`d${index}`));
+    const serve = jest.fn((offset, limit) => {
+      const page = Math.floor(offset / limit);
+      return Promise.resolve(rows.slice(page * limit, page * limit + limit));
+    });
+    const { wrapper } = await mountList({ getScheduledEmails: serve });
+    rows = [scheduledRow('moved'), ...rows.filter(row => row.draftLocalId !== 'd30')];
     await wrapper.vm.loadMore();
-    expect(wrapper.vm.items.map(item => item.draftLocalId)).toEqual(['d1', 'd2', 'd3']);
+    // d19 comes again at the top of page 2 and is dropped: 39 rows, off a page boundary.
+    expect(wrapper.vm.items.length).toBe(39);
+    await wrapper.vm.loadMore();
+    expect(serve).toHaveBeenLastCalledWith(40, 20);
+    const ids = wrapper.vm.items.map(item => item.draftLocalId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain('d59');
   });
 
   it('re-reads itself when the server\'s count moves, or a schedule changed elsewhere', async () => {
