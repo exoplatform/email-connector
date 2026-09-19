@@ -150,8 +150,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <div
               v-bind="attrs"
               class="d-flex">
+              <!-- Greyed out while the date and time card is open: the way on is its
+                   check, or closing it (EXO-90434). -->
               <v-btn
-                :disabled="disabled || scheduling"
+                :disabled="disabled || scheduling || scheduleMode"
                 :loading="loading"
                 @click="sendEmail()"
                 class="btn btn-primary composer-send-button">
@@ -164,7 +166,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 left>
                 <template #activator="{ on, attrs: menuAttrs }">
                   <v-btn
-                    :disabled="disabled || loading"
+                    :disabled="disabled || loading || scheduleMode"
                     :aria-label="$t('emailConnector.mailBox.newEmail.drawer.schedule.openMenu')"
                     :title="$t('emailConnector.mailBox.newEmail.drawer.schedule.openMenu')"
                     min-width="28"
@@ -1799,7 +1801,8 @@ export default {
     },
     /**
      * Sends what the composer holds, or re-sends the payload the no-subject
-     * confirmation handed back.
+     * confirmation handed back. Nothing is sent from the composer while its schedule
+     * card is open (EXO-90434).
      *
      * @param {object} email - a ready payload, or nothing to build one
      * @returns {void}
@@ -1807,7 +1810,9 @@ export default {
     sendEmail(email) {
       // Never beside a schedule of the same draft in flight: one of the two would be
       // refused, and the user told something contradictory (EXO-90434).
-      if (this.scheduling) {
+      // Nor while the date and time card is open: Send is greyed out then, and nothing
+      // else in the composer may send past it.
+      if (this.scheduling || (this.scheduleMode && !email)) {
         return;
       }
       if (email) {

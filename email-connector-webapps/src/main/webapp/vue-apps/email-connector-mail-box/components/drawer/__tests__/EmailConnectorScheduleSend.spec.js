@@ -228,6 +228,23 @@ describe('the composer\'s split Send button (EXO-90434)', () => {
     expect(wrapper.find('.picker-stub').exists()).toBe(true);
   });
 
+  it('greys out Send and its caret while the card is open, and sends nothing past it, until it closes', async () => {
+    const { wrapper, service } = await mountComposer();
+    await wrapper.find('.schedule-send-action').trigger('click');
+    expect(wrapper.find('.composer-send-button').attributes('disabled')).toBe('disabled');
+    expect(wrapper.find('.schedule-send-menu-button').attributes('disabled')).toBe('disabled');
+    wrapper.vm.sendEmail();
+    expect(service.sendEmail).not.toHaveBeenCalled();
+    expect(service.sendDraft).not.toHaveBeenCalled();
+    expect(wrapper.vm.loading).toBe(false);
+
+    // Closed any way -- confirmed, cancelled, clicked away -- the card is scheduleMode
+    // going false, and both come back.
+    await wrapper.setData({ scheduleMode: false });
+    expect(wrapper.find('.composer-send-button').attributes('disabled')).toBeUndefined();
+    expect(wrapper.find('.schedule-send-menu-button').attributes('disabled')).toBeUndefined();
+  });
+
   it('disables the caret as it disables Send: no recipient, or a file still going up', async () => {
     const { wrapper } = await mountComposer();
     expect(wrapper.find('.schedule-send-menu-button').attributes('disabled')).toBeUndefined();
