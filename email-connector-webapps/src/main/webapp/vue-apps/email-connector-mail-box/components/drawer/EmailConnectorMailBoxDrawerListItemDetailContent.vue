@@ -75,7 +75,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-list-item-subtitle
           :class="stateColor"
           class="pb-1 d-flex align-center scheduled-mail-date">
-          <v-icon size="12" :class="stateColor || 'icon-default-color'" class="me-1">far fa-clock</v-icon>
+          <v-icon
+            :class="stateColor || 'icon-default-color'"
+            class="me-1"
+            size="12">
+            far fa-clock
+          </v-icon>
           {{ scheduledForLabel }}
         </v-list-item-subtitle>
         <v-list-item-subtitle
