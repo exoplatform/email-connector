@@ -177,6 +177,7 @@ import org.exoplatform.emailConnector.notification.plugin.NewEmailsNotificationP
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
@@ -943,6 +944,11 @@ public class EmailBoxService {
   // server" from "may have been accepted".
   @Autowired
   private SmtpTransmitter           smtpTransmitter;
+
+  // The durable read-receipt answers (EXO-90435): the sync records there what the
+  // server's $MDNSent says, and a re-created row reads its answer back from there.
+  @Autowired
+  private EmailReadReceiptAnswerStorage readReceiptAnswerStorage;
 
   /**
    * Stops the notification scheduler with the Spring context. The thread is a daemon, so a
@@ -11001,6 +11007,7 @@ public class EmailBoxService {
                                                 // The read-receipt fields, set by name just below.
                                                 false, null, null, false, null);
           captureReadReceiptRequest(message, cached, folderKey);
+          alignReadReceiptAnswer(cached, username);
           emailBoxStorage.createEmail(cached);
           newEmailIds.add(messageUid);
 
@@ -11102,6 +11109,9 @@ public class EmailBoxService {
     if (!uidsToClearRecent.isEmpty()) {
       emailBoxStorage.markEmailsAsNotRecent(uidsToClearRecent, username, folderKey);
     }
+    // The store first, then the rows: a row reads as answered only once the store says
+    // so, and the store's unique index is what an answer being given now collides with.
+    readReceiptAnswerStorage.recordServerAnswers(username, messageIdsAnsweredElsewhere, new Date());
     emailBoxStorage.markReadReceiptsAnswered(username, folderKey, uidsAnsweredElsewhere, messageIdsAnsweredElsewhere);
     return uidsToMarkRead.size() + uidsToMarkUnread.size() + uidsToStar.size() + uidsToUnstar.size();
   }
@@ -12255,6 +12265,38 @@ public class EmailBoxService {
     }
     if (hasKeyword(message, MDN_SENT_KEYWORD)) {
       email.setReadReceiptState(ReadReceiptState.SENT);
+    }
+  }
+
+  /**
+   * Lines a newly cached message up with the durable answer store (EXO-90435), before
+   * its row is written. A request the server says was answered ({@code $MDNSent},
+   * captured just before) is recorded in the store, which is what a claim being made
+   * right now collides with; a request the server says nothing about takes the answer
+   * the store already holds, if any -- the case of a mailbox that stores no keywords,
+   * whose re-created rows would otherwise ask again. Only requests pay a statement,
+   * and they are few.
+   *
+   * @param cached the row about to be created, its read-receipt fields captured
+   * @param username the mailbox owner
+   */
+  private void alignReadReceiptAnswer(Email cached, String username) {
+    if (!cached.isReadReceiptRequested() || StringUtils.isBlank(cached.getMailHeaderId())) {
+      return;
+    }
+    try {
+      if (cached.getReadReceiptState() != null) {
+        readReceiptAnswerStorage.recordServerAnswers(username, List.of(cached.getMailHeaderId()), new Date());
+      } else {
+        String key = EmailReadReceiptAnswerStorage.messageIdHash(cached.getMailHeaderId());
+        ReadReceiptState stored = key == null ? null
+                                              : readReceiptAnswerStorage.findAnswers(username, List.of(cached.getMailHeaderId()))
+                                                                        .get(key);
+        cached.setReadReceiptState(stored);
+      }
+    } catch (RuntimeException e) {
+      // The row is still cached; the reader and the answer consult the store anyway.
+      LOG.warn("The read-receipt answer of a message of user {} could not be aligned with the store", username, e);
     }
   }
 

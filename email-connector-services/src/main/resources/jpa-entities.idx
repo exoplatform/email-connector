@@ -9,3 +9,4 @@ org.exoplatform.emailConnector.utils.SemicolonListConverter
 org.exoplatform.emailConnector.entity.EmailFolderEntity
 org.exoplatform.emailConnector.entity.EmailSyncStateEntity
 org.exoplatform.emailConnector.entity.EmailScheduledSendEntity
+org.exoplatform.emailConnector.entity.EmailReadReceiptAnswerEntity
