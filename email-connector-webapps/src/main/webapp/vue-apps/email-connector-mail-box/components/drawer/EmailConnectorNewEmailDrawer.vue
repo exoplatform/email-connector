@@ -151,10 +151,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               v-bind="attrs"
               class="d-flex">
               <v-btn
-                :disabled="disabled"
+                :disabled="disabled || scheduling"
                 :loading="loading"
                 @click="sendEmail()"
-                class="btn btn-primary">
+                class="btn btn-primary composer-send-button">
                 {{ $t('emailConnector.mailBox.newEmail.drawer.send.label') }}
               </v-btn>
               <v-menu
@@ -1805,6 +1805,11 @@ export default {
      * @returns {void}
      */
     sendEmail(email) {
+      // Never beside a schedule of the same draft in flight: one of the two would be
+      // refused, and the user told something contradictory (EXO-90434).
+      if (this.scheduling) {
+        return;
+      }
       if (email) {
         this.email = email;
       }
