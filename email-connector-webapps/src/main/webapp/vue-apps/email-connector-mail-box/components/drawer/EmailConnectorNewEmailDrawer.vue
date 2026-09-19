@@ -443,6 +443,14 @@ export default {
     /**
      * Whether the composer holds anything at all — which is also what makes a draft
      * worth saving and a Discard button worth offering.
+     * <p>
+     * Named for what reads it: the Discard button, the autosave, the closing save and
+     * the server push all ask for `hasContent`. It kept its older name, confirmClose,
+     * when the drafts work (EXO-89337) stopped binding it to the drawer's close
+     * confirmation, so every one of those read an undefined property: no autosave, no
+     * closing save, no Discard button -- a draft was only ever stored when a file or a
+     * schedule forced one (found by EXO-90435, whose read-receipt choice rides the
+     * draft's saves).
      *
      * <p>
      * Named hasContent, as every reader of it calls it: the drafts work (EXO-89337)
