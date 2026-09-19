@@ -81,7 +81,7 @@ import io.meeds.social.util.JsonUtils;
  * row the sync deletes and later re-creates -- a move, an archive, a reset, a message
  * leaving and re-entering the sync window -- comes back unanswered, and the request is
  * offered again. Making the answer survive its rows needs a store keyed by user and
- * Message-ID, a schema decision left to phase 2's receipt table.
+ * Message-ID; that decision is pending (EXO-90435 review, round 1).
  */
 @Service
 public class ReadReceiptService {
