@@ -211,6 +211,7 @@ export default {
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$on('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
+    this.$root.$on('scheduled-email-updated', this.onScheduledEmailUpdated);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$on('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
@@ -243,6 +244,7 @@ export default {
     this.$root.$off('retry-email-read', this.onRetryEmailRead);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$off('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
+    this.$root.$off('scheduled-email-updated', this.onScheduledEmailUpdated);
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);
@@ -436,6 +438,26 @@ export default {
      * @param {string} webmailUrl - the account's webmail, for the toolbar
      * @returns {void}
      */
+    /**
+     * Follows the Scheduled view's mail this drawer shows (EXO-90434): its new date or
+     * state once the view was read again; the drawer closes once it is no longer
+     * scheduled -- sent, cancelled, discarded, being edited.
+     *
+     * @param {String} draftLocalId the mail's draft local id
+     * @param {Object} row the reader's row for it now, null when it left the view
+     * @returns {void}
+     */
+    onScheduledEmailUpdated(draftLocalId, row) {
+      if (!this.emailDetailDrawer || !this.email?.scheduledRow || this.email.draftLocalId !== draftLocalId) {
+        return;
+      }
+      if (row) {
+        this.email = row;
+        this.emails = [row];
+      } else {
+        this.close();
+      }
+    },
     openThreadOn(email, emails, syncInProgress, webmailUrl) {
       this.emailDetailDrawer = true;
       // Nothing to fetch: whatever message request was still on its way is superseded.
