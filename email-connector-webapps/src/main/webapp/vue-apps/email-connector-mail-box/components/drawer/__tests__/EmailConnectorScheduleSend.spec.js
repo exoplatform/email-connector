@@ -309,6 +309,8 @@ describe('scheduling runs Send\'s checks, then stores the draft and freezes it (
       subject: 'Hello',
       content: { body: wrapper.vm.formatEmailBody('<p>Hi<blockquote>quoted</blockquote></p>') },
       attachments: [],
+      // Always carried, off included: the server reads a missing value as "no" (EXO-90435).
+      readReceiptRequested: false,
     });
     expect(draft.content.body).toContain('border-left');
     expect(alerts(emitted)).toEqual([[`emailConnector.mailBox.newEmail.drawer.schedule.success|date:${date}`, 'success']]);

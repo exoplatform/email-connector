@@ -18,6 +18,8 @@
 // Scheduled send (EXO-90434), reached like everything else here through
 // this.$emailConnectorMailBoxService.
 export * from './EmailConnectorScheduledSendService.js';
+// Read receipts (EXO-90435), reached the same way.
+export * from './EmailConnectorReadReceiptService.js';
 import { refusal } from './EmailConnectorScheduledSendService.js';
 
 const presentation = {

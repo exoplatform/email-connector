@@ -537,6 +537,9 @@ export default {
       });
       unreadByFolder.forEach((unread, folder) => this.$root.$emit('update-email-read-status', true, unread, folder));
       this.onAutoOpenedEmailRead?.(row);
+      // The reader may now treat it as displayed: a read receipt its sender asked for
+      // may leave on its own (EXO-90435), exactly when the mail counts as read.
+      this.$root.$emit('email-read-on-display', row);
       this.$emailConnectorMailBoxService.broadcastOpenEmail().catch(() => null);
     },
     /**

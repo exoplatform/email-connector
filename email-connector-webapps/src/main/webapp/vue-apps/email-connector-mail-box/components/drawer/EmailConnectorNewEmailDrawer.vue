@@ -128,6 +128,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :active="newEmailDrawer"
         :persist="persistAttachment"
         :unpersist="unpersistAttachment" />
+      <!-- The read receipt this mail asks for (EXO-90435), said where the user sees it
+           before sending, and removable right here as well as from More options. -->
+      <div
+        v-if="readReceiptRequested"
+        class="mx-4 mt-2 read-receipt-chip-row">
+        <v-chip
+          :aria-label="$t('emailConnector.mailBox.readReceipt.request.chip')"
+          :close-label="$t('emailConnector.mailBox.readReceipt.request.remove')"
+          class="read-receipt-chip"
+          small
+          close
+          @click:close="readReceiptRequested = false">
+          <v-icon size="12" class="me-2">fas fa-envelope-open-text</v-icon>
+          {{ $t('emailConnector.mailBox.readReceipt.request.chip') }}
+        </v-chip>
+      </div>
     </template>
     <template #footer>
       <div class="d-flex align-center">
@@ -151,8 +167,46 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
         <span v-if="draftStatusLabel && !scheduledEdit" class="text-caption text-sub-title ms-2">{{ draftStatusLabel }}</span>
         <v-spacer />
-        <!-- Room for a future "More options" (⋮) button before Send -- read receipts,
-             EXO-90435 -- which is not built yet. -->
+        <!-- More options (⋮), before Send (EXO-90435, PO option A): what the mail asks
+             of its recipients rather than when it goes -- today, a read receipt, a
+             checkable entry whose state the chip above the footer repeats. -->
+        <v-menu
+          v-model="moreOptionsMenu"
+          :close-on-content-click="false"
+          offset-y
+          top
+          left>
+          <template #activator="{ on, attrs }">
+            <v-btn
+              :aria-label="$t('emailConnector.mailBox.newEmail.drawer.moreOptions')"
+              :title="$t('emailConnector.mailBox.newEmail.drawer.moreOptions')"
+              :disabled="loading || scheduling"
+              class="me-2 composer-more-options"
+              icon
+              v-bind="attrs"
+              v-on="on">
+              <v-icon size="18" class="icon-default-color">fas fa-ellipsis-v</v-icon>
+            </v-btn>
+          </template>
+          <v-list
+            class="pa-0"
+            dense>
+            <v-list-item
+              :aria-checked="readReceiptRequested ? 'true' : 'false'"
+              role="menuitemcheckbox"
+              class="px-2 read-receipt-toggle"
+              @click="readReceiptRequested = !readReceiptRequested">
+              <v-list-item-icon class="me-2 my-auto">
+                <v-icon size="16" :class="readReceiptRequested ? 'primary--text' : 'icon-default-color'">
+                  {{ readReceiptRequested ? 'fas fa-check-square' : 'far fa-square' }}
+                </v-icon>
+              </v-list-item-icon>
+              <v-list-item-title>
+                {{ $t('emailConnector.mailBox.readReceipt.request.label') }}
+              </v-list-item-title>
+            </v-list-item>
+          </v-list>
+        </v-menu>
         <!-- Send as a split button (EXO-90434), Social's scheduled-post UX: Send, and a
              caret whose menu offers "Schedule send", which opens the date and time card
              anchored on the pair. -->
@@ -334,6 +388,16 @@ export default {
       // scheduledDate, timeZone, removedIds}: removedIds are its stored files taken off
       // on screen, removed on the server only with the update.
       scheduledEdit: null,
+      // When the mail on screen was scheduled before being taken out of its schedule to
+      // be edited: the banner says it is a draft again, and the picker starts there.
+      previousScheduledDate: null,
+      // Whether this mail asks its recipients for a read receipt (EXO-90435): the user's
+      // "request by default" when the composer opens, the draft's own choice when one is
+      // resumed. Sent with every save, send and schedule -- the server reads a missing
+      // value as "no".
+      readReceiptRequested: false,
+      // The More options (⋮) menu before Send.
+      moreOptionsMenu: false,
       title: '',
       editorMaxHeight: 0,
       // The draft this composer session is writing, as ONE record rather than a
@@ -408,6 +472,11 @@ export default {
     'email.content.body'() {
       this.onComposeChanged();
     },
+    // The read-receipt choice is part of the draft (EXO-90435): changing it is an edit,
+    // saved like the words are.
+    readReceiptRequested() {
+      this.onComposeChanged();
+    },
   },
   computed: {
     /**
@@ -443,11 +512,14 @@ export default {
     /**
      * Whether the composer holds anything at all — which is also what makes a draft
      * worth saving and a Discard button worth offering.
-     *
      * <p>
-     * Named hasContent, as every reader of it calls it: the drafts work (EXO-89337)
-     * renamed its readers from confirmClose and the computed itself kept the old name,
-     * so this.hasContent read undefined -- no autosave, no save on close, no Discard.
+     * Named for what reads it: the Discard button, the autosave, the closing save and
+     * the server push all ask for `hasContent`. It kept its older name, confirmClose,
+     * when the drafts work (EXO-89337) stopped binding it to the drawer's close
+     * confirmation, so every one of those read an undefined property: no autosave, no
+     * closing save, no Discard button -- a draft was only ever stored when a file or a
+     * schedule forced one (found by EXO-90435, whose read-receipt choice rides the
+     * draft's saves).
      *
      * @returns {boolean} true when the composer holds anything
      */
@@ -542,7 +614,8 @@ export default {
       // Awaited before anything is written into the body, because the prefill
       // IS the body: patching a signature in after the drawer opened would race
       // the editor echo and the saved-signature stamp.
-      const signature = await this.signatureBlock();
+      const [signature, readReceiptDefault] = await Promise.all([this.signatureBlock(), this.readReceiptDefault()]);
+      this.readReceiptRequested = readReceiptDefault;
       this.title = this.drawerTitle(email, forward);
       this.seedRecipients(email, forward, replyAll, prefill);
       // A subject and a body, seeded the same way the recipients are. Opening
@@ -691,6 +764,18 @@ export default {
           return html ? `<div class="ec-signature">${html}</div>` : '';
         })
         .catch(() => '');
+    },
+    /**
+     * Whether a new mail asks for a read receipt before the user says anything: their
+     * "request by default" preference (EXO-90435). Read at every opening, so a change in
+     * the settings applies to the next mail; an unreadable preference is "no".
+     *
+     * @returns {Promise<boolean>} the default
+     */
+    readReceiptDefault() {
+      return this.$emailConnectorCommonService.getReadReceiptSettings()
+        .then(settings => !!settings?.requestByDefault)
+        .catch(() => false);
     },
     /**
      * Brings the files of the message being forwarded onto this forward, as the same
@@ -1160,6 +1245,9 @@ export default {
       this.bcc = this.toRecipients(draft.bcc);
       this.email.subject = draft.subject || '';
       this.email.content.body = draft.content?.body || '';
+      // The draft's own read-receipt choice, never the default: it is what the user left
+      // it with, a scheduled mail taken out of its schedule included (EXO-90435).
+      this.readReceiptRequested = !!draft.readReceiptRequested;
       // The PARENT's id, not the draft's own. On a stored draft, mailHeaderId holds
       // the draft's own minted id and must never be sent back as a parent — that
       // would thread the draft against itself. What the composer needs here is what
@@ -1364,6 +1452,9 @@ export default {
       this.scheduleMenu = false;
       this.scheduleMode = false;
       this.scheduledEdit = null;
+      this.previousScheduledDate = null;
+      this.moreOptionsMenu = false;
+      this.readReceiptRequested = false;
       this.newEmailDrawer = false;
     },
     /**
@@ -1444,6 +1535,9 @@ export default {
         // draft reply join its conversation while it is still being written. On every
         // later save the server ignores it.
         parentMessageId: this.email.mailHeaderId,
+        // Every save carries the choice: the server reads a missing value as "no", and
+        // a draft saved without it would be sent without the receipt asked for.
+        readReceiptRequested: this.readReceiptRequested,
         hasContent: this.hasContent,
         signature: this.composeSignature(),
       };
@@ -1491,6 +1585,8 @@ export default {
       this.email.mailHeaderId = null;
       this.attachments = [];
       this.scheduledEdit = null;
+      this.previousScheduledDate = null;
+      this.readReceiptRequested = false;
       this.resetDraftTracking();
     },
     /**
@@ -1729,6 +1825,7 @@ export default {
           to: snapshot.to,
           cc: snapshot.cc,
           bcc: snapshot.bcc,
+          readReceiptRequested: !!snapshot.readReceiptRequested,
         };
         // Captured before the request: the answer is judged against what this session
         // believed a moment ago, and the assignment below is what replaces it.
@@ -1872,6 +1969,7 @@ export default {
         this.toAddresses(this.to),
         this.toAddresses(this.cc),
         this.toAddresses(this.bcc),
+        !!this.readReceiptRequested,
       ]);
     },
     /**
@@ -1942,11 +2040,16 @@ export default {
           ...(this.email.bcc || []),
           ...this.toAddresses(this.bcc)
         ];
+        // Before the no-subject question, whose answer hands this very payload back.
+        this.email.readReceiptRequested = !!this.readReceiptRequested;
         if (!this.email.subject) {
           this.$root.$emit('open-no-subject-email-confirm-popup', this.email);
           return;
         }
       }
+      // What the composer shows is what goes, whichever path built the payload: the
+      // server reads a missing value as "no" (EXO-90435).
+      this.email.readReceiptRequested = !!this.readReceiptRequested;
       this.email.attachments = this.attachments
         .filter(attachment => attachment.uploadId)
         .map(attachment => ({
@@ -2086,6 +2189,8 @@ export default {
         subject: this.email.subject,
         content: { body: this.formatEmailBody(this.email.content.body) },
         attachments: [],
+        // The server reads a missing value as "no" (EXO-90435).
+        readReceiptRequested: !!this.readReceiptRequested,
       };
     },
     /**
