@@ -491,7 +491,6 @@ export default {
     // default.
     this.emailCategoryIdsPromise = this.$emailConnectorMailBoxService.getAvailableEmailCategories()
       .then(list => this.emailCategories = list || []);
-    this.emailCategoryIdsPromise.then(() => this.readCategorySubtrees()).catch(() => null);
     // Read the "Default view" setting from here rather than from open(), for the
     // same reason the categories are read from here: both are needed to know
     // WHICH list to show, and asking for them only once the drawer is opening is
@@ -1859,6 +1858,21 @@ export default {
       this.$set(this.unreadAdjustments, folder, (this.unreadAdjustments[folder] || 0) + (read ? -1 : 1));
     },
     /**
+     * Reads the categories' subcategories the first time the drawer goes full screen,
+     * where the column's unread counts need them -- never for a drawer that stays
+     * narrow -- and keeps them for the page's lifetime.
+     *
+     * @returns {Promise<void>} resolved once they are read
+     */
+    ensureCategorySubtrees() {
+      if (!this.categorySubtreesPromise) {
+        this.categorySubtreesPromise = this.emailCategoryIdsPromise
+          .then(() => this.readCategorySubtrees())
+          .catch(() => null);
+      }
+      return this.categorySubtreesPromise;
+    },
+    /**
      * Reads each category's subcategories once the categories are known, for the
      * column's unread counts. A category whose subcategories cannot be read counts on
      * its own id alone.
@@ -2788,7 +2802,10 @@ export default {
      * @returns {void}
      */
     openFirstAfterNavigation() {
-      if (!this.expanded || !this.emailBoxDrawer) {
+      // Not while a folder is loading: the list is still the previous folder's, and
+      // its first mail would open -- and be read two seconds later -- in the folder the
+      // user just left. The folder switch calls this again once the new list is in.
+      if (!this.expanded || !this.emailBoxDrawer || this.loading) {
         return;
       }
       const showingEmail = this.email && !this.selectEmailPlaceHolder;
@@ -2883,6 +2900,9 @@ export default {
      */
     updateExpand(expanded) {
       this.layoutExpanded = expanded;
+      if (expanded) {
+        this.ensureCategorySubtrees();
+      }
       window.setTimeout(() => {
         this.expanded = expanded;
         if (expanded) {
