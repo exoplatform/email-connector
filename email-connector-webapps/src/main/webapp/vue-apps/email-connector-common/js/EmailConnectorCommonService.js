@@ -267,3 +267,51 @@ export function resetSignatureImage() {
     }
   });
 }
+
+/**
+ * The caller's read-receipt preferences (EXO-90435): whether the composer asks for a
+ * receipt by default, how a request someone else made is answered (ASK, NEVER or
+ * ALWAYS), and whether the administrator allows ALWAYS at all.
+ *
+ * @returns {Promise<object>} {requestByDefault, responsePolicy, alwaysAllowed}
+ */
+export function getReadReceiptSettings() {
+  return fetch('/email-connector/rest/user-email-setting/read-receipts', {
+    credentials: 'include',
+    cache: 'no-store',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the read receipt settings');
+    }
+  });
+}
+
+/**
+ * Stores the caller's read-receipt preferences. The server refuses ALWAYS while the
+ * administrator disables it, and answers the preferences as they now stand.
+ *
+ * @param {object} settings - {requestByDefault, responsePolicy}
+ * @returns {Promise<object>} the stored preferences, alwaysAllowed included
+ */
+export function saveReadReceiptSettings(settings) {
+  return fetch('/email-connector/rest/user-email-setting/read-receipts', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({
+      requestByDefault: !!settings?.requestByDefault,
+      responsePolicy: settings?.responsePolicy || 'ASK',
+    })
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when saving the read receipt settings');
+    }
+  });
+}

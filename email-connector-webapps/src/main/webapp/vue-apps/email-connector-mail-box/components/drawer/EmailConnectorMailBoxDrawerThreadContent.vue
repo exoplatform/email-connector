@@ -131,6 +131,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :expanded-drawer="expandedDrawer"
         :in-thread="isThread"
         :loading="isPartial(item.message)"
+        :receipt-auto-allowed="receiptsReleased"
         @expand="expand(item.key)"
         @collapse="collapse(item.key)" />
     </template>
@@ -159,6 +160,12 @@ export default {
       // opened message alone — which then follows that message when the drawer swaps
       // its list row for the full one.
       fallback: false,
+      // Whether the conversation counts as displayed to the user, the rule it is read
+      // by (EXO-90414): at once when the user opened it, once the drawer's dwell ended
+      // when the drawer opened it on its own -- never merely because the dwell stopped,
+      // which is also what walking past it does. What lets a read receipt leave on its
+      // own under the ALWAYS policy (EXO-90435).
+      receiptsReleased: false,
     };
   },
   props: {
@@ -373,11 +380,15 @@ export default {
     // as well as in the list. Reusing it rather than inventing a second signal is what
     // keeps the two views from ever disagreeing about whether a draft exists.
     this.$root.$on('refresh-email-box', this.reloadFromCache);
+    // The drawer read the conversation it opened on its own, once the user stayed on
+    // it: from then on it counts as displayed (EXO-90435).
+    this.$root.$on('email-read-on-display', this.releaseReceipts);
   },
   beforeDestroy() {
     this.$root.$off('update-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('refresh-email-box', this.reloadFromCache);
+    this.$root.$off('email-read-on-display', this.releaseReceipts);
     this.$emit('loading', false);
     this.$emit('opened-partial', false);
     // Nothing is being read any more — the drawer switched to its multi-select mode, to
@@ -627,6 +638,9 @@ export default {
       // is asked for, and starts speaking for this one only once its messages are here.
       this.emitThreadContext(true);
       this.revealedKeys = [];
+      // A conversation the user opened counts as displayed at once; one the drawer
+      // opened on its own only once it read it (releaseReceipts).
+      this.receiptsReleased = !this.deferThreadRead;
       this.seedMessages();
       const threadId = this.resolveThreadId();
       this.loadingThread = true;
@@ -867,6 +881,20 @@ export default {
         unreadByFolder.set(folder, (unreadByFolder.get(folder) || []).concat(e.mailRemoteId));
       });
       unreadByFolder.forEach((unread, folder) => this.$root.$emit('update-email-read-status', true, unread, folder));
+    },
+    /**
+     * Lets the read receipts of this conversation leave on their own, once the drawer
+     * read the message it had opened on its own (the dwell of EXO-90414 ended with the
+     * user still on it) -- the message this reader is open on, and no other.
+     *
+     * @param {object} row - the listed message the drawer read
+     * @returns {void}
+     */
+    releaseReceipts(row) {
+      if (row && this.email && row.mailRemoteId === this.email.mailRemoteId
+          && (row.folder || 'INBOX') === (this.email.folder || 'INBOX')) {
+        this.receiptsReleased = true;
+      }
     },
     // Reveal a folded run: its messages render as individual strips from now on.
     revealBubble(bubble) {
