@@ -47,6 +47,14 @@ public final class MailFolder {
   // — see EmailBoxService#cleanupObsoleteEmails.
   public static final String DRAFTS   = "DRAFTS";
 
+  // The "Scheduled" view (EXO-90434): drafts waiting to be sent at a date. A view KEY,
+  // never a folder discriminator -- a scheduled mail stays a DRAFTS row, and the view
+  // is listed through its own endpoint rather than as a browsable folder, which is why
+  // it is in neither BROWSABLE_BUILT_INS nor any FOLDER value. It shares no namespace
+  // with the mail server's own folders: a server folder called "Scheduled" is a
+  // CUSTOM:<id> key.
+  public static final String SCHEDULED = "SCHEDULED";
+
   // Deleted mail. Mirrored from the server exactly as SENT and ARCHIVE are — the row
   // is a copy of what the Trash folder holds, and nothing here authors one — but it
   // is the one mirrored folder that must NOT be read back into the rest of the
