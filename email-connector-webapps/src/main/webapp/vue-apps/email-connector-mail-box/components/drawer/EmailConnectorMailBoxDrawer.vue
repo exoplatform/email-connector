@@ -149,6 +149,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :server-error="searchServerError"
             draggable-hits
             @open-result="openSearchResult" />
+          <!-- The Scheduled view (EXO-90434): its own list, no chips. -->
+          <email-connector-mail-box-scheduled-list
+            v-else-if="scheduledView"
+            :signal="scheduledViewSignal"
+            compact />
           <template v-else>
             <email-connector-mail-box-drawer-filter-chips
               :important-category="importantCategory"
@@ -241,6 +246,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @loading="readerLoading = $event"
           @opened-partial="readerPartial = $event" />
       </template>
+      <email-connector-mail-box-scheduled-list
+        v-else-if="scheduledView"
+        :signal="scheduledViewSignal" />
       <template v-else>
         <email-connector-mail-box-drawer-filter-chips
           :important-category="importantCategory"
@@ -277,7 +285,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import { LIST_TOP_ROW_HEIGHT } from '../../js/EmailConnectorMailBoxService.js';
+import { LIST_TOP_ROW_HEIGHT, SCHEDULED_VIEW, isScheduledView } from '../../js/EmailConnectorMailBoxService.js';
 import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 import emailDragMixin from '../../js/EmailConnectorMailBoxEmailDragMixin.js';
 
@@ -302,7 +310,11 @@ const NAVIGATION_RAIL_BELOW_WIDTH_PX = 1440;
 // server's \Seen alone, at the next load.
 const UNREAD_COUNTED_FOLDERS = ['INBOX', 'JUNK'];
 
-const TOTAL_COUNTED_FOLDERS = ['DRAFTS'];
+const TOTAL_COUNTED_FOLDERS = ['DRAFTS', SCHEDULED_VIEW];
+
+// The folders the mailbox may be opened on from outside it: the built-ins, the Scheduled
+// view among them -- the scheduled-mail failure notification opens it (EXO-90434).
+const OPENABLE_FOLDERS = ['INBOX', 'SENT', 'ARCHIVE', 'DRAFTS', 'TRASH', 'JUNK', SCHEDULED_VIEW];
 
 // What the settings' folders drawer says when the folder list may have changed: a
 // folder created or renamed (its name drawer), one deleted or opted in or out, the
@@ -744,7 +756,7 @@ export default {
         await this.openMailFromOutside(options);
         return;
       }
-      await this.open(options.loading);
+      await this.open(options.loading, options.folder);
       if (options.searchTerm) {
         this.openSearchFromOutside(options.searchTerm);
       }
@@ -927,7 +939,11 @@ export default {
             unread: true,
           };
         } else if (TOTAL_COUNTED_FOLDERS.includes(folder.key)) {
-          counts[folder.key] = { count: folder.count || 0, unread: false };
+          // The Scheduled view says when one of its mails needs the user: not sent, or
+          // not confirmed sent (EXO-90434).
+          counts[folder.key] = folder.attention
+            ? { count: folder.count || 0, unread: false, attention: true }
+            : { count: folder.count || 0, unread: false };
         }
       });
       return counts;
@@ -978,7 +994,27 @@ export default {
     // The header filter is the platform's own (exo-drawer); it hides the go-back
     // button, so it steps aside while select mode needs that button.
     canSearch() {
-      return !this.syncBlocked && !this.selectMode;
+      return !this.syncBlocked && !this.selectMode && !this.scheduledView;
+    },
+    /**
+     * Whether the Scheduled view is listed (EXO-90434): its own list replaces the
+     * folder's, with no chips, search, selection or drag.
+     *
+     * @returns {Boolean} true on the Scheduled view
+     */
+    scheduledView() {
+      return isScheduledView(this.currentFolder);
+    },
+    /**
+     * What the Scheduled view's list watches to re-read itself: the view's count and
+     * warning as the last folder listing gave them, which move when the dispatcher sends
+     * a mail or one fails.
+     *
+     * @returns {String} the signal
+     */
+    scheduledViewSignal() {
+      const view = this.folders.find(folder => isScheduledView(folder.key));
+      return view ? `${view.count || 0}|${!!view.attention}` : '0|false';
     },
     searchActive() {
       return !!this.searchTerm;
@@ -1220,13 +1256,15 @@ export default {
       this.categoryViewId = defaultView && this.importantCategory && defaultView === this.importantCategory.id
         ? this.importantCategory.id : null;
     },
-    async open(loading) {
+    async open(loading, folder = null) {
       if (loading) {
         this.syncInProgress = true;
         await this.$nextTick();
       }
-      // Always (re)open on the inbox, without leftover search, filter or view state.
-      this.currentFolder = 'INBOX';
+      // Always (re)open on the inbox -- or the built-in folder the caller names, the
+      // Scheduled view for the notification of a mail not sent (EXO-90434) -- without
+      // leftover search, filter or view state.
+      this.currentFolder = OPENABLE_FOLDERS.includes(folder) ? folder : 'INBOX';
       this.favoriteOnly = false;
       this.unreadOnly = false;
       this.categoryViewId = null;
@@ -1234,7 +1272,11 @@ export default {
       this.clearSearch();
       this.loading = true;
       this.emailBoxDrawer = true;
-      await this.applyDefaultCategoryView();
+      // The "open on Important" default is the inbox's: a folder asked for by name opens
+      // on that folder as it is.
+      if (this.currentFolder === 'INBOX') {
+        await this.applyDefaultCategoryView();
+      }
       await this.loadEmailBox();
       this.loading = false;
       if (this.syncInProgress) {
@@ -2843,11 +2885,16 @@ export default {
       const wasSyncing = this.syncInProgress;
       const folder = this.currentFolder;
       const favoriteOnly = this.favoriteOnly;
-      const emailBox = await this.$emailConnectorMailBoxService.getEmailBox(folder, favoriteOnly);
+      // The Scheduled view is no folder the listing serves (EXO-90434): its mails come
+      // from their own endpoint, read by its list. What the listing carries besides the
+      // rows -- the folders, the sync status, the webmail -- is still wanted, and read
+      // with the Drafts, whose rows are then left out.
+      const scheduled = isScheduledView(folder);
+      const emailBox = await this.$emailConnectorMailBoxService.getEmailBox(scheduled ? 'DRAFTS' : folder, !scheduled && favoriteOnly);
       if (folder !== this.currentFolder || favoriteOnly !== this.favoriteOnly) {
         return;
       }
-      this.emailBox = emailBox;
+      this.emailBox = scheduled ? { ...emailBox, emails: [] } : emailBox;
       // The folder list's unread counts are the server's again, the reads made here
       // included.
       this.unreadAdjustments = {};
@@ -2959,6 +3006,12 @@ export default {
       }
       this.currentFolder = folder;
       this.cancelSelectMode();
+      // The Scheduled view has no search (EXO-90434): a running one ends with the switch,
+      // its field too, or its results would stand in for the view's list.
+      if (isScheduledView(folder) && this.searchActive) {
+        this.clearSearch();
+        this.$refs.emailBoxDrawer?.resetFilter?.();
+      }
       if (this.expanded) {
         this.pinnedEmail = false;
         this.selectEmailPlaceHolder = true;

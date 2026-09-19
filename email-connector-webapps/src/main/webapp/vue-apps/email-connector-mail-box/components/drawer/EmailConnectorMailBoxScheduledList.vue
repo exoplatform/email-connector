@@ -1,0 +1,377 @@
+<!--
+Copyright (C) 2026 eXo Platform SAS.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <http://www.gnu.org/licenses/>.
+-->
+<template>
+  <!-- The "Scheduled" view (EXO-90434), in place of a folder's list: the mails waiting
+       to be sent at a date, soonest first, read from their own endpoint -- they are
+       drafts, frozen, and no folder listing holds them. -->
+  <div class="scheduled-email-list">
+    <v-progress-linear
+      v-if="loading && !items.length"
+      color="primary"
+      height="2"
+      indeterminate />
+    <v-list
+      v-if="items.length"
+      class="py-0"
+      dense>
+      <template v-for="(scheduled, index) in items">
+        <v-divider v-if="index > 0" :key="`divider-${scheduled.draftLocalId}`" />
+        <email-connector-mail-box-scheduled-list-item
+          :key="scheduled.draftLocalId"
+          :scheduled="scheduled"
+          :busy="busyIds.includes(scheduled.draftLocalId)"
+          @action="onAction" />
+      </template>
+    </v-list>
+    <div
+      v-if="hasMore"
+      class="d-flex justify-center py-2">
+      <v-btn
+        :loading="loading"
+        class="scheduled-email-load-more"
+        color="primary"
+        small
+        text
+        @click="loadMore">
+        {{ $t('emailConnector.mailBox.scheduled.loadMore') }}
+      </v-btn>
+    </div>
+    <div
+      v-if="loaded && !items.length"
+      :class="compact ? 'pt-10' : 'pt-16'"
+      class="text-center px-4 scheduled-email-empty">
+      <v-icon :size="compact ? 32 : 60" class="icon-default-color">far fa-clock</v-icon>
+      <div class="mt-2 text-subtitle text-sub-title text-wrap">
+        {{ $t('emailConnector.mailBox.scheduled.empty') }}
+      </div>
+    </div>
+    <!-- Reschedule: the composer's own date and time card (email-connector-schedule-picker),
+         in a dialog of its own here. -->
+    <v-dialog
+      v-model="rescheduleDialog"
+      max-width="420"
+      content-class="overflow-visible">
+      <v-card v-if="rescheduleDialog" class="overflow-visible">
+        <v-card-title class="text-subtitle-1">
+          {{ $t('emailConnector.mailBox.scheduled.reschedule.title') }}
+        </v-card-title>
+        <email-connector-schedule-picker
+          :value="rescheduled && rescheduled.scheduledDate"
+          :loading="rescheduling"
+          :confirm-label="$t('emailConnector.mailBox.scheduled.action.reschedule')"
+          class="px-2 pb-2"
+          @confirm="reschedule" />
+      </v-card>
+    </v-dialog>
+    <exo-confirm-dialog
+      ref="scheduledConfirmDialog"
+      :title="confirmation && confirmation.title"
+      :message="confirmation && confirmation.message"
+      :ok-label="confirmation && confirmation.okLabel"
+      :cancel-label="$t('emailConnector.mailBox.scheduled.confirm.cancelButton')"
+      @ok="runConfirmed" />
+  </div>
+</template>
+
+<script>
+import { SCHEDULED_PAGE_SIZE } from '../../js/EmailConnectorScheduledSendService.js';
+
+export default {
+  props: {
+    // Whether it sits in the full-screen list column rather than in the narrow drawer.
+    compact: {
+      type: Boolean,
+      default: false,
+    },
+    // Changes whenever the server's count of the view does -- a mail sent by the
+    // dispatcher, one that failed -- so the list re-reads itself (see the drawer's
+    // scheduledViewSignal).
+    signal: {
+      type: String,
+      default: '',
+    },
+  },
+  data: () => ({
+    items: [],
+    loading: false,
+    loaded: false,
+    hasMore: false,
+    // The mails an action is running on: their menu waits, a bar says so.
+    busyIds: [],
+    rescheduleDialog: false,
+    rescheduled: null,
+    rescheduling: false,
+    // The question the confirmation dialog is asking: {title, message, okLabel, run}.
+    confirmation: null,
+  }),
+  watch: {
+    signal() {
+      this.reload();
+    },
+  },
+  created() {
+    // Which read is current: an answer for an older one is dropped. Plain: nothing
+    // renders it.
+    this.readRequest = 0;
+    this.$root.$on('scheduled-emails-changed', this.reload);
+    this.reload();
+  },
+  beforeDestroy() {
+    this.$root.$off('scheduled-emails-changed', this.reload);
+  },
+  methods: {
+    /**
+     * Reads the view again from its first page, as far as it was read.
+     *
+     * @returns {Promise<void>} resolved once read
+     */
+    reload() {
+      return this.read(0, Math.max(SCHEDULED_PAGE_SIZE, this.items.length), true);
+    },
+    /**
+     * Reads the next page.
+     *
+     * @returns {Promise<void>} resolved once read
+     */
+    loadMore() {
+      return this.read(this.items.length, SCHEDULED_PAGE_SIZE, false);
+    },
+    /**
+     * Reads a page of the view. The server pages by multiples of the page size, so a
+     * reload of several pages asks for them as one.
+     *
+     * @param {Number} offset the first row
+     * @param {Number} limit how many rows
+     * @param {Boolean} replace whether the page replaces the list, or follows it
+     * @returns {Promise<void>} resolved once read, or dropped
+     */
+    read(offset, limit, replace) {
+      const request = ++this.readRequest;
+      this.loading = true;
+      return this.$emailConnectorMailBoxService.getScheduledEmails(offset, limit)
+        .then(page => {
+          if (request !== this.readRequest) {
+            return;
+          }
+          const rows = page || [];
+          this.items = replace ? rows : [...this.items, ...rows];
+          this.hasMore = rows.length === limit;
+        })
+        .catch(() => {
+          if (request === this.readRequest) {
+            this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.loadError'), 'error');
+          }
+        })
+        .finally(() => {
+          if (request === this.readRequest) {
+            this.loading = false;
+            this.loaded = true;
+          }
+        });
+    },
+    /**
+     * Runs a row's action, asking first for the ones that send or lose something.
+     *
+     * @param {String} action the action name (see scheduledActions)
+     * @param {Object} scheduled the scheduled mail
+     * @returns {void}
+     */
+    onAction(action, scheduled) {
+      switch (action) {
+      case 'edit':
+        this.$root.$emit('edit-scheduled-email', { draftLocalId: scheduled.draftLocalId, scheduledDate: scheduled.scheduledDate });
+        break;
+      case 'reschedule':
+        this.rescheduled = scheduled;
+        this.rescheduleDialog = true;
+        break;
+      case 'sendNow':
+      case 'retry':
+      case 'sendAgain':
+        this.confirm({
+          title: this.$t('emailConnector.mailBox.scheduled.sendNow.confirm.title'),
+          message: this.$t(action === 'sendAgain'
+            ? 'emailConnector.mailBox.scheduled.sendNow.confirm.uncertainMessage'
+            : 'emailConnector.mailBox.scheduled.sendNow.confirm.message'),
+          okLabel: this.$t('emailConnector.mailBox.scheduled.sendNow.confirm.ok'),
+          run: () => this.sendNow(scheduled),
+        });
+        break;
+      case 'cancel':
+      case 'moveToDrafts':
+        this.confirm({
+          title: this.$t('emailConnector.mailBox.scheduled.cancel.confirm.title'),
+          message: this.$t('emailConnector.mailBox.scheduled.cancel.confirm.message'),
+          okLabel: this.$t('emailConnector.mailBox.scheduled.cancel.confirm.ok'),
+          run: () => this.cancel(scheduled),
+        });
+        break;
+      case 'discard':
+        this.confirm({
+          title: this.$t('emailConnector.mailBox.scheduled.discard.confirm.title'),
+          message: this.$t('emailConnector.mailBox.scheduled.discard.confirm.message'),
+          okLabel: this.$t('emailConnector.mailBox.scheduled.discard.confirm.ok'),
+          run: () => this.discard(scheduled),
+        });
+        break;
+      default:
+        break;
+      }
+    },
+    /**
+     * Asks a question, and runs its answer on "ok".
+     *
+     * @param {Object} confirmation {title, message, okLabel, run}
+     * @returns {void}
+     */
+    confirm(confirmation) {
+      this.confirmation = confirmation;
+      this.$nextTick(() => this.$refs.scheduledConfirmDialog.open());
+    },
+    /**
+     * Runs what the confirmed question was about.
+     *
+     * @returns {void}
+     */
+    runConfirmed() {
+      const run = this.confirmation?.run;
+      this.confirmation = null;
+      if (run) {
+        run();
+      }
+    },
+    /**
+     * Gives the mail the date picked in the dialog.
+     *
+     * @param {Number} scheduledDate the instant, epoch milliseconds
+     * @param {String} timeZone the zone it was chosen in
+     * @returns {Promise<void>} resolved once done or refused
+     */
+    reschedule(scheduledDate, timeZone) {
+      const scheduled = this.rescheduled;
+      if (!scheduled || this.rescheduling) {
+        return Promise.resolve();
+      }
+      this.rescheduling = true;
+      return this.$emailConnectorMailBoxService.rescheduleEmail(scheduled.draftLocalId, scheduledDate, timeZone)
+        .then(updated => {
+          this.rescheduleDialog = false;
+          this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.reschedule.success', {
+            0: this.$emailConnectorMailBoxService.formatScheduledDate(updated?.scheduledDate || scheduledDate,
+              updated?.timeZone || timeZone),
+          }), 'success');
+          this.changed();
+        })
+        .catch(error => {
+          this.refused(error);
+          // A refusal (409) means the mail's state moved under the user: shown as it is.
+          this.changed();
+        })
+        .finally(() => this.rescheduling = false);
+    },
+    /**
+     * Sends the mail now, or again. The request answers once the mail server has, which
+     * may take minutes: the row says it is sending meanwhile, and the user is told so.
+     *
+     * @param {Object} scheduled the scheduled mail
+     * @returns {Promise<void>} resolved once the server answered
+     */
+    sendNow(scheduled) {
+      return this.onRow(scheduled, () => {
+        this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.sendNow.progress'), 'info');
+        return this.$emailConnectorMailBoxService.sendScheduledEmailNow(scheduled.draftLocalId)
+          .then(result => {
+            if (result?.status === 'SENT') {
+              this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.sendNow.success'), 'success');
+              // The Sent folder receives its copy from the mail server, a moment later:
+              // the mailbox keeps re-reading for it, as after any send.
+              this.$root.$emit('email-sent');
+              return;
+            }
+            const line = this.$emailConnectorMailBoxService.scheduledStateLine(result);
+            const reason = line?.reasonKey ? this.$t(line.key, { 0: this.$t(line.reasonKey) }) : this.$t(line?.key
+              || 'emailConnector.mailBox.scheduled.action.error');
+            this.$root.$emit('alert-message', reason, 'error');
+          });
+      });
+    },
+    /**
+     * Takes the mail out of its schedule: back to Drafts, content kept.
+     *
+     * @param {Object} scheduled the scheduled mail
+     * @returns {Promise<void>} resolved once done or refused
+     */
+    cancel(scheduled) {
+      return this.onRow(scheduled, () => this.$emailConnectorMailBoxService.cancelScheduledEmail(scheduled.draftLocalId)
+        .then(() => this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.cancel.success'), 'success')));
+    },
+    /**
+     * Throws the mail away: the draft goes, and its schedule with it.
+     *
+     * @param {Object} scheduled the scheduled mail
+     * @returns {Promise<void>} resolved once done or refused
+     */
+    discard(scheduled) {
+      return this.onRow(scheduled, () => this.$emailConnectorMailBoxService.deleteDraft(scheduled.draftLocalId)
+        .then(() => this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.discard.success'), 'success')));
+    },
+    /**
+     * Runs an action on one row: the row is busy meanwhile, a refusal is said in the
+     * user's words, and the view and the folder counts are read again either way --
+     * a refusal (409) means the mail's state moved under the user.
+     *
+     * @param {Object} scheduled the scheduled mail
+     * @param {Function} action runs the request, answers a promise
+     * @returns {Promise<void>} resolved once done or refused
+     */
+    onRow(scheduled, action) {
+      const id = scheduled.draftLocalId;
+      if (this.busyIds.includes(id)) {
+        return Promise.resolve();
+      }
+      this.busyIds.push(id);
+      return Promise.resolve()
+        .then(action)
+        .catch(error => this.refused(error))
+        .finally(() => {
+          this.busyIds = this.busyIds.filter(busy => busy !== id);
+          this.changed();
+        });
+    },
+    /**
+     * Says why a request was refused, in the user's words.
+     *
+     * @param {Error} error the refusal
+     * @returns {void}
+     */
+    refused(error) {
+      this.$root.$emit('alert-message', this.$emailConnectorMailBoxService.scheduledErrorMessage(error, this,
+        'emailConnector.mailBox.scheduled.action.error'), 'error');
+    },
+    /**
+     * Reads the view again, and has the mailbox re-read its folders: the view's count and
+     * warning colour, Drafts' count.
+     *
+     * @returns {void}
+     */
+    changed() {
+      this.reload();
+      this.$root.$emit('refresh-email-box');
+    },
+  },
+};
+</script>

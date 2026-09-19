@@ -44,13 +44,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             height="36">
             <v-icon
               class="mx-auto"
-              :class="folder.key === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
+              :class="folder.key === currentFolder && !categoryViewId ? 'primary--text' : (folder.attention ? 'warning--text' : 'icon-default-color')"
               size="16">
               {{ folder.icon }}
             </v-icon>
           </v-sheet>
           <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
             {{ folder.label }}
+          </span>
+          <!-- The Scheduled view's count, in the warning colour when one of its mails was
+               not sent (EXO-90434). -->
+          <span
+            v-if="folder.count"
+            :class="folder.attention ? 'warning--text font-weight-bold' : 'text-sub-title'"
+            class="ms-auto ps-2 caption folder-menu-count">
+            {{ $emailConnectorMailBoxService.formatCount(folder.count) }}
           </span>
         </v-list-item>
       </div>
@@ -111,8 +119,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         {{ $t('emailConnector.mailBox.list.drawer.sync.tooltip') }}
       </span>
     </v-list-item>
-    <!-- Select mode: multi-select rows to read/archive/delete in bulk. -->
+    <!-- Select mode: multi-select rows to read/archive/delete in bulk. Not in the
+         Scheduled view, whose mails are acted on one at a time (EXO-90434). -->
     <v-list-item
+      v-if="!scheduledView"
       class="height-auto"
       @click="enterSelectMode()">
       <v-sheet
@@ -239,11 +249,26 @@ export default {
      * @returns {Array} the folder descriptors to display
      */
     visibleFolders() {
-      return this.availableFolders.map(folder => ({
-        key: folder.key,
-        icon: this.$emailConnectorMailBoxService.folderIcon(folder),
-        label: this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
-      }));
+      return this.availableFolders.map(folder => {
+        const scheduled = this.$emailConnectorMailBoxService.isScheduledView(folder.key);
+        return {
+          key: folder.key,
+          icon: this.$emailConnectorMailBoxService.folderIcon(folder),
+          label: this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
+          // Counted in the menu only for the Scheduled view, which is listed only when it
+          // holds something and says when one of its mails needs the user (EXO-90434).
+          count: scheduled ? folder.count || 0 : 0,
+          attention: scheduled && !!folder.attention,
+        };
+      });
+    },
+    /**
+     * Whether the Scheduled view is listed: no multi-selection there.
+     *
+     * @returns {Boolean} true on the Scheduled view
+     */
+    scheduledView() {
+      return this.$emailConnectorMailBoxService.isScheduledView(this.currentFolder);
     },
     /**
      * Whether the FOLDERS section scrolls in its own bounded pane -- Benjamin's

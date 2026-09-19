@@ -18,7 +18,8 @@ extensionRegistry.registerExtension('WebNotification', 'notification-group-exten
   rank: 50,
   name: 'email-connector',
   plugins: [
-    'NewEmailsNotificationPlugin'
+    'NewEmailsNotificationPlugin',
+    'ScheduledEmailFailedNotificationPlugin',
   ],
   icon: 'fa-envelope',
 });
@@ -26,4 +27,9 @@ extensionRegistry.registerExtension('WebNotification', 'notification-content-ext
   type: 'NewEmailsNotificationPlugin',
   rank: 10,
   vueComponent: Vue.options.components['user-notification-new-emails'],
+});
+extensionRegistry.registerExtension('WebNotification', 'notification-content-extension', {
+  type: 'ScheduledEmailFailedNotificationPlugin',
+  rank: 10,
+  vueComponent: Vue.options.components['user-notification-scheduled-email-failed'],
 });
