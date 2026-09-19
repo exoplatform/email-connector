@@ -210,7 +210,7 @@ export default {
           this.$set(email, 'read', read);
         }
       });
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      this.selectEmailPlaceHolder = this.placeholderAfterReadStatus(read, emails);
       if (this.selectMode) {
         this.cancelSelectMode();
       }
@@ -549,6 +549,29 @@ export default {
     cancelSelectMode() {
       this.selectMode = false;
       this.selectedEmails = [];
+    },
+    /**
+     * Whether the wide layout shows the "select an email" placeholder after a read
+     * status was applied to some messages.
+     * <p>
+     * Marking UNREAD is the "mark unread and put it away" intent, and puts away the
+     * opened message when it is among them. Marking READ never does: it is what
+     * opening a message does to its conversation — this drawer marks the opened
+     * message read as it opens it, and the reader marks the rest read as soon as the
+     * conversation lands, possibly before the opened message's own request has
+     * answered. Sending the reader to the placeholder then dropped that request and
+     * left the user facing "Select an email". It only shows the placeholder when
+     * nothing is open.
+     *
+     * @param {boolean} read - the read status applied
+     * @param {Array<Number>} emails - the messages it was applied to
+     * @returns {boolean} whether to show the placeholder
+     */
+    placeholderAfterReadStatus(read, emails) {
+      if (read) {
+        return this.selectEmailPlaceHolder || (this.expanded && !this.email);
+      }
+      return this.canDisplaySelectEmailPlaceHolder(emails);
     },
     canDisplaySelectEmailPlaceHolder(emails) {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
