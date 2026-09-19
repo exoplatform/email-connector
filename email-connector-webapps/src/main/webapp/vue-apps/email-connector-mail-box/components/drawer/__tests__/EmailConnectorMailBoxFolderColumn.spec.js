@@ -515,6 +515,20 @@ describe('going somewhere in full screen opens its first mail (EXO-90415)', () =
     expect(revealThreadRow).toHaveBeenCalledWith(row(2).threadId);
   });
 
+  it('gives the focus to the first row when the kept mail is pinned from outside and not listed', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1, 'INBOX', { categoryIds: [12] }), row(2, 'INBOX', { categoryIds: [12] })] });
+    await expand(fixture);
+    await fixture.wrapper.setData({ pinnedEmail: true, email: { ...row(9), to: [] }, selectEmailPlaceHolder: false });
+    const revealThreadRow = jest.spyOn(fixture.wrapper.vm, 'revealThreadRow');
+
+    fixture.wrapper.vm.$root.$emit('open-category-view', 12);
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(9);
+    expect(revealThreadRow).toHaveBeenCalledWith(row(1).threadId);
+  });
+
   it('opens nothing in the narrow layout, where the list is what is on screen', async () => {
     fixture = await mountDrawer({ INBOX: [row(1)], SENT: [row(7, 'SENT')] });
     const revealThreadRow = jest.spyOn(fixture.wrapper.vm, 'revealThreadRow');
