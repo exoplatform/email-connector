@@ -400,24 +400,19 @@ export default {
       this.stableCategoryPolls = 0;
     };
     this.$root.$on('email-sent', this.onEmailSent);
-    this.onOpenEmailDetailContent = (mailRemoteId) => {
+    // Every event below that names messages by IMAP UID may say which folder they are
+    // numbered in, as its last argument. The reader, a search result and the list rows
+    // of a search say it: a UID only numbers a message within its folder, and a search
+    // holds several folders, so the listed folder may hold ANOTHER message under the
+    // same number -- which a bare UID used to reach on the mail server (EXO-90416).
+    this.onOpenEmailDetailContent = (mailRemoteId, folder) => {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
-      this.openEmailDetailContent(mailRemoteId);
+      this.openEmailDetailContent(mailRemoteId, folder);
     };
-    this.onUpdateEmailReadStatus = (read, emails) => {
-      this.updateEmailsReadStatus(read, emails);
-      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
-        return; 
-      }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-    };
-    this.onDeleteEmail = (emails) => {
-      this.deleteEmails(emails);
+    this.onUpdateEmailReadStatus = (read, emails, folder) => {
+      this.updateEmailsReadStatus(read, emails, folder);
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
@@ -426,8 +421,18 @@ export default {
         this.cancelSelectMode();
       }
     };
-    this.onArchiveEmail = (emails) => {
-      this.archiveEmails(emails);
+    this.onDeleteEmail = (emails, folder) => {
+      this.deleteEmails(emails, folder);
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
+        return; 
+      }
+      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      if (this.selectMode) {
+        this.cancelSelectMode();
+      }
+    };
+    this.onArchiveEmail = (emails, folder) => {
+      this.archiveEmails(emails, folder);
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
@@ -465,8 +470,8 @@ export default {
     // The two Junk actions, wired the same way. "Mark as spam" leaves from any
     // writable folder, "Not spam" from the Spam listing; a Delete out of Spam is the
     // ordinary delete-email above, addressed to the row's own folder.
-    this.onJunkEmail = (emails) => {
-      this.markAsJunk(emails);
+    this.onJunkEmail = (emails, folder) => {
+      this.markAsJunk(emails, folder);
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return;
       }
@@ -490,8 +495,8 @@ export default {
     // "Move to..." into one of the user's own folders, wired the same way as archive:
     // the rows leave the listing at once, the reader stops showing what is no longer
     // there, and a running selection ends. The target comes from the picker drawer.
-    this.onMoveEmail = (emails, target) => {
-      this.moveEmails(emails, target);
+    this.onMoveEmail = (emails, target, folder) => {
+      this.moveEmails(emails, target, folder);
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return;
       }
@@ -893,9 +898,10 @@ export default {
      * the same lookup the narrow drawer does in its own folderOf.
      *
      * @param {Number} mailRemoteId the message's IMAP UID within the listed folder
+     * @param {String} folder the folder it is numbered in, when the row says so
      * @returns {void}
      */
-    openEmailDetailContent(mailRemoteId) {
+    openEmailDetailContent(mailRemoteId, folder = null) {
       // A row an Undo put back, or a move filed here, is a snapshot: it carries the UID
       // it had before the move (or a placeholder, see rememberMovedRows), which the
       // server's re-read replaces, so nothing can be opened by it yet. The row renders
@@ -908,9 +914,10 @@ export default {
       // from elsewhere gives way to it.
       this.pinnedEmail = false;
       this.loading = true;
-      const listed = this.emails.find(e => e.mailRemoteId === mailRemoteId);
-      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, listed?.folder || 'INBOX').then((email) => {
-        this.updateEmailsReadStatus(true, [mailRemoteId]);
+      const listed = this.rowOfEmail(mailRemoteId, folder);
+      const ownFolder = folder || listed?.folder || 'INBOX';
+      this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder).then((email) => {
+        this.updateEmailsReadStatus(true, [mailRemoteId], ownFolder);
         this.email = email;
         this.selectEmailPlaceHolder = false;
       }).finally(() => {
@@ -974,7 +981,7 @@ export default {
           this.selectEmailPlaceHolder = false;
           this.$root.$emit('set-opened', hit.mailRemoteId);
         } else {
-          this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer);
+          this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer, hit.folder);
         }
       } catch (error) {
         // A mailbox held by a running synchronization is a "one moment", not a
@@ -1122,7 +1129,7 @@ export default {
           this.selectEmailPlaceHolder = false;
           this.$root.$emit('set-opened', result.mailRemoteId);
         } else {
-          this.$root.$emit('open-email-detail-drawer', result.mailRemoteId, this.mergedSearchResults, this.syncInProgress, this.webmailUrl, true);
+          this.$root.$emit('open-email-detail-drawer', result.mailRemoteId, this.mergedSearchResults, this.syncInProgress, this.webmailUrl, true, false, result.folder);
         }
       } catch (error) {
         // A fetch refused because a synchronization is running (already retried
@@ -1212,14 +1219,28 @@ export default {
      * read would promise a state nothing is saving, and the next sync would take it
      * back.
      *
+     * With a folder -- given by whoever acts on a search result or on the opened
+     * message -- the ids are that folder's, and a listed row sharing a number in
+     * another folder is left alone: it is another message (EXO-90416). A message of
+     * that folder the listing does not hold is pushed all the same, its search row
+     * stamped.
+     *
      * @param {Boolean} read the status to apply
      * @param {Array} emailIds the IMAP UIDs to apply it to
+     * @param {String} folder the folder they are numbered in, when the caller knows it
      * @returns {void}
      */
-    updateEmailsReadStatus(read, emailIds = []) {
+    updateEmailsReadStatus(read, emailIds = [], folder = null) {
+      const unlisted = [];
       const emailIdsToUpdate = emailIds.filter(id => {
-        const email = this.emails.find(e => e.mailRemoteId === id);
-        if (!email || this.$emailConnectorMailBoxService.isReadOnlyFolder(email.folder)) {
+        const email = this.emails.find(e => e.mailRemoteId === id && (!folder || (e.folder || 'INBOX') === folder));
+        if (!email) {
+          if (folder && !this.$emailConnectorMailBoxService.isReadOnlyFolder(folder)) {
+            unlisted.push(id);
+          }
+          return false;
+        }
+        if (this.$emailConnectorMailBoxService.isReadOnlyFolder(email.folder)) {
           return false;
         }
         if (email.read !== read) {
@@ -1228,8 +1249,14 @@ export default {
         }
         return false;
       });
-      this.byOwnFolder(emailIdsToUpdate).forEach(([folder, ids]) =>
-        this.$emailConnectorMailBoxService.updateEmailsReadStatus(ids, read, folder));
+      this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) =>
+        this.$emailConnectorMailBoxService.updateEmailsReadStatus(ids, read, ownFolder));
+      if (unlisted.length) {
+        this.searchServerResults
+          .filter(result => unlisted.includes(result.mailRemoteId) && (result.folder || 'INBOX') === folder)
+          .forEach(result => this.$set(result, 'read', read));
+        this.$emailConnectorMailBoxService.updateEmailsReadStatus(unlisted, read, folder);
+      }
     },
     /**
      * The folder a message id belongs to — the ROW's own, which is the only one the
@@ -1245,23 +1272,32 @@ export default {
      * before the mailbox held other folders means.
      *
      * @param {Number} mailRemoteId the message's IMAP UID
+     * @param {String} folder the folder, when the caller already knows it
      * @returns {String} the folder that id is numbered in
      */
-    folderOfEmail(mailRemoteId) {
-      return this.rowOfEmail(mailRemoteId)?.folder || 'INBOX';
+    folderOfEmail(mailRemoteId, folder = null) {
+      return folder || this.rowOfEmail(mailRemoteId)?.folder || 'INBOX';
     },
     /**
      * The row this drawer holds for a message id, from the three places it holds rows
      * -- see folderOfEmail for why they genuinely differ. Null for an id from none of
      * them.
      *
+     * Without a folder the listing answers first, which is right for every action
+     * started from the folder's own list; an action on a search result or on the
+     * opened message passes the folder it acts in, because the listing may hold another
+     * message under the same number -- and acting on it would move, delete or flag the
+     * wrong mail on the mail server (EXO-90416).
+     *
      * @param {Number} mailRemoteId the message's IMAP UID
+     * @param {String} folder the folder it is numbered in, when the caller knows it
      * @returns {Object} the row, or null
      */
-    rowOfEmail(mailRemoteId) {
-      return (this.emails || []).find(email => email.mailRemoteId === mailRemoteId)
-        || (this.searchServerResults || []).find(result => result.mailRemoteId === mailRemoteId)
-        || (this.email?.mailRemoteId === mailRemoteId ? this.email : null);
+    rowOfEmail(mailRemoteId, folder = null) {
+      const inFolder = (row, fallback) => !folder || (row.folder || fallback) === folder;
+      return (this.emails || []).find(email => email.mailRemoteId === mailRemoteId && inFolder(email, 'INBOX'))
+        || (this.searchServerResults || []).find(result => result.mailRemoteId === mailRemoteId && inFolder(result, 'INBOX'))
+        || (this.email?.mailRemoteId === mailRemoteId && inFolder(this.email, 'INBOX') ? this.email : null);
     },
     /**
      * Groups message ids by the folder each one is listed in, so one request goes out
@@ -1272,9 +1308,13 @@ export default {
      * folders, and that is the case the grouping exists for.
      *
      * @param {Array<Number>} emailIds the ids to act on
+     * @param {String} folder the folder they are all numbered in, when the caller knows it
      * @returns {Array} [folder, ids] pairs, empty when there is nothing to do
      */
-    byOwnFolder(emailIds = []) {
+    byOwnFolder(emailIds = [], folder = null) {
+      if (folder) {
+        return emailIds.length ? [[folder, emailIds]] : [];
+      }
       const groups = new Map();
       emailIds.forEach(id => {
         const folder = this.folderOfEmail(id);
@@ -1467,12 +1507,14 @@ export default {
      * screen, answered success, and the message was still there after a reload.
      *
      * @param {Array<Number>} emailIdsToDelete the IMAP UIDs to delete
+     * @param {String} folder the folder they are numbered in, when the emitter knows it (a
+     *   search result, the opened message); otherwise each row's own
      * @returns {void}
      */
-    deleteEmails(emailIdsToDelete = []) {
-      this.fileIntoHiddenFolder(emailIdsToDelete, 'TRASH', 'delete', (ids, folder) =>
-        this.$emailConnectorMailBoxService.deleteEmails(ids, folder, true)
-          .then(deleteResult => deleteResult.failedDeletions ?? 0));
+    deleteEmails(emailIdsToDelete = [], folder = null) {
+      this.fileIntoHiddenFolder(emailIdsToDelete, 'TRASH', 'delete', (ids, ownFolder) =>
+        this.$emailConnectorMailBoxService.deleteEmails(ids, ownFolder, true)
+          .then(deleteResult => deleteResult.failedDeletions ?? 0), folder);
     },
     /**
      * The shared body of deleteEmails and markAsJunk: files the listed rows into the
@@ -1500,12 +1542,14 @@ export default {
      * @param {String} action the alert's verb key (see alertOnActionFailures)
      * @param {Function} request (ids, folder) => Promise<Number> — the request for one
      *   folder's ids, resolving with how many failed
+     * @param {String} actingFolder the folder the ids are numbered in, when the emitter
+     *   knows it (a search result, the opened message)
      * @returns {void}
      */
-    fileIntoHiddenFolder(emailIds, target, action, request) {
-      const groups = this.byOwnFolder(emailIds);
+    fileIntoHiddenFolder(emailIds, target, action, request, actingFolder = null) {
+      const groups = this.byOwnFolder(emailIds, actingFolder);
       const filed = groups.map(([folder, ids]) =>
-        this.rememberMovedRows(ids.map(id => ({ ...this.rowOfEmail(id), folder })), target));
+        this.rememberMovedRows(ids.map(id => ({ ...this.rowOfEmail(id, folder), folder })), target));
       const hidden = target === 'JUNK' ? this.junkedEmailIds : this.deletedEmailIds;
       hidden.push(...emailIds);
       groups.forEach(([folder, ids], index) =>
@@ -1562,7 +1606,7 @@ export default {
       if (!emailIds.length) {
         return;
       }
-      const rows = emailIds.map(id => ({ ...this.rowOfEmail(id), folder: origin }));
+      const rows = emailIds.map(id => ({ ...this.rowOfEmail(id, origin), folder: origin }));
       hidden.push(...emailIds);
       request(emailIds)
         .then(({ failures, toSent }) => {
@@ -1603,12 +1647,14 @@ export default {
      * it.
      *
      * @param {Array<Number>} emailIdsToJunk the IMAP UIDs to report as spam
+     * @param {String} folder the folder they are numbered in, when the emitter knows it (a
+     *   search result, the opened message); otherwise each row's own
      * @returns {void}
      */
-    markAsJunk(emailIdsToJunk = []) {
-      this.fileIntoHiddenFolder(emailIdsToJunk, 'JUNK', 'junk', (ids, folder) =>
-        this.$emailConnectorMailBoxService.markAsJunk(ids, folder, true)
-          .then(junkResult => junkResult.failedJunkMoves ?? 0));
+    markAsJunk(emailIdsToJunk = [], folder = null) {
+      this.fileIntoHiddenFolder(emailIdsToJunk, 'JUNK', 'junk', (ids, ownFolder) =>
+        this.$emailConnectorMailBoxService.markAsJunk(ids, ownFolder, true)
+          .then(junkResult => junkResult.failedJunkMoves ?? 0), folder);
     },
     /**
      * Puts quarantined messages back where they came from — "Not spam": the user's
@@ -1659,11 +1705,13 @@ export default {
      * Moves messages to the Archive, one request per folder they are listed in.
      *
      * @param {Array<Number>} emailIdsToArchive the IMAP UIDs to archive
+     * @param {String} folder the folder they are numbered in, when the emitter knows it (a
+     *   search result, the opened message); otherwise each row's own
      * @returns {void}
      */
-    archiveEmails(emailIdsToArchive = []) {
+    archiveEmails(emailIdsToArchive = [], folder = null) {
       // Group BEFORE hiding the rows — same reason as deleteEmails above.
-      const groups = this.byOwnFolder(emailIdsToArchive);
+      const groups = this.byOwnFolder(emailIdsToArchive, folder);
       this.archivedEmailIds.push(...emailIdsToArchive);
       groups.forEach(([folder, ids]) =>
         this.$emailConnectorMailBoxService.archiveEmails(ids, folder)
@@ -1692,23 +1740,24 @@ export default {
      *
      * @param {Array<Number>} emailIdsToMove the IMAP UIDs to move
      * @param {String} target the destination's key (CUSTOM:<id>, INBOX or ARCHIVE)
+     * @param {String} sourceFolder the folder they are numbered in, when the picker knows it
      * @returns {Promise} resolving once every request has answered
      */
-    moveEmails(emailIdsToMove = [], target) {
+    moveEmails(emailIdsToMove = [], target, sourceFolder = null) {
       if (!target) {
         return Promise.resolve();
       }
       // Group BEFORE hiding the rows — same reason as deleteEmails above.
-      const groups = this.byOwnFolder(emailIdsToMove);
+      const groups = this.byOwnFolder(emailIdsToMove, sourceFolder);
       // The undo's addresses, taken now for the same reason: it names the messages by
       // Message-ID, the one thing they keep across a move (the COPY renumbers the UID),
       // and the row is the only place this drawer can read it from.
       const undoGroups = groups.map(([folder, ids]) => ({
         folder,
-        mailHeaderIds: ids.map(id => this.rowOfEmail(id)?.mailHeaderId || null),
+        mailHeaderIds: ids.map(id => this.rowOfEmail(id, folder)?.mailHeaderId || null),
         // The rows themselves, for the Undo to put back into the listing at once (see
         // undoMove) -- stamped with their folder, which an inbox row leaves implicit.
-        rows: ids.map(id => ({ ...this.rowOfEmail(id), folder })),
+        rows: ids.map(id => ({ ...this.rowOfEmail(id, folder), folder })),
       }));
       // The destination's rows, remembered per request so a request the server refused
       // forgets exactly its own.

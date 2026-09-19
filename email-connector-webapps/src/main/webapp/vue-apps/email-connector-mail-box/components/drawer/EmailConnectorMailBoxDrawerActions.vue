@@ -364,8 +364,32 @@ export default {
      * @returns {Boolean} true when "Move to..." may be offered
      */
     canMoveSelection() {
-      return this.canMarkSelectionAsJunk
+      return this.canMarkSelectionAsJunk && this.selectionByFolder.length === 1
         && this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.selectionFolder).length > 0;
+    },
+    /**
+     * The selected ids grouped by the folder their rows are numbered in, in the order
+     * they were selected.
+     * <p>
+     * A folder's listing holds one folder, and this is one group -- the listed folder,
+     * as before. A list of search results holds several (the mail drawer opened on
+     * them), where one number may be two messages: each action is then sent once per
+     * folder, with that folder, so the mailbox never resolves a bare UID against the
+     * listed folder and acts on another message there (EXO-90416). The selection is
+     * kept by UID, so a number selected in such a list selects -- and shows selected --
+     * every row carrying it; the action reaches exactly those rows.
+     *
+     * @returns {Array} [folder, ids] pairs; a selected id no row holds goes under a
+     *          null folder, addressed as before
+     */
+    selectionByFolder() {
+      const groups = new Map();
+      this.selectedEmails.forEach(id => {
+        const rows = this.emails.filter(email => email.mailRemoteId === id);
+        const folders = rows.length ? rows.map(row => row.folder || 'INBOX') : [null];
+        Array.from(new Set(folders)).forEach(folder => groups.set(folder, (groups.get(folder) || []).concat(id)));
+      });
+      return Array.from(groups.entries());
     },
     /**
      * The folder the selected rows are listed in -- a listing holds one folder's rows,
@@ -400,11 +424,23 @@ export default {
     openNewEmailDrawer() {
       this.$root.$emit('open-new-email-drawer');
     },
+    /**
+     * Sends a bulk action once per folder of the selection (see selectionByFolder), the
+     * folder last.
+     *
+     * @param {String} event the action's event
+     * @param {Array} before the arguments that precede the ids (the read status)
+     * @returns {void}
+     */
+    emitPerFolder(event, ...before) {
+      this.selectionByFolder.forEach(([folder, ids]) =>
+        this.$root.$emit(event, ...before, ids, ...(folder ? [folder] : [])));
+    },
     updateEmailsReadStatus(read) {
-      this.$root.$emit('update-email-read-status', read, this.selectedEmails);
+      this.emitPerFolder('update-email-read-status', read);
     },
     archiveEmails() {
-      this.$root.$emit('archive-email', this.selectedEmails);
+      this.emitPerFolder('archive-email');
     },
     /**
      * Reports the whole selection as spam. No confirmation — undone from the Spam
@@ -413,7 +449,7 @@ export default {
      * @returns {void}
      */
     markAsJunk() {
-      this.$root.$emit('junk-email', this.selectedEmails);
+      this.emitPerFolder('junk-email');
     },
     /**
      * Opens the folder picker for the whole selection; the move itself is sent once
@@ -451,7 +487,7 @@ export default {
       this.$root.$emit('open-purge-email-confirm-popup', this.selectedEmails);
     },
     deleteEmails() {
-      this.$root.$emit('delete-email', this.selectedEmails); 
+      this.emitPerFolder('delete-email');
     },
     synchronize() {
       this.$root.$emit('synchronize-in-progress');

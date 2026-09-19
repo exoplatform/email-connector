@@ -104,7 +104,9 @@ export default {
      * @returns {void}
      */
     moveTo(folder) {
-      this.$root.$emit('move-email', this.mailRemoteIds, folder.key);
+      // The source folder travels with the ids: they are numbered in it, and the listing
+      // may hold other messages under the same numbers (EXO-90416).
+      this.$root.$emit('move-email', this.mailRemoteIds, folder.key, this.sourceFolder);
       this.$refs.moveToFolderDrawer.close();
     },
     /**
