@@ -331,11 +331,22 @@ public class EmailBoxService {
    * release a claim in this JVM: it sends the notification itself when it is done
    * ({@link #sendPendingNewEmailsNotification(String)}), and this hold is the safety
    * net when it is slow. Floored at the grace delay, capped at the 15-minute backstop.
+   * <p>
+   * <b>The 120-second default is a deliberate trade-off (PO decision, EXO-90418):
+   * a timely notification over category filtering.</b> On a busy platform (more due
+   * mailboxes than background AI slots, or a rate-limited provider) the classifier may
+   * not finish within it; the notification then goes out on time and counts the new mail
+   * as it stands, the not-yet-categorized messages notifying as uncategorized mail always
+   * does, so the owner's per-category preference is not applied to that one notification.
+   * Raise the property to favour the filter over the delay.
    */
   public static final String      NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY                   =
                                                                             "email.connector.notification.classification.hold.seconds";
 
-  /** The default of {@link #NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY}: two minutes. */
+  /**
+   * The default of {@link #NOTIFICATION_CLASSIFICATION_HOLD_PROPERTY}: two minutes, the
+   * PO's choice of timeliness over filtering on a busy platform (see the property).
+   */
   private static final long       DEFAULT_NOTIFICATION_CLASSIFICATION_HOLD_SECONDS            = 120L;
 
   // Cooldown before a BLOCKED mailbox is allowed to retry a sync, so BLOCKED is a temporary
