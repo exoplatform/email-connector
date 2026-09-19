@@ -15,16 +15,31 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item class="full-height align-center">
+  <!-- Compact, it sits at the top of the full-screen list column, under its chips
+       (EXO-90415); otherwise it fills the narrow drawer. -->
+  <v-list-item :class="compact ? 'pt-6 align-start' : 'full-height align-center'">
     <v-list-item-content>
       <v-icon
-        size="60"
+        :size="compact ? 32 : 60"
         class="tertiary--text">
         far fa-envelope
       </v-icon>
-      <v-list-item-title class="text-wrap mt-5">
+      <v-list-item-title :class="compact ? 'mt-3' : 'mt-5'" class="text-wrap">
         {{ $t('emailConnector.mailBox.list.drawer.noEmail') }}
       </v-list-item-title>
     </v-list-item-content>
   </v-list-item>
 </template>
+
+<script>
+export default {
+  props: {
+    // Whether it sits at the top of the full-screen list column rather than filling
+    // the narrow drawer.
+    compact: {
+      type: Boolean,
+      default: false,
+    },
+  },
+};
+</script>
