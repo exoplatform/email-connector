@@ -26,6 +26,7 @@ import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerNavigation from '../EmailConnectorMailBoxDrawerNavigation.vue';
 import EmailConnectorMailBoxDrawerActionMenuItems from '../EmailConnectorMailBoxDrawerActionMenuItems.vue';
 import EmailConnectorMailBoxApp from '../../EmailConnectorMailBoxApp.vue';
+import EmailConnectorMailBoxDrawerNoEmail from '../EmailConnectorMailBoxDrawerNoEmail.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 import { KEY_OPEN_DELAY_MS } from '../../../js/EmailConnectorMailBoxListNavigation.js';
 
@@ -499,32 +500,117 @@ describe('the full-screen left pane (EXO-90415)', () => {
       .attributes('hide-views')).toBeUndefined();
   });
 
-  it('sets the list, folder or search, on white beside the grey column, with a border between, open and as a rail', async () => {
+  it('keeps the list, folder or search, on the pane\'s grey, the column a shade darker, a divider between, open and as a rail', async () => {
     fixture = await mountDrawer({ INBOX: [row(1)] });
     await fixture.wrapper.setData({ navigationRail: false });
     await expand(fixture);
 
     const pane = () => fixture.wrapper.vm.$refs.expandedListPane;
     const column = () => fixture.wrapper.find('email-connector-mail-box-drawer-navigation');
-    expect(pane().classList.contains('white-background')).toBe(true);
-    expect(column().classes()).toContain('border-right-color');
-    // The column keeps the pane's platform grey: it paints no background of its own.
-    expect(column().classes().some(name => name.includes('background'))).toBe(false);
+    // The list paints nothing of its own: exo-drawer's grey pane, as its header strip.
+    expect(Array.from(pane().classList).some(name => name.includes('background') || name === 'white')).toBe(false);
+    expect(column().classes()).toContain('grey-background');
+    // The divider sits between them, whichever the reading direction.
+    const divider = column().element.nextElementSibling;
+    expect(divider.tagName).toBe('V-DIVIDER');
+    expect(divider.getAttribute('vertical')).not.toBeNull();
+    expect(divider.nextElementSibling).toBe(pane());
 
     await fixture.wrapper.setData({ navigationRail: true, searchTerm: 'mail' });
-    expect(pane().classList.contains('white-background')).toBe(true);
     expect(pane().querySelector('email-connector-mail-box-drawer-search-results')).not.toBeNull();
-    expect(column().classes()).toContain('border-right-color');
+    expect(Array.from(pane().classList).some(name => name.includes('background'))).toBe(false);
+    expect(column().classes()).toContain('grey-background');
   });
 
-  it('draws the border on the column\'s other side in a right-to-left language', async () => {
-    fixture = await mountDrawer({ INBOX: [row(1)] });
-    fixture.wrapper.vm.$vuetify.rtl = true;
-    await expand(fixture);
+  describe('an empty list says so in the list, not in the reader', () => {
+    /**
+     * Where the "No email" message is, and what the reader shows.
+     *
+     * @returns {Object} {inList, compact, inReader, placeholder, reader}
+     */
+    function emptyState() {
+      const left = fixture.wrapper.find('[data-slot="fullAppLeftContent"]');
+      const content = fixture.wrapper.find('[data-slot="content"]');
+      const inList = left.find('email-connector-mail-box-drawer-no-email');
+      return {
+        inList: inList.exists(),
+        compact: inList.exists() && 'compact' in inList.attributes(),
+        inReader: content.exists() && content.find('email-connector-mail-box-drawer-no-email').exists(),
+        placeholder: content.exists() && content.find('email-connector-mail-box-drawer-select-email').exists(),
+        reader: content.exists() && content.find('email-connector-mail-box-drawer-thread-content').exists(),
+      };
+    }
 
-    const column = fixture.wrapper.find('email-connector-mail-box-drawer-navigation');
-    expect(column.classes()).toContain('border-left-color');
-    expect(column.classes()).not.toContain('border-right-color');
+    it('an empty folder', async () => {
+      fixture = await mountDrawer({ INBOX: [] });
+      await expand(fixture);
+
+      expect(emptyState()).toEqual({ inList: true, compact: true, inReader: false, placeholder: false, reader: false });
+      // Under the chips, which stay: the way out of a filter.
+      const chips = fixture.wrapper.vm.$refs.expandedListPane.querySelector('email-connector-mail-box-drawer-filter-chips');
+      expect(chips.nextElementSibling.tagName).toBe('EMAIL-CONNECTOR-MAIL-BOX-DRAWER-NO-EMAIL');
+    });
+
+    it('chips or a category view matching nothing', async () => {
+      fixture = await mountDrawer({ INBOX: [row(1)] });
+      await expand(fixture);
+      expect(emptyState().reader).toBe(true);
+
+      await fixture.wrapper.setData({ selectEmailPlaceHolder: true });
+      fixture.wrapper.vm.$root.$emit('open-category-view', 12);
+      await flush();
+      await flush();
+      expect(emptyState()).toEqual({ inList: true, compact: true, inReader: false, placeholder: false, reader: false });
+    });
+
+    it('a search with no result', async () => {
+      fixture = await mountDrawer({ INBOX: [row(1)] });
+      await expand(fixture);
+      await fixture.wrapper.setData({ searchTerm: 'nothing matches this', selectEmailPlaceHolder: true });
+
+      const state = emptyState();
+      expect(state.inReader).toBe(false);
+      expect(state.placeholder).toBe(false);
+      // The search results say "no result" in the list column themselves.
+      expect(fixture.wrapper.vm.$refs.expandedListPane.querySelector('email-connector-mail-box-drawer-search-results')).not.toBeNull();
+    });
+
+    it('keeps the select-an-email placeholder while the list has mail', async () => {
+      fixture = await mountDrawer({ INBOX: [row(1)] });
+      await expand(fixture);
+      await fixture.wrapper.setData({ selectEmailPlaceHolder: true });
+
+      expect(emptyState().placeholder).toBe(true);
+    });
+
+    it('draws the compact message small and at the top, the narrow one as before', () => {
+      const draw = compact => shallowMount(EmailConnectorMailBoxDrawerNoEmail, { propsData: { compact }, mocks: { $t: key => key } });
+      const compact = draw(true);
+      expect(compact.find('v-list-item').classes()).toEqual(expect.arrayContaining(['pt-6', 'align-start']));
+      expect(compact.find('v-list-item').classes()).not.toContain('full-height');
+      expect(compact.find('v-icon').attributes('size')).toBe('32');
+      const narrow = draw(false);
+      expect(narrow.find('v-list-item').classes()).toEqual(expect.arrayContaining(['full-height', 'align-center']));
+      expect(narrow.find('v-icon').attributes('size')).toBe('60');
+    });
+
+    it('leaves the narrow layout as it was: the message fills the drawer', async () => {
+      fixture = await mountDrawer({ INBOX: [] });
+      await fixture.wrapper.vm.$nextTick();
+
+      const message = fixture.wrapper.find('[data-slot="content"]').find('email-connector-mail-box-drawer-no-email');
+      expect(message.exists()).toBe(true);
+      expect(message.attributes('compact')).toBeUndefined();
+    });
+
+    it('a mailbox blocked from synchronizing says so across the drawer', async () => {
+      fixture = await mountDrawer({ INBOX: [] });
+      await fixture.wrapper.setData({ emailBox: { emails: [], folders: FOLDERS, emailSyncStatus: 'BLOCKED' } });
+      await expand(fixture);
+
+      expect(fixture.wrapper.find('[data-slot="fullAppLeftContent"]').exists()).toBe(false);
+      expect(fixture.wrapper.find('[data-slot="content"]').text()).toContain('emailConnector.mailBox.list.drawer.sync.blocked.reconnect');
+    });
   });
 
   it('re-reads the folder list when the settings\' folders drawer changed it', async () => {
