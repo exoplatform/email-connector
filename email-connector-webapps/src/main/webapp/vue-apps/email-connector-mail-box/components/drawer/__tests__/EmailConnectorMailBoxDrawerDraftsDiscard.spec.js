@@ -17,7 +17,9 @@
 
 // EXO-90438 — the mailbox drawer's side of the Drafts Discard: one request per draft,
 // one re-read of the list when they have all answered, and a count the user is told
-// about.
+// about. Plus the last action that was still throwing its failure count away —
+// read/unread, whose refused pushes the server reverts on its own side while the
+// interface went on showing the state it had guessed.
 
 import { shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
@@ -60,6 +62,7 @@ async function mountDrawer(emails, answers = {}, currentFolder = 'DRAFTS') {
     isReadOnlyFolder: emailConnectorMailBoxService.isReadOnlyFolder,
     isDraftsFolder: emailConnectorMailBoxService.isDraftsFolder,
     discardDrafts: jest.fn(() => answers.discardDrafts || Promise.resolve({ discarded: 0, failed: 0, conflicted: 0 })),
+    updateEmailsReadStatus: jest.fn(() => answers.updateEmailsReadStatus || Promise.resolve({ failedUpdates: 0 })),
     getEmailBox: jest.fn(() => Promise.resolve({ emails, folders: FOLDERS, emailSyncStatus: 'SUCCESS' })),
     getAvailableEmailCategories: jest.fn(() => Promise.resolve([])),
   });
@@ -205,6 +208,43 @@ describe('the drawer discards the drafts it is handed and says what became of th
     await flush();
 
     expect(fixture.service.getEmailBox).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a read/unread the mail server refused is shown, not swallowed (EXO-90438)', () => {
+  let fixture;
+  afterEach(() => fixture?.teardown());
+
+  it('says how many pushes the server would not take', async () => {
+    fixture = await mountDrawer([{ mailRemoteId: 1, folder: 'INBOX', read: false }],
+      { updateEmailsReadStatus: Promise.resolve({ failedUpdates: 1 }) }, 'INBOX');
+
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [1]);
+    await flush();
+
+    expect(fixture.alerts.pop().alertMessage)
+      .toBe('emailConnector.mailBox.list.drawer.read.email.error|1');
+  });
+
+  it('a request that never answered counts as the whole batch, rather than rejecting into the console', async () => {
+    fixture = await mountDrawer([{ mailRemoteId: 1, folder: 'INBOX', read: true }, { mailRemoteId: 2, folder: 'INBOX', read: true }],
+      { updateEmailsReadStatus: Promise.reject(new Error('offline')) }, 'INBOX');
+
+    fixture.wrapper.vm.updateEmailsReadStatus(false, [1, 2]);
+    await flush();
+
+    expect(fixture.alerts.pop().alertMessage)
+      .toBe('emailConnector.mailBox.list.drawer.unread.emails.error|2');
+  });
+
+  it('says nothing when every push landed', async () => {
+    fixture = await mountDrawer([{ mailRemoteId: 1, folder: 'INBOX', read: false }],
+      { updateEmailsReadStatus: Promise.resolve({ failedUpdates: 0 }) }, 'INBOX');
+
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [1]);
+    await flush();
+
+    expect(fixture.alerts).toEqual([]);
   });
 });
 
