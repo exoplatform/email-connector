@@ -90,6 +90,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import { SCHEDULED_PAGE_SIZE } from '../../js/EmailConnectorScheduledSendService.js';
 
+// The largest page the server serves: it clamps the limit to it (EmailBoxRest).
+const MAX_SCHEDULED_READ = 100;
+
 export default {
   props: {
     // Whether it sits in the full-screen list column rather than in the narrow drawer.
@@ -135,12 +138,16 @@ export default {
   },
   methods: {
     /**
-     * Reads the view again from its first page, as far as it was read.
+     * Reads the view again from its first page, as far as it was read. The server pages
+     * by offset / limit, so the read is kept to whole pages: a length that is a multiple
+     * of the page size is what lets the next "Show more" land on the next page rather
+     * than inside one already listed. Capped at the largest page the server serves.
      *
      * @returns {Promise<void>} resolved once read
      */
     reload() {
-      return this.read(0, Math.max(SCHEDULED_PAGE_SIZE, this.items.length), true);
+      const pages = Math.max(1, Math.ceil(this.items.length / SCHEDULED_PAGE_SIZE));
+      return this.read(0, Math.min(pages * SCHEDULED_PAGE_SIZE, MAX_SCHEDULED_READ), true);
     },
     /**
      * Reads the next page.
@@ -168,7 +175,13 @@ export default {
             return;
           }
           const rows = page || [];
-          this.items = replace ? rows : [...this.items, ...rows];
+          if (replace) {
+            this.items = rows;
+          } else {
+            // A mail listed already is not listed twice, whatever moved in between.
+            const listed = new Set(this.items.map(item => item.draftLocalId));
+            this.items = [...this.items, ...rows.filter(row => !listed.has(row.draftLocalId))];
+          }
           this.hasMore = rows.length === limit;
         })
         .catch(() => {
@@ -300,6 +313,12 @@ export default {
               // The Sent folder receives its copy from the mail server, a moment later:
               // the mailbox keeps re-reading for it, as after any send.
               this.$root.$emit('email-sent');
+              return;
+            }
+            if (result?.status === 'SCHEDULED') {
+              // The mail server could not even be reached: nothing went out, and the mail
+              // is back in its schedule for an automatic retry.
+              this.$root.$emit('alert-message', this.$t('emailConnector.mailBox.scheduled.sendNow.retryLater'), 'warning');
               return;
             }
             const line = this.$emailConnectorMailBoxService.scheduledStateLine(result);
