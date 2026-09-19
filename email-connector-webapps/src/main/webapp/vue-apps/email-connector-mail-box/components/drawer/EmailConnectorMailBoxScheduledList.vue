@@ -113,6 +113,10 @@ export default {
     loading: false,
     loaded: false,
     hasMore: false,
+    // How many whole pages the list holds: where "Show more" reads next. Counted rather
+    // than derived from the rows' number, which a dropped duplicate leaves off a page
+    // boundary -- and the server floors an offset to its page.
+    pagesRead: 0,
     // The mails an action is running on: their menu waits, a bar says so.
     busyIds: [],
     rescheduleDialog: false,
@@ -146,7 +150,7 @@ export default {
      * @returns {Promise<void>} resolved once read
      */
     reload() {
-      const pages = Math.max(1, Math.ceil(this.items.length / SCHEDULED_PAGE_SIZE));
+      const pages = Math.max(1, Math.ceil(this.items.length / SCHEDULED_PAGE_SIZE), this.pagesRead);
       return this.read(0, Math.min(pages * SCHEDULED_PAGE_SIZE, MAX_SCHEDULED_READ), true);
     },
     /**
@@ -155,7 +159,7 @@ export default {
      * @returns {Promise<void>} resolved once read
      */
     loadMore() {
-      return this.read(this.items.length, SCHEDULED_PAGE_SIZE, false);
+      return this.read(this.pagesRead * SCHEDULED_PAGE_SIZE, SCHEDULED_PAGE_SIZE, false);
     },
     /**
      * Reads a page of the view. The server pages by multiples of the page size, so a
@@ -177,7 +181,9 @@ export default {
           const rows = page || [];
           if (replace) {
             this.items = rows;
+            this.pagesRead = limit / SCHEDULED_PAGE_SIZE;
           } else {
+            this.pagesRead++;
             // A mail listed already is not listed twice, whatever moved in between.
             const listed = new Set(this.items.map(item => item.draftLocalId));
             this.items = [...this.items, ...rows.filter(row => !listed.has(row.draftLocalId))];
