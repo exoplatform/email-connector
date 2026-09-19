@@ -18,7 +18,9 @@ package org.exoplatform.emailConnector.storage;
 
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -109,6 +111,24 @@ public class EmailScheduledSendStorage {
    */
   public EmailScheduledSend get(String userId, String draftLocalId) {
     return emailScheduledSendDAO.findByUserIdAndDraftLocalId(userId, draftLocalId).map(this::fromEntity).orElse(null);
+  }
+
+  /**
+   * The schedules of some of a user's drafts, keyed by draft handle, in one read.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalIds the drafts' handles
+   * @return the scheduled ones, by handle; empty when none is
+   */
+  public Map<String, EmailScheduledSend> getByDraftLocalIds(String userId, Collection<String> draftLocalIds) {
+    if (draftLocalIds == null || draftLocalIds.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, EmailScheduledSend> byDraft = new HashMap<>();
+    for (EmailScheduledSendEntity entity : emailScheduledSendDAO.findByUserIdAndDraftLocalIds(userId, draftLocalIds)) {
+      byDraft.put(entity.getDraftLocalId(), fromEntity(entity));
+    }
+    return byDraft;
   }
 
   /**
