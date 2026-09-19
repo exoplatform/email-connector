@@ -190,6 +190,37 @@ public class EmailScheduledSendStorageTest {
   }
 
   /**
+   * An edit of a scheduled mail's content takes its row only while it is scheduled or
+   * failed: never while it is being sent, once sent, once its sending is uncertain, nor
+   * another user's (EXO-90434).
+   */
+  @Test
+  void anEditTakesTheRowOnlyWhileTheMailIsScheduledOrFailed() {
+    EmailScheduledSend created = storage.create(row(draft("d1")));
+    Date later = new Date(NOW.getTime() + 5000);
+    assertTrue(storage.takeForEdit(USER, "d1", later), "scheduled");
+    assertEquals(later, storage.get(created.getId()).getUpdatedDate());
+    assertEquals(ScheduledSendStatus.SCHEDULED, storage.get(created.getId()).getStatus(), "an edit leaves the state as it was");
+    assertFalse(storage.takeForEdit("mallory", "d1", NOW), "another user's handle takes nothing");
+    assertFalse(storage.takeForEdit(USER, "nothing", NOW));
+
+    assertTrue(storage.claim(created.getId(), NODE, NOW));
+    assertFalse(storage.takeForEdit(USER, "d1", NOW), "being sent");
+    assertTrue(storage.endRun(created.getId(), NODE, NOW, ScheduledSendStatus.FAILED, ScheduledSendError.NETWORK, null, NOW));
+    assertTrue(storage.takeForEdit(USER, "d1", NOW), "failed");
+    assertEquals(ScheduledSendStatus.FAILED, storage.get(created.getId()).getStatus());
+
+    assertTrue(storage.claimNow(USER, "d1", NODE, NOW));
+    assertEquals(1, storage.markUncertainOf(NODE, List.of(), NOW));
+    assertFalse(storage.takeForEdit(USER, "d1", NOW), "uncertain");
+
+    EmailScheduledSend sent = storage.create(row(draft("d2")));
+    assertTrue(storage.claim(sent.getId(), NODE, NOW));
+    assertTrue(storage.markSent(sent.getId(), NODE, NOW, NOW));
+    assertFalse(storage.takeForEdit(USER, "d2", NOW), "sent");
+  }
+
+  /**
    * The recovery statements work with nothing in flight: the empty list is replaced by
    * a sentinel, since some vendors refuse an empty NOT IN.
    */

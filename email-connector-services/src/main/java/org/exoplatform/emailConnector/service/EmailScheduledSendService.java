@@ -46,6 +46,7 @@ import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailScheduledSend;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
 import org.exoplatform.emailConnector.model.ScheduledSendError;
@@ -280,6 +281,65 @@ public class EmailScheduledSendService {
     if (!emailScheduledSendStorage.reschedule(username, draftLocalId, date, timeZone, now)) {
       rejectAsConflictOrNotFound(username, draftLocalId);
     }
+    return toScheduledEmail(emailScheduledSendStorage.get(username, draftLocalId));
+  }
+
+  /**
+   * Replaces a scheduled mail's content -- subject, body, recipients, files -- and, when
+   * a date is given, its date, in one transaction, the mail staying scheduled
+   * (EXO-90434: an edit that is not a cancel followed by a new schedule, so the mail is
+   * never sent half-edited nor left unscheduled). Only while it is scheduled or failed:
+   * a mail being sent, sent, or whose sending could not be confirmed is refused, and
+   * nothing is written.
+   *
+   * @param draftLocalId the draft's handle
+   * @param draft the draft as the composer shows it, new files as uploads
+   * @param removedAttachmentIds the draft's stored files to take off it, may be null
+   * @param scheduledDate the new instant, epoch milliseconds, or null to keep the date
+   * @param timeZone the zone it was chosen in, with a new date
+   * @param username the owner
+   * @return the scheduled mail
+   * @throws IllegalAccessException if the owner may not use their mailbox
+   * @throws ObjectNotFoundException if the owner has no such scheduled mail
+   * @throws IllegalArgumentException a message code: no recipient, invalid zone, date
+   *           too soon or too far, a file that cannot be carried or that would go over
+   *           the size cap
+   * @throws ScheduledSendConflictException when the mail is being sent, sent, or
+   *           uncertain
+   */
+  public ScheduledEmail updateContent(String draftLocalId,
+                                      Email draft,
+                                      List<Long> removedAttachmentIds,
+                                      Long scheduledDate,
+                                      String timeZone,
+                                      String username) throws IllegalAccessException, ObjectNotFoundException {
+    requireMailbox(username);
+    if (draft == null || !hasRecipient(draft)) {
+      throw new IllegalArgumentException(RECIPIENTS_MANDATORY);
+    }
+    Date now = now();
+    Date date = null;
+    if (scheduledDate != null) {
+      requireValidTimeZone(timeZone);
+      date = requireValidDate(scheduledDate, now);
+    }
+    Date newDate = date;
+    draft.setDraftLocalId(draftLocalId);
+    emailBoxService.updateScheduledDraft(draft, removedAttachmentIds, username, () -> {
+      boolean taken = newDate == null ? emailScheduledSendStorage.takeForEdit(username, draftLocalId, now)
+                                      : emailScheduledSendStorage.reschedule(username, draftLocalId, newDate, timeZone, now);
+      if (!taken) {
+        rejectAsConflictOrNotFound(username, draftLocalId);
+      }
+    });
+    if (draft.getAttachments() != null) {
+      emailBoxService.releaseUploads(draft.getAttachments()
+                                          .stream()
+                                          .filter(upload -> upload != null && StringUtils.isNotBlank(upload.getUploadId()))
+                                          .map(EmailOutgoingAttachment::getUploadId)
+                                          .toList());
+    }
+    LOG.info("The content of a scheduled mail of user {} was updated", username);
     return toScheduledEmail(emailScheduledSendStorage.get(username, draftLocalId));
   }
 

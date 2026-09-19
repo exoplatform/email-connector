@@ -8140,6 +8140,22 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A stored file of a draft.
+   *
+   * @param id its row id
+   * @param size its size in bytes
+   * @return the file, without its bytes
+   */
+  private EmailAttachment storedFile(long id, long size) {
+    EmailAttachment attachment = new EmailAttachment();
+    attachment.setId(id);
+    attachment.setSize(size);
+    attachment.setFileId(id + 100);
+    attachment.setName("file-" + id);
+    return attachment;
+  }
+
+  /**
    * A draft as the storage layer hands it back: the composer's text plus the
    * identity the service settled at the first save — the technical id, the minted
    * Message-ID, and the UID of the copy sitting in the mailbox's Drafts folder.
@@ -11446,6 +11462,83 @@ public class EmailBoxServiceTest {
     order.verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
     order.verify(emailBoxStorage).detachDraftFromServerCopy(TEST_USER, "draft-1");
     verify(emailScheduledSendStorage, never()).delete(anyLong());
+  }
+
+  /**
+   * An edit of a scheduled draft takes the schedule row before it writes anything, then
+   * takes the removed files off, stores the new ones, and writes the text with a forced
+   * revision -- the mail staying scheduled (EXO-90434).
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anEditOfAScheduledDraftTakesTheRowFirstThenWritesFilesAndText() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of(storedFile(7L, 100L)));
+    when(emailBoxStorage.addDraftAttachment(TEST_USER, "draft-1", "upload-1", "b.pdf", "application/pdf"))
+                                                                                                        .thenReturn(storedFile(8L, 10L));
+    when(emailBoxStorage.attachmentFileExists(anyLong())).thenReturn(true);
+    EmailBoxService.ScheduleTaker taker = mock(EmailBoxService.ScheduleTaker.class);
+    Email edited = draft("draft-1");
+    edited.setSubject("New subject");
+    edited.setAttachments(List.of(new EmailOutgoingAttachment("upload-1", "b.pdf", "application/pdf", 10L)));
+
+    emailBoxService.updateScheduledDraft(edited, List.of(7L), TEST_USER, taker);
+
+    InOrder order = inOrder(taker, emailBoxStorage);
+    order.verify(taker).take();
+    order.verify(emailBoxStorage).removeDraftAttachment(TEST_USER, "draft-1", 7L);
+    order.verify(emailBoxStorage).addDraftAttachment(TEST_USER, "draft-1", "upload-1", "b.pdf", "application/pdf");
+    ArgumentCaptor<Email> written = ArgumentCaptor.forClass(Email.class);
+    order.verify(emailBoxStorage).saveDraft(written.capture());
+    assertEquals("New subject", written.getValue().getSubject());
+    assertEquals(3L, written.getValue().getDraftRevision(), "forced past the stored revision");
+    assertEquals(DraftState.LOCAL_ONLY, written.getValue().getDraftState());
+    verify(emailScheduledSendStorage, never()).cancel(anyString(), anyString());
+  }
+
+  /**
+   * An edit the schedule row refuses writes nothing; so does one naming a file the draft
+   * does not have, one over the size cap, and one whose upload is gone.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anEditOfAScheduledDraftThatIsRefusedWritesNothing() throws Exception {
+    givenAUsableMailbox();
+    Email stored = storedDraft();
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    when(emailBoxStorage.getDraftAttachments(TEST_USER, "draft-1")).thenReturn(List.of(storedFile(7L, 20L * 1024 * 1024)));
+
+    assertThrows(ScheduledSendConflictException.class, () -> emailBoxService.updateScheduledDraft(draft("draft-1"), null, TEST_USER, () -> {
+      throw new ScheduledSendConflictException(ScheduledSendConflictException.SENDING);
+    }));
+    assertEquals("emailConnector.drafts.attach.unknown",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.updateScheduledDraft(draft("draft-1"), List.of(99L), TEST_USER, () -> {
+                              })).getMessage());
+    Email tooLarge = draft("draft-1");
+    tooLarge.setAttachments(List.of(new EmailOutgoingAttachment("upload-1", "big.bin", "application/octet-stream",
+                                                                6L * 1024 * 1024)));
+    assertEquals("emailConnector.mailBox.newEmail.attach.maxSize.error",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.updateScheduledDraft(tooLarge, null, TEST_USER, () -> {
+                              })).getMessage());
+    Email gone = draft("draft-1");
+    gone.setAttachments(List.of(new EmailOutgoingAttachment("upload-2", "c.pdf", "application/pdf", 1L)));
+    assertEquals("emailConnector.drafts.attach.uploadGone",
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.updateScheduledDraft(gone, null, TEST_USER, () -> {
+                              })).getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+    verify(emailBoxStorage, never()).removeDraftAttachment(anyString(), anyString(), anyLong());
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(null);
+    assertThrows(ObjectNotFoundException.class, () -> emailBoxService.updateScheduledDraft(draft("draft-1"), null, TEST_USER, () -> {
+    }));
   }
 
   /**
