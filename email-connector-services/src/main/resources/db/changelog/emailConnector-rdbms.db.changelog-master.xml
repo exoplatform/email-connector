@@ -1427,9 +1427,12 @@
       MESSAGE_ID_HASH is the SHA-256 of the message's own Message-ID, in lower-case hex:
       a Message-ID is case-sensitive and up to 1024 characters in EMAIL_BOX, and a
       unique index on it would neither hold under MySQL's case-insensitive collation
-      nor fit its key length. A Message-ID this add-on synthesized for a message that had
-      none is never a key here. STATE is SENT or IGNORED; ORIGIN is LOCAL (answered in
-      this add-on) or SERVER (the sync found $MDNSent, set by another client).
+      nor fit its key length. Every Message-ID a message came with is a key; a message
+      that came with none has no key here and keeps its answer on its cached rows only.
+      No cached row ever carries the placeholder this add-on synthesizes for such a
+      message -- that placeholder only ever feeds the thread id. STATE is SENT or
+      IGNORED; ORIGIN is LOCAL (answered in this add-on) or SERVER (the sync found
+      $MDNSent, set by another client).
 
       The unique index UQ_EMAIL_READ_RECEIPT_ANSWER on (USER_ID, MESSAGE_ID_HASH) is the
       at-most-once decision of a receipt: the answer is an INSERT, and the second one,
