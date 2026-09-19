@@ -15,16 +15,18 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- Expanding puts the mailbox list beside the message. Opened on its own — from
-       the platform's search, or the Favorites drawer — there is no list to put there,
-       so the wide layout has nothing to show on its left half and expanding is not
-       offered. -->
+  <!-- There is one full-screen layout, the mailbox drawer's (EXO-90415): this drawer's
+       expand button hands the mail over to it and closes, rather than widening this
+       drawer -- exo-drawer's own expand is off, or the drawer would go to full width
+       and then close under the user. Opened on its own -- from the platform's search,
+       or the Favorites drawer -- there is no mailbox behind it to hand the mail to, and
+       expanding is not offered. -->
   <exo-drawer
     id="emailDetailDrawer"
     ref="emailDetailDrawer"
     v-model="emailDetailDrawer"
     right
-    :allow-expand="!standalone"
+    :allow-expand="false"
     @expand-updated="updateExpand"
     :loading="waitingForEmail || readerLoading || waitingForPartialEmail || (expanded && syncInProgress)"
     go-back-button
@@ -74,6 +76,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-if="email && !email.draftLocalId && (!expanded || !selectEmailPlaceHolder)"
         :email="email"
         :thread="threadContext" />
+      <v-btn
+        v-if="canExpandInMailBox"
+        :title="$t('label.expand')"
+        icon
+        @click="expandInMailBox">
+        <v-icon size="20">fas fa-expand-alt</v-icon>
+      </v-btn>
     </template>
     <template v-if="expanded" #fullAppLeftContent>
       <categories-filter
@@ -419,6 +428,16 @@ export default {
      */
     navigationDrawerOpen() {
       return this.emailDetailDrawer;
+    },
+    /**
+     * Whether the expand button is offered: opened over the mailbox list, where the
+     * mailbox drawer's full screen can take the mail over, and not on a phone, where
+     * no drawer expands (EXO-90415).
+     *
+     * @returns {Boolean} true when the mail can be expanded into the mailbox
+     */
+    canExpandInMailBox() {
+      return !this.standalone && !this.expanded && !this.$vuetify?.breakpoint?.smAndDown;
     },
   },
   watch: {
@@ -817,6 +836,30 @@ export default {
       this.$root.$emit('email-detail-drawer-closed');
       this.selectedCategoryId = null;
       this.selectedCategoryIds = [];
+    },
+    /**
+     * Expands the mail into the mailbox drawer's full screen, the one full-screen
+     * layout (EXO-90415): the mailbox drawer opens that mail in its reader and expands,
+     * then this drawer closes.
+     * <p>
+     * Closed without exo-drawer's confirmation: an attachment download still running is
+     * not given up by expanding -- the mailbox drawer tracks the same download and asks
+     * before its own close -- and a "give up the download?" question would read as the
+     * expand button closing the mail.
+     *
+     * @returns {void}
+     */
+    expandInMailBox() {
+      this.$root.$emit('expand-mail-box-on-email', {
+        email: this.email,
+        folder: this.email && (this.email.folder || 'INBOX'),
+      });
+      const drawer = this.$refs.emailDetailDrawer;
+      if (drawer?.closeEffectively) {
+        drawer.closeEffectively();
+      } else {
+        this.close();
+      }
     },
     updateExpand(expanded) {
       window.setTimeout(() => this.expanded = expanded, 200);
