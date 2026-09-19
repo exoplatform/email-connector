@@ -25,6 +25,7 @@ import { mount, shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerNavigation from '../EmailConnectorMailBoxDrawerNavigation.vue';
 import EmailConnectorMailBoxDrawerActionMenuItems from '../EmailConnectorMailBoxDrawerActionMenuItems.vue';
+import EmailConnectorMailBoxApp from '../../EmailConnectorMailBoxApp.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 import { KEY_OPEN_DELAY_MS } from '../../../js/EmailConnectorMailBoxListNavigation.js';
 
@@ -294,7 +295,7 @@ describe('the folder column folds to a rail and back without losing its order (E
       .filter(element => !element.closest('[style*="display: none"]'))
       .map(element => {
         if (element.tagName === 'V-SUBHEADER') {
-          return `H:${element.textContent.trim()}`;
+          return `H:${element.querySelector('span').textContent.trim()}`;
         }
         return element.tagName === 'V-DIVIDER' ? 'DIV' : `I:${element.getAttribute('aria-label')}`;
       });
@@ -353,6 +354,55 @@ describe('the folder column\'s icons sit on the axis of their names (EXO-90415)'
       expect(icon.classes()).toEqual(expect.arrayContaining(['my-auto', 'align-self-center', 'align-center', 'mx-auto']));
       expect(icon.classes()).not.toContain('me-2');
     });
+  });
+});
+
+describe('the folder column opens the settings\' folders drawer (EXO-90415)', () => {
+  /**
+   * Mounts the column alone.
+   *
+   * @param {Boolean} rail whether folded to a rail
+   * @returns {Object} {wrapper, emit}
+   */
+  function mountColumn(rail) {
+    const wrapper = mount(EmailConnectorMailBoxDrawerNavigation, {
+      propsData: { folders: FOLDERS, categories: CATEGORIES, rail },
+      mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+      stubs: {
+        'v-tooltip': { template: '<span><slot name="activator" :on="{}" :attrs="{}" /></span>' },
+        'v-btn': { template: '<button type="button" v-bind="$attrs" @click="$emit(\'click\')"><slot /></button>' },
+      },
+    });
+    const emit = jest.fn();
+    wrapper.vm.$root.$emit = emit;
+    return { wrapper, emit };
+  }
+
+  const MANAGE = '[aria-label="emailConnector.mailBox.list.drawer.navigation.manageFolders"]';
+
+  it('offers a pen on the FOLDERS header, open, and opens the drawer with it', async () => {
+    const { wrapper, emit } = mountColumn(false);
+    const buttons = wrapper.findAll(MANAGE);
+    expect(buttons).toHaveLength(1);
+    expect(buttons.at(0).attributes('title')).toBe('emailConnector.mailBox.list.drawer.navigation.manageFolders');
+    // On FOLDERS, not on CATEGORIES.
+    expect(wrapper.find('[data-section="folders"]').find(MANAGE).exists()).toBe(true);
+    expect(buttons.at(0).isVisible()).toBe(true);
+
+    await buttons.at(0).trigger('click');
+    expect(emit).toHaveBeenCalledWith('open-email-folders-drawer');
+  });
+
+  it('hides it as a rail, with the header', () => {
+    const { wrapper } = mountColumn(true);
+    expect(wrapper.find(MANAGE).isVisible()).toBe(false);
+  });
+
+  it('mounts the settings\' own folders and name drawers in the mailbox app, reused, not copied', () => {
+    const template = EmailConnectorMailBoxApp.template
+      || shallowMount(EmailConnectorMailBoxApp, { mocks: { $emailConnectorCommonService: {} } }).html();
+    expect(template).toContain('email-connector-user-setting-folders-drawer');
+    expect(template).toContain('email-connector-user-setting-folder-name-drawer');
   });
 });
 
@@ -475,6 +525,70 @@ describe('the full-screen left pane (EXO-90415)', () => {
     const column = fixture.wrapper.find('email-connector-mail-box-drawer-navigation');
     expect(column.classes()).toContain('border-left-color');
     expect(column.classes()).not.toContain('border-right-color');
+  });
+
+  it('re-reads the folder list when the settings\' folders drawer changed it', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    await expand(fixture);
+    fixture.service.getEmailBox.mockClear();
+    ['email-folders-list-changed', 'email-folders-saved', 'email-folders-updated']
+      .forEach(event => fixture.wrapper.vm.$root.$emit(event));
+    await flush();
+    expect(fixture.service.getEmailBox.mock.calls).toEqual([['INBOX', false], ['INBOX', false], ['INBOX', false]]);
+    // The column and the menu read the new list.
+    fixture.service.getEmailBox.mockImplementationOnce(() => Promise.resolve({ emails: [row(1)],
+      folders: [...FOLDERS, { key: 'CUSTOM:2', type: 'CUSTOM', displayName: 'Projets', syncEnabled: true }], emailSyncStatus: 'SUCCESS' }));
+    fixture.wrapper.vm.$root.$emit('email-folders-list-changed');
+    await flush();
+    expect(fixture.wrapper.vm.availableFolders.map(folder => folder.key)).toContain('CUSTOM:2');
+  });
+
+  it('falls back to the inbox when the listed folder was deleted', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1)], 'CUSTOM:1': [row(5, 'CUSTOM:1')] });
+    await expand(fixture);
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'CUSTOM:1');
+    await flush();
+    expect(fixture.wrapper.vm.currentFolder).toBe('CUSTOM:1');
+    // Deleted: the listing refuses the key.
+    fixture.service.getEmailBox.mockImplementationOnce(() => Promise.reject(new Error('emailConnector.folder.notBrowsable')));
+
+    fixture.wrapper.vm.$root.$emit('email-folders-saved');
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.currentFolder).toBe('INBOX');
+    expect(fixture.service.getEmailBox).toHaveBeenLastCalledWith('INBOX', false);
+  });
+
+  it('falls back to the inbox when the listed folder is no longer offered (opted out)', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1)], 'CUSTOM:1': [row(5, 'CUSTOM:1')] });
+    await expand(fixture);
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'CUSTOM:1');
+    await flush();
+    fixture.service.getEmailBox.mockImplementationOnce(() => Promise.resolve({ emails: [],
+      folders: FOLDERS.map(folder => (folder.key === 'CUSTOM:1' ? { ...folder, syncEnabled: false } : folder)), emailSyncStatus: 'SUCCESS' }));
+
+    fixture.wrapper.vm.$root.$emit('email-folders-updated');
+    await flush();
+    await flush();
+
+    expect(fixture.wrapper.vm.currentFolder).toBe('INBOX');
+  });
+
+  it('leaves the arrow keys to the folders drawer opened over it', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1), row(2)] });
+    await expand(fixture);
+    fixture.service.getEmailByRemoteId.mockClear();
+    window.eXo = { openedDrawers: [fixture.wrapper.vm.$refs.emailBoxDrawer, { id: 'userSettingFoldersDrawer' }] };
+    try {
+      const event = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+      document.body.dispatchEvent(event);
+      await new Promise(resolve => setTimeout(resolve, KEY_OPEN_DELAY_MS + 20));
+      expect(event.defaultPrevented).toBe(false);
+      expect(fixture.service.getEmailByRemoteId).not.toHaveBeenCalled();
+    } finally {
+      delete window.eXo;
+    }
   });
 
   it('stays on screen over an empty folder, where it is the way out', async () => {

@@ -21,6 +21,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="emailConnectorMailBox">
     <email-connector-user-setting-connectors-drawer />
     <email-connector-user-setting-drawer :user-email-setting="userEmailSetting" />
+    <!-- The settings' own folders drawer and its name drawer, reused whole, opened from
+         the full-screen folder column (EXO-90415). Like the two drawers above, they are
+         registered by the user-setting bundle, which every opening of this app requires
+         first (see extensions.js), and speak to this app through its root. -->
+    <email-connector-user-setting-folders-drawer />
+    <email-connector-user-setting-folder-name-drawer />
     <email-connector-mail-box-drawer />
     <email-connector-mail-box-drawer-list-item-detail />
     <email-connector-new-email-drawer />
