@@ -115,7 +115,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- The left pane in full screen: the folder column, then the list, each scrolling
          on its own so the folders stay put while the list moves (EXO-90415). Always on
          screen once expanded, an empty folder included: the column is how the user
-         leaves it. -->
+         leaves it. The column keeps the pane's platform grey and the list -- folder or
+         search results -- is white, a thin border between them (the PO's option A),
+         open and as a rail alike. -->
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <div class="d-flex flex-row fill-height">
         <email-connector-mail-box-drawer-navigation
@@ -127,8 +129,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :category-unread-counts="categoryUnreadCounts"
           :rail="navigationRail"
           :style="{ width: navigationWidth, minWidth: navigationWidth }"
+          :class="$vuetify.rtl ? 'border-left-color' : 'border-right-color'"
           class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing" />
-        <div class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden" style="min-width: 0;">
+        <div
+          ref="expandedListPane"
+          class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden white-background"
+          style="min-width: 0;">
           <email-connector-mail-box-drawer-search-results
             v-if="searchActive"
             ref="expandedSearchResults"
