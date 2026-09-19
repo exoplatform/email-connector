@@ -297,7 +297,7 @@ describe('the folder column folds to a rail and back without losing its order (E
       .filter(element => !element.closest('[style*="display: none"]'))
       .map(element => {
         if (element.tagName === 'V-SUBHEADER') {
-          return `H:${element.querySelector('span').textContent.trim()}`;
+          return `H:${(element.querySelector('span') || element).textContent.trim()}`;
         }
         return element.tagName === 'V-DIVIDER' ? 'DIV' : `I:${element.getAttribute('aria-label')}`;
       });
@@ -316,8 +316,10 @@ describe('the folder column folds to a rail and back without losing its order (E
     await wrapper.setProps({ rail: false });
 
     expect(visibleOrder(wrapper)).toEqual(OPEN);
-    // The real VTooltip's patching put the CATEGORIES header above the folders when the
-    // headers were loose siblings of the entries; each section is its own element now.
+    // Pins the structure that fixed it: one element per section, holding its own
+    // divider, header and entries. The reorder itself -- the CATEGORIES header above the
+    // folders -- came from the real VTooltip's patching, observed live on Vuetify 2.7.2
+    // and not reproduced by this suite, which has no Vuetify.
     const sections = wrapper.findAll('[data-section]').wrappers;
     expect(sections.map(section => section.attributes('data-section'))).toEqual(['folders', 'categories']);
     expect(sections[0].findAll('v-list-item').length).toBe(5);
@@ -339,7 +341,8 @@ describe('the folder column folds to a rail and back without losing its order (E
     // as tall and centres its label, and as a rail the first entry -- a dense row -- is
     // centred in it by half of the difference. Heights, not offsets.
     const wrapper = mountOpenColumn();
-    const header = wrapper.find('[data-section="folders"] v-subheader');
+    const header = wrapper.find('v-subheader');
+    expect(header.find('span').text()).toBe('emailConnector.mailBox.list.drawer.menu.folders');
     expect(header.attributes('style')).toContain(`height: ${emailConnectorMailBoxService.LIST_TOP_ROW_HEIGHT}`);
     expect(wrapper.find('[data-section="categories"] v-subheader').attributes('style')).toBeUndefined();
     expect(wrapper.element.style.paddingTop).toBe('0px');
@@ -405,8 +408,10 @@ describe('the folder column opens the settings\' folders drawer (EXO-90415)', ()
     const buttons = wrapper.findAll(MANAGE);
     expect(buttons).toHaveLength(1);
     expect(buttons.at(0).attributes('title')).toBe('emailConnector.mailBox.list.drawer.navigation.manageFolders');
-    // On FOLDERS, not on CATEGORIES.
-    expect(wrapper.find('[data-section="folders"]').find(MANAGE).exists()).toBe(true);
+    // On the FOLDERS header, outside the listbox: no button is one of its options.
+    expect(wrapper.find('v-list-item-group').find(MANAGE).exists()).toBe(false);
+    expect(buttons.at(0).element.closest('v-subheader').querySelector('span').textContent)
+      .toBe('emailConnector.mailBox.list.drawer.menu.folders');
     expect(buttons.at(0).isVisible()).toBe(true);
 
     await buttons.at(0).trigger('click');
@@ -552,15 +557,29 @@ describe('the full-screen left pane (EXO-90415)', () => {
 
     const pane = () => fixture.wrapper.vm.$refs.expandedListPane;
     const column = () => fixture.wrapper.find('email-connector-mail-box-drawer-navigation');
+    const navigationStyle = () => {
+      const seen = new Set();
+      const walk = vnode => {
+        if (!vnode || seen.has(vnode)) {
+          return null;
+        }
+        seen.add(vnode);
+        if (vnode.tag === 'email-connector-mail-box-drawer-navigation') {
+          return vnode;
+        }
+        return [...(vnode.children || []), vnode.componentInstance?._vnode].reduce((found, child) => found || walk(child), null);
+      };
+      return walk(fixture.wrapper.vm._vnode).data.style;
+    };
     // The chips row is the height the column's first row shares, its chips centred in it.
     const chips = pane().querySelector('email-connector-mail-box-drawer-filter-chips');
     expect(chips.style.minHeight).toBe(emailConnectorMailBoxService.LIST_TOP_ROW_HEIGHT);
     expect(chips.classList.contains('py-3')).toBe(false);
     // The list paints nothing of its own: exo-drawer's grey pane, as its header strip.
     expect(Array.from(pane().classList).some(name => name.includes('background') || name === 'white')).toBe(false);
-    // A veil of the platform's grey over the pane: darker than the list in any
-    // branding, and not a class Vuetify's .transparent could outrank.
-    expect(column().attributes('style')).toContain('background-color: rgba(112, 112, 112, 0.08)');
+    // A veil of the skin's grey tint over the pane (jsdom drops var() from a style, so
+    // the binding is read off the rendered virtual node).
+    expect(navigationStyle().backgroundColor).toBe('var(--allPagesGreyColorLighten1Opacity2, rgba(112, 112, 112, 0.08))');
     // The divider sits between them, whichever the reading direction.
     const divider = column().element.nextElementSibling;
     expect(divider.tagName).toBe('V-DIVIDER');
@@ -570,7 +589,7 @@ describe('the full-screen left pane (EXO-90415)', () => {
     await fixture.wrapper.setData({ navigationRail: true, searchTerm: 'mail' });
     expect(pane().querySelector('email-connector-mail-box-drawer-search-results')).not.toBeNull();
     expect(Array.from(pane().classList).some(name => name.includes('background'))).toBe(false);
-    expect(column().attributes('style')).toContain('background-color: rgba(112, 112, 112, 0.08)');
+    expect(navigationStyle().backgroundColor).toBe('var(--allPagesGreyColorLighten1Opacity2, rgba(112, 112, 112, 0.08))');
   });
 
   describe('an empty list says so in the list, not in the reader', () => {
@@ -705,6 +724,75 @@ describe('the full-screen left pane (EXO-90415)', () => {
       expect(fixture.service.getEmailBox).not.toHaveBeenCalled();
     });
 
+    describe('"Clear filters" is one navigation, whichever filters were on', () => {
+      /**
+       * The mails the reader was asked to open, as folder:UID.
+       *
+       * @returns {Array<String>} the openings
+       */
+      const openings = () => fixture.service.getEmailByRemoteId.mock.calls.map(([id, folder]) => `${folder}:${id}`);
+
+      it('a category view: the folder\'s first mail opens, once', async () => {
+        fixture = await mountDrawer({ INBOX: [row(1), row(2, 'INBOX', { categoryIds: [12] })] });
+        await expand(fixture);
+        fixture.wrapper.vm.$root.$emit('open-category-view', 12);
+        await flush();
+        await flush();
+        fixture.service.getEmailByRemoteId.mockClear();
+
+        await fixture.wrapper.vm.clearFilters();
+        await flush();
+        await flush();
+
+        expect(fixture.wrapper.vm.categoryViewId).toBeNull();
+        expect(openings()).toEqual(['INBOX:1']);
+        expect(fixture.wrapper.vm.email.mailRemoteId).toBe(1);
+      });
+
+      it('the Unread chip alone: the same, never the placeholder', async () => {
+        fixture = await mountDrawer({ INBOX: [row(1), row(2, 'INBOX', { read: false })] });
+        await expand(fixture);
+        fixture.wrapper.vm.toggleUnreadFilter();
+        await fixture.wrapper.vm.openListedEmail(fixture.wrapper.vm.emails[0]);
+        await flush();
+        fixture.service.getEmailByRemoteId.mockClear();
+
+        await fixture.wrapper.vm.clearFilters();
+        await flush();
+
+        expect(fixture.wrapper.vm.unreadOnly).toBe(false);
+        expect(fixture.wrapper.vm.selectEmailPlaceHolder).toBe(false);
+        expect(openings()).toEqual(['INBOX:1']);
+      });
+
+      it('a category view with Favorites: waits for the reload, then opens its first mail, once', async () => {
+        let answer;
+        fixture = await mountDrawer({ INBOX: [row(2, 'INBOX', { categoryIds: [12], starred: true })] });
+        await expand(fixture);
+        await fixture.wrapper.setData({ favoriteOnly: true });
+        fixture.wrapper.vm.$root.$emit('open-category-view', 12);
+        await flush();
+        await flush();
+        fixture.service.getEmailByRemoteId.mockClear();
+        fixture.service.getEmailBox.mockImplementationOnce(() => new Promise(resolve => {
+          answer = () => resolve({ emails: [row(1), row(2, 'INBOX', { categoryIds: [12], starred: true })], folders: FOLDERS, emailSyncStatus: 'SUCCESS' });
+        }));
+
+        const cleared = fixture.wrapper.vm.clearFilters();
+        await flush();
+        await flush();
+        // Nothing opens on the starred subset still listed.
+        expect(openings()).toEqual([]);
+        expect(fixture.wrapper.vm.selectEmailPlaceHolder).toBe(true);
+        answer();
+        await cleared;
+        await flush();
+
+        expect(openings()).toEqual(['INBOX:1']);
+        expect(fixture.wrapper.vm.favoriteOnly).toBe(false);
+      });
+    });
+
     it('clears the Favorites chip too, which the server answers', async () => {
       fixture = await mountDrawer({ INBOX: [row(1)] });
       await expand(fixture);
@@ -716,6 +804,19 @@ describe('the full-screen left pane (EXO-90415)', () => {
 
       expect(fixture.wrapper.vm.favoriteOnly).toBe(false);
       expect(fixture.service.getEmailBox).toHaveBeenCalledWith('INBOX', false);
+    });
+
+    it('says nothing before the list has answered, expanded before the first load', async () => {
+      fixture = await mountDrawer({ INBOX: [] });
+      await fixture.wrapper.setData({ emailBox: null, loading: true });
+      await expand(fixture);
+      const message = () => fixture.wrapper.find('[data-slot="fullAppLeftContent"] email-connector-mail-box-drawer-no-email');
+      expect(message().exists()).toBe(false);
+
+      await fixture.wrapper.setData({ emailBox: { emails: [], folders: FOLDERS, emailSyncStatus: 'SUCCESS' } });
+      expect(message().exists()).toBe(false);
+      await fixture.wrapper.setData({ loading: false });
+      expect(message().exists()).toBe(true);
     });
 
     it('leaves the narrow layout as it was: the message fills the drawer', async () => {
@@ -744,13 +845,86 @@ describe('the full-screen left pane (EXO-90415)', () => {
     ['email-folders-list-changed', 'email-folders-saved', 'email-folders-updated']
       .forEach(event => fixture.wrapper.vm.$root.$emit(event));
     await flush();
-    expect(fixture.service.getEmailBox.mock.calls).toEqual([['INBOX', false], ['INBOX', false], ['INBOX', false]]);
+    await flush();
+    // Coalesced: one re-read, and one more for what changed while it ran -- never one
+    // listing per event, racing each other.
+    expect(fixture.service.getEmailBox.mock.calls).toEqual([['INBOX', false], ['INBOX', false]]);
+    fixture.service.getEmailBox.mockClear();
+    fixture.wrapper.vm.$root.$emit('email-folders-saved');
+    await flush();
+    expect(fixture.service.getEmailBox.mock.calls).toEqual([['INBOX', false]]);
     // The column and the menu read the new list.
     fixture.service.getEmailBox.mockImplementationOnce(() => Promise.resolve({ emails: [row(1)],
       folders: [...FOLDERS, { key: 'CUSTOM:2', type: 'CUSTOM', displayName: 'Projets', syncEnabled: true }], emailSyncStatus: 'SUCCESS' }));
     fixture.wrapper.vm.$root.$emit('email-folders-list-changed');
     await flush();
     expect(fixture.wrapper.vm.availableFolders.map(folder => folder.key)).toContain('CUSTOM:2');
+  });
+
+  it('drops a listing answered for a folder the user already left', async () => {
+    const answers = {};
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    await expand(fixture);
+    fixture.service.getEmailBox.mockImplementation(folder => new Promise(resolve => {
+      answers[folder.toLowerCase()] = rows => resolve({ emails: rows, folders: FOLDERS, emailSyncStatus: 'SUCCESS' });
+    }));
+
+    // A poll for the inbox is on its way when the user switches to Sent.
+    const poll = fixture.wrapper.vm.loadEmailBox();
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'SENT');
+    answers.sent([row(7, 'SENT')]);
+    await flush();
+    answers.inbox([row(1), row(2)]);
+    await poll;
+    await flush();
+
+    expect(fixture.wrapper.vm.currentFolder).toBe('SENT');
+    expect(fixture.wrapper.vm.emailBox.emails.map(email => `${email.folder}:${email.mailRemoteId}`)).toEqual(['SENT:7']);
+  });
+
+  it('drops a listing answered for the Favorites subset once the chip is off', async () => {
+    let answer;
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    fixture.service.getEmailBox.mockImplementationOnce(() => new Promise(resolve => {
+      answer = () => resolve({ emails: [], folders: FOLDERS, emailSyncStatus: 'SUCCESS' });
+    }));
+    fixture.wrapper.vm.onToggleFavoriteFilter();
+    fixture.wrapper.vm.onToggleFavoriteFilter();
+    await flush();
+    answer();
+    await flush();
+
+    expect(fixture.wrapper.vm.favoriteOnly).toBe(false);
+    expect(fixture.wrapper.vm.emailBox.emails.map(email => email.mailRemoteId)).toEqual([1]);
+  });
+
+  it('opts out the listed folder then closes the drawer: the inbox, never the late answer of the folder left', async () => {
+    const answers = [];
+    fixture = await mountDrawer({ INBOX: [row(1)], 'CUSTOM:1': [row(5, 'CUSTOM:1')] });
+    await expand(fixture);
+    fixture.wrapper.vm.$root.$emit('switch-folder', 'CUSTOM:1');
+    await flush();
+    fixture.service.getEmailBox.mockImplementation(folder => new Promise(resolve => answers.push({ folder, resolve })));
+    const optedOut = FOLDERS.map(folder => (folder.key === 'CUSTOM:1' ? { ...folder, syncEnabled: false } : folder));
+
+    fixture.wrapper.vm.$root.$emit('email-folders-saved');
+    fixture.wrapper.vm.$root.$emit('email-folders-updated');
+    await flush();
+    expect(answers.map(answer => answer.folder)).toEqual(['CUSTOM:1']);
+    answers[0].resolve({ emails: [row(5, 'CUSTOM:1')], folders: optedOut, emailSyncStatus: 'SUCCESS' });
+    await flush();
+    // Gone from the list: the inbox; then the one trailing re-read.
+    answers.filter(answer => answer.folder === 'INBOX')
+      .forEach(answer => answer.resolve({ emails: [row(1)], folders: optedOut, emailSyncStatus: 'SUCCESS' }));
+    await flush();
+    await flush();
+    answers.filter(answer => answer.folder === 'INBOX')
+      .forEach(answer => answer.resolve({ emails: [row(1)], folders: optedOut, emailSyncStatus: 'SUCCESS' }));
+    await flush();
+
+    expect(fixture.wrapper.vm.currentFolder).toBe('INBOX');
+    expect(answers.every(answer => answer.folder !== 'CUSTOM:1' || answer === answers[0])).toBe(true);
+    expect(fixture.wrapper.vm.emailBox.emails.map(email => email.folder)).toEqual(['INBOX']);
   });
 
   it('falls back to the inbox when the listed folder was deleted', async () => {

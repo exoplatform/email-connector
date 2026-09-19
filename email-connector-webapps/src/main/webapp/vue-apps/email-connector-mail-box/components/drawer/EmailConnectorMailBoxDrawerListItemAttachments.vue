@@ -78,7 +78,9 @@ export default {
      * @returns {String} the label
      */
     moreAttachmentsTitle() {
-      return this.$t('emailConnector.mailBox.attachments.more', { 0: this.moreAttachments });
+      return this.moreAttachments === 1
+        ? this.$t('emailConnector.mailBox.attachments.more.one')
+        : this.$t('emailConnector.mailBox.attachments.more', { 0: this.moreAttachments });
     },
     emailAttachmentsList() {
       return this.emailAttachments.slice(0, 2);

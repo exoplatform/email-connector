@@ -23,6 +23,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     class="pb-2"
     dense
     nav>
+    <!-- The FOLDERS header, with its pen, above the listbox: no button inside it. -->
+    <v-subheader
+      v-show="!rail"
+      :style="{ height: TOP_ROW_HEIGHT }"
+      class="text-uppercase caption px-2">
+      <span class="flex-grow-1">{{ sections[0].title }}</span>
+      <v-btn
+        :title="$t('emailConnector.mailBox.list.drawer.navigation.manageFolders')"
+        :aria-label="$t('emailConnector.mailBox.list.drawer.navigation.manageFolders')"
+        icon
+        x-small
+        @click="$root.$emit('open-email-folders-drawer')">
+        <v-icon size="12" class="icon-default-color">fa-pen</v-icon>
+      </v-btn>
+    </v-subheader>
     <v-list-item-group
       :value="activeKey"
       color="primary"
@@ -34,25 +49,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :aria-label="section.title"
         :data-section="section.key"
         role="group">
-        <v-divider
-          v-if="index > 0"
-          v-show="!rail"
-          class="my-2" />
-        <v-subheader
-          v-show="!rail"
-          :style="index === 0 ? { height: TOP_ROW_HEIGHT } : null"
-          class="text-uppercase caption px-2">
-          <span class="flex-grow-1">{{ section.title }}</span>
-          <v-btn
-            v-if="section.key === 'folders'"
-            :title="$t('emailConnector.mailBox.list.drawer.navigation.manageFolders')"
-            :aria-label="$t('emailConnector.mailBox.list.drawer.navigation.manageFolders')"
-            icon
-            x-small
-            @click="$root.$emit('open-email-folders-drawer')">
-            <v-icon size="12" class="icon-default-color">fa-pen</v-icon>
-          </v-btn>
-        </v-subheader>
+        <template v-if="index > 0">
+          <v-divider v-show="!rail" class="my-2" />
+          <v-subheader v-show="!rail" class="text-uppercase caption px-2">{{ section.title }}</v-subheader>
+        </template>
         <v-tooltip
           v-for="entry in section.entries"
           :key="entry.value"
