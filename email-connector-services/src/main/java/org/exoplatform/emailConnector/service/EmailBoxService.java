@@ -747,8 +747,6 @@ public class EmailBoxService {
   // Maximum cumulative size (bytes) allowed for the attachments of a single outgoing email (SMTP-friendly, 25 MB).
   private static final long       MAX_OUTGOING_ATTACHMENTS_SIZE                               = 25L * 1024 * 1024;
 
-  // The message code the size cap is refused with, which a scheduled send maps to its own
-  // error code rather than letting it read as an internal failure.
   // The message code a scheduling carrying files not yet stored on the draft is refused with.
   private static final String     ATTACHMENTS_NOT_STORED_CODE                                 =
                                                               "emailConnector.scheduled.attachmentsNotStored";
@@ -757,6 +755,8 @@ public class EmailBoxService {
   private static final String     ATTACHMENT_GONE_CODE                                        =
                                                        "emailConnector.drafts.send.attachmentGone";
 
+  // The message code the size cap is refused with, which a scheduled send maps to its own
+  // error code rather than letting it read as an internal failure.
   private static final String     MAX_SIZE_ERROR_CODE                                         =
                                                       "emailConnector.mailBox.newEmail.attach.maxSize.error";
 
