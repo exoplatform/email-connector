@@ -81,6 +81,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionByFolder, selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+import { isListedFolder } from '../../js/EmailConnectorMailBoxService.js';
 
 export default {
   props: {
@@ -100,12 +101,13 @@ export default {
     /**
      * The conversation's UIDs grouped by the folder they are numbered in: a
      * conversation spans folders, and a UID only names a message within its own
-     * (EXO-90421, the EXO-90416 wrong-message class) -- one request per folder.
+     * (EXO-90421, the EXO-90416 wrong-message class) -- one request per folder, none
+     * for All Mail copies, which the server does not categorize (isListedFolder).
      *
      * @returns {Array} [folder, ids] pairs
      */
     idsByFolder() {
-      return selectionByFolder((this.emails || []).map(selectionKey));
+      return selectionByFolder((this.emails || []).map(selectionKey)).filter(([folder]) => isListedFolder(folder));
     },
     assignedCategories() {
       return this.categories.filter(category => this.assignedIds.includes(category.id));
@@ -128,11 +130,7 @@ export default {
     this.$root.$off('email-categories-updated', this.onCategoriesUpdated);
   },
   methods: {
-    /**
-     * The categories any message of the conversation carries.
-     *
-     * @returns {void}
-     */
+    /** @returns {void} recomputes the categories any message of the conversation carries */
     computeAssigned() {
       const ids = new Set();
       (this.emails || []).forEach(email => (email.categoryIds || []).forEach(id => ids.add(id)));
