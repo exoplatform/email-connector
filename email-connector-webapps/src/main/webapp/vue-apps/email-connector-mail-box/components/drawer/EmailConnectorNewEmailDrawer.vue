@@ -2305,18 +2305,16 @@ export default {
       const session = this.draftSession;
       await this.forceDraft(session);
       this.savedSignature = this.composeSignature();
-      for (const upload of uploads) {
-        try {
-          const stored = await this.persistAttachment(upload);
+      await Promise.all(uploads.map(upload => this.persistAttachment(upload)
+        .then(stored => {
           if (stored) {
             upload.id = stored.id;
             upload.uploadId = null;
             upload.stored = true;
           }
-        } catch (e) {
-          // The file stays a chip of this session; the next save or the send carries it.
-        }
-      }
+        })
+        // The file stays a chip of this session; the send carries it as an upload.
+        .catch(() => null)));
     },
     /**
      * Throws the edits away, and the composer with them: the scheduled mail stays as it

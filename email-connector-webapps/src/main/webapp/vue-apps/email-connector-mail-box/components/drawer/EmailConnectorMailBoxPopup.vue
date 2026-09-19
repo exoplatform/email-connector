@@ -34,6 +34,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     max-width="100vw">
     <v-card class="elevation-12 transparent">
       <div class="ignore-vuetify-classes popupHeader ClearFix" :class="isBrandingLayout && 'layout-drawer' || ''">
+        <!-- eslint-disable-next-line vuejs-accessibility/anchor-has-content -->
         <a
           class="uiIconClose pull-right"
           aria-hidden="true"
