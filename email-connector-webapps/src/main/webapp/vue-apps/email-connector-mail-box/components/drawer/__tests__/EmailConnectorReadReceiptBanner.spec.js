@@ -194,6 +194,15 @@ describe('the read-receipt banner (EXO-90435)', () => {
     expect(second.emitted).toEqual([]);
   });
 
+  it('drops the banner silently when the message is gone (404): moved or deleted since', async () => {
+    const email = asking('ASK');
+    const { wrapper, emitted } = mountBanner(email, true, jest.fn(() => Promise.reject(refused(404, 'emailConnector.readReceipt.notFound'))));
+    await wrapper.find('.read-receipt-send').trigger('click');
+    await flush();
+    expect(wrapper.find('.read-receipt-banner').exists()).toBe(false);
+    expect(emitted).toEqual([]);
+  });
+
   it('says a failed send and keeps the banner so the user can try again', async () => {
     const email = asking('ASK');
     const { wrapper, emitted } = mountBanner(email, true, jest.fn(() => Promise.reject(refused(500, 'emailConnector.readReceipt.sendFailed'))));
