@@ -68,7 +68,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span
         v-if="canOfferMove"
         :title="moveTitle"
-        class="d-inline-flex">
+        class="d-inline-flex valign-middle">
         <v-btn
           :disabled="!canMoveSelection"
           :aria-label="moveTitle"
@@ -169,7 +169,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <span
         v-if="canOfferMove"
         :title="moveTitle"
-        class="d-inline-flex">
+        class="d-inline-flex valign-middle">
         <v-btn
           :disabled="!canMoveSelection"
           @click="moveEmails()"
