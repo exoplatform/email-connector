@@ -467,7 +467,8 @@ describe('the moved rows in their destination (EXO-89966)', () => {
       mocks: { $t: key => key },
     });
     content.vm.onSelectAllChange(true);
-    expect(content.emitted('update:selected-emails')[0][0]).toEqual([2]);
+    // The selection names messages by folder and UID (EXO-90416).
+    expect(content.emitted('update:selected-emails')[0][0]).toEqual(['INBOX:2']);
     content.destroy();
   });
 

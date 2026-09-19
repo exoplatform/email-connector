@@ -71,13 +71,21 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         icon>
         <v-icon size="20" class="icon-default-color">fa-ban</v-icon>
       </v-btn>
-      <v-btn
-        v-if="canMoveSelection"
-        :title="$t('emailConnector.mailBox.list.drawer.detail.moveTo.label')"
-        @click="moveEmails()"
-        icon>
-        <v-icon size="20" class="icon-default-color">fa-folder-open</v-icon>
-      </v-btn>
+      <!-- Shown for a selection across folders too, disabled: the picker moves from one
+           source folder, and the wrapper carries the reason, which a disabled button
+           cannot show itself (it takes no pointer events). -->
+      <span
+        v-if="canOfferMove"
+        :title="moveTitle"
+        class="d-inline-flex">
+        <v-btn
+          :disabled="!canMoveSelection"
+          :aria-label="moveTitle"
+          @click="moveEmails()"
+          icon>
+          <v-icon size="20" class="icon-default-color">fa-folder-open</v-icon>
+        </v-btn>
+      </span>
       <v-btn
         v-if="canMutateSelection"
         :title="$t('emailConnector.mailBox.list.drawer.detail.delete.label')"
@@ -167,19 +175,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-icon>
         {{ $t('emailConnector.mailBox.list.drawer.detail.markJunk.label') }}
       </v-btn>
-      <v-btn
-        v-if="canMoveSelection"
-        @click="moveEmails()"
-        outlined
-        class="btn btn-primary font-weight-bold">
-        <v-icon
-          size="16"
-          class="pe-3"
-          color="primary">
-          fa-folder-open
-        </v-icon>
-        {{ $t('emailConnector.mailBox.list.drawer.detail.moveTo.label') }}
-      </v-btn>
+      <span
+        v-if="canOfferMove"
+        :title="moveTitle"
+        class="d-inline-flex">
+        <v-btn
+          :disabled="!canMoveSelection"
+          @click="moveEmails()"
+          outlined
+          class="btn btn-primary font-weight-bold">
+          <v-icon
+            size="16"
+            class="pe-3"
+            color="primary">
+            fa-folder-open
+          </v-icon>
+          {{ $t('emailConnector.mailBox.list.drawer.detail.moveTo.label') }}
+        </v-btn>
+      </span>
       <v-btn
         v-if="canMutateSelection"
         @click="deleteEmails()"
@@ -235,6 +248,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { parseSelectionKey, selectionByFolder, selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+
 export default {
   props: {
     emails: {
@@ -284,8 +299,9 @@ export default {
     }
   },
   computed: {
+    // The listed rows by selection key (folder and UID), the way the selection names them.
     emailsMap() {
-      return Object.fromEntries(this.emails.map(e => [e.mailRemoteId, e]));
+      return Object.fromEntries(this.emails.map(e => [selectionKey(e), e]));
     },
     hasSelectedEmails() {
       return this.selectedEmails.length > 0;
@@ -363,9 +379,52 @@ export default {
      *
      * @returns {Boolean} true when "Move to..." may be offered
      */
-    canMoveSelection() {
+    canOfferMove() {
       return this.canMarkSelectionAsJunk
         && this.$emailConnectorMailBoxService.moveTargets(this.$root.mailFolders, this.selectionFolder).length > 0;
+    },
+    /**
+     * Whether the selection may be moved now: offered (canOfferMove), and in one folder,
+     * the picker moving from a single source folder (EXO-90416).
+     *
+     * @returns {Boolean} true when "Move to..." is enabled
+     */
+    canMoveSelection() {
+      return this.canOfferMove && this.selectionByFolder.length === 1;
+    },
+    /**
+     * The move button's label: what it does, or why it is disabled.
+     *
+     * @returns {String} the label
+     */
+    moveTitle() {
+      return this.canMoveSelection
+        ? this.$t('emailConnector.mailBox.list.drawer.detail.moveTo.label')
+        : this.$t('emailConnector.mailBox.list.drawer.detail.moveTo.oneFolder');
+    },
+    /**
+     * The selected UIDs grouped by the folder they are numbered in, in selection order.
+     * <p>
+     * A folder's listing holds one folder, and this is one group -- the listed folder,
+     * as before. A list of search results holds several (the mail drawer opened on
+     * them), where one number may be two messages: the selection is kept by folder and
+     * UID (selectionKey), and each action is sent once per folder, with that folder, so
+     * the mailbox never resolves a bare UID against the listed folder and acts on
+     * another message there (EXO-90416).
+     *
+     * @returns {Array} [folder, ids] pairs
+     */
+    selectionByFolder() {
+      return selectionByFolder(this.selectedEmails);
+    },
+    /**
+     * The selected UIDs, for the actions whose folder is fixed server-side (restore
+     * and purge out of the Trash, "Not spam" out of the Spam folder).
+     *
+     * @returns {Array<Number>} the UIDs
+     */
+    selectedIds() {
+      return this.selectedEmails.map(key => parseSelectionKey(key).id);
     },
     /**
      * The folder the selected rows are listed in -- a listing holds one folder's rows,
@@ -400,11 +459,22 @@ export default {
     openNewEmailDrawer() {
       this.$root.$emit('open-new-email-drawer');
     },
+    /**
+     * Sends a bulk action once per folder of the selection (see selectionByFolder), the
+     * folder last.
+     *
+     * @param {String} event the action's event
+     * @param {Array} before the arguments that precede the ids (the read status)
+     * @returns {void}
+     */
+    emitPerFolder(event, ...before) {
+      this.selectionByFolder.forEach(([folder, ids]) => this.$root.$emit(event, ...before, ids, folder));
+    },
     updateEmailsReadStatus(read) {
-      this.$root.$emit('update-email-read-status', read, this.selectedEmails);
+      this.emitPerFolder('update-email-read-status', read);
     },
     archiveEmails() {
-      this.$root.$emit('archive-email', this.selectedEmails);
+      this.emitPerFolder('archive-email');
     },
     /**
      * Reports the whole selection as spam. No confirmation — undone from the Spam
@@ -413,7 +483,7 @@ export default {
      * @returns {void}
      */
     markAsJunk() {
-      this.$root.$emit('junk-email', this.selectedEmails);
+      this.emitPerFolder('junk-email');
     },
     /**
      * Opens the folder picker for the whole selection; the move itself is sent once
@@ -422,7 +492,8 @@ export default {
      * @returns {void}
      */
     moveEmails() {
-      this.$root.$emit('open-move-to-folder-drawer', this.selectedEmails, this.selectionFolder);
+      const [[folder, ids] = []] = this.selectionByFolder;
+      this.$root.$emit('open-move-to-folder-drawer', ids || [], folder || this.selectionFolder);
     },
     /**
      * Puts the whole selection back into the inbox out of the Spam folder.
@@ -430,7 +501,7 @@ export default {
      * @returns {void}
      */
     restoreFromJunk() {
-      this.$root.$emit('not-junk-email', this.selectedEmails);
+      this.$root.$emit('not-junk-email', this.selectedIds);
     },
     /**
      * Puts the whole selection back into the inbox. No confirmation — a restore is
@@ -439,7 +510,7 @@ export default {
      * @returns {void}
      */
     restoreEmails() {
-      this.$root.$emit('restore-email', this.selectedEmails);
+      this.$root.$emit('restore-email', this.selectedIds);
     },
     /**
      * Asks first, then destroys the whole selection. The confirmation is handed the
@@ -448,10 +519,10 @@ export default {
      * @returns {void}
      */
     purgeEmails() {
-      this.$root.$emit('open-purge-email-confirm-popup', this.selectedEmails);
+      this.$root.$emit('open-purge-email-confirm-popup', this.selectedIds);
     },
     deleteEmails() {
-      this.$root.$emit('delete-email', this.selectedEmails); 
+      this.emitPerFolder('delete-email');
     },
     synchronize() {
       this.$root.$emit('synchronize-in-progress');
