@@ -78,8 +78,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template #titleIcons>
       <div v-if="hasFullAppLeft">
+        <!-- Not on a draft the reader was opened on: its mail actions address a message
+             by IMAP UID, which a draft may not have (see the list item's openDraft). -->
         <email-connector-mail-box-drawer-list-item-detail-actions
-          v-if="email && !selectEmailPlaceHolder"
+          v-if="email && !email.draftLocalId && !selectEmailPlaceHolder"
           :email="email"
           :thread="threadContext" />
       </div>
@@ -539,6 +541,21 @@ export default {
       this.supersedeEmailRequest();
       this.email = null;
     });
+    // A draft's conversation opened from the full-screen list: the reader opens on the
+    // draft's own row, which the list already holds in full (see the list item's
+    // openDraft). The mail drawer answered this when it had a full screen of its own;
+    // since there is one full-screen layout, this one does (EXO-90415).
+    this.onOpenEmailThreadContent = (email) => {
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive || !this.expanded) {
+        return;
+      }
+      this.showHandedOverEmail(email);
+    };
+    this.$root.$on('open-email-thread-content', this.onOpenEmailThreadContent);
+    // The mail drawer's expand button: the one full-screen layout is this drawer's, so
+    // expanding a mail opened over the list hands the mail over and expands HERE, with
+    // that mail open -- the mail drawer then closes itself (EXO-90415).
+    this.$root.$on('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
     // Opening the mailbox, optionally straight onto one message — that is how the
     // global Favorites drawer hands a mail over. The payload used to be the plain
     // "loading" flag and callers still pass it that way, so an object is what marks
@@ -614,6 +631,8 @@ export default {
     this.$root.$off('enter-select-mode', this.onEnterSelectMode);
     this.$root.$off('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
+    this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
+    this.$root.$off('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
   },
   computed: {
     hasEmails() {
@@ -983,7 +1002,11 @@ export default {
      *
      * @param {Number} mailRemoteId the message's IMAP UID within the listed folder
      * @param {String} folder the folder it is numbered in, when the row says so
-     * @param {Object} options {automatic}: whether the user did not ask for this mail
+     * A mail handed over by the mail drawer (options.handover, EXO-90415) is not read
+     * or counted again either: that drawer did both when it opened it.
+     *
+     * @param {Object} options {automatic}: whether the user did not ask for this mail;
+     *   {handover}: whether the mail drawer handed it over, already read
      * @returns {Promise} resolved once the message is on screen (nothing for an inert row)
      */
     openEmailDetailContent(mailRemoteId, folder = null, options = {}) {
@@ -1026,12 +1049,15 @@ export default {
       // Read from the moment it is opened, as the detail drawer does: the reader marks
       // the conversation's unread rows read as soon as the conversation lands, which
       // may be before this answer, and it must find this one already read -- in the
-      // message's OWN folder (EXO-90416). Not when the user did not ask for it: then
-      // it is read once they stayed on it (EXO-90414).
-      if (!options.automatic) {
+      // message's OWN folder (EXO-90416). Not when the user did not ask for it: then it
+      // is read once they stayed on it (EXO-90414). Not for a mail handed over by the
+      // mail drawer either: that drawer read it, and counted it as opened, when it
+      // opened it (EXO-90415).
+      const quiet = options.automatic || options.handover;
+      if (!quiet) {
         this.updateEmailsReadStatus(true, [mailRemoteId], ownFolder);
       }
-      const read = options.automatic
+      const read = quiet
         ? this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder, { broadcast: false })
         : this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder);
       return read.then((email) => {
@@ -1178,6 +1204,68 @@ export default {
           this.releaseEmailRequest();
         }
       }
+    },
+    /**
+     * Expands this drawer on the mail the mail drawer was showing -- the mail drawer's
+     * expand button (EXO-90415). There is one full-screen layout, this one: expanding a
+     * mail opened over the list lands in it with that mail open, and collapsing comes
+     * back to the list, as in Gmail. The mail drawer closes itself right after.
+     * <p>
+     * The mail is put in the reader before the layout switches, so updateExpand finds
+     * one open and neither shows the placeholder nor opens the first mail of the list.
+     * A search hit lands in the full-screen search results, lit, since the search is
+     * still running here; a mail the list does not hold -- one opened from the global
+     * Favorites drawer over the mailbox -- is pinned, as openMailFromOutside pins it. No
+     * mail at all (its copy could not be read) expands on the list.
+     *
+     * @param {Object} handover {email, folder}: the mail the mail drawer shows, and the
+     *   folder it is numbered in
+     * @returns {void}
+     */
+    onExpandMailBoxOnEmail(handover) {
+      if (!this.emailBoxDrawer) {
+        return;
+      }
+      // The mail drawer is closing on a hand-over, not on a return to the list: the row
+      // it was opened from is no longer the one to focus.
+      this.rowToRefocus = null;
+      if (handover?.email) {
+        this.showHandedOverEmail(handover.email, handover.folder);
+      }
+      const drawer = this.$refs.emailBoxDrawer;
+      if (drawer && !drawer.expand) {
+        drawer.toogleExpand();
+      }
+    },
+    /**
+     * Shows in the reader a mail another surface already holds: the mail drawer's, on
+     * a hand-over, or a draft's conversation row the full-screen list was clicked on.
+     * <p>
+     * A full copy -- or a draft's row, which the reader only needs the thread of -- is
+     * shown as it is: nothing to fetch, nothing to read again. A bare list row, or a
+     * copy that could not be read, is opened through the ordinary path for its full
+     * copy, as already read (options.handover).
+     *
+     * @param {Object} email the mail to show
+     * @param {String} folder the folder it is numbered in, when the caller knows it
+     * @returns {void}
+     */
+    showHandedOverEmail(email, folder = null) {
+      const ownFolder = folder || email.folder || 'INBOX';
+      const listed = this.emails.find(e => e.mailRemoteId === email.mailRemoteId && (e.folder || 'INBOX') === ownFolder);
+      this.autoSelectPending = false;
+      if (listed && (email.unavailable || this.$emailConnectorMailBoxService.isListingRow(email))) {
+        this.$root.$emit('set-opened', email.mailRemoteId);
+        this.openEmailDetailContent(email.mailRemoteId, ownFolder, { handover: true });
+        return;
+      }
+      this.supersedeEmailRequest();
+      // A search hit stays on screen through the search's own rule (see the emails
+      // watcher); anything else the list does not hold is pinned open.
+      this.pinnedEmail = !listed && !this.searchActive;
+      this.email = email;
+      this.selectEmailPlaceHolder = false;
+      this.$root.$emit('set-opened', email.mailRemoteId);
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
