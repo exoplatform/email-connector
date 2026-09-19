@@ -11128,17 +11128,49 @@ public class EmailBoxServiceTest {
     Email stored = draft("draft-1");
     stored.setId(9L);
     when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
-    EmailScheduledSend schedule = new EmailScheduledSend();
-    schedule.setStatus(ScheduledSendStatus.SENDING);
-    when(emailScheduledSendStorage.get(TEST_USER, "draft-1")).thenReturn(schedule);
+    // Being sent: the schedule's conditional cancel does not land, and the row is there.
+    when(emailScheduledSendStorage.isScheduled(TEST_USER, "draft-1")).thenReturn(true);
+    when(emailScheduledSendStorage.cancel(TEST_USER, "draft-1")).thenReturn(false);
     ScheduledSendConflictException sending = assertThrows(ScheduledSendConflictException.class,
                                                           () -> emailBoxService.deleteDraft("draft-1", TEST_USER));
     assertEquals(ScheduledSendConflictException.SENDING, sending.getMessage());
     verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
 
-    schedule.setStatus(ScheduledSendStatus.FAILED);
+    // Not being sent: the schedule goes first, through its conditional statement, and
+    // only then the draft -- so no claim can land between the two.
+    when(emailScheduledSendStorage.cancel(TEST_USER, "draft-1")).thenReturn(true);
     assertTrue(emailBoxService.deleteDraft("draft-1", TEST_USER));
-    verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+    InOrder order = inOrder(emailScheduledSendStorage, emailBoxStorage);
+    order.verify(emailScheduledSendStorage, org.mockito.Mockito.atLeastOnce()).cancel(TEST_USER, "draft-1");
+    order.verify(emailBoxStorage).deleteEmailsByIds(List.of(9L));
+  }
+
+  /**
+   * A server Drafts copy a scheduled draft still points at (a crash between the schedule
+   * and the removal, or an autosave on another node) is removed before the send, so no
+   * other client can send it too.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aLeftoverServerCopyIsRemovedBeforeTheScheduledSend() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    when(draftsFolder.isOpen()).thenReturn(true);
+    Message serverCopy = serverDraftCopy("<draft@example.org>");
+    when(draftsFolder.getMessageByUID(4242L)).thenReturn(serverCopy);
+    Email stored = storedDraft();
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+
+    emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+    });
+
+    InOrder order = inOrder(serverCopy, emailBoxStorage, smtpTransmitter);
+    order.verify(serverCopy).setFlag(Flags.Flag.DELETED, true);
+    order.verify(emailBoxStorage).detachDraftFromServerCopy(TEST_USER, "draft-1");
+    order.verify(smtpTransmitter).transmit(any(MimeMessage.class));
   }
 
   /**

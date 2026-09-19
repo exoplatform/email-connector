@@ -314,22 +314,35 @@ public class EmailScheduledSendService {
    */
   public ScheduledEmail sendNow(String draftLocalId, String username) throws IllegalAccessException, ObjectNotFoundException {
     requireMailbox(username);
-    Date now = now();
-    String node = EmailConnectorUtils.getSyncNodeName();
-    if (!emailScheduledSendStorage.claimNow(username, draftLocalId, node, now)) {
-      rejectAsConflictOrNotFound(username, draftLocalId);
-    }
-    EmailScheduledSend claimed = emailScheduledSendStorage.get(username, draftLocalId);
-    if (claimed == null) {
+    EmailScheduledSend before = emailScheduledSendStorage.get(username, draftLocalId);
+    if (before == null) {
       throw new ObjectNotFoundException(draftLocalId);
     }
-    Email draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
-    inFlight.add(claimed.getId());
+    // In flight BEFORE the claim, so a first-tick recovery running in between never
+    // takes this live run for one a restart interrupted.
+    boolean added = inFlight.add(before.getId());
+    Email draft;
     try {
+      Date now = now();
+      String node = EmailConnectorUtils.getSyncNodeName();
+      if (!emailScheduledSendStorage.claimNow(username, draftLocalId, node, now)) {
+        rejectAsConflictOrNotFound(username, draftLocalId);
+      }
+      EmailScheduledSend claimed = emailScheduledSendStorage.get(username, draftLocalId);
+      if (claimed == null) {
+        throw new ObjectNotFoundException(draftLocalId);
+      }
+      draft = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       runClaimed(claimed);
+      before = claimed;
     } finally {
-      inFlight.remove(claimed.getId());
+      // Only when this call put it there: a dispatcher run of the same row on this node
+      // owns its own entry.
+      if (added) {
+        inFlight.remove(before.getId());
+      }
     }
+    EmailScheduledSend claimed = before;
     EmailScheduledSend after = emailScheduledSendStorage.get(username, draftLocalId);
     if (after == null) {
       claimed.setStatus(ScheduledSendStatus.SENT);
@@ -402,7 +415,12 @@ public class EmailScheduledSendService {
     }
     cleanUpSent(now);
     int dispatched = 0;
-    for (Long id : emailScheduledSendStorage.findDueToSend(now, freeSlots())) {
+    int free = freeSlots();
+    if (free <= 0) {
+      LOG.debug("The scheduled-send pool is full on node {}; nothing dispatched this tick", node);
+      return 0;
+    }
+    for (Long id : emailScheduledSendStorage.findDueToSend(now, free)) {
       try {
         if (!emailScheduledSendStorage.claim(id, node, now)) {
           LOG.debug("Scheduled mail {} was claimed by another node first", id);
@@ -471,6 +489,12 @@ public class EmailScheduledSendService {
    * One claimed Sent-folder check of an uncertain mail: found, the mail was sent and is
    * cleaned up as such; not found (or unreadable), it stays uncertain and its owner is
    * told, once. Never a send.
+   * <p>
+   * The check is claimed by clearing its due instant, so a node that stops during it
+   * leaves the mail UNCERTAIN with no check pending and no notification: it is still
+   * listed, flagged for attention in the "Scheduled" view, and its owner decides. Not
+   * re-armed on purpose: a check re-run cannot tell a lost check from a completed one
+   * without another column, and the listing already says what matters.
    *
    * @param claimed the claimed row, carrying the check's node and claim instant
    */
