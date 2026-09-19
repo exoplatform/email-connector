@@ -617,8 +617,25 @@ export function unlinkEmailsFromCategory(mailRemoteIds, categoryId) {
   });
 }
 
-export function getEmailByRemoteId(mailRemoteId, folder) {
-  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+/**
+ * Reads one message in full.
+ *
+ * @param {Number} mailRemoteId the message's IMAP UID within its folder
+ * @param {String} folder the folder that UID is numbered in; INBOX when omitted
+ * @param {Object} options {broadcast}: false when the read must not count as the user
+ *   opening the message -- a message the reader opened on its own, whose opening is
+ *   signalled later by broadcastOpenEmail (EXO-90414). Counts when omitted.
+ * @returns {Promise<Object>} the message
+ */
+export function getEmailByRemoteId(mailRemoteId, folder, options = {}) {
+  const params = new URLSearchParams();
+  if (folder && folder !== 'INBOX') {
+    params.set('folder', folder);
+  }
+  if (options.broadcast === false) {
+    params.set('broadcast', 'false');
+  }
+  const query = params.toString() ? `?${params.toString()}` : '';
   return fetch(`/email-connector/rest/email-box/${mailRemoteId}${query}`, {
     headers: {
       'Content-Type': 'application/json'
@@ -1134,6 +1151,26 @@ export function deleteDraft(draftLocalId) {
   }).then((resp) => {
     if (!resp?.ok) {
       throw new Error('Error when deleting draft');
+    }
+  });
+}
+
+/**
+ * Counts one opening of a message by the user -- for a message the reader opened on
+ * its own, read with {broadcast: false}, once the user has stayed on it (EXO-90414).
+ *
+ * @returns {Promise<void>} resolved once the server took it
+ */
+export function broadcastOpenEmail() {
+  return fetch('/email-connector/rest/email-box/open/broadcast', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when broadcasting an email opening');
     }
   });
 }

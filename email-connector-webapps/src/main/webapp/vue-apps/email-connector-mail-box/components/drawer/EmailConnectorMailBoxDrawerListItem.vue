@@ -80,9 +80,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @change="onSelectChange" />
       <div class="flex-grow-1 no-min-width">    
         <!-- eslint-disable vuejs-accessibility/no-static-element-interactions -->
+        <!-- data-thread-key is how the arrow keys find the row they stand on, and
+             aria-current tells a screen reader which conversation the reader shows --
+             the one it shows, not the one the keyboard highlight is passing over. No
+             outline: the arrow keys focus the row, and the row's own grey background
+             (lit on focus, see isHover) is the cue; the browser's ring drawn over it
+             read as a stray blue box. Inline because this webapp bundles no CSS. -->
         <div
           class="clickable"
+          style="outline: none;"
           tabindex="0"
+          :data-thread-key="threadKey"
+          :aria-current="inReader ? 'true' : null"
           :aria-label="ariaLabel"
           @click="openDetail"
           @keydown.enter="openDetail"
@@ -211,6 +220,12 @@ export default {
       type: String,
       default: null,
     },
+    // The message the full-screen reader shows beside the list; none in the narrow
+    // layout, where there is no reader beside it.
+    readerEmailId: {
+      type: [Number, String],
+      default: null,
+    },
     webmailUrl: {
       type: String,
       default: null,
@@ -245,6 +260,15 @@ export default {
     },
     threadIds() {
       return this.thread ? this.thread.mailRemoteIds : [this.email.mailRemoteId];
+    },
+    /**
+     * The row's key, as groupEmailsByThread builds it: what the arrow keys use to find
+     * the row they stand on and the one they go to.
+     *
+     * @returns {String} the key
+     */
+    threadKey() {
+      return String(this.thread ? this.thread.threadId : this.email.mailRemoteId);
     },
     threadCount() {
       return this.thread ? this.thread.count : 1;
@@ -385,6 +409,14 @@ export default {
     },
     opened() {
       return this.openedEmailId === this.email.mailRemoteId;
+    },
+    /**
+     * Whether the reader beside the list shows this row's message, for aria-current.
+     *
+     * @returns {Boolean} true when it does
+     */
+    inReader() {
+      return this.readerEmailId != null && this.threadIds.includes(this.readerEmailId);
     },
     backgroundClass() {
       if (this.isMobile) {

@@ -164,6 +164,51 @@ public class EmailBoxRestTest {
     response.andExpect(status().isOk());
   }
 
+  /**
+   * EXO-90414: an explicit read counts as an opening, as it always has; a read the
+   * reader made on its own (broadcast=false) does not, on the full answer or on the
+   * not-modified one.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void getRemoteEmailByIdBroadcastsTheOpeningUnlessAskedNotTo() throws Exception {
+    Email email = new Email();
+    email.setId(7L);
+    when(emailBoxService.getEmailByMailRemoteIdAndUserId(anyLong(), anyString(), anyString(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean()))
+      .thenReturn(email);
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).getEmailByMailRemoteIdAndUserId(7L, SIMPLE_USER, "INBOX", true, true, true, true);
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("broadcast", "false").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).getEmailByMailRemoteIdAndUserId(7L, SIMPLE_USER, "INBOX", true, true, true, false);
+
+    String eTag = "\"" + java.util.Objects.hash(7L, "INBOX", SIMPLE_USER) + "\"";
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").param("broadcast", "false").header("If-None-Match", eTag).with(testSimpleUser()))
+           .andExpect(status().isNotModified());
+    verify(emailBoxService, never()).broadcastOpenEmail(anyString());
+
+    mockMvc.perform(get(EMAIL_BOX_PATH + "/7").header("If-None-Match", eTag).with(testSimpleUser()))
+           .andExpect(status().isNotModified());
+    verify(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
+  }
+
+  /**
+   * EXO-90414: the deferred opening signal broadcasts once, for the acting user only,
+   * and a user whose mailbox is not theirs to read is refused.
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void broadcastOpenEmail() throws Exception {
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/open/broadcast").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
+
+    doThrow(new IllegalAccessException("not allowed")).when(emailBoxService).broadcastOpenEmail(SIMPLE_USER);
+    mockMvc.perform(post(EMAIL_BOX_PATH + "/open/broadcast").with(testSimpleUser())).andExpect(status().isUnauthorized());
+  }
+
   @Test
   void updateEmailReadStatus() throws Exception {
     ResultActions response = mockMvc.perform(patch(EMAIL_BOX_PATH + "?readStatus=true").with(testSimpleUser()));

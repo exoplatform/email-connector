@@ -198,6 +198,20 @@ describe('the mailbox addresses a search result in its own folder, never its lis
     expect(service.updateEmailsReadStatus).not.toHaveBeenCalled();
   });
 
+  it('retries a result that could not be read in its own folder, never the listed twin', async () => {
+    await mountWithTwin();
+    await wrapper.setData({ expanded: true, email: { ...message(5, 'ARCHIVE'), unavailable: true } });
+    service.getEmailByRemoteId.mockClear();
+
+    wrapper.vm.$root.$emit('retry-email-read', wrapper.vm.email);
+    // Not even for a moment: the listed INBOX:5 is another message.
+    expect(wrapper.vm.email.folder).toBe('ARCHIVE');
+    await flush();
+
+    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(5, 'ARCHIVE');
+    expect(wrapper.vm.email.folder).toBe('ARCHIVE');
+  });
+
   it('keeps a selection by folder and UID', async () => {
     await mountWithTwin();
 
@@ -489,6 +503,17 @@ describe('the mail drawer opened on search results opens, reads and removes the 
     expect(service.getEmailByRemoteId).toHaveBeenCalledWith(5, 'ARCHIVE');
     // With what the list knows of it: read already, so nothing is pushed again.
     expect(reads).toEqual([[true, [5], 'ARCHIVE', true]]);
+  });
+
+  it('retries a result that could not be read in its own folder', async () => {
+    mountOnTwins();
+    await wrapper.setData({ emailDetailDrawer: true, detachedFromList: true,
+      emails: [message(5, 'INBOX'), message(5, 'ARCHIVE')], email: { ...message(5, 'ARCHIVE'), unavailable: true } });
+
+    wrapper.vm.$root.$emit('retry-email-read', wrapper.vm.email);
+    await flush();
+
+    expect(service.getEmailByRemoteId).toHaveBeenCalledWith(5, 'ARCHIVE');
   });
 
   it('keeps its selection by folder and UID', async () => {
