@@ -84,6 +84,7 @@ import javax.mail.Store;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.AddressException;
+import javax.mail.internet.ContentType;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
@@ -7063,7 +7064,7 @@ public class EmailBoxService {
    * composed mail.
    */
   @FunctionalInterface
-  interface OutgoingMessageFactory {
+  public interface OutgoingMessageFactory {
 
     /**
      * Builds the message.
@@ -7088,6 +7089,12 @@ public class EmailBoxService {
    * The session bounds its socket timeouts, as a scheduled send's does: the caller is
    * a request thread holding a claim, and a transmission that can hang forever holds
    * it forever.
+   * <p>
+   * Public, like {@link #openServerCopy}, though only this add-on calls it: the caller
+   * is another bean, and a package-private method of this proxied bean is not reliably
+   * intercepted when the class and the proxy come from different class loaders (the
+   * add-on's jars are shipped beside its WAR) -- the call would then run on the proxy's
+   * own, empty, instance.
    *
    * @param username the user sending
    * @param factory builds the message on the user's session and address
@@ -7095,7 +7102,7 @@ public class EmailBoxService {
    * @throws SmtpTransmitter.TransmissionException naming the step that failed; a
    *           message that could not be built fails in {@code PREPARE}
    */
-  void transmitAsUser(String username, OutgoingMessageFactory factory) throws IllegalAccessException,
+  public void transmitAsUser(String username, OutgoingMessageFactory factory) throws IllegalAccessException,
                                                                        SmtpTransmitter.TransmissionException {
     UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
     if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
@@ -7135,7 +7142,7 @@ public class EmailBoxService {
    * @param email the cached message, for its folder, UID and Message-ID
    * @return the server copy, possibly empty; never null
    */
-  ServerCopy openServerCopy(String username, Email email) {
+  public ServerCopy openServerCopy(String username, Email email) {
     if (email == null || email.getMailRemoteId() == null || email.getMailRemoteId() <= 0) {
       return new ServerCopy(null, null, null, username);
     }
@@ -7167,7 +7174,7 @@ public class EmailBoxService {
    * The server copy of a cached message, opened by {@link #openServerCopy}: a header
    * read and a keyword write, both best effort, and the connection it holds.
    */
-  final class ServerCopy implements AutoCloseable {
+  public final class ServerCopy implements AutoCloseable {
 
     private final Store   store;
 
@@ -7195,7 +7202,7 @@ public class EmailBoxService {
      *
      * @return true when there is a message to read and flag
      */
-    boolean isPresent() {
+    public boolean isPresent() {
       return message != null;
     }
 
@@ -7205,7 +7212,7 @@ public class EmailBoxService {
      * @param name the header name
      * @return the value, or null when absent or unreadable
      */
-    String header(String name) {
+    public String header(String name) {
       if (message == null) {
         return null;
       }
@@ -7224,7 +7231,7 @@ public class EmailBoxService {
      * @param keyword the keyword
      * @return true when it was set
      */
-    boolean addKeyword(String keyword) {
+    public boolean addKeyword(String keyword) {
       if (message == null) {
         return false;
       }
@@ -10765,6 +10772,7 @@ public class EmailBoxService {
     List<Long> uidsToStar = new ArrayList<>();
     List<Long> uidsToUnstar = new ArrayList<>();
     List<Long> uidsAnsweredElsewhere = new ArrayList<>();
+    List<String> messageIdsAnsweredElsewhere = new ArrayList<>();
     for (Message message : serverMessages) {
       try {
         long messageUid = uidFolder.getUID(message);
@@ -10792,6 +10800,10 @@ public class EmailBoxService {
         // row costs nothing on the syncs after it.
         if (email.isReadReceiptRequested() && email.getReadReceiptState() == null && hasKeyword(message, MDN_SENT_KEYWORD)) {
           uidsAnsweredElsewhere.add(messageUid);
+          String messageId = ((MimeMessage) message).getMessageID();
+          if (StringUtils.isNotBlank(messageId)) {
+            messageIdsAnsweredElsewhere.add(messageId);
+          }
         }
         backfillThreadingIfNeeded(email, message, messageUid, username, folderKey);
       } catch (Exception e) {
@@ -10813,7 +10825,7 @@ public class EmailBoxService {
     if (!uidsToClearRecent.isEmpty()) {
       emailBoxStorage.markEmailsAsNotRecent(uidsToClearRecent, username, folderKey);
     }
-    emailBoxStorage.markReadReceiptsAnswered(username, folderKey, uidsAnsweredElsewhere);
+    emailBoxStorage.markReadReceiptsAnswered(username, folderKey, uidsAnsweredElsewhere, messageIdsAnsweredElsewhere);
     return uidsToMarkRead.size() + uidsToMarkUnread.size() + uidsToStar.size() + uidsToUnstar.size();
   }
 
@@ -11949,7 +11961,11 @@ public class EmailBoxService {
    */
   static void captureReadReceiptRequest(Message message, Email email, String folderKey) throws MessagingException {
     String requestedTo = firstHeader(message, HEADER_DISPOSITION_NOTIFICATION_TO);
-    email.setReadReceiptRequested(StringUtils.isNotBlank(requestedTo));
+    // A read receipt asking for a read receipt is not a request anybody answers: RFC
+    // 8098 section 2.1 forbids generating an MDN in response to an MDN, so one is
+    // recorded as asking for nothing. Its Content-Type rides the prefetched
+    // CONTENT_INFO, so this costs no round-trip.
+    email.setReadReceiptRequested(StringUtils.isNotBlank(requestedTo) && !isDispositionNotification(message));
     if (!email.isReadReceiptRequested()) {
       return;
     }
@@ -11986,6 +12002,26 @@ public class EmailBoxService {
       return targets.length == 1 && StringUtils.isNotBlank(envelope)
           && StringUtils.equalsIgnoreCase(StringUtils.trim(targets[0].getAddress()), envelope);
     } catch (AddressException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether a message is itself a read receipt: {@code multipart/report} of report
+   * type {@code disposition-notification}.
+   *
+   * @param message the message
+   * @return true for a read receipt; false too when the type cannot be read
+   */
+  private static boolean isDispositionNotification(Message message) {
+    try {
+      String contentType = message.getContentType();
+      if (contentType == null) {
+        return false;
+      }
+      ContentType type = new ContentType(contentType);
+      return type.match("multipart/report") && "disposition-notification".equalsIgnoreCase(type.getParameter("report-type"));
+    } catch (MessagingException | RuntimeException e) {
       return false;
     }
   }

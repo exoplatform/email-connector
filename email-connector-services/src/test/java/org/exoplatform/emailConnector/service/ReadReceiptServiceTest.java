@@ -357,7 +357,7 @@ class ReadReceiptServiceTest {
     when(serverCopy.header("Original-Recipient")).thenReturn("rfc822;alice@corp.example");
     List<MimeMessage> transmitted = captureTransmissions();
 
-    readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND);
+    readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false);
 
     assertEquals(1, transmitted.size());
     String fields = read(((Multipart) transmitted.get(0).getContent()).getBodyPart(1).getInputStream());
@@ -385,9 +385,44 @@ class ReadReceiptServiceTest {
     serverCopy();
     List<MimeMessage> transmitted = captureTransmissions();
 
-    readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND);
+    readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, true);
 
     assertEquals("auto-replied", transmitted.get(0).getHeader("Auto-Submitted")[0]);
+  }
+
+  /**
+   * The automatic answer is decided now, never on what the reader was told: once the
+   * request must be asked about (the policy was changed, the administrator switched
+   * ALWAYS off, the message is unsafe), an automatic SEND is refused before anything
+   * is claimed, and the reader shows the banner. A click under ALWAYS sends a receipt
+   * that says it was sent manually.
+   *
+   * @throws Exception when the mocked plumbing misbehaves
+   */
+  @Test
+  void anAutomaticAnswerIsOnlyAcceptedWhileTheServerDecidesAuto() throws Exception {
+    Email email = incoming();
+    when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
+    assertEquals(ReadReceiptService.ASK_FIRST,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, true)).getMessage(),
+                 "the policy is ASK now");
+    storedSettings(new ReadReceiptSettings(false, ReadReceiptPolicy.ALWAYS, false));
+    System.setProperty(ReadReceiptService.ALLOW_ALWAYS_PROPERTY, "false");
+    assertThrows(IllegalArgumentException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, true),
+                 "the administrator switched ALWAYS off");
+    System.clearProperty(ReadReceiptService.ALLOW_ALWAYS_PROPERTY);
+    email.setReadReceiptReturnPathMatch(false);
+    assertThrows(IllegalArgumentException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, true),
+                 "the message is not safe to answer on its own");
+    verify(emailBoxStorage, never()).claimReadReceipt(anyString(), any(), any());
+
+    email.setReadReceiptReturnPathMatch(true);
+    when(emailBoxStorage.claimReadReceipt(USER, email, ReadReceiptState.SENT)).thenReturn(true);
+    serverCopy();
+    List<MimeMessage> transmitted = captureTransmissions();
+    readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false);
+    assertNull(transmitted.get(0).getHeader("Auto-Submitted"), "a click is never automatic, whatever the policy");
   }
 
   /**
@@ -404,7 +439,7 @@ class ReadReceiptServiceTest {
     when(emailBoxStorage.claimReadReceipt(USER, email, ReadReceiptState.IGNORED)).thenReturn(true);
     EmailBoxService.ServerCopy serverCopy = serverCopy();
 
-    readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.IGNORE);
+    readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.IGNORE, false);
 
     verify(emailBoxService, never()).transmitAsUser(anyString(), any());
     verify(serverCopy).addKeyword("$MDNSent");
@@ -420,9 +455,9 @@ class ReadReceiptServiceTest {
    */
   @Test
   void everyRefusalCarriesItsCode() throws Exception {
-    assertThrows(ObjectNotFoundException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND));
+    assertThrows(ObjectNotFoundException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false));
     doThrow(IllegalAccessException.class).when(emailBoxService).getOwnedEmailById(99L, USER);
-    assertThrows(ObjectNotFoundException.class, () -> readReceiptService.respond(99L, USER, ReadReceiptAction.SEND));
+    assertThrows(ObjectNotFoundException.class, () -> readReceiptService.respond(99L, USER, ReadReceiptAction.SEND, false));
 
     Email notAsked = incoming();
     notAsked.setReadReceiptRequested(false);
@@ -433,7 +468,7 @@ class ReadReceiptServiceTest {
     when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(answered);
     assertEquals(ReadReceiptConflictException.ALREADY_HANDLED,
                  assertThrows(ReadReceiptConflictException.class,
-                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.IGNORE)).getMessage());
+                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.IGNORE, false)).getMessage());
 
     Email junk = incoming();
     junk.setFolder(MailFolder.JUNK);
@@ -446,7 +481,7 @@ class ReadReceiptServiceTest {
     assertRefused(incoming(), ReadReceiptAction.SEND, ReadReceiptService.NOT_ALLOWED);
 
     assertEquals(ReadReceiptService.INVALID_ACTION,
-                 assertThrows(IllegalArgumentException.class, () -> readReceiptService.respond(EMAIL_ID, USER, null)).getMessage());
+                 assertThrows(IllegalArgumentException.class, () -> readReceiptService.respond(EMAIL_ID, USER, null, false)).getMessage());
     verify(emailBoxStorage, never()).claimReadReceipt(anyString(), any(), any());
     verify(emailBoxService, never()).transmitAsUser(anyString(), any());
   }
@@ -463,15 +498,16 @@ class ReadReceiptServiceTest {
     when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
     when(emailBoxStorage.claimReadReceipt(USER, email, ReadReceiptState.SENT)).thenReturn(false);
 
-    assertThrows(ReadReceiptConflictException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND));
+    assertThrows(ReadReceiptConflictException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false));
     verify(emailBoxService, never()).transmitAsUser(anyString(), any());
     verify(emailBoxService, never()).openServerCopy(anyString(), any());
   }
 
   /**
-   * A receipt that could not leave gives its claim back, so the user can try again;
-   * one that may have left keeps it, so no second receipt follows; either way no
-   * keyword is written.
+   * A receipt that could not leave -- the transmitter failed before the server took it,
+   * the connector is unusable, a lookup threw -- gives its claim back, so the user can
+   * try again, and writes no keyword; one that may have left keeps its claim and sets
+   * $MDNSent, so no second receipt follows from here or from another client.
    *
    * @throws Exception when the mocked plumbing misbehaves
    */
@@ -486,20 +522,27 @@ class ReadReceiptServiceTest {
                                                                                                          .transmitAsUser(eq(USER), any());
     assertEquals(ReadReceiptService.SEND_FAILED,
                  assertThrows(IllegalStateException.class,
-                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND)).getMessage());
+                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false)).getMessage());
     verify(emailBoxStorage).releaseReadReceipt(USER, email, ReadReceiptState.SENT);
 
     doThrow(new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.SEND, new Exception("lost"))).when(emailBoxService)
                                                                                                         .transmitAsUser(eq(USER), any());
     assertEquals(ReadReceiptService.UNCONFIRMED,
                  assertThrows(IllegalStateException.class,
-                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND)).getMessage());
+                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false)).getMessage());
     verify(emailBoxStorage).releaseReadReceipt(USER, email, ReadReceiptState.SENT);
+    verify(serverCopy).addKeyword("$MDNSent");
 
     doThrow(IllegalAccessException.class).when(emailBoxService).transmitAsUser(eq(USER), any());
-    assertThrows(IllegalAccessException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND));
+    assertThrows(IllegalAccessException.class, () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false));
     verify(emailBoxStorage, org.mockito.Mockito.times(2)).releaseReadReceipt(USER, email, ReadReceiptState.SENT);
-    verify(serverCopy, never()).addKeyword(anyString());
+
+    doThrow(new NumberFormatException("connector id")).when(emailBoxService).transmitAsUser(eq(USER), any());
+    assertEquals(ReadReceiptService.SEND_FAILED,
+                 assertThrows(IllegalStateException.class,
+                              () -> readReceiptService.respond(EMAIL_ID, USER, ReadReceiptAction.SEND, false)).getMessage());
+    verify(emailBoxStorage, org.mockito.Mockito.times(3)).releaseReadReceipt(USER, email, ReadReceiptState.SENT);
+    verify(serverCopy, org.mockito.Mockito.times(1)).addKeyword(anyString());
   }
 
   // ---------------------------------------------------------------------------------
@@ -609,7 +652,7 @@ class ReadReceiptServiceTest {
   private void assertRefused(Email email, ReadReceiptAction action, String code) throws Exception {
     when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
     assertEquals(code,
-                 assertThrows(IllegalArgumentException.class, () -> readReceiptService.respond(EMAIL_ID, USER, action)).getMessage());
+                 assertThrows(IllegalArgumentException.class, () -> readReceiptService.respond(EMAIL_ID, USER, action, false)).getMessage());
   }
 
   /**

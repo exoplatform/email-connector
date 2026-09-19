@@ -1048,27 +1048,32 @@ public class EmailBoxRestTest {
                               .content("{\"action\":\"SEND\"}")
                               .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isNoContent());
-    verify(readReceiptService).respond(12L, SIMPLE_USER, ReadReceiptAction.SEND);
+    verify(readReceiptService).respond(12L, SIMPLE_USER, ReadReceiptAction.SEND, false);
+    mockMvc.perform(post(path).with(testSimpleUser())
+                              .content("{\"action\":\"SEND\",\"automatic\":true}")
+                              .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isNoContent());
+    verify(readReceiptService).respond(12L, SIMPLE_USER, ReadReceiptAction.SEND, true);
 
-    doThrow(new ObjectNotFoundException("gone")).when(readReceiptService).respond(12L, SIMPLE_USER, ReadReceiptAction.IGNORE);
+    doThrow(new ObjectNotFoundException("gone")).when(readReceiptService).respond(12L, SIMPLE_USER, ReadReceiptAction.IGNORE, false);
     expectAnswer(path, "IGNORE").andExpect(status().isNotFound());
 
     doThrow(new IllegalArgumentException(ReadReceiptService.NOT_REQUESTED)).when(readReceiptService)
-                                                                           .respond(13L, SIMPLE_USER, ReadReceiptAction.SEND);
+                                                                           .respond(13L, SIMPLE_USER, ReadReceiptAction.SEND, false);
     expectAnswer(EMAIL_BOX_PATH + "/13/read-receipt", "SEND").andExpect(status().isBadRequest());
 
     doThrow(new ReadReceiptConflictException(ReadReceiptConflictException.ALREADY_HANDLED)).when(readReceiptService)
-                                                                                         .respond(14L, SIMPLE_USER, ReadReceiptAction.SEND);
+                                                                                         .respond(14L, SIMPLE_USER, ReadReceiptAction.SEND, false);
     expectAnswer(EMAIL_BOX_PATH + "/14/read-receipt", "SEND").andExpect(status().isConflict());
 
-    doThrow(IllegalAccessException.class).when(readReceiptService).respond(15L, SIMPLE_USER, ReadReceiptAction.SEND);
+    doThrow(IllegalAccessException.class).when(readReceiptService).respond(15L, SIMPLE_USER, ReadReceiptAction.SEND, false);
     expectAnswer(EMAIL_BOX_PATH + "/15/read-receipt", "SEND").andExpect(status().isUnauthorized());
 
     doThrow(new IllegalStateException(ReadReceiptService.SEND_FAILED)).when(readReceiptService)
-                                                                     .respond(16L, SIMPLE_USER, ReadReceiptAction.SEND);
+                                                                     .respond(16L, SIMPLE_USER, ReadReceiptAction.SEND, false);
     expectAnswer(EMAIL_BOX_PATH + "/16/read-receipt", "SEND").andExpect(status().isInternalServerError());
 
-    doThrow(new IllegalArgumentException(ReadReceiptService.INVALID_ACTION)).when(readReceiptService).respond(17L, SIMPLE_USER, null);
+    doThrow(new IllegalArgumentException(ReadReceiptService.INVALID_ACTION)).when(readReceiptService).respond(17L, SIMPLE_USER, null, false);
     mockMvc.perform(post(EMAIL_BOX_PATH + "/17/read-receipt").with(testSimpleUser())
                                                              .content("{}")
                                                              .contentType(MediaType.APPLICATION_JSON))

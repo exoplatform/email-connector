@@ -99,6 +99,14 @@ public class ReadReceiptService {
   /** The request cannot be answered from here: own mail, Junk/Trash, no address, policy. */
   public static final String   NOT_ALLOWED           = "emailConnector.readReceipt.notAllowed";
 
+  /**
+   * An automatic answer (the reader sent it on display, under ALWAYS) to a request
+   * that is not to be answered automatically any more -- the user's policy, the
+   * administrator's switch or the message changed since the reader was told AUTO. The
+   * reader shows the banner instead.
+   */
+  public static final String   ASK_FIRST             = "emailConnector.readReceipt.askFirst";
+
   /** No action, or one this service does not know. */
   public static final String   INVALID_ACTION        = "emailConnector.readReceipt.invalidAction";
 
@@ -260,15 +268,21 @@ public class ReadReceiptService {
    * @param emailId the cached message's technical id
    * @param username the user answering, who must own it
    * @param action SEND or IGNORE
+   * @param automatic whether the reader answers on its own (SEND on display, under
+   *          ALWAYS) rather than on a click: allowed only while this service decides
+   *          AUTO for the message, and what makes the receipt say it was sent
+   *          automatically. A click is never automatic, whatever the policy.
    * @throws ObjectNotFoundException when there is no such message of this user
-   * @throws IllegalArgumentException {@link #NOT_REQUESTED}, {@link #NOT_ALLOWED} or
-   *           {@link #INVALID_ACTION}
+   * @throws IllegalArgumentException {@link #NOT_REQUESTED}, {@link #NOT_ALLOWED},
+   *           {@link #ASK_FIRST} or {@link #INVALID_ACTION}
    * @throws ReadReceiptConflictException when the request was already answered
    * @throws IllegalAccessException when the user's mailbox connector is not usable
    * @throws IllegalStateException {@link #SEND_FAILED} or {@link #UNCONFIRMED}
    */
-  public void respond(long emailId, String username, ReadReceiptAction action) throws ObjectNotFoundException,
-                                                                                IllegalAccessException {
+  public void respond(long emailId,
+                      String username,
+                      ReadReceiptAction action,
+                      boolean automatic) throws ObjectNotFoundException, IllegalAccessException {
     if (action == null) {
       throw new IllegalArgumentException(INVALID_ACTION);
     }
@@ -298,13 +312,19 @@ public class ReadReceiptService {
       // since nothing in the reader offers one.
       throw new IllegalArgumentException(NOT_ALLOWED);
     }
+    if (action == ReadReceiptAction.SEND && automatic && prompt != ReadReceiptPrompt.AUTO) {
+      // Decided now, never on what the reader was told before: a reader holding an
+      // AUTO from before a policy change (or a cached response) must not send without
+      // asking. It shows the banner instead.
+      throw new IllegalArgumentException(ASK_FIRST);
+    }
     ReadReceiptState answer = action == ReadReceiptAction.SEND ? ReadReceiptState.SENT : ReadReceiptState.IGNORED;
     if (!emailBoxStorage.claimReadReceipt(username, email, answer)) {
       throw new ReadReceiptConflictException(ReadReceiptConflictException.ALREADY_HANDLED);
     }
     try (EmailBoxService.ServerCopy serverCopy = emailBoxService.openServerCopy(username, email)) {
       if (action == ReadReceiptAction.SEND) {
-        sendReceipt(email, username, ownAddress, prompt == ReadReceiptPrompt.AUTO, serverCopy);
+        sendReceipt(email, username, ownAddress, automatic, serverCopy);
       }
       serverCopy.addKeyword(EmailBoxService.MDN_SENT_KEYWORD);
     }
@@ -342,11 +362,20 @@ public class ReadReceiptService {
       throw e;
     } catch (SmtpTransmitter.TransmissionException e) {
       if (e.getPhase() == SmtpTransmitter.Phase.SEND) {
+        // Kept answered, here AND on the server: the user's other clients must not
+        // send the second receipt this one refuses to.
+        serverCopy.addKeyword(EmailBoxService.MDN_SENT_KEYWORD);
         LOG.warn("The read receipt of a message of user {} may or may not have been sent; it is not sent again", username, e);
         throw new IllegalStateException(UNCONFIRMED, e);
       }
       emailBoxStorage.releaseReadReceipt(username, email, ReadReceiptState.SENT);
       LOG.warn("The read receipt of a message of user {} could not be sent ({})", username, e.getPhase(), e);
+      throw new IllegalStateException(SEND_FAILED, e);
+    } catch (RuntimeException e) {
+      // Nothing was transmitted: the transmitter's own failures all arrive above,
+      // classified, so this is a lookup failing before it. The claim goes back.
+      emailBoxStorage.releaseReadReceipt(username, email, ReadReceiptState.SENT);
+      LOG.warn("The read receipt of a message of user {} could not be prepared", username, e);
       throw new IllegalStateException(SEND_FAILED, e);
     }
   }
