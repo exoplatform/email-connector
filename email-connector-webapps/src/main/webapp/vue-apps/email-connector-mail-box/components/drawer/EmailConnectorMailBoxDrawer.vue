@@ -470,6 +470,11 @@ export default {
     };
     this.$root.$on('retry-email-read', this.onRetryEmailRead);
     this.isRefreshing = false;
+    // Whether a folder switch's list is still on its way, and which switch: the list on
+    // screen is then the previous folder's (see openFirstAfterNavigation). Plain: nothing
+    // renders them.
+    this.folderLoading = false;
+    this.folderLoads = 0;
     // Plain instance field: a pending timeout id needs no reactivity.
     this.searchDebounceTimer = null;
     // Which hit openSearchResult is opening, so a repeat of it is ignored while another
@@ -2778,8 +2783,14 @@ export default {
         this.selectEmailPlaceHolder = true;
       }
       this.loading = true;
+      const folderLoad = ++this.folderLoads;
+      this.folderLoading = true;
       this.loadEmailBox().finally(() => {
         this.loading = false;
+        // A later switch owns the flag until its own list is in.
+        if (folderLoad === this.folderLoads) {
+          this.folderLoading = false;
+        }
         // A running search follows the folder: local matches recompute from the
         // new list, and the server search re-runs scoped to the new folder.
         if (this.searchActive) {
@@ -2802,10 +2813,12 @@ export default {
      * @returns {void}
      */
     openFirstAfterNavigation() {
-      // Not while a folder is loading: the list is still the previous folder's, and
-      // its first mail would open -- and be read two seconds later -- in the folder the
-      // user just left. The folder switch calls this again once the new list is in.
-      if (!this.expanded || !this.emailBoxDrawer || this.loading) {
+      // Not while another folder is loading: the list is still the previous folder's,
+      // and its first mail would open -- and be read two seconds later -- in the folder
+      // the user just left. The folder switch calls this again once the new list is in.
+      // Only that load: a chip's reload, or a mail opening, keeps the folder listed, and
+      // nothing would call this again after them.
+      if (!this.expanded || !this.emailBoxDrawer || this.folderLoading) {
         return;
       }
       const showingEmail = this.email && !this.selectEmailPlaceHolder;
