@@ -260,6 +260,20 @@ public class EmailScheduledSendStorage {
   }
 
   /**
+   * Takes a mail that is not being sent for an edit of its content: its row stays
+   * locked until the caller's transaction ends (see
+   * {@link EmailScheduledSendDAO#takeForEdit}).
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalId the draft's handle
+   * @param now the write instant
+   * @return true when taken
+   */
+  public boolean takeForEdit(String userId, String draftLocalId, Date now) {
+    return emailScheduledSendDAO.takeForEdit(userId, draftLocalId, now, RESCHEDULABLE) == 1;
+  }
+
+  /**
    * A new date for a mail that is not being sent.
    *
    * @param userId the mailbox owner
