@@ -1218,4 +1218,114 @@
       </column>
     </addColumn>
   </changeSet>
+
+  <changeSet author="email-connector" id="1.0.0-62" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The scheduled-send table's sequence (EXO-90434), on the vendors that have
+      sequences, created before its table for the reason 1.0.0-43 records. 1.0.0-61 is
+      spent by EXO-90418 (the persisted notification boundary), on a branch of its own
+      that lands on the same line, so this work starts at 62.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_SCHEDULED_SEND_ID" startValue="1"/>
+    <rollback>
+      <dropSequence sequenceName="SEQ_EMAIL_SCHEDULED_SEND_ID"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-63">
+    <comment>
+      A mail scheduled to be sent at a date (EXO-90434). The mail itself stays what it
+      was, a draft row of EMAIL_BOX, so its attachments, inline pictures, revisions and
+      threading keep working unchanged; this row is the schedule beside it, one per
+      draft (EMAIL_ID is unique), and its existence is what locks the draft against
+      edits while it waits.
+
+      STATUS is the at-most-once state machine the dispatcher and the user's actions
+      share: SCHEDULED waits for NEXT_ATTEMPT_DATE; SENDING is the claim, taken by a
+      conditional UPDATE so exactly one node (or one "send now") transmits, and never
+      put back to SCHEDULED unless nothing reached the mail server; FAILED is a
+      permanent refusal; UNCERTAIN is a transmission that may have reached the server
+      and is never retried automatically; SENT is transmitted and waiting for its draft
+      row to be removed. CLAIMED_BY and CLAIMED_DATE name the claim, so a restarted
+      node recognises its own interrupted sends and every later write of a run is
+      conditioned on the claim it holds. LAST_ERROR carries a code only, never a server
+      message. SCHEDULED_DATE is the instant chosen (UTC); TIME_ZONE is only the zone
+      it was chosen in, for display.
+
+      Indexed for the two reads that run: the dispatcher's due scan (STATUS,
+      NEXT_ATTEMPT_DATE) and the per-user list and count (USER_ID). Rolled back
+      explicitly, indexes then table (whose unique constraint goes with it).
+    </comment>
+    <createTable tableName="EMAIL_SCHEDULED_SEND">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_SCHEDULED_SEND"/>
+      </column>
+      <column name="EMAIL_ID" type="BIGINT">
+        <constraints nullable="false" unique="true" uniqueConstraintName="UQ_EMAIL_SCHED_SEND_EMAIL"/>
+      </column>
+      <column name="USER_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DRAFT_LOCAL_ID" type="VARCHAR(64)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SCHEDULED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+      <column name="TIME_ZONE" type="VARCHAR(64)"/>
+      <column name="STATUS" type="VARCHAR(20)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="NEXT_ATTEMPT_DATE" type="TIMESTAMP"/>
+      <column name="ATTEMPTS" type="INT" defaultValueNumeric="0">
+        <constraints nullable="false"/>
+      </column>
+      <column name="CLAIMED_BY" type="VARCHAR(250)"/>
+      <column name="CLAIMED_DATE" type="TIMESTAMP"/>
+      <column name="LAST_ERROR" type="VARCHAR(64)"/>
+      <column name="CREATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+      <column name="UPDATED_DATE" type="TIMESTAMP"/>
+    </createTable>
+    <createIndex tableName="EMAIL_SCHEDULED_SEND" indexName="IDX_EMAIL_SCHED_SEND_DUE">
+      <column name="STATUS"/>
+      <column name="NEXT_ATTEMPT_DATE"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_SCHEDULED_SEND" indexName="IDX_EMAIL_SCHED_SEND_USER">
+      <column name="USER_ID"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_SCHEDULED_SEND" indexName="IDX_EMAIL_SCHED_SEND_USER"/>
+      <dropIndex tableName="EMAIL_SCHEDULED_SEND" indexName="IDX_EMAIL_SCHED_SEND_DUE"/>
+      <dropTable tableName="EMAIL_SCHEDULED_SEND"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-64" dbms="mysql">
+    <comment>
+      The table options every table of this file gets on MySQL (InnoDB, utf8mb4, the
+      accent-insensitive 0900 collation), applied to EMAIL_SCHEDULED_SEND as literal SQL
+      for the checksum reason 1.0.0-53 gives, and BEFORE the foreign key of 1.0.0-65,
+      which needs both tables on InnoDB. The rollback is explicit and empty on purpose,
+      as 1.0.0-59's is: sql has no automatic rollback, and the table goes with 1.0.0-63's.
+    </comment>
+    <sql>ALTER TABLE EMAIL_SCHEDULED_SEND ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <rollback/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-65">
+    <comment>
+      The schedule goes with its draft, in the database. Every removal of an EMAIL_BOX
+      row this add-on performs is a bulk JPQL DELETE (deleteEmailsByIds, the disconnect
+      wipe, the sync's cleanup), which no JPA cascade ever sees; ON DELETE CASCADE is the
+      one place that holds for all of them, as 1.0.0-6 does for the attachments.
+    </comment>
+    <addForeignKeyConstraint baseTableName="EMAIL_SCHEDULED_SEND"
+                             baseColumnNames="EMAIL_ID"
+                             referencedTableName="EMAIL_BOX"
+                             referencedColumnNames="ID"
+                             constraintName="FK_EMAIL_SCHED_SEND_EMAIL"
+                             onDelete="CASCADE"/>
+    <rollback>
+      <dropForeignKeyConstraint baseTableName="EMAIL_SCHEDULED_SEND" constraintName="FK_EMAIL_SCHED_SEND_EMAIL"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

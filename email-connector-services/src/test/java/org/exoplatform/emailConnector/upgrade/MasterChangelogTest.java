@@ -52,11 +52,15 @@ import liquibase.ChecksumVersion;
 import liquibase.Contexts;
 import liquibase.LabelExpression;
 import liquibase.Liquibase;
+import liquibase.change.Change;
 import liquibase.changelog.ChangeSet;
 import liquibase.database.Database;
 import liquibase.database.DatabaseFactory;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.resource.ClassLoaderResourceAccessor;
+import liquibase.sql.Sql;
+import liquibase.sqlgenerator.SqlGeneratorFactory;
+import liquibase.statement.SqlStatement;
 
 /**
  * Applies the whole changelog to an empty HSQLDB.
@@ -165,6 +169,240 @@ public class MasterChangelogTest {
   }
 
   /**
+   * The scheduled-send changesets (1.0.0-62 to 1.0.0-65) apply, roll back and apply
+   * again, to a tag placed immediately before 1.0.0-62, for the reason
+   * {@link #theFolderRegistryChangesetsRollBackAndReapply()} gives. After the rollback
+   * the table, its sequence and its foreign key are gone and the sync-state table
+   * before them still stands; the re-apply is what shows nothing was left behind (a
+   * surviving sequence, index or constraint would fail the second CREATE). The cascade
+   * itself is proven on the applied schema: deleting a draft row removes its schedule.
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theScheduledSendChangesetsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback62" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-62"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-scheduled-send");
+      assertFalse(tableExists(connection, "EMAIL_SCHEDULED_SEND"), "sanity: the table does not exist before 1.0.0-63");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_SCHEDULED_SEND"), "1.0.0-63 creates EMAIL_SCHEDULED_SEND");
+      assertTrue(indexExists(connection, "EMAIL_SCHEDULED_SEND", "IDX_EMAIL_SCHED_SEND_DUE"), "and its due index");
+      assertTrue(indexExists(connection, "EMAIL_SCHEDULED_SEND", "IDX_EMAIL_SCHED_SEND_USER"), "and its user index");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_SCHEDULED_SEND_ID"), "1.0.0-62 creates its sequence");
+      assertDraftDeleteCascadesToItsSchedule(connection);
+
+      liquibase.rollback("before-scheduled-send", "");
+      assertFalse(tableExists(connection, "EMAIL_SCHEDULED_SEND"), "rolling back drops EMAIL_SCHEDULED_SEND");
+      assertFalse(sequenceExists(connection, "SEQ_EMAIL_SCHEDULED_SEND_ID"), "and its sequence");
+      assertTrue(tableExists(connection, "EMAIL_SYNC_STATE"), "and nothing before them");
+
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_SCHEDULED_SEND"), "the changesets apply again after their rollback");
+      assertDraftDeleteCascadesToItsSchedule(connection);
+    }
+  }
+
+  /**
+   * The scheduled-send table as MySQL and PostgreSQL get it, generated through
+   * Liquibase's own dialects on offline connections (no server): on MySQL the table
+   * options arrive as literal SQL and BEFORE the foreign key (which needs InnoDB on both
+   * sides), and on both vendors the foreign key carries ON DELETE CASCADE -- the one
+   * property every bulk removal of a draft relies on. PostgreSQL gets the sequence the
+   * entity's {@code @PortableSequence} names; MySQL gets an auto-increment instead.
+   * Rollback SQL is generated too, and drops what the update created.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theScheduledSendTableOnMySqlAndPostgreSql() throws Exception {
+    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-62");
+    int options = mysql.indexOf("ALTER TABLE EMAIL_SCHEDULED_SEND ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+    int foreignKey = mysql.indexOf("ADD CONSTRAINT FK_EMAIL_SCHED_SEND_EMAIL FOREIGN KEY (EMAIL_ID) REFERENCES EMAIL_BOX (ID) ON DELETE CASCADE");
+    assertTrue(options > 0, "the table options of 1.0.0-64: " + mysql);
+    assertTrue(foreignKey > options, "the cascading foreign key of 1.0.0-65, after the table options: " + foreignKey + " / " + options);
+    Matcher createMysql = Pattern.compile("CREATE TABLE EMAIL_SCHEDULED_SEND \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(mysql);
+    assertTrue(createMysql.find(), "no CREATE TABLE EMAIL_SCHEDULED_SEND in the MySQL SQL");
+    assertTrue(createMysql.group().contains("AUTO_INCREMENT"), "MySQL ids come from an auto-increment: " + createMysql.group());
+    assertTrue(createMysql.group().contains("CONSTRAINT UQ_EMAIL_SCHED_SEND_EMAIL UNIQUE (EMAIL_ID)"), createMysql.group());
+    assertFalse(mysql.contains("SEQ_EMAIL_SCHEDULED_SEND_ID"), "no sequence on MySQL");
+
+    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-62");
+    assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_SCHEDULED_SEND_ID START WITH 1"),
+               "the sequence of 1.0.0-62 on PostgreSQL: " + postgresql);
+    assertTrue(postgresql.indexOf("CREATE SEQUENCE") < postgresql.indexOf("CREATE TABLE EMAIL_SCHEDULED_SEND (ID BIGINT NOT NULL,"),
+               "created before its table, with no auto-increment on the id: " + postgresql);
+    assertTrue(postgresql.contains("ADD CONSTRAINT FK_EMAIL_SCHED_SEND_EMAIL FOREIGN KEY (EMAIL_ID) REFERENCES EMAIL_BOX (ID) ON DELETE CASCADE"),
+               "the cascading foreign key on PostgreSQL: " + postgresql);
+
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String rollback = offlineRollbackSql(vendor, "1.0.0-62").toUpperCase(Locale.ROOT);
+      assertTrue(rollback.contains("DROP TABLE") && rollback.contains("EMAIL_SCHEDULED_SEND"), vendor + " rollback drops the table: " + rollback);
+      assertTrue(rollback.indexOf("FK_EMAIL_SCHED_SEND_EMAIL") >= 0 && rollback.indexOf("FK_EMAIL_SCHED_SEND_EMAIL") < rollback.indexOf("DROP TABLE"),
+                 vendor + " rollback drops the foreign key first: " + rollback);
+    }
+    assertTrue(offlineRollbackSql("postgresql?version=15", "1.0.0-62").contains("DROP SEQUENCE SEQ_EMAIL_SCHEDULED_SEND_ID"),
+               "and the sequence, where there is one");
+  }
+
+  /**
+   * Inserts a draft row and its schedule, deletes the draft row, and requires the
+   * schedule row to be gone.
+   *
+   * @param connection the database
+   * @throws SQLException when a statement fails
+   */
+  private void assertDraftDeleteCascadesToItsSchedule(Connection connection) throws SQLException {
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER) VALUES (9001, 'alice', 's',"
+          + " 'Alice,alice@example.org', CURRENT_TIMESTAMP, 'DRAFTS')");
+      statement.executeUpdate("INSERT INTO EMAIL_SCHEDULED_SEND (ID, EMAIL_ID, USER_ID, DRAFT_LOCAL_ID, SCHEDULED_DATE, STATUS,"
+          + " CREATED_DATE) VALUES (9002, 9001, 'alice', 'd', CURRENT_TIMESTAMP, 'SCHEDULED', CURRENT_TIMESTAMP)");
+      statement.executeUpdate("DELETE FROM EMAIL_BOX WHERE ID = 9001");
+      try (ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM EMAIL_SCHEDULED_SEND")) {
+        rows.next();
+        assertEquals(0, rows.getInt(1), "the schedule goes with its draft");
+      }
+    }
+  }
+
+  /**
+   * Whether a sequence exists, asked of HSQLDB's information schema.
+   *
+   * @param connection the database
+   * @param sequenceName the sequence, as created
+   * @return true when it exists
+   * @throws SQLException when the schema cannot be read
+   */
+  private boolean sequenceExists(Connection connection, String sequenceName) throws SQLException {
+    try (PreparedStatement select = connection.prepareStatement("SELECT COUNT(*) FROM INFORMATION_SCHEMA.SEQUENCES WHERE SEQUENCE_NAME = ?")) {
+      select.setString(1, sequenceName);
+      try (ResultSet result = select.executeQuery()) {
+        result.next();
+        return result.getInt(1) > 0;
+      }
+    }
+  }
+
+  /**
+   * The SQL a vendor's database would run for the changesets from an id to the end,
+   * generated by Liquibase's own SQL generators for that vendor over an offline
+   * connection -- no server, and nothing executed, so vendor-specific custom changes
+   * elsewhere in the file (which need a live connection) are not involved.
+   *
+   * @param vendor the offline URL's vendor part, e.g. {@code mysql?version=8.0.17}
+   * @param fromId the first changeset whose SQL is generated
+   * @return the SQL, one statement per line
+   * @throws Exception when it cannot be generated
+   */
+  private String offlineUpdateSql(String vendor, String fromId) throws Exception {
+    StringBuilder sql = new StringBuilder();
+    Database database = offlineDatabase(vendor);
+    for (ChangeSet changeSet : changeSetsFrom(database, vendor, fromId)) {
+      for (Change change : changeSet.getChanges()) {
+        appendSql(sql, change.generateStatements(database), database);
+      }
+    }
+    return sql.toString();
+  }
+
+  /**
+   * The rollback SQL of the changesets from an id to the end, last first, as the
+   * vendor's generators render each changeset's declared rollback.
+   *
+   * @param vendor the offline URL's vendor part
+   * @param fromId the first changeset rolled back
+   * @return the SQL, one statement per line
+   * @throws Exception when it cannot be generated
+   */
+  private String offlineRollbackSql(String vendor, String fromId) throws Exception {
+    StringBuilder sql = new StringBuilder();
+    Database database = offlineDatabase(vendor);
+    List<ChangeSet> changeSets = new ArrayList<>(changeSetsFrom(database, vendor, fromId));
+    java.util.Collections.reverse(changeSets);
+    for (ChangeSet changeSet : changeSets) {
+      for (Change change : changeSet.getRollback().getChanges()) {
+        appendSql(sql, change.generateStatements(database), database);
+      }
+    }
+    return sql.toString();
+  }
+
+  /**
+   * An offline database of a vendor.
+   *
+   * @param vendor the offline URL's vendor part
+   * @return the database
+   * @throws Exception when it cannot be opened
+   */
+  private Database offlineDatabase(String vendor) throws Exception {
+    return DatabaseFactory.getInstance()
+                          .openDatabase("offline:" + vendor, null, null, null, new ClassLoaderResourceAccessor());
+  }
+
+  /**
+   * The changesets from an id to the end that run on a vendor, in file order.
+   *
+   * @param database the offline database, for parsing
+   * @param vendor the offline URL's vendor part
+   * @param fromId the first changeset
+   * @return the changesets
+   * @throws Exception when the changelog cannot be parsed
+   */
+  private List<ChangeSet> changeSetsFrom(Database database, String vendor, String fromId) throws Exception {
+    String dbms = vendor.substring(0, vendor.indexOf('?'));
+    List<ChangeSet> selected = new ArrayList<>();
+    boolean from = false;
+    for (ChangeSet changeSet : new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database).getDatabaseChangeLog()
+                                                                                                    .getChangeSets()) {
+      // Compared by number, not by equality: a changeset another vendor filters out at
+      // parse time (1.0.0-62 on MySQL) never appears in this list to be matched.
+      from = from || sequenceNumber(changeSet.getId()) >= sequenceNumber(fromId);
+      if (from && appliesTo(changeSet, dbms)) {
+        selected.add(changeSet);
+      }
+    }
+    return selected;
+  }
+
+  /**
+   * The number at the end of a {@code 1.0.0-N} changeset id.
+   *
+   * @param id the id
+   * @return N
+   */
+  private static int sequenceNumber(String id) {
+    return Integer.parseInt(id.substring(id.lastIndexOf('-') + 1));
+  }
+
+  /**
+   * Renders statements through the vendor's generators and appends them.
+   *
+   * @param sql the buffer
+   * @param statements the statements
+   * @param database the vendor
+   */
+  private void appendSql(StringBuilder sql, SqlStatement[] statements, Database database) {
+    for (SqlStatement statement : statements) {
+      for (Sql generated : SqlGeneratorFactory.getInstance().generateSql(statement, database)) {
+        sql.append(generated.toSql()).append(";\n");
+      }
+    }
+  }
+
+  /**
+   * Whether a parsed changeset runs on a vendor.
+   *
+   * @param changeSet the changeset
+   * @param vendor the vendor's short name
+   * @return true when its dbms list is empty or names the vendor
+   */
+  private boolean appliesTo(ChangeSet changeSet, String vendor) {
+    return changeSet.getDbmsSet() == null || changeSet.getDbmsSet().isEmpty() || changeSet.getDbmsSet().contains(vendor);
+  }
+
+  /**
    * On MySQL, and only there, the registry's REMOTE_NAME keeps its case: generated
    * through Liquibase's own MySQL dialect (an offline connection, no server), the
    * CREATE TABLE of 1.0.0-53 carries a binary collation on that one column, while the
@@ -214,9 +452,18 @@ public class MasterChangelogTest {
 
   // The changesets this add-on's branches added since the checksum pin below exists
   // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
-  // -59). They are the ones a second evaluation computes ahead of the update in the
+  // -59; the scheduled-send table, 1.0.0-62 to -65). They are the ones a second evaluation computes ahead of the update in the
   // pin, and nothing on this list may ever drift.
-  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53", "1.0.0-54", "1.0.0-55", "1.0.0-56", "1.0.0-58", "1.0.0-59");
+  private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53",
+                                                              "1.0.0-54",
+                                                              "1.0.0-55",
+                                                              "1.0.0-56",
+                                                              "1.0.0-58",
+                                                              "1.0.0-59",
+                                                              "1.0.0-62",
+                                                              "1.0.0-63",
+                                                              "1.0.0-64",
+                                                              "1.0.0-65");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
