@@ -36,9 +36,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <!-- Read/unread is a write to the mail server, so it stays off a read-only folder's
          rows. It is folder-aware now (EXO-89367), so this is no longer about the write
          landing in the wrong place — it is that a message the user threw away has no
-         read state worth pushing. -->
+         read state worth pushing.
+         Off a DRAFT's row too (EXO-90438), and by decision rather than by refusal: a
+         draft is the user's own text, stored read and never announced as new mail, so
+         "Mark as unread" there promised a state that means nothing. The server would
+         take it for a draft that has been uploaded — and on one that has not there is
+         no message up there to carry the flag, so the push came back as a failure that,
+         until this change, nothing showed. -->
     <v-list-item
-      v-if="!readOnly"
+      v-if="!readOnly && !inDrafts"
       class="ps-2 pe-3 height-auto"
       @click.stop="updateEmailReadStatus">
       <v-sheet
@@ -170,6 +176,28 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-sheet>
       <span>
         {{ $t('emailConnector.mailBox.list.drawer.detail.delete.label') }}
+      </span>
+    </v-list-item>
+    <!-- The Drafts folder's own destructive action, where every ordinary one above is
+         withheld: Discard, which removes the copy on the mail server and the local row
+         rather than filing the draft anywhere. Same wording and same confirmation as
+         the bulk Discard of the selection toolbar — one dialog, whoever asks. -->
+    <v-list-item
+      v-if="canDiscard"
+      class="ps-2 pe-3 height-auto"
+      @click.stop="discardDraft">
+      <v-sheet
+        class="d-flex"
+        width="28"
+        height="36">
+        <v-icon
+          class="error--text mx-auto"
+          size="16">
+          fa-trash
+        </v-icon>
+      </v-sheet>
+      <span>
+        {{ $t('emailConnector.mailBox.list.drawer.detail.discard.label') }}
       </span>
     </v-list-item>
     <!-- The Spam folder's own two actions, where the ordinary ones above are withheld:
@@ -347,7 +375,48 @@ export default {
      * @returns {Boolean} true when the folder-changing actions belong on this row
      */
     canMove() {
-      return !this.readOnly && (this.email.folder || 'INBOX') !== 'DRAFTS';
+      return !this.readOnly && !this.inDrafts;
+    },
+    /**
+     * Whether this row is a draft listed in the Drafts folder — asked of the same
+     * service the bulk toolbar asks, so the menu and the bar cannot disagree about
+     * where the ordinary actions stop and Discard starts.
+     *
+     * @returns {Boolean} true when the row is in Drafts
+     */
+    inDrafts() {
+      return this.$emailConnectorMailBoxService.isDraftsFolder(this.email.folder);
+    },
+    /**
+     * Whether Discard belongs on this row (EXO-90438): a draft, and one the discard
+     * endpoint can address — it takes the draft's LOCAL id, which a row that is not a
+     * draft has none of.
+     *
+     * @returns {Boolean} true when Discard belongs on this row
+     */
+    canDiscard() {
+      return this.draftRows.length > 0;
+    },
+    /**
+     * The drafts this row stands for.
+     *
+     * A listing row is a CONVERSATION, so two drafts answering the same exchange
+     * collapse into one row (groupEmailsByThread), and ticking that row selects both —
+     * the bulk Discard would then throw both away. The menu has to mean the same thing
+     * as the checkbox beside it, or discarding from the ⋮ would leave a draft behind
+     * and read as an action that did not work.
+     *
+     * Off threadRowsInFolder, which is the very list the checkbox keys its selection on
+     * -- so the two cannot come to mean different sets -- and not off threadIds, its
+     * sibling: that one yields UIDs, and a draft's is exactly what may be missing.
+     *
+     * @returns {Array<Object>} the draft rows Discard applies to, empty when this row
+     *          is not a draft at all
+     */
+    draftRows() {
+      return this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread)
+        .filter(message => this.$emailConnectorMailBoxService.isDraftsFolder(message.folder)
+                           && !!message.draftLocalId);
     },
     /**
      * Whether the user has a mirrored folder of their own to move this row into,
@@ -361,9 +430,22 @@ export default {
     },
   },
   methods: {
+    /**
+     * Starts a selection on this row's conversation, exactly as ticking its checkbox
+     * does: one select-email per message of the acting folder, naming the draft's local
+     * id where there is one so the drawer keys it as the checkbox would (EXO-90438).
+     *
+     * @returns {void}
+     */
     selectEmail() {
       this.$emit('close');
-      this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, folder: this.actingFolder, selected: true }));
+      this.$emailConnectorMailBoxService.threadRowsInFolder(this.email, this.thread)
+        .forEach(message => this.$root.$emit('select-email', {
+          emailId: message.mailRemoteId,
+          draftLocalId: message.draftLocalId,
+          folder: this.actingFolder,
+          selected: true,
+        }));
     },
     updateEmailReadStatus() {
       this.$emit('close');
@@ -430,6 +512,21 @@ export default {
     purgeEmail() {
       this.$emit('close');
       this.$root.$emit('open-purge-email-confirm-popup', this.threadIds);
+    },
+    /**
+     * Asks first, then throws this row's drafts away — the drafts and nothing else, so
+     * the menu and the checkbox on the same row mean the same thing (see draftRows).
+     *
+     * The rows are handed over rather than their ids: the confirmation has to tell a
+     * scheduled draft from an ordinary one, and the discard addresses a draft by its
+     * LOCAL id — the UID the rest of this menu works with is exactly what an unpushed
+     * draft does not have.
+     *
+     * @returns {void}
+     */
+    discardDraft() {
+      this.$emit('close');
+      this.$root.$emit('open-discard-drafts-confirm-popup', this.draftRows);
     },
   }
 };

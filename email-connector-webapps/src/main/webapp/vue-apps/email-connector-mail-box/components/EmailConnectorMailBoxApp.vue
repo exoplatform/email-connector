@@ -35,6 +35,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          asked from the row menu, from the reader and from the bulk toolbar, and the
          reader lives outside that drawer. One dialog, one wording, whoever asks. -->
     <email-connector-mail-box-purge-confirm-popup />
+    <!-- Mounted beside it, for the same reason: Discard is asked from the Drafts
+         listing's row menu and from its bulk toolbar, and both must ask it in the same
+         words. The two places that discard a draft WITHOUT asking are deliberate and
+         are not these: the composer's own Discard button, which is itself the explicit
+         act, and the draft strip inside a conversation (EmailConnectorMailBoxDrawer-
+         ThreadContent), which predates this dialog. -->
+    <email-connector-mail-box-discard-drafts-confirm-popup />
     <email-connector-mail-box-move-to-folder-drawer />
     <email-connector-mail-box-drawer-attachments-drawer />
     <email-connector-mail-box-drawer-list-item-action-menu-drawer />
