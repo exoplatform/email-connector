@@ -209,8 +209,8 @@ describe('the folder column (EXO-90415)', () => {
       mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
     });
 
-    expect(wrapper.vm.folderEntries.map(entry => [entry.key, entry.label, entry.icon]))
-      .toEqual(menu.vm.visibleFolders.map(folder => [folder.key, folder.label, folder.icon]));
+    expect(wrapper.vm.folderEntries.map(entry => [entry.value, entry.label, entry.icon]))
+      .toEqual(menu.vm.visibleFolders.map(folder => [`folder:${folder.key}`, folder.label, folder.icon]));
     expect(wrapper.vm.folderEntries.map(entry => entry.icon))
       .toEqual(['fa-inbox', 'fa-paper-plane', 'fa-file-alt', 'fa-ban', 'fa-folder']);
     // A folder of the user's own is shown as they named it, never through the bundle.
@@ -232,6 +232,21 @@ describe('the folder column (EXO-90415)', () => {
     wrapper.vm.openCategoryView(12);
 
     expect(emit.mock.calls).toEqual([['switch-folder', 'INBOX'], ['open-category-view', 12]]);
+  });
+
+  it('makes each entry an option of the listbox, selected when lit, with tooltip attributes only as a rail', () => {
+    const tooltipped = { template: '<div><slot name="activator" :on="{}" :attrs="{ \'aria-haspopup\': \'true\' }" /><slot /></div>' };
+    const mountWith = rail => shallowMount(EmailConnectorMailBoxDrawerNavigation, {
+      propsData: { folders: FOLDERS, categories: CATEGORIES, currentFolder: 'SENT', rail },
+      mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+      stubs: { 'v-tooltip': tooltipped },
+    });
+    const open = mountWith(false).findAll('v-list-item');
+    expect(open.wrappers.every(item => item.attributes('role') === 'option')).toBe(true);
+    expect(open.wrappers.map(item => item.attributes('aria-selected')))
+      .toEqual(['false', 'true', 'false', 'false', 'false', 'false', 'false']);
+    expect(open.at(0).attributes('aria-haspopup')).toBeUndefined();
+    expect(mountWith(true).findAll('v-list-item').at(0).attributes('aria-haspopup')).toBe('true');
   });
 
   it('shows the names beside the icons open, in tooltips only as a rail', () => {
@@ -476,6 +491,28 @@ describe('going somewhere in full screen opens its first mail (EXO-90415)', () =
     await flush();
 
     expect(fixture.wrapper.vm.email.mailRemoteId).toBe(2);
+  });
+
+  it('gives the focus to the kept mail\'s row when the view still lists it, so the arrows walk on from it', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1, 'INBOX', { categoryIds: [12] }), row(2, 'INBOX', { categoryIds: [12] }),
+      row(3, 'INBOX', { categoryIds: [12] })] });
+    await expand(fixture);
+    await fixture.wrapper.vm.openListedEmail(fixture.wrapper.vm.emails[1]);
+    await flush();
+    const revealThreadRow = jest.spyOn(fixture.wrapper.vm, 'revealThreadRow');
+
+    fixture.wrapper.vm.$root.$emit('open-category-view', 12);
+    await flush();
+    await flush();
+    expect(revealThreadRow).toHaveBeenCalledWith(row(2).threadId);
+
+    // And when the view is left for the folder that still holds it.
+    revealThreadRow.mockClear();
+    fixture.wrapper.vm.$root.$emit('open-category-view', 12);
+    await flush();
+    await flush();
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(2);
+    expect(revealThreadRow).toHaveBeenCalledWith(row(2).threadId);
   });
 
   it('opens nothing in the narrow layout, where the list is what is on screen', async () => {

@@ -252,7 +252,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import listNavigationMixin, { firstOpenableThread, searchRows, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
+import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 
 // The drawer's width in its narrow layout, and the list's in the full-screen left pane:
 // exo-drawer's own default, which both layouts kept until the folder column came.
@@ -1194,11 +1194,11 @@ export default {
      * read nor counts it as opened: listNavigationMixin does both once the user stayed
      * on it (EXO-90414).
      *
-     * @param {Number} mailRemoteId the message's IMAP UID within the listed folder
-     * @param {String} folder the folder it is numbered in, when the row says so
      * A mail handed over by the mail drawer (options.handover, EXO-90415) is not read
      * or counted again either: that drawer did both when it opened it.
      *
+     * @param {Number} mailRemoteId the message's IMAP UID within the listed folder
+     * @param {String} folder the folder it is numbered in, when the row says so
      * @param {Object} options {automatic}: whether the user did not ask for this mail;
      *   {handover}: whether the mail drawer handed it over, already read
      * @returns {Promise} resolved once the message is on screen (nothing for an inert row)
@@ -2836,7 +2836,9 @@ export default {
     },
     /**
      * After a move to another folder or view in full screen, opens the first mail of
-     * the list when the reader shows none, and gives its row the focus.
+     * the list when the reader shows none, and gives the focus to the row of the mail
+     * the reader then shows -- the one it kept (a view still listing it, a view left
+     * for the folder holding it), or the first one it opens.
      * <p>
      * The focus matters as much as the opening: the folder column is a listbox, where
      * the arrow keys are not the list's (listNavigationMixin leaves keys inside one
@@ -2851,13 +2853,11 @@ export default {
       }
       const showingEmail = this.email && !this.selectEmailPlaceHolder;
       this.autoSelectFirstEmail();
-      if (showingEmail) {
-        return;
-      }
       const rows = this.navigationEntriesOf(this.navigationEmails);
-      const first = this.searchActive ? rows[0] : firstOpenableThread(rows);
-      if (first) {
-        this.revealThreadRow(first.threadId);
+      const kept = showingEmail ? rows[threadIndexOf(rows, this.email)] : null;
+      const focused = kept || (!showingEmail && (this.searchActive ? rows[0] : firstOpenableThread(rows)));
+      if (focused) {
+        this.revealThreadRow(focused.threadId);
       }
     },
     /**
