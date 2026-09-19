@@ -3337,6 +3337,9 @@ public class EmailBoxService {
     } else {
       emails = emailBoxStorage.getEmails(username, folder);
     }
+    // The Drafts folder has no scheduled draft left; another folder's listing may still
+    // carry a draft row (none today), and it would be shown read-only like everywhere else.
+    markScheduledDrafts(username, emails);
     Map<String, Integer> folderCounts = emailBoxStorage.getFolderMessageCounts(username);
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
@@ -4864,13 +4867,14 @@ public class EmailBoxService {
     if (broadcast) {
       broadcastOpenEmail(username);
     }
-    return emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId,
-                                                           username,
-                                                           userEmail,
-                                                           folder,
-                                                           withAttachments,
-                                                           withRecipients,
-                                                           withProfile);
+    return markScheduledDraft(username,
+                              emailBoxStorage.getEmailByMailRemoteIdAndUserId(mailRemoteId,
+                                                                              username,
+                                                                              userEmail,
+                                                                              folder,
+                                                                              withAttachments,
+                                                                              withRecipients,
+                                                                              withProfile));
   }
 
   /**
@@ -4954,11 +4958,70 @@ public class EmailBoxService {
   private List<Email> readConversation(String username, String threadId, String userEmail, String openedFrom) {
     // Null-checked before the contains: HIDDEN_FOLDERS is a List.of, which throws on
     // contains(null), and "no folder" is the ordinary call.
+    List<Email> conversation;
     if (openedFrom == null || !MailFolder.HIDDEN_FOLDERS.contains(openedFrom)) {
-      return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmail);
+      conversation = emailBoxStorage.getEmailsByThreadId(username, threadId, userEmail);
+    } else {
+      List<String> excluded = MailFolder.HIDDEN_FOLDERS.stream().filter(folder -> !folder.equals(openedFrom)).toList();
+      conversation = emailBoxStorage.getEmailsByThreadId(username, threadId, userEmail, excluded);
     }
-    List<String> excluded = MailFolder.HIDDEN_FOLDERS.stream().filter(folder -> !folder.equals(openedFrom)).toList();
-    return emailBoxStorage.getEmailsByThreadId(username, threadId, userEmail, excluded);
+    // A scheduled draft stays in its conversation, marked so the reader shows it
+    // read-only rather than offering to resume a draft whose every edit is refused.
+    return markScheduledDrafts(username, conversation);
+  }
+
+  /**
+   * Marks the scheduled drafts among some rows of a user (EXO-90434): each draft with a
+   * schedule row gets {@code scheduled}, its date, zone and status, so every read that
+   * shows a draft can show it as scheduled and read-only. One read of the schedule table
+   * for all of them, and none when the rows hold no draft.
+   *
+   * @param username the mailbox owner
+   * @param emails the rows, marked in place; may be null
+   * @return the same rows
+   */
+  List<Email> markScheduledDrafts(String username, List<Email> emails) {
+    if (emails == null || emails.isEmpty()) {
+      return emails;
+    }
+    List<String> draftLocalIds = emails.stream()
+                                       .filter(Objects::nonNull)
+                                       .map(Email::getDraftLocalId)
+                                       .filter(StringUtils::isNotBlank)
+                                       .distinct()
+                                       .toList();
+    if (draftLocalIds.isEmpty()) {
+      return emails;
+    }
+    Map<String, EmailScheduledSend> schedules = emailScheduledSendStorage.getByDraftLocalIds(username, draftLocalIds);
+    if (schedules == null || schedules.isEmpty()) {
+      return emails;
+    }
+    for (Email email : emails) {
+      EmailScheduledSend schedule = email == null || StringUtils.isBlank(email.getDraftLocalId()) ? null
+                                                                                                 : schedules.get(email.getDraftLocalId());
+      if (schedule != null) {
+        email.setScheduled(true);
+        email.setScheduledDate(schedule.getScheduledDate() == null ? null : schedule.getScheduledDate().getTime());
+        email.setScheduledTimeZone(schedule.getTimeZone());
+        email.setScheduledStatus(schedule.getStatus());
+      }
+    }
+    return emails;
+  }
+
+  /**
+   * {@link #markScheduledDrafts(String, List)} for one row.
+   *
+   * @param username the mailbox owner
+   * @param email the row, marked in place; may be null
+   * @return the same row
+   */
+  private Email markScheduledDraft(String username, Email email) {
+    if (email != null && StringUtils.isNotBlank(email.getDraftLocalId())) {
+      markScheduledDrafts(username, List.of(email));
+    }
+    return email;
   }
 
   /**
@@ -5240,7 +5303,7 @@ public class EmailBoxService {
     if (email != null && !StringUtils.equals(email.getUserId(), username)) {
       throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_GET_EMAIL_MESSAGE, username));
     }
-    return email;
+    return markScheduledDraft(username, email);
   }
 
   /**
@@ -10594,7 +10657,7 @@ public class EmailBoxService {
                                                 // And no stored attachments: that field is the send path's
                                                 // way of carrying a draft's own files, and this row's
                                                 // attachments are parts of a message on the server.
-                                                null));
+                                                null, false, null, null, null));
           newEmailIds.add(messageUid);
 
         }

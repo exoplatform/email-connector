@@ -75,6 +75,20 @@ public interface EmailScheduledSendDAO extends JpaRepository<EmailScheduledSendE
   Optional<EmailScheduledSendEntity> findByUserIdAndDraftLocalId(String userId, String draftLocalId);
 
   /**
+   * The schedules of some of a user's drafts, in one read: what marks the scheduled ones
+   * wherever drafts are shown. Bounded by the drafts of one read (a conversation, a
+   * message), and served by the user index.
+   *
+   * @param userId the mailbox owner
+   * @param draftLocalIds the drafts' handles
+   * @return the rows of those that are scheduled
+   */
+  @Query("SELECT s FROM EmailScheduledSendEntity s WHERE s.userId = :userId AND s.draftLocalId IN :draftLocalIds")
+  List<EmailScheduledSendEntity> findByUserIdAndDraftLocalIds(@Param("userId")
+  String userId, @Param("draftLocalIds")
+  Collection<String> draftLocalIds);
+
+  /**
    * How many schedule rows a user holds in states other than the given ones: the
    * per-user limit's count.
    *
