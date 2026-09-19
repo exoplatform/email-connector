@@ -525,12 +525,16 @@ export default {
       const threads = this.navigationEntriesOf(this.navigationEmails);
       const index = threadIndexOf(threads, row);
       const messages = index >= 0 ? threads[index].emails : [row];
-      const unread = messages.filter(message => !message.read).map(message => message.mailRemoteId);
-      // With the folder those UIDs are numbered in: a search hit's is not the listed one,
-      // and the listing may hold another message under the same number (EXO-90414).
-      if (unread.length) {
-        this.$root.$emit('update-email-read-status', true, unread, row.folder || null);
-      }
+      // Each message in the folder its UID is numbered in, one read per folder, as the
+      // reader's own read of a conversation goes: a row of the mail drawer's search list
+      // may gather a conversation's hits from several folders, and the listing may hold
+      // another message under any of those numbers (EXO-90414).
+      const unreadByFolder = new Map();
+      messages.filter(message => !message.read).forEach(message => {
+        const folder = message.folder || 'INBOX';
+        unreadByFolder.set(folder, (unreadByFolder.get(folder) || []).concat(message.mailRemoteId));
+      });
+      unreadByFolder.forEach((unread, folder) => this.$root.$emit('update-email-read-status', true, unread, folder));
       this.onAutoOpenedEmailRead?.(row);
       this.$emailConnectorMailBoxService.broadcastOpenEmail().catch(() => null);
     },

@@ -1349,6 +1349,20 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
     expect(wrapper.vm.emails.map(email => `${email.folder}:${email.mailRemoteId}`)).toEqual(['INBOX:4', 'INBOX:5']);
   });
 
+  it('reads each message of an automatically opened conversation in its own folder', async () => {
+    // A row of a search list gathering a conversation's hits from two folders.
+    const archived = { ...row(7), folder: 'ARCHIVE', threadId: 't', read: false };
+    const inboxed = { ...row(9), folder: 'INBOX', threadId: 't', read: false };
+    await mountExpanded([row(1), inboxed, archived], 1);
+    await wrapper.setData({ detachedFromList: true });
+    const reads = [];
+    wrapper.vm.$root.$on('update-email-read-status', (read, ids, folder) => reads.push([read, ids, folder]));
+
+    wrapper.vm.markAutoOpenedEmailRead(inboxed);
+
+    expect(reads).toEqual([[true, [9], 'INBOX'], [true, [7], 'ARCHIVE']]);
+  });
+
   it('reads an automatically opened mail only once the user stayed on it', async () => {
     const unread = { ...row(1), read: false };
     await mountExpanded([unread, row(2), row(3)], 2);
