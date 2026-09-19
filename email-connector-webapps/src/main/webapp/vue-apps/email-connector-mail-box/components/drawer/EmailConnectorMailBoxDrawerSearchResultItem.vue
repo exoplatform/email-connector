@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
+  <!-- In full screen a hit is dragged onto a folder of the column, alone (EXO-90421). -->
   <!-- data-thread-key is how the arrow keys find the hit they stand on, and aria-current
        tells a screen reader which hit the reader shows (EXO-90414). No outline: the row's
        own background, lit on focus, is the cue, as on the folder list's rows. -->
@@ -22,7 +23,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <div
     :class="backgroundClass"
     class="clickable ps-7 pe-4 pt-3 pb-3 no-border"
-    style="outline: none;"
+    :style="{ outline: 'none', opacity: dragging ? 0.5 : null }"
+    v-bind="canDrag ? { draggable: 'true' } : {}"
+    @dragstart="onDragStart"
+    @dragend="onDragEnd"
     tabindex="0"
     :data-thread-key="rowKey"
     :aria-current="opened ? 'true' : null"
@@ -74,10 +78,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { dragLabel, dragPayloadOfSearchHit, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
+
 export default {
   data() {
     return {
       isHover: false,
+      // Whether this hit is being dragged, to fade it.
+      dragging: false,
     };
   },
   props: {
@@ -96,8 +104,22 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Whether the hit may be dragged onto a folder: the full-screen list's hits only.
+    draggableHit: {
+      type: Boolean,
+      default: false,
+    },
   },
   computed: {
+    /**
+     * Whether the hit is draggable now: a full-screen hit, not on a phone, of a folder
+     * the move, delete and spam actions are offered on (dragPayloadOfSearchHit).
+     *
+     * @returns {Boolean} true when it is
+     */
+    canDrag() {
+      return this.draggableHit && !this.$vuetify.breakpoint.smAndDown && !!dragPayloadOfSearchHit(this.result);
+    },
     /**
      * The row's background: lit like the folder list's opened row when the reader shows
      * this hit, lighter under the pointer or the keyboard focus.
@@ -124,6 +146,35 @@ export default {
     },
     ariaLabel() {
       return `Open email from ${this.senderName} about ${this.subject}`;
+    },
+  },
+  methods: {
+    /**
+     * Starts dragging the hit, in the folder the server found it in, and tells the
+     * drawer what is dragged.
+     *
+     * @param {DragEvent} event the dragstart event
+     * @returns {void}
+     */
+    onDragStart(event) {
+      const payload = this.canDrag && dragPayloadOfSearchHit(this.result);
+      if (!payload) {
+        event.preventDefault();
+        return;
+      }
+      startDrag(event, payload, dragLabel(payload.ids.length, this.$t.bind(this)));
+      this.dragging = true;
+      this.$root.$emit('email-drag-start', payload);
+    },
+    /**
+     * Ends the drag, dropped or not.
+     *
+     * @returns {void}
+     */
+    onDragEnd() {
+      this.dragging = false;
+      this.isHover = false;
+      this.$root.$emit('email-drag-end');
     },
   },
 };

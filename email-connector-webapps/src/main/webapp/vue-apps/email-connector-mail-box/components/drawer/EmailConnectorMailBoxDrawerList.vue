@@ -29,7 +29,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :sync-in-progress="syncInProgress"
       :selected-emails="selectedEmails"
       :select-mode="selectMode"
-      :expanded="expanded" />
+      :expanded="expanded"
+      :drag-source="dragSource" />
     <!-- Sits directly under the last rendered row: scrolling it into view is what asks
          for the next slice. An empty div rather than a "load more" button, because the
          mail is already in memory — there is nothing to fetch and nothing for the user
@@ -70,6 +71,11 @@ export default {
     expanded: {
       type: Boolean,
       default: false,
+    },
+    // The mail being dragged from the list, for its rows to fade (EXO-90421).
+    dragSource: {
+      type: Object,
+      default: null,
     },
     syncInProgress: {
       type: Boolean,
