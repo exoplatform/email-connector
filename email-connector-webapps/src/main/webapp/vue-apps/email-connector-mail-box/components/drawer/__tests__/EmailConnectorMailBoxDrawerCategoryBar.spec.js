@@ -65,6 +65,16 @@ describe('the reader\'s category bar across folders (EXO-90421)', () => {
     expect(wrapper.vm.assignedIds).toEqual([]);
   });
 
+  it('sends nothing for the conversation\'s All Mail copies, which the server does not categorize', async () => {
+    const { wrapper, service } = mountBar([{ mailRemoteId: 5, folder: 'INBOX' }, { mailRemoteId: 9, folder: 'ALL_MAIL' }]);
+
+    await wrapper.vm.toggle({ id: 11 }, true);
+    await wrapper.vm.toggle({ id: 11 }, false);
+
+    expect(service.linkEmailsToCategory.mock.calls).toEqual([[[5], 11, 'INBOX']]);
+    expect(service.unlinkEmailsFromCategory.mock.calls).toEqual([[[5], 11, 'INBOX']]);
+  });
+
   it('a folder the server refused keeps its messages as they were', async () => {
     const emails = [{ mailRemoteId: 5, folder: 'INBOX' }, { mailRemoteId: 6, folder: 'ARCHIVE' }];
     const { wrapper, service } = mountBar(emails);
