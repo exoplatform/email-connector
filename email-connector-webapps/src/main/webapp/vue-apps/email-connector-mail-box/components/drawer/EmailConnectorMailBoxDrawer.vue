@@ -443,7 +443,7 @@ export default {
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
+      this.selectEmailPlaceHolder = this.placeholderAfterReadStatus(read, emails);
       if (this.selectMode) {
         this.cancelSelectMode();
       }
@@ -961,11 +961,14 @@ export default {
         this.emailRequestHoldsLoading = true;
       }
       this.loadingEmail = true;
+      // Read from the moment it is opened, as the detail drawer does: the reader marks
+      // the conversation's unread rows read as soon as the conversation lands, which
+      // may be before this answer, and it must find this one already read.
+      this.updateEmailsReadStatus(true, [mailRemoteId]);
       this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, listed?.folder || 'INBOX').then((email) => {
         if (request !== this.emailRequest) {
           return;
         }
-        this.updateEmailsReadStatus(true, [mailRemoteId]);
         this.email = email;
         this.selectEmailPlaceHolder = false;
       }).catch(() => {
@@ -1088,6 +1091,28 @@ export default {
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
       this.close();
+    },
+    /**
+     * Whether the wide layout shows the "select an email" placeholder after a read
+     * status was applied to some messages.
+     * <p>
+     * Marking UNREAD is the "mark unread and put it away" intent, and puts away the
+     * opened message when it is among them. Marking READ never does: it is what
+     * opening a message does to its conversation — the reader marks the unread ones
+     * read as soon as the conversation lands, possibly before the opened message's own
+     * request has answered — and sending the reader to the placeholder then dropped
+     * that request and left the user facing "Select an email" instead of the message
+     * they had just clicked. It only shows the placeholder when nothing is open.
+     *
+     * @param {boolean} read - the read status applied
+     * @param {Array<Number>} emails - the messages it was applied to
+     * @returns {boolean} whether to show the placeholder
+     */
+    placeholderAfterReadStatus(read, emails) {
+      if (read) {
+        return this.selectEmailPlaceHolder || (this.expanded && !this.email);
+      }
+      return this.canDisplaySelectEmailPlaceHolder(emails);
     },
     canDisplaySelectEmailPlaceHolder(emails) {
       return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
