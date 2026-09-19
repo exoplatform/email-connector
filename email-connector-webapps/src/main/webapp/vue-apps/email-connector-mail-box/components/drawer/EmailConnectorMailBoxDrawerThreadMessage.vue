@@ -68,6 +68,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       hide-subject
       :collapsible="collapsible"
       :in-thread="inThread"
+      :receipt-auto-allowed="receiptAutoAllowed"
       @toggle-collapse="$emit('collapse')" />
   </div>
 </template>
@@ -102,6 +103,13 @@ export default {
     // strip (sender, excerpt, date), not for the full message, which renders as a
     // skeleton until the conversation lands.
     loading: {
+      type: Boolean,
+      default: false,
+    },
+    // Whether the conversation counts as displayed to the user, so the read receipt of
+    // this message, once expanded, may leave on its own (EXO-90435). Carried through to
+    // the expanded renderer.
+    receiptAutoAllowed: {
       type: Boolean,
       default: false,
     },
