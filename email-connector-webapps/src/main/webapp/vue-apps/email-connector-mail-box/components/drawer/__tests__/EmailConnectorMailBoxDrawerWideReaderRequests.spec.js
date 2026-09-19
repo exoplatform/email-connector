@@ -179,10 +179,12 @@ describe('EmailConnectorMailBoxDrawer — the wide reader\'s message requests', 
     fixture.teardown();
   });
 
+  // With nothing left to open, the delete leaves the placeholder (EXO-90414 moves the
+  // reader on to the next mail when there is one -- see the test after this one).
   it('never reopens a message deleted while its full copy was on its way', async () => {
     const listed = row(2);
     const answer = deferred();
-    const fixture = await mountWide([listed, row(3)], () => answer.promise);
+    const fixture = await mountWide([listed], () => answer.promise);
     const vm = fixture.wrapper.vm;
 
     vm.openEmailDetailContent(2);
@@ -193,6 +195,27 @@ describe('EmailConnectorMailBoxDrawer — the wide reader\'s message requests', 
     answer.resolve(full(listed));
     await flush();
     expect(vm.selectEmailPlaceHolder).toBe(true);
+    expect(vm.email?.content?.body).toBeUndefined();
+    fixture.teardown();
+  });
+
+  it('moves on to the next mail, never back to the one deleted while its full copy was on its way (EXO-90414)', async () => {
+    const listed = row(2);
+    const next = row(3);
+    const answer = deferred();
+    const fixture = await mountWide([listed, next], mailRemoteId => (mailRemoteId === 2 ? answer.promise : new Promise(() => null)));
+    const vm = fixture.wrapper.vm;
+
+    vm.openEmailDetailContent(2);
+    vm.$root.$emit('delete-email', [2]);
+    // The next mail is on screen at once, on its list row, its own request on its way.
+    expect(vm.selectEmailPlaceHolder).toBe(false);
+    expect(vm.email).toBe(next);
+    expect(vm.loadingEmail).toBe(true);
+
+    answer.resolve(full(listed));
+    await flush();
+    expect(vm.email).toBe(next);
     expect(vm.email?.content?.body).toBeUndefined();
     fixture.teardown();
   });

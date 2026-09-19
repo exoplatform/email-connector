@@ -80,9 +80,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         @change="onSelectChange" />
       <div class="flex-grow-1 no-min-width">    
         <!-- eslint-disable vuejs-accessibility/no-static-element-interactions -->
+        <!-- data-thread-key is how the arrow keys find the row they stand on, and
+             aria-current tells a screen reader which conversation the reader shows. -->
         <div
           class="clickable"
           tabindex="0"
+          :data-thread-key="threadKey"
+          :aria-current="opened ? 'true' : null"
           :aria-label="ariaLabel"
           @click="openDetail"
           @keydown.enter="openDetail"
@@ -245,6 +249,15 @@ export default {
     },
     threadIds() {
       return this.thread ? this.thread.mailRemoteIds : [this.email.mailRemoteId];
+    },
+    /**
+     * The row's key, as groupEmailsByThread builds it: what the arrow keys use to find
+     * the row they stand on and the one they go to.
+     *
+     * @returns {String} the key
+     */
+    threadKey() {
+      return String(this.thread ? this.thread.threadId : this.email.mailRemoteId);
     },
     threadCount() {
       return this.thread ? this.thread.count : 1;
