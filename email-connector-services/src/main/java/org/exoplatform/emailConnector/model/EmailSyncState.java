@@ -45,4 +45,10 @@ public class EmailSyncState {
   private Date   lastActivityDate;
 
   private Date   createdDate;
+
+  /** The highest INBOX UID the owner has been notified about, null until initialised. */
+  private Long   notifiedUid;
+
+  /** The INBOX epoch: changes on a reset or a new UIDVALIDITY. */
+  private long   inboxEpoch;
 }
