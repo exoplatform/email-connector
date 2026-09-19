@@ -122,20 +122,22 @@ export default {
      * @returns {Object} what the scheduled draft's state says, or null while it waits
      */
     stateLine() {
-      return this.$emailConnectorMailBoxService.scheduledStateLine({
-        status: this.draft?.scheduledStatus,
-        lastError: this.draft?.scheduledLastError,
-      });
+      return this.$emailConnectorMailBoxService.scheduledStateLine({ status: this.draft?.scheduledStatus });
     },
     /**
-     * @returns {String} the state line's words, nothing while it simply waits
+     * The state line's words, nothing while it simply waits. A conversation's row
+     * carries the status and not the reason (the backend sets scheduled, scheduledDate,
+     * scheduledTimeZone and scheduledStatus on reads), so a mail not sent says where
+     * the reason is rather than inventing one.
+     *
+     * @returns {String} the words
      */
     stateText() {
       if (!this.stateLine) {
         return '';
       }
       return this.stateLine.reasonKey
-        ? this.$t(this.stateLine.key, { 0: this.$t(this.stateLine.reasonKey) })
+        ? this.$t('emailConnector.mailBox.list.drawer.thread.draft.notSent')
         : this.$t(this.stateLine.key);
     },
     /**

@@ -511,6 +511,16 @@ describe('a scheduled reply in its conversation is read-only (EXO-90434, PO deci
     expect(strip.emitted('edit')).toHaveLength(1);
   });
 
+  it('says a mail not sent or not confirmed from the status the conversation\'s row carries, never an invented reason', () => {
+    const failed = mountStrip({ ...DRAFT, scheduledStatus: 'FAILED' }).find('.scheduled-draft-state');
+    expect(failed.text()).toBe('emailConnector.mailBox.list.drawer.thread.draft.notSent');
+    expect(failed.classes()).toContain('error--text');
+    expect(mountStrip({ ...DRAFT, scheduledStatus: 'UNCERTAIN' }).find('.scheduled-draft-state').text())
+      .toBe('emailConnector.mailBox.scheduled.uncertain');
+    expect(mountStrip(DRAFT).find('.scheduled-draft-state').exists()).toBe(false);
+    expect(mountStrip({ ...DRAFT, scheduledStatus: 'SENDING' }).find('.scheduled-draft-edit').attributes('disabled')).toBe('disabled');
+  });
+
   it('keeps an unscheduled draft as it was: resumed on a click', async () => {
     const strip = mountStrip({ ...DRAFT, scheduled: false });
     expect(strip.find('.scheduled-draft-edit').exists()).toBe(false);
