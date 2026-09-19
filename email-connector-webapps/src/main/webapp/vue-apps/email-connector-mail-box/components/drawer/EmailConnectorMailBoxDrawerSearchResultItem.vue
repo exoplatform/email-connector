@@ -162,7 +162,8 @@ export default {
         event.preventDefault();
         return;
       }
-      startDrag(event, payload, dragLabel(payload.ids.length, this.$t.bind(this)));
+      // One hit, one row: the picture says "Move 1 email".
+      startDrag(event, payload, dragLabel(1, this.$t.bind(this)));
       this.dragging = true;
       this.$root.$emit('email-drag-start', payload);
     },

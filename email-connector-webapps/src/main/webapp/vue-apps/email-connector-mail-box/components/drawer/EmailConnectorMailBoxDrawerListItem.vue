@@ -179,7 +179,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import { canDragFrom, dragLabel, dragPayloadOfRow, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
+import { canDragFrom, dragLabel, dragPayloadOfRow, draggedRowCount, startDrag } from '../../js/EmailConnectorMailBoxDragAndDrop.js';
 
 export default {
   data() {
@@ -630,17 +630,20 @@ export default {
      * @returns {void}
      */
     onDragStart(event) {
-      const payload = this.canDrag && dragPayloadOfRow({
+      const row = {
         email: this.email,
         thread: this.thread,
         selectMode: this.selectMode,
         selectedEmails: this.selectedEmails,
-      });
+        emails: this.emails,
+      };
+      const payload = this.canDrag && dragPayloadOfRow(row);
       if (!payload) {
         event.preventDefault();
         return;
       }
-      startDrag(event, payload, dragLabel(payload.ids.length, this.$t.bind(this)));
+      // The picture counts the rows the user dragged, the payload every message they hold.
+      startDrag(event, payload, dragLabel(draggedRowCount(row), this.$t.bind(this)));
       this.$root.$emit('email-drag-start', payload);
     },
     /**

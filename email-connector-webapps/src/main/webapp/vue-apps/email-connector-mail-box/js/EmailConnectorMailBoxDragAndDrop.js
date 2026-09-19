@@ -22,7 +22,7 @@
 // (delete-email), "Mark as spam" (junk-email), or the category assignment -- with the
 // same rules for which mail may go where. Nothing here talks to the server.
 
-import { canMarkAsJunk, isListedFolder, moveTargets, threadIdsInFolder } from './EmailConnectorMailBoxService.js';
+import { canMarkAsJunk, groupEmailsByThread, isListedFolder, moveTargets, threadIdsInFolder } from './EmailConnectorMailBoxService.js';
 import { selectionByFolder, selectionKey } from './EmailConnectorMailBoxSelection.js';
 
 // The type the dragged payload is written under: a drop that does not carry it (a file,
@@ -64,8 +64,7 @@ export function dragPayloadOfRow({ email, thread, selectMode, selectedEmails }) 
     return null;
   }
   const ids = threadIdsInFolder(email, thread);
-  const keys = ids.map(mailRemoteId => selectionKey({ mailRemoteId, folder }));
-  if (selectMode && keys.every(key => (selectedEmails || []).includes(key))) {
+  if (dragsSelection({ email, thread, selectMode, selectedEmails })) {
     const groups = selectionByFolder(selectedEmails);
     if (groups.length !== 1 || !canDragFrom(groups[0][0])) {
       return null;
@@ -73,6 +72,38 @@ export function dragPayloadOfRow({ email, thread, selectMode, selectedEmails }) 
     return { folder: groups[0][0], ids: groups[0][1] };
   }
   return { folder, ids };
+}
+
+/**
+ * Whether dragging a row drags the running selection: the row is selected -- every
+ * message it gathers in its folder (threadIdsInFolder), the rule the row's checkbox reads.
+ *
+ * @param {Object} row {email, thread, selectMode, selectedEmails}, as dragPayloadOfRow takes it
+ * @returns {Boolean} true when the selection is what moves
+ */
+function dragsSelection({ email, thread, selectMode, selectedEmails }) {
+  const folder = email.folder || 'INBOX';
+  return !!selectMode && threadIdsInFolder(email, thread)
+    .every(mailRemoteId => (selectedEmails || []).includes(selectionKey({ mailRemoteId, folder })));
+}
+
+/**
+ * How many ROWS a drag of a list row moves, which is what its picture says: the user
+ * picks conversations, not messages, so two selected conversations of three messages
+ * read "Move 2 emails" (the payload still carries all their messages). The selection's
+ * rows are its conversations among the listed messages, grouped as the list groups them
+ * (groupEmailsByThread); a row dragged alone is one.
+ *
+ * @param {Object} row {email, thread, selectMode, selectedEmails, emails}: dragPayloadOfRow's
+ *   argument, plus the listed messages
+ * @returns {Number} the number of rows dragged, at least 1
+ */
+export function draggedRowCount({ email, thread, selectMode, selectedEmails, emails }) {
+  if (!email || !dragsSelection({ email, thread, selectMode, selectedEmails })) {
+    return 1;
+  }
+  const selected = (emails || []).filter(message => (selectedEmails || []).includes(selectionKey(message)));
+  return Math.max(groupEmailsByThread(selected).length, 1);
 }
 
 /**
@@ -137,9 +168,10 @@ export function hasDragPayload(event) {
 }
 
 /**
- * What the picture following the pointer says: how many messages are dragged.
+ * What the picture following the pointer says: how many rows -- conversations, or
+ * search hits -- are dragged (draggedRowCount), not how many messages they hold.
  *
- * @param {Number} count how many messages
+ * @param {Number} count how many rows
  * @param {Function} t the translation function ($t)
  * @returns {String} "Move 1 email", "Move 3 emails"
  */
