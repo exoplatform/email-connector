@@ -22,6 +22,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-model="emailBoxDrawer"
     right
     allow-expand
+    :drawer-width="drawerWidth"
     @expand-updated="updateExpand"
     :loading="loading || syncInProgress || (searchActive && searchServerRunning) || readerLoading || (loadingEmail && readerPartial)"
     :use-filter="canSearch"
@@ -60,6 +61,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $vuetify.rtl && 'fa fa-arrow-right' || 'fa fa-arrow-left' }}
         </v-icon>
       </v-btn>
+      <!-- Folds the folder column to an icon rail and back (EXO-90415). -->
+      <v-btn
+        v-else
+        :title="navigationToggleLabel"
+        :aria-label="navigationToggleLabel"
+        :aria-expanded="String(!navigationRail)"
+        class="ms-n2 me-1"
+        icon
+        @click="toggleNavigationRail">
+        <v-icon size="20" class="icon-default-color">fa-bars</v-icon>
+      </v-btn>
       <div class="d-flex align-center justify-space-between width-full">
         <span :class="{ 'text-body': selectMode }">
           {{ title }}
@@ -74,13 +86,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :available-folders="availableFolders"
           :categories="emailCategories"
           :category-view-id="categoryViewId"
-          :sync-in-progress="syncInProgress" />
+          :sync-in-progress="syncInProgress"
+          hide-views />
       </div>
     </template>
     <template #titleIcons>
       <div v-if="hasFullAppLeft">
+        <!-- Not on a draft the reader was opened on: its mail actions address a message
+             by IMAP UID, which a draft may not have (see the list item's openDraft). -->
         <email-connector-mail-box-drawer-list-item-detail-actions
-          v-if="email && !selectEmailPlaceHolder"
+          v-if="email && !email.draftLocalId && !selectEmailPlaceHolder"
           :email="email"
           :thread="threadContext" />
       </div>
@@ -97,41 +112,78 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :category-view-id="categoryViewId"
         :sync-in-progress="syncInProgress" />
     </template>
+    <!-- The left pane in full screen: the folder column, then the list, each scrolling
+         on its own so the folders stay put while the list moves (EXO-90415). Always on
+         screen once expanded, an empty folder included: the column is how the user
+         leaves it. The list -- folder or search results -- is on the pane's platform
+         grey, like exo-drawer's header strip above it; the column is a shade darker
+         (NAVIGATION_BACKGROUND), a divider between them, open and as a rail; the reader
+         beside the pane stays white. An empty list says so in the
+         list, under its chips, not in the reader. The chips row and the column's first
+         row share one height (LIST_TOP_ROW_HEIGHT), so they sit on one line. -->
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
-      <email-connector-mail-box-drawer-search-results
-        v-if="searchActive"
-        ref="expandedSearchResults"
-        :results="mergedSearchResults"
-        :opened-key="openedSearchKey"
-        :total-matches="searchTotalMatches"
-        :server-searching="searchServerRunning"
-        :server-error="searchServerError"
-        @open-result="openSearchResult" />
-      <template v-else>
-        <email-connector-mail-box-drawer-filter-chips
-          :important-category="importantCategory"
+      <div class="d-flex flex-row fill-height">
+        <email-connector-mail-box-drawer-navigation
+          :folders="availableFolders"
+          :current-folder="currentFolder"
+          :categories="emailCategories"
           :category-view-id="categoryViewId"
-          :favorite-only="favoriteOnly"
-          :unread-only="unreadOnly"
-          class="full-width border-box-sizing application-border application-border-radius py-3 px-3"
-          @toggle-important="toggleImportantView"
-          @toggle-favorite="onToggleFavoriteFilter"
-          @toggle-unread="toggleUnreadFilter" />
-        <email-connector-mail-box-drawer-content
-          ref="expandedListContent"
-          :emails="emails"
-          :email="email"
-          :selected-emails="selectedEmails"
-          :select-mode="selectMode"
-          :indeterminate="indeterminate"
-          expanded
-          @update:selected-emails="selectedEmails = $event" />
+          :folder-counts="folderCounts"
+          :category-unread-counts="categoryUnreadCounts"
+          :rail="navigationRail"
+          :style="{ width: navigationWidth, minWidth: navigationWidth, backgroundColor: NAVIGATION_BACKGROUND }"
+          class="flex-grow-0 flex-shrink-0 fill-height overflow-y-auto overflow-x-hidden border-box-sizing" />
+        <v-divider vertical />
         <div
-          v-if="customFolderWindow"
-          class="caption text-sub-title text-center py-2">
-          {{ $t('emailConnector.mailBox.list.drawer.folder.custom.window', { 0: customFolderWindow }) }}
+          ref="expandedListPane"
+          class="flex-grow-1 flex-shrink-1 fill-height overflow-y-auto overflow-x-hidden"
+          style="min-width: 0;">
+          <email-connector-mail-box-drawer-search-results
+            v-if="searchActive"
+            ref="expandedSearchResults"
+            :results="mergedSearchResults"
+            :opened-key="openedSearchKey"
+            :total-matches="searchTotalMatches"
+            :server-searching="searchServerRunning"
+            :server-error="searchServerError"
+            @open-result="openSearchResult" />
+          <template v-else>
+            <email-connector-mail-box-drawer-filter-chips
+              :important-category="importantCategory"
+              :category-view-id="categoryViewId"
+              :favorite-only="favoriteOnly"
+              :unread-only="unreadOnly"
+              :style="{ minHeight: LIST_TOP_ROW_HEIGHT }"
+              class="full-width border-box-sizing application-border application-border-radius px-3"
+              @toggle-important="toggleImportantView"
+              @toggle-favorite="onToggleFavoriteFilter"
+              @toggle-unread="toggleUnreadFilter" />
+            <email-connector-mail-box-drawer-content
+              v-if="hasEmails"
+              ref="expandedListContent"
+              :emails="emails"
+              :email="email"
+              :selected-emails="selectedEmails"
+              :select-mode="selectMode"
+              :indeterminate="indeterminate"
+              expanded
+              @update:selected-emails="selectedEmails = $event" />
+            <!-- Not before the list has answered: expanding before the first load
+                 must not flash "No email in Inbox". -->
+            <email-connector-mail-box-drawer-no-email
+              v-else-if="emailBox && !loading"
+              :folder-name="folderLabelOf(currentFolder)"
+              :filtered="hasActiveFilters"
+              compact
+              @clear-filters="clearFilters" />
+            <div
+              v-if="customFolderWindow"
+              class="caption text-sub-title text-center py-2">
+              {{ $t('emailConnector.mailBox.list.drawer.folder.custom.window', { 0: customFolderWindow }) }}
+            </div>
+          </template>
         </div>
-      </template>
+      </div>
     </template>
     <template v-if="emailBoxDrawer && !loading" #content>
       <v-list-item v-if="syncBlocked" class="full-height align-center">
@@ -161,9 +213,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :server-searching="searchServerRunning"
         :server-error="searchServerError"
         @open-result="openSearchResult" />
+      <!-- Full screen: the reader. With nothing open it shows the "select an email"
+           placeholder while the list beside it holds something to select, and nothing
+           over an empty list, which says so itself (EXO-90415). -->
+      <template v-else-if="expanded">
+        <email-connector-mail-box-drawer-multi-select-email
+          v-if="selectMode"
+          :emails="emails"
+          :selected-emails="selectedEmails" />
+        <template v-else-if="selectEmailPlaceHolder">
+          <email-connector-mail-box-drawer-select-email v-if="navigationEmails.length" />
+        </template>
+        <!-- The reader tells the header which conversation it is showing, so the
+             title bar above can act on the exchange rather than on the one message
+             that was clicked. This drawer holds both of them and is the only place
+             the value can pass between them. -->
+        <email-connector-mail-box-drawer-thread-content
+          v-else
+          :email="email"
+          :emails="emails"
+          expanded-drawer
+          :defer-thread-read="autoOpenReadPending"
+          @thread-context="threadContext = $event"
+          @loading="readerLoading = $event"
+          @opened-partial="readerPartial = $event" />
+      </template>
       <template v-else>
         <email-connector-mail-box-drawer-filter-chips
-          v-if="!expanded"
           :important-category="importantCategory"
           :category-view-id="categoryViewId"
           :favorite-only="favoriteOnly"
@@ -173,28 +249,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @toggle-favorite="onToggleFavoriteFilter"
           @toggle-unread="toggleUnreadFilter" />
         <template v-if="hasEmails">
-          <template v-if="expanded">
-            <email-connector-mail-box-drawer-multi-select-email
-              v-if="selectMode"
-              :emails="emails"
-              :selected-emails="selectedEmails" />
-            <email-connector-mail-box-drawer-select-email v-else-if="selectEmailPlaceHolder" />
-            <!-- The reader tells the header which conversation it is showing, so the
-                 title bar above can act on the exchange rather than on the one message
-                 that was clicked. This drawer holds both of them and is the only place
-                 the value can pass between them. -->
-            <email-connector-mail-box-drawer-thread-content
-              v-else
-              :email="email"
-              :emails="emails"
-              expanded-drawer
-              :defer-thread-read="autoOpenReadPending"
-              @thread-context="threadContext = $event"
-              @loading="readerLoading = $event"
-              @opened-partial="readerPartial = $event" />
-          </template>
           <email-connector-mail-box-drawer-content
-            v-else
             ref="listContent"
             :emails="emails"
             :selected-emails="selectedEmails"
@@ -206,7 +261,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <!-- A custom folder is a recent-activity mirror, not a copy, and the list says
                so rather than letting an older message look lost. -->
           <div
-            v-if="customFolderWindow && !expanded"
+            v-if="customFolderWindow"
             class="caption text-sub-title text-center py-2">
             {{ $t('emailConnector.mailBox.list.drawer.folder.custom.window', { 0: customFolderWindow }) }}
           </div>
@@ -219,7 +274,65 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import listNavigationMixin, { firstOpenableThread, searchRows, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
+import { LIST_TOP_ROW_HEIGHT } from '../../js/EmailConnectorMailBoxService.js';
+import listNavigationMixin, { firstOpenableThread, searchRows, threadIndexOf, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
+
+// The drawer's width in its narrow layout, and the list's in the full-screen left pane:
+// exo-drawer's own default, which both layouts kept until the folder column came.
+const LIST_WIDTH_PX = 420;
+
+// The full-screen folder column, open and folded to an icon rail (EXO-90415). The left
+// pane is exo-drawer's drawerWidth -- it has two columns in full screen, no third -- so
+// it widens by the column's width: 620 px with the column open, 476 px as a rail.
+const NAVIGATION_WIDTH_PX = 200;
+
+const NAVIGATION_RAIL_WIDTH_PX = 56;
+
+// Below this window width the column starts as a rail: at 1280 px the reader would get
+// some 660 px beside an open column.
+const NAVIGATION_RAIL_BELOW_WIDTH_PX = 1440;
+
+// The folders the column counts the unread mail of, and the ones it counts in full
+// (EXO-90415), Outlook's choice, agreed with the PO. The spam is read-only here
+// (isReadOnlyFolder): opening a message there reads nothing, so its count follows the
+// server's \Seen alone, at the next load.
+const UNREAD_COUNTED_FOLDERS = ['INBOX', 'JUNK'];
+
+const TOTAL_COUNTED_FOLDERS = ['DRAFTS'];
+
+// What the settings' folders drawer says when the folder list may have changed: a
+// folder created or renamed (its name drawer), one deleted or opted in or out, the
+// drawer closed.
+const FOLDERS_CHANGED_EVENTS = ['email-folders-list-changed', 'email-folders-saved', 'email-folders-updated'];
+
+// The folder column's shade: a light grey veil over the pane, so the column is darker
+// than the list -- the platform's greyColorLighten1Opacity2 tint (its default: #707070
+// at 8 %, the family of the opened row's 20 %), read from the skin's variable as the
+// centralized skin wants, its default spelled out. Inline, as the add-on has no CSS
+// loader and no platform helper class carries this tint (EXO-90415, PO feedback).
+const NAVIGATION_BACKGROUND = 'var(--allPagesGreyColorLighten1Opacity2, rgba(112, 112, 112, 0.08))';
+
+// Where the user's own choice of column or rail is kept, in this browser only.
+const NAVIGATION_RAIL_STORAGE_KEY = 'emailConnector.mailBox.navigationRail';
+
+/**
+ * Whether the folder column starts as a rail: the user's last choice in this browser,
+ * else a rail on a window narrower than NAVIGATION_RAIL_BELOW_WIDTH_PX. The storage may
+ * be unavailable (a private window, blocked site data): then the width decides.
+ *
+ * @returns {Boolean} true to start as a rail
+ */
+function initialNavigationRail() {
+  try {
+    const stored = window.localStorage.getItem(NAVIGATION_RAIL_STORAGE_KEY);
+    if (stored === 'true' || stored === 'false') {
+      return stored === 'true';
+    }
+  } catch (e) {
+    // No storage: the width decides.
+  }
+  return window.innerWidth < NAVIGATION_RAIL_BELOW_WIDTH_PX;
+}
 
 // Categorization runs after the sync reports done, in batches, and a large mailbox takes
 // several minutes. Two numbers govern how long the drawer keeps watching for the results.
@@ -292,6 +405,22 @@ export default {
       selectedEmails: [],
       selectMode: false,
       expanded: false,
+      // exo-drawer's own expand flag, followed at once rather than 200 ms late like
+      // `expanded`: the drawer's width follows it, and a width following `expanded`
+      // would leave the narrow drawer 620 px wide for 200 ms after a collapse.
+      layoutExpanded: false,
+      // Whether the full-screen folder column is folded to an icon rail (EXO-90415).
+      navigationRail: initialNavigationRail(),
+      NAVIGATION_BACKGROUND,
+      // The chips row's height, which the folder column's first row shares.
+      LIST_TOP_ROW_HEIGHT,
+      // The unread mail read or unread here since the folder list was last loaded, by
+      // folder: the counts the server gave move with the user's own reads until the
+      // next load brings its own.
+      unreadAdjustments: {},
+      // Each category's id with its subcategories', by category id: what a category's
+      // unread count is matched against, as its view is (selectedCategoryIds).
+      categorySubtrees: {},
       email: null,
       // The wide layout's own reader: the opened message's request is pending, the
       // reader is reading the conversation, and whether it still shows the opened
@@ -403,6 +532,15 @@ export default {
     };
     this.$root.$on('retry-email-read', this.onRetryEmailRead);
     this.isRefreshing = false;
+    // Whether a folder switch's list is still on its way, and which switch: the list on
+    // screen is then the previous folder's (see openFirstAfterNavigation). Plain: nothing
+    // renders them.
+    this.folderLoading = false;
+    this.folderLoads = 0;
+    // The folders drawer's re-read in flight, and whether another is owed (see
+    // onFoldersChanged). Plain: nothing renders them.
+    this.foldersReload = null;
+    this.foldersReloadAgain = false;
     // Plain instance field: a pending timeout id needs no reactivity.
     this.searchDebounceTimer = null;
     // Which hit openSearchResult is opening, so a repeat of it is ignored while another
@@ -563,6 +701,25 @@ export default {
       this.supersedeEmailRequest();
       this.email = null;
     });
+    // A draft's conversation opened from the full-screen list: the reader opens on the
+    // draft's own row, which the list already holds in full (see the list item's
+    // openDraft). The mail drawer answered this when it had a full screen of its own;
+    // since there is one full-screen layout, this one does (EXO-90415).
+    this.onOpenEmailThreadContent = (email) => {
+      if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive || !this.expanded) {
+        return;
+      }
+      this.showHandedOverEmail(email);
+    };
+    this.$root.$on('open-email-thread-content', this.onOpenEmailThreadContent);
+    // The mail drawer's expand button: the one full-screen layout is this drawer's, so
+    // expanding a mail opened over the list hands the mail over and expands HERE, with
+    // that mail open -- the mail drawer then closes itself (EXO-90415).
+    this.$root.$on('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
+    // The settings' folders drawer, opened over the mailbox from the folder column
+    // (EXO-90415): a folder created, renamed, deleted or opted in or out there -- and
+    // the drawer closing -- re-reads the folder list the column and the menu show.
+    FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$on(event, this.onFoldersChanged));
     // Opening the mailbox, optionally straight onto one message — that is how the
     // global Favorites drawer hands a mail over. The payload used to be the plain
     // "loading" flag and callers still pass it that way, so an object is what marks
@@ -641,6 +798,9 @@ export default {
     this.$root.$off('enter-select-mode', this.onEnterSelectMode);
     this.$root.$off('update-email-favorite-status', this.onUpdateEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyEmailsFavoriteStatus);
+    this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
+    this.$root.$off('expand-mail-box-on-email', this.onExpandMailBoxOnEmail);
+    FOLDERS_CHANGED_EVENTS.forEach(event => this.$root.$off(event, this.onFoldersChanged));
   },
   computed: {
     hasEmails() {
@@ -714,8 +874,83 @@ export default {
     indeterminate() {
       return this.selectedEmails.length > 0 && this.selectedEmails.length < this.emails.length; 
     },
+    /**
+     * Whether the full-screen left pane -- folder column and list -- is on screen: in
+     * full screen, whatever the list holds (EXO-90415). An empty folder used to hide it,
+     * and with it the only way out of that folder now that the folders are in the
+     * column rather than in the menu. Not on a mailbox blocked from synchronizing,
+     * where the whole drawer says so.
+     *
+     * @returns {Boolean} true when the left pane shows
+     */
     hasFullAppLeft() {
-      return this.expanded && (this.hasEmails || this.hasActiveFilters || this.searchActive) && !this.syncBlocked;
+      return this.expanded && !this.syncBlocked;
+    },
+    /**
+     * The drawer's width: the list's in the narrow layout; in full screen, the left
+     * pane's -- the folder column and the list side by side (EXO-90415). Follows
+     * exo-drawer's expand flag at once (layoutExpanded).
+     *
+     * @returns {String} the width, in CSS pixels
+     */
+    drawerWidth() {
+      if (!this.layoutExpanded) {
+        return `${LIST_WIDTH_PX}px`;
+      }
+      return `${LIST_WIDTH_PX + (this.navigationRail ? NAVIGATION_RAIL_WIDTH_PX : NAVIGATION_WIDTH_PX)}px`;
+    },
+    /**
+     * The folder column's own width, open or as a rail.
+     *
+     * @returns {String} the width, in CSS pixels
+     */
+    navigationWidth() {
+      return `${this.navigationRail ? NAVIGATION_RAIL_WIDTH_PX : NAVIGATION_WIDTH_PX}px`;
+    },
+    /**
+     * The count each folder of the column shows (EXO-90415): the unread mail of the
+     * inbox (the plain inbox, whatever the badge counts) and of the spam, moved by the
+     * reads made here since the list was loaded; every message of the drafts.
+     *
+     * @returns {Object} {count, unread} by folder key
+     */
+    folderCounts() {
+      const counts = {};
+      this.folders.forEach(folder => {
+        if (UNREAD_COUNTED_FOLDERS.includes(folder.key)) {
+          counts[folder.key] = {
+            count: Math.max(0, (folder.unreadCount || 0) + (this.unreadAdjustments[folder.key] || 0)),
+            unread: true,
+          };
+        } else if (TOTAL_COUNTED_FOLDERS.includes(folder.key)) {
+          counts[folder.key] = { count: folder.count || 0, unread: false };
+        }
+      });
+      return counts;
+    },
+    /**
+     * The unread mail of each category over the loaded window of the listed folder
+     * (EXO-90415): the categories are assigned to cached mail, so this is what the
+     * client holds -- the same window a category view lists.
+     *
+     * @returns {Object} the count by category id
+     */
+    categoryUnreadCounts() {
+      const unread = (this.emailBox?.emails || []).filter(email => !email.read && !this.isOptimisticallyRemoved(email));
+      return Object.fromEntries(this.emailCategories.map(category => {
+        const ids = this.categorySubtrees[category.id] || [category.id];
+        return [category.id, unread.filter(email => (email.categoryIds || []).some(id => ids.includes(id))).length];
+      }));
+    },
+    /**
+     * What the column's toggle does, for its tooltip and its accessible name.
+     *
+     * @returns {String} the label
+     */
+    navigationToggleLabel() {
+      return this.$t(this.navigationRail
+        ? 'emailConnector.mailBox.list.drawer.navigation.expand'
+        : 'emailConnector.mailBox.list.drawer.navigation.collapse');
     },
     // The Important category, which gets a shortcut chip above the list on top
     // of its ⋮ menu entry; null until categories load (or when the default
@@ -727,8 +962,12 @@ export default {
     categoryView() {
       return this.emailCategories.find(category => category.id === this.categoryViewId) || null;
     },
-    // Whether any filter or view narrows the list (used to keep the expanded
-    // left pane on screen when a filter empties it).
+    /**
+     * Whether a chip or a category view narrows the list: the full-screen empty list
+     * then says so, and offers to clear them (EXO-90415).
+     *
+     * @returns {Boolean} true when a filter is on
+     */
     hasActiveFilters() {
       return this.favoriteOnly || this.unreadOnly || !!this.categoryViewId;
     },
@@ -890,6 +1129,13 @@ export default {
       const expanded = id ? await this.$emailConnectorMailBoxService.getSubcategoryIds(id) : [];
       if (token === this.categoryExpansionToken) {
         this.selectedCategoryIds = expanded;
+        // In full screen a view is navigated to like a folder: when the mail on screen
+        // is not in it, its first mail opens (EXO-90415). After the list's own watcher
+        // has had its say on whether the mail on screen is still listed.
+        await this.$nextTick();
+        if (token === this.categoryExpansionToken) {
+          this.openFirstAfterNavigation();
+        }
       }
     },
     emails() {
@@ -1008,9 +1254,13 @@ export default {
      * read nor counts it as opened: listNavigationMixin does both once the user stayed
      * on it (EXO-90414).
      *
+     * A mail handed over by the mail drawer (options.handover, EXO-90415) is not read
+     * or counted again either: that drawer did both when it opened it.
+     *
      * @param {Number} mailRemoteId the message's IMAP UID within the listed folder
      * @param {String} folder the folder it is numbered in, when the row says so
-     * @param {Object} options {automatic}: whether the user did not ask for this mail
+     * @param {Object} options {automatic}: whether the user did not ask for this mail;
+     *   {handover}: whether the mail drawer handed it over, already read
      * @returns {Promise} resolved once the message is on screen (nothing for an inert row)
      */
     openEmailDetailContent(mailRemoteId, folder = null, options = {}) {
@@ -1053,12 +1303,15 @@ export default {
       // Read from the moment it is opened, as the detail drawer does: the reader marks
       // the conversation's unread rows read as soon as the conversation lands, which
       // may be before this answer, and it must find this one already read -- in the
-      // message's OWN folder (EXO-90416). Not when the user did not ask for it: then
-      // it is read once they stayed on it (EXO-90414).
-      if (!options.automatic) {
+      // message's OWN folder (EXO-90416). Not when the user did not ask for it: then it
+      // is read once they stayed on it (EXO-90414). Not for a mail handed over by the
+      // mail drawer either: that drawer read it, and counted it as opened, when it
+      // opened it (EXO-90415).
+      const quiet = options.automatic || options.handover;
+      if (!quiet) {
         this.updateEmailsReadStatus(true, [mailRemoteId], ownFolder);
       }
-      const read = options.automatic
+      const read = quiet
         ? this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder, { broadcast: false })
         : this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder);
       return read.then((email) => {
@@ -1205,6 +1458,68 @@ export default {
           this.releaseEmailRequest();
         }
       }
+    },
+    /**
+     * Expands this drawer on the mail the mail drawer was showing -- the mail drawer's
+     * expand button (EXO-90415). There is one full-screen layout, this one: expanding a
+     * mail opened over the list lands in it with that mail open, and collapsing comes
+     * back to the list, as in Gmail. The mail drawer closes itself right after.
+     * <p>
+     * The mail is put in the reader before the layout switches, so updateExpand finds
+     * one open and neither shows the placeholder nor opens the first mail of the list.
+     * A search hit lands in the full-screen search results, lit, since the search is
+     * still running here; a mail the list does not hold -- one opened from the global
+     * Favorites drawer over the mailbox -- is pinned, as openMailFromOutside pins it. No
+     * mail at all (its copy could not be read) expands on the list.
+     *
+     * @param {Object} handover {email, folder}: the mail the mail drawer shows, and the
+     *   folder it is numbered in
+     * @returns {void}
+     */
+    onExpandMailBoxOnEmail(handover) {
+      if (!this.emailBoxDrawer) {
+        return;
+      }
+      // The mail drawer is closing on a hand-over, not on a return to the list: the row
+      // it was opened from is no longer the one to focus.
+      this.rowToRefocus = null;
+      if (handover?.email) {
+        this.showHandedOverEmail(handover.email, handover.folder);
+      }
+      const drawer = this.$refs.emailBoxDrawer;
+      if (drawer && !drawer.expand) {
+        drawer.toogleExpand();
+      }
+    },
+    /**
+     * Shows in the reader a mail another surface already holds: the mail drawer's, on
+     * a hand-over, or a draft's conversation row the full-screen list was clicked on.
+     * <p>
+     * A full copy -- or a draft's row, which the reader only needs the thread of -- is
+     * shown as it is: nothing to fetch, nothing to read again. A bare list row, or a
+     * copy that could not be read, is opened through the ordinary path for its full
+     * copy, as already read (options.handover).
+     *
+     * @param {Object} email the mail to show
+     * @param {String} folder the folder it is numbered in, when the caller knows it
+     * @returns {void}
+     */
+    showHandedOverEmail(email, folder = null) {
+      const ownFolder = folder || email.folder || 'INBOX';
+      const listed = this.emails.find(e => e.mailRemoteId === email.mailRemoteId && (e.folder || 'INBOX') === ownFolder);
+      this.autoSelectPending = false;
+      if (listed && (email.unavailable || this.$emailConnectorMailBoxService.isListingRow(email))) {
+        this.$root.$emit('set-opened', email.mailRemoteId);
+        this.openEmailDetailContent(email.mailRemoteId, ownFolder, { handover: true });
+        return;
+      }
+      this.supersedeEmailRequest();
+      // A search hit stays on screen through the search's own rule (see the emails
+      // watcher); anything else the list does not hold is pinned open.
+      this.pinnedEmail = !listed && !this.searchActive;
+      this.email = email;
+      this.selectEmailPlaceHolder = false;
+      this.$root.$emit('set-opened', email.mailRemoteId);
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
@@ -1591,9 +1906,14 @@ export default {
       const emailIdsToUpdate = emailIds.filter(id => {
         const email = this.emails.find(e => e.mailRemoteId === id && (!folder || (e.folder || 'INBOX') === folder));
         if (!email) {
-          if (folder && !this.$emailConnectorMailBoxService.isReadOnlyFolder(folder)
-              && this.knownReadStatus(id, folder, knownRead) !== read) {
+          const known = folder && this.knownReadStatus(id, folder, knownRead);
+          if (folder && !this.$emailConnectorMailBoxService.isReadOnlyFolder(folder) && known !== read) {
             unlisted.push(id);
+            // Counted only when the change is known to be one: a message of unknown
+            // state may already have been read.
+            if (typeof known === 'boolean') {
+              this.adjustUnread(folder, read);
+            }
           }
           return false;
         }
@@ -1602,6 +1922,7 @@ export default {
         }
         if (email.read !== read) {
           this.$set(email, 'read', read);
+          this.adjustUnread(email.folder || 'INBOX', read);
           return true;
         }
         return false;
@@ -1614,6 +1935,45 @@ export default {
           .forEach(result => this.$set(result, 'read', read));
         this.$emailConnectorMailBoxService.updateEmailsReadStatus(unlisted, read, folder);
       }
+    },
+    /**
+     * Moves a folder's unread count by one message read or unread here, until the next
+     * load brings the server's count (EXO-90415).
+     *
+     * @param {String} folder the folder the message is numbered in
+     * @param {Boolean} read whether it was read (one fewer unread) or unread (one more)
+     * @returns {void}
+     */
+    adjustUnread(folder, read) {
+      this.$set(this.unreadAdjustments, folder, (this.unreadAdjustments[folder] || 0) + (read ? -1 : 1));
+    },
+    /**
+     * Reads the categories' subcategories the first time the drawer goes full screen,
+     * where the column's unread counts need them -- never for a drawer that stays
+     * narrow -- and keeps them for the page's lifetime.
+     *
+     * @returns {Promise<void>} resolved once they are read
+     */
+    ensureCategorySubtrees() {
+      if (!this.categorySubtreesPromise) {
+        this.categorySubtreesPromise = this.emailCategoryIdsPromise
+          .then(() => this.readCategorySubtrees())
+          .catch(() => null);
+      }
+      return this.categorySubtreesPromise;
+    },
+    /**
+     * Reads each category's subcategories once the categories are known, for the
+     * column's unread counts. A category whose subcategories cannot be read counts on
+     * its own id alone.
+     *
+     * @returns {Promise<void>} resolved once every category is read
+     */
+    readCategorySubtrees() {
+      return Promise.all(this.emailCategories.map(category =>
+        Promise.resolve(this.$emailConnectorMailBoxService.getSubcategoryIds(category.id))
+          .catch(() => null)
+          .then(ids => this.$set(this.categorySubtrees, category.id, ids?.length ? ids : [category.id]))));
     },
     /**
      * The folder a message id belongs to — the ROW's own, which is the only one the
@@ -1738,6 +2098,44 @@ export default {
     openCategoryView(categoryId) {
       this.filtersTouched = true;
       this.categoryViewId = this.categoryViewId === categoryId ? null : categoryId;
+    },
+    /**
+     * Clears every filter narrowing the list -- the category view, the Unread and
+     * Favorites chips -- as one navigation: the folder listed again as it holds it,
+     * then its first mail opened in full screen (the empty list's "Clear filters").
+     *
+     * @returns {Promise<void>} resolved once the list is listed again
+     */
+    clearFilters() {
+      this.filtersTouched = true;
+      this.cancelSelectMode();
+      if (this.expanded) {
+        this.pinnedEmail = false;
+        this.selectEmailPlaceHolder = true;
+      }
+      // One navigation, whichever filters were on: the list is re-listed -- reloaded
+      // when Favorites narrowed it, since that subset is the server's -- and then its
+      // first mail opens once, as after a folder switch; the folder-switch flag keeps
+      // the category view's own opening from firing on the list still narrowed.
+      const reload = this.favoriteOnly;
+      const load = ++this.folderLoads;
+      this.folderLoading = true;
+      this.categoryViewId = null;
+      this.selectedCategoryIds = [];
+      this.unreadOnly = false;
+      this.favoriteOnly = false;
+      if (reload) {
+        this.loading = true;
+      }
+      return (reload ? this.loadEmailBox() : Promise.resolve()).catch(() => null).finally(() => {
+        if (reload) {
+          this.loading = false;
+        }
+        if (load === this.folderLoads) {
+          this.folderLoading = false;
+          this.openFirstAfterNavigation();
+        }
+      });
     },
     // "Select several" from the ⋮ menu: enter the same multi-select mode a row
     // checkbox starts, with nothing selected yet.
@@ -2426,9 +2824,28 @@ export default {
       const folder = (this.folders || []).find(candidate => candidate.key === key);
       return folder ? this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)) : key;
     },
+    /**
+     * Reads the listed folder -- with the Favorites subset when that chip is on -- and
+     * everything the listing carries (the folder list, the sync status, the webmail).
+     * <p>
+     * An answer for another listing than the one now wanted -- the user switched folder
+     * or toggled Favorites while it was on its way, a poll answered late -- is dropped:
+     * it would put that listing's rows under the folder now named (EXO-90415).
+     *
+     * @returns {Promise<void>} resolved once the listing is applied, or dropped
+     */
     async loadEmailBox() {
       const wasSyncing = this.syncInProgress;
-      this.emailBox = await this.$emailConnectorMailBoxService.getEmailBox(this.currentFolder, this.favoriteOnly);
+      const folder = this.currentFolder;
+      const favoriteOnly = this.favoriteOnly;
+      const emailBox = await this.$emailConnectorMailBoxService.getEmailBox(folder, favoriteOnly);
+      if (folder !== this.currentFolder || favoriteOnly !== this.favoriteOnly) {
+        return;
+      }
+      this.emailBox = emailBox;
+      // The folder list's unread counts are the server's again, the reads made here
+      // included.
+      this.unreadAdjustments = {};
       this.pruneRefreshPendingRows();
       // A folder opened while rows a "Move to..." filed into it are still on their way:
       // the move happened with another folder on screen, so the watch the Undo arms for
@@ -2507,6 +2924,18 @@ export default {
           : current.filter(id => id !== categoryId));
       });
     },
+    /**
+     * Lists another folder -- from the 3-dots menu, or from the full-screen folder
+     * column -- and reloads.
+     * <p>
+     * In full screen the reader leaves the previous folder's mail and opens the new
+     * folder's first one once it is listed, as expanding does (EXO-90415, reusing
+     * EXO-90414's automatic opening: read only if the user stays on it), and the focus
+     * goes to its row so the arrow keys walk the new list at once.
+     *
+     * @param {String} folder the folder key
+     * @returns {void}
+     */
     onSwitchFolder(folder) {
       // Selecting a folder always leaves the category view — that is the way
       // back from one, so it works even for the folder already listed.
@@ -2519,15 +2948,120 @@ export default {
       }
       this.currentFolder = folder;
       this.cancelSelectMode();
+      if (this.expanded) {
+        this.pinnedEmail = false;
+        this.selectEmailPlaceHolder = true;
+      }
       this.loading = true;
+      const folderLoad = ++this.folderLoads;
+      this.folderLoading = true;
       this.loadEmailBox().finally(() => {
         this.loading = false;
+        // A later switch owns the flag, the search and the opening: a superseded one
+        // answering last must not open its folder's mail in the folder now listed.
+        if (folderLoad !== this.folderLoads) {
+          return;
+        }
+        this.folderLoading = false;
         // A running search follows the folder: local matches recompute from the
         // new list, and the server search re-runs scoped to the new folder.
         if (this.searchActive) {
           this.runServerSearch();
         }
+        this.openFirstAfterNavigation();
       });
+    },
+    /**
+     * After a move to another folder or view in full screen, opens the first mail of
+     * the list when the reader shows none, and gives the focus to the row of the mail
+     * the reader then shows -- the one it kept (a view still listing it, a view left
+     * for the folder holding it), or the first one it opens.
+     * <p>
+     * The focus matters as much as the opening: the folder column is a listbox, where
+     * the arrow keys are not the list's (listNavigationMixin leaves keys inside one
+     * alone), so the focus left on the entry just clicked would make the arrows do
+     * nothing until the user clicked in the list.
+     *
+     * @returns {void}
+     */
+    openFirstAfterNavigation() {
+      // Not while another folder is loading: the list is still the previous folder's,
+      // and its first mail would open -- and be read two seconds later -- in the folder
+      // the user just left. The folder switch calls this again once the new list is in.
+      // Only that load: a chip's reload, or a mail opening, keeps the folder listed, and
+      // nothing would call this again after them.
+      if (!this.expanded || !this.emailBoxDrawer || this.folderLoading) {
+        return;
+      }
+      const showingEmail = this.email && !this.selectEmailPlaceHolder;
+      this.autoSelectFirstEmail();
+      const rows = this.navigationEntriesOf(this.navigationEmails);
+      const kept = showingEmail ? rows[threadIndexOf(rows, this.email)] : null;
+      // A kept mail the list does not hold (one pinned from outside) leaves the focus to
+      // the first row: the arrows walk the list from its top, the reader keeps the mail.
+      const focused = kept || (this.searchActive ? rows[0] : firstOpenableThread(rows));
+      if (focused) {
+        this.revealThreadRow(focused.threadId);
+      }
+    },
+    /**
+     * Re-reads the folder list after the settings' folders drawer changed it
+     * (EXO-90415), so the column and the menu show it at once. A listed folder that is
+     * gone -- deleted, opted out, missing on the server, or refused by the listing --
+     * gives way to the inbox. Coalesced: one re-read in flight, at most one to follow.
+     *
+     * @returns {Promise<void>} resolved once the list is re-read
+     */
+    onFoldersChanged() {
+      if (!this.emailBoxDrawer) {
+        return Promise.resolve();
+      }
+      // One re-read at a time, and at most one more for whatever changed meanwhile: an
+      // opt-in switched, a delete, then the close each say so, and each used to cost a
+      // whole listing, racing the others.
+      if (this.foldersReload) {
+        this.foldersReloadAgain = true;
+        return this.foldersReload;
+      }
+      this.foldersReload = this.reloadFolders().finally(() => {
+        this.foldersReload = null;
+        if (this.foldersReloadAgain) {
+          this.foldersReloadAgain = false;
+          return this.onFoldersChanged();
+        }
+      });
+      return this.foldersReload;
+    },
+    /**
+     * The re-read behind onFoldersChanged: the listing again, and the inbox when the
+     * listed folder is gone.
+     *
+     * @returns {Promise<void>} resolved once done
+     */
+    async reloadFolders() {
+      let listed = true;
+      try {
+        await this.loadEmailBox();
+      } catch (e) {
+        listed = false;
+      }
+      if (this.currentFolder !== 'INBOX' && (!listed || !this.availableFolders.some(folder => folder.key === this.currentFolder))) {
+        this.onSwitchFolder('INBOX');
+      }
+    },
+    /**
+     * Folds the folder column to an icon rail, or unfolds it, and remembers the choice
+     * in this browser for the next full screen.
+     *
+     * @returns {void}
+     */
+    toggleNavigationRail() {
+      this.navigationRail = !this.navigationRail;
+      try {
+        window.localStorage.setItem(NAVIGATION_RAIL_STORAGE_KEY, String(this.navigationRail));
+      } catch (e) {
+        // No storage: the choice holds until the page is left.
+      }
     },
     startAutoRefresh() {
       if (this.refreshInterval) {
@@ -2589,11 +3123,16 @@ export default {
      * (EXO-90414): the one already open when there is one, otherwise the first of the
      * list on screen (autoSelectFirstEmail). The placeholder is still set at once, so
      * the reader never renders with nothing to read during the layout's transition.
+     * The drawer's width follows at once too (layoutExpanded, EXO-90415).
      *
      * @param {Boolean} expanded whether the drawer is now full screen
      * @returns {void}
      */
     updateExpand(expanded) {
+      this.layoutExpanded = expanded;
+      if (expanded) {
+        this.ensureCategorySubtrees();
+      }
       window.setTimeout(() => {
         this.expanded = expanded;
         if (expanded) {
