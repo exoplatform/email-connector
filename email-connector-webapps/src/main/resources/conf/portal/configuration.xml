@@ -267,6 +267,38 @@
         </value-param>
       </init-params>
     </component-plugin>
+    <!-- Users who saved their notification settings before this plugin existed hold a
+         stored list without it, and would never get the scheduled-mail failure notice
+         (EXO-90434): added to every default channel. Named after the plugin id, which the
+         upgrade plugin expects. -->
+    <component-plugin>
+      <name>ScheduledEmailFailedNotificationPlugin</name>
+      <set-method>addUpgradePlugin</set-method>
+      <type>io.meeds.social.notification.upgrade.NotificationUpgradePlugin</type>
+      <description>Enables the scheduled email failure notification for existing users</description>
+      <init-params>
+        <value-param>
+          <name>product.group.id</name>
+          <description>The groupId of the product</description>
+          <value>org.exoplatform.social</value>
+        </value-param>
+        <value-param>
+          <name>plugin.execution.order</name>
+          <description>The plugin execution order</description>
+          <value>6</value>
+        </value-param>
+        <value-param>
+          <name>notificationPluginId</name>
+          <description>Notification Plugin Id</description>
+          <value>ScheduledEmailFailedNotificationPlugin</value>
+        </value-param>
+        <value-param>
+          <name>notificationChannelId</name>
+          <description>Notification Channel Id, applied to all when empty</description>
+          <value></value>
+        </value-param>
+      </init-params>
+    </component-plugin>
   </external-component-plugins>
 
   <!-- Contributes mail to the platform's unified search (the global magnifying
