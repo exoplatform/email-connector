@@ -71,7 +71,21 @@ public class EmailSyncStateStorage {
       return;
     }
     try {
-      emailSyncStateDAO.saveAndFlush(new EmailSyncStateEntity(userId, null, null, lastSyncDate, lastActivityDate, new Date()));
+      // A created row starts at an INBOX epoch no earlier row of this mailbox had (its
+      // creation instant): a disconnect or rebind deletes the row with the cache, and a
+      // re-created row back at 0 would tell a consumer that kept a UID cursor that
+      // nothing changed, while every UID now names a re-downloaded message without its
+      // category links, or another account's (EXO-90418). Bumps stay +1; consumers only
+      // compare for equality.
+      Date createdDate = new Date();
+      emailSyncStateDAO.saveAndFlush(new EmailSyncStateEntity(userId,
+                                                              null,
+                                                              null,
+                                                              lastSyncDate,
+                                                              lastActivityDate,
+                                                              createdDate,
+                                                              null,
+                                                              createdDate.getTime()));
     } catch (DataIntegrityViolationException e) {
       emailSyncStateDAO.resetSchedule(userId, lastSyncDate, lastActivityDate);
     }
@@ -198,6 +212,50 @@ public class EmailSyncStateStorage {
   }
 
   /**
+   * Whether a mailbox holds a live sync claim, whichever node took it.
+   *
+   * @param userId the mailbox owner
+   * @param staleBefore a claim taken strictly before this instant no longer counts
+   * @return true when a synchronization is running
+   */
+  public boolean isClaimed(String userId, Date staleBefore) {
+    return emailSyncStateDAO.countLiveClaim(userId, staleBefore) > 0;
+  }
+
+  /**
+   * Initialises (or lowers) the persisted notification boundary at the start of an
+   * INBOX sync.
+   *
+   * @param userId the mailbox owner
+   * @param maxLocalUid the highest INBOX UID cached before the sync
+   */
+  public void initNotifiedUid(String userId, long maxLocalUid) {
+    emailSyncStateDAO.initNotifiedUid(userId, maxLocalUid);
+  }
+
+  /**
+   * Takes the range (from, to] of new mail for a notification.
+   *
+   * @param userId the mailbox owner
+   * @param fromUid the boundary as read, null when it was never initialised
+   * @param toUid the highest UID the notification covers
+   * @return true when the caller now owns the range
+   */
+  public boolean advanceNotifiedUid(String userId, Long fromUid, long toUid) {
+    return fromUid == null ? emailSyncStateDAO.initialiseNotifiedUid(userId, toUid) == 1
+                           : emailSyncStateDAO.advanceNotifiedUid(userId, fromUid, toUid) == 1;
+  }
+
+  /**
+   * Moves the INBOX to a new epoch.
+   *
+   * @param userId the mailbox owner
+   */
+  public void bumpInboxEpoch(String userId) {
+    emailSyncStateDAO.bumpInboxEpoch(userId);
+  }
+
+  /**
    * Entity to DTO.
    *
    * @param entity the row
@@ -209,6 +267,8 @@ public class EmailSyncStateStorage {
                               entity.getClaimedBy(),
                               entity.getLastSyncDate(),
                               entity.getLastActivityDate(),
-                              entity.getCreatedDate());
+                              entity.getCreatedDate(),
+                              entity.getNotifiedUid(),
+                              entity.getInboxEpoch());
   }
 }

@@ -110,7 +110,7 @@ public class EmailSyncStateClaimConcurrencyTest {
   @Test
   @Transactional(propagation = Propagation.NOT_SUPPORTED)
   void exactlyOneOfManySimultaneousClaimantsWins() throws Exception {
-    emailSyncStateDAO.save(new EmailSyncStateEntity(USER, null, null, new Date(NOW.getTime() - 1_800_000L), null, NOW));
+    emailSyncStateDAO.save(new EmailSyncStateEntity(USER, null, null, new Date(NOW.getTime() - 1_800_000L), null, NOW, null, 0L));
 
     CountDownLatch startLine = new CountDownLatch(1);
     AtomicInteger winners = new AtomicInteger();

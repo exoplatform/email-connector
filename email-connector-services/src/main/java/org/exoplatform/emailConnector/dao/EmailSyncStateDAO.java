@@ -227,4 +227,85 @@ public interface EmailSyncStateDAO extends JpaRepository<EmailSyncStateEntity, S
   @Query("SELECT COUNT(s) FROM EmailSyncStateEntity s WHERE s.syncStartedDate IS NOT NULL AND s.syncStartedDate >= :staleBefore")
   long countClaimed(@Param("staleBefore")
   Date staleBefore);
+
+  /**
+   * Whether a mailbox is being synchronized right now, by any node: its row carries
+   * a live claim. What a consumer of the new-mail events running on another node
+   * asks before it treats the mailbox as settled.
+   *
+   * @param userId the mailbox owner
+   * @param staleBefore a claim taken strictly before this instant no longer counts
+   * @return one when the claim is live, zero otherwise
+   */
+  @Query("SELECT COUNT(s) FROM EmailSyncStateEntity s WHERE s.userId = :userId"
+      + " AND s.syncStartedDate IS NOT NULL AND s.syncStartedDate >= :staleBefore")
+  long countLiveClaim(@Param("userId")
+  String userId, @Param("staleBefore")
+  Date staleBefore);
+
+  /**
+   * Initialises the persisted notification boundary at the start of an INBOX sync:
+   * set to the highest UID cached before the sync when it was never set, and lowered
+   * to it when it stands above it (a reset emptied the cache, or the server renumbered
+   * the folder: the old boundary would silence every new message below it). Otherwise
+   * left alone. One column, one CASE reading only itself, so MySQL's left-to-right
+   * evaluation of SET cannot change its meaning.
+   *
+   * @param userId the mailbox owner
+   * @param maxLocalUid the highest INBOX UID cached before the sync
+   * @return one when the row exists
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailSyncStateEntity s SET s.notifiedUid ="
+      + " CASE WHEN s.notifiedUid IS NULL OR s.notifiedUid > :maxLocalUid THEN :maxLocalUid ELSE s.notifiedUid END"
+      + " WHERE s.userId = :userId")
+  int initNotifiedUid(@Param("userId")
+  String userId, @Param("maxLocalUid")
+  long maxLocalUid);
+
+  /**
+   * Takes the range (from, to] of new mail for a notification: the boundary moves
+   * only if it still is where the caller read it, so of every node trying to notify
+   * the same range exactly one sees a row count of one.
+   *
+   * @param userId the mailbox owner
+   * @param fromUid the boundary as the caller read it
+   * @param toUid the highest UID the notification covers
+   * @return one when the caller now owns the range, zero otherwise
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailSyncStateEntity s SET s.notifiedUid = :toUid"
+      + " WHERE s.userId = :userId AND s.notifiedUid = :fromUid AND s.notifiedUid < :toUid")
+  int advanceNotifiedUid(@Param("userId")
+  String userId, @Param("fromUid")
+  long fromUid, @Param("toUid")
+  long toUid);
+
+  /**
+   * {@link #advanceNotifiedUid} for a row whose boundary was never initialised.
+   *
+   * @param userId the mailbox owner
+   * @param toUid the highest UID the notification covers
+   * @return one when the caller now owns the range, zero otherwise
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailSyncStateEntity s SET s.notifiedUid = :toUid WHERE s.userId = :userId AND s.notifiedUid IS NULL")
+  int initialiseNotifiedUid(@Param("userId")
+  String userId, @Param("toUid")
+  long toUid);
+
+  /**
+   * Moves the INBOX to a new epoch: its UIDs no longer mean what they meant.
+   *
+   * @param userId the mailbox owner
+   * @return one when the row exists
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailSyncStateEntity s SET s.inboxEpoch = s.inboxEpoch + 1 WHERE s.userId = :userId")
+  int bumpInboxEpoch(@Param("userId")
+  String userId);
 }
