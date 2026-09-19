@@ -15,30 +15,32 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- The full-screen folder column (EXO-90415): the 3-dots menu's FOLDERS and
-       CATEGORIES beside the list, driving the same state with the same root events and
-       highlight rule. As a rail: icons, names in tooltips, a dot for unread mail. No
-       SFC style (no CSS loader): Vuetify props and the platform's helper classes. -->
+  <!-- Full-screen folder column (EXO-90415): the 3-dots menu's FOLDERS/CATEGORIES, same
+       events and highlight. Rail: icons, tooltips, unread dot. No SFC style. -->
   <v-list
-    :class="rail ? 'px-1' : 'px-2'"
-    class="py-2 transparent"
+    :class="rail ? 'px-1 py-0' : 'px-2 py-2'"
+    class="transparent"
     dense
     nav>
     <v-list-item-group
       :value="activeKey"
       color="primary"
       mandatory>
-      <!-- One block per section, FOLDERS then CATEGORIES: the two lists are drawn
-           alike. Each entry is an option of the group's listbox (a nav list leaves
-           the role to its items), selected when lit. -->
-      <template v-for="(section, index) in sections">
+      <!-- One element per section: as flat siblings, VTooltip's patching put the
+           CATEGORIES header above the folders after a rail. The rail hides headers and
+           divider. Entries are the listbox's options, selected when lit. -->
+      <div
+        v-for="(section, index) in sections"
+        :key="section.key"
+        :aria-label="section.title"
+        :data-section="section.key"
+        role="group">
         <v-divider
           v-if="index > 0"
-          :key="`${section.key}-divider`"
+          v-show="!rail"
           class="my-2" />
         <v-subheader
-          v-if="!rail"
-          :key="`${section.key}-title`"
+          v-show="!rail"
           class="text-uppercase caption px-2">
           {{ section.title }}
         </v-subheader>
@@ -47,19 +49,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :key="entry.value"
           :disabled="!rail"
           right>
-          <!-- The tooltip's activator attributes only where there is a tooltip: open,
-               the entry shows its name and has none to announce. -->
+          <!-- Activator attributes only where there is a tooltip (the rail). -->
           <template #activator="{ on, attrs }">
             <v-list-item
               :value="entry.value"
               :aria-label="entry.ariaLabel"
               :aria-selected="String(entry.value === activeKey)"
-              :title="rail ? null : entry.label"
+              :title="rail ? null : entry.tooltip"
               role="option"
               v-bind="rail ? attrs : {}"
               v-on="rail ? on : {}"
               @click="entry.select">
-              <v-list-item-icon :class="rail ? 'mx-auto' : 'me-3'">
+              <v-list-item-icon :class="rail ? 'mx-auto' : 'ms-0 me-2'" class="my-auto align-self-center align-center">
                 <v-badge
                   :value="rail && entry.unread"
                   color="primary"
@@ -78,14 +79,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                   v-if="entry.count"
                   :class="{ 'font-weight-bold': entry.unread }"
                   class="text-body-2">
-                  {{ entry.count }}
+                  {{ $emailConnectorMailBoxService.formatCount(entry.count) }}
                 </v-list-item-action-text>
               </template>
             </v-list-item>
           </template>
           <span>{{ entry.tooltip }}</span>
         </v-tooltip>
-      </template>
+      </div>
     </v-list-item-group>
   </v-list>
 </template>
@@ -103,9 +104,8 @@ export default {
     // By folder key, {count, unread}: how many, and whether they are unread mail (the
     // inbox, the spam) rather than a total (the drafts). No entry, no count.
     folderCounts: { type: Object, default: () => ({}) },
-    // The unread mail of each category over the loaded window, by category id.
+    // Each category's unread mail over the loaded window, by id.
     categoryUnreadCounts: { type: Object, default: () => ({}) },
-    // Whether the column is folded to an icon rail.
     rail: { type: Boolean, default: false },
   },
   computed: {
