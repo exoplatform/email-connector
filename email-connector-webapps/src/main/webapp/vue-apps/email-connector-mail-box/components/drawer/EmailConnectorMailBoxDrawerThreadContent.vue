@@ -370,13 +370,34 @@ export default {
      * the whole exchange, and a watcher would hand the header a conversation that is
      * still missing its sent replies and archived messages — which is exactly how a
      * lone mail is mistaken for a conversation, or a conversation for a lone mail. Clearing first and re-announcing on arrival means the header is
-     * briefly right-but-narrow instead of momentarily wrong.
+     * briefly right-but-narrow instead of momentarily wrong. While the conversation
+     * is on its way, the seeded rows are announced as a PROVISIONAL context (see
+     * emitProvisionalThreadContext), so the header's actions reach what is on screen.
      *
      * @param {boolean} clear - true to announce that nothing is open
      * @returns {void}
      */
     emitThreadContext(clear) {
       this.$emit('thread-context', clear ? null : this.summaryExtensionParams);
+    },
+    /**
+     * Tells the header which conversation is on screen while it is only seeded: the
+     * rows of it the folder list holds. The header's actions scope a conversation to
+     * the acting folder, and those are exactly the rows the list holds, so a delete
+     * started now reaches the conversation on screen rather than the opened message
+     * alone. Marked provisional; the extension that describes the conversation
+     * (`email-thread-summary`) is never given it — its params stay the landed
+     * conversation only.
+     *
+     * @returns {void}
+     */
+    emitProvisionalThreadContext() {
+      this.$emit('thread-context', {
+        threadId: this.email && this.resolveThreadId(),
+        messages: this.categorizableMessages,
+        subject: this.subject,
+        provisional: true,
+      });
     },
     // Patch the favorite flag on this conversation's INBOX messages (favorite ids are
     // INBOX UIDs; the same number in another folder is a different message).
@@ -438,8 +459,9 @@ export default {
      * whole of it. Collapsed messages render as their usual strip (sender, excerpt,
      * date); the expanded one renders as a skeleton until its body is here.
      * <p>
-     * Deliberately not announced to the drawer's header (see emitThreadContext): the
-     * list holds one folder, so this is not the exchange yet, only its visible part.
+     * Announced to the drawer's header as a provisional context only (see
+     * emitProvisionalThreadContext): the list holds one folder, so this is not the
+     * exchange yet, only its visible part.
      *
      * @returns {void}
      */
@@ -466,6 +488,7 @@ export default {
       // list holds no sent reply), and keeping it open would open two messages.
       this.seedExpandedKey = latest ? this.msgKey(latest) : null;
       this.expandedIds = this.seedExpandedKey ? [this.seedExpandedKey] : [];
+      this.emitProvisionalThreadContext();
     },
     isLast(message) {
       const last = this.messages[this.messages.length - 1];
