@@ -21,7 +21,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="selectMode"
       :indeterminate="indeterminate"
       color="#707070"
-      :background-color="backgroundColor"
       hide-details
       :label="$t('emailConnector.mailBox.list.drawer.selectAll')"
       v-model="selectedAll"
@@ -85,9 +84,6 @@ export default {
         this.onSelectAllChange(value);
       }
     },
-    backgroundColor() {
-      return this.expanded && '#f2f2f2';
-    }
   },
   methods: {
     /**

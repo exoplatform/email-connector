@@ -250,6 +250,24 @@ export function folderIcon(folder) {
   return BUILT_IN_FOLDER_ICONS[folder.key || 'INBOX'] || 'fa-folder';
 }
 
+// Above this a count shows as "99+", the platform's convention for a badge (social's
+// UserNotificationType writes it inline the same way; there is no shared formatter).
+const COUNT_DISPLAY_MAX = 99;
+
+/**
+ * A count as the folder column shows it: "99+" past 99, nothing for none. The exact
+ * number stays in the entry's accessible name and tooltip.
+ *
+ * @param {Number} count the count
+ * @returns {String} what to show, empty for none
+ */
+export function formatCount(count) {
+  if (!(count > 0)) {
+    return '';
+  }
+  return count > COUNT_DISPLAY_MAX ? `${COUNT_DISPLAY_MAX}+` : String(count);
+}
+
 /**
  * A custom folder's full path, readable: the server's hierarchy separator replaced by
  * a spaced slash ("Customers / Acme"), so a nested folder says where it lives.

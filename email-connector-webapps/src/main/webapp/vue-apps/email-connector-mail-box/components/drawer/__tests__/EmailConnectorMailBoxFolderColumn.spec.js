@@ -259,12 +259,128 @@ describe('the folder column (EXO-90415)', () => {
 
     const rail = mountColumn({ rail: true }).wrapper;
     expect(rail.findAll('v-list-item-title').length).toBe(0);
-    expect(rail.findAll('v-subheader').length).toBe(0);
+    expect(rail.findAll('v-subheader').wrappers.every(header => header.isVisible() === false)).toBe(true);
     // Each entry keeps its name for the tooltip and for a screen reader.
     expect(rail.findAll('v-list-item').wrappers.map(item => item.attributes('aria-label')))
       .toEqual(['emailConnector.mailBox.list.drawer.folder.inbox', 'emailConnector.mailBox.list.drawer.folder.sent',
         'emailConnector.mailBox.list.drawer.folder.drafts', 'emailConnector.mailBox.list.drawer.folder.junk', 'Factures',
         'Important', 'Invitation']);
+  });
+});
+
+describe('the folder column folds to a rail and back without losing its order (EXO-90415)', () => {
+  /**
+   * Mounts the column, open, with the platform's components as plain elements.
+   *
+   * @returns {Object} the wrapper
+   */
+  function mountOpenColumn() {
+    return mount(EmailConnectorMailBoxDrawerNavigation, {
+      propsData: { folders: FOLDERS, categories: CATEGORIES, rail: false },
+      mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+      stubs: { 'v-tooltip': { template: '<span><slot name="activator" :on="{}" :attrs="{}" /></span>' } },
+    });
+  }
+
+  /**
+   * What the column shows, top to bottom: headers, dividers and entries, the hidden
+   * ones left out.
+   *
+   * @param {Object} wrapper the mounted column
+   * @returns {Array<String>} H:<header>, DIV or I:<entry>
+   */
+  function visibleOrder(wrapper) {
+    return Array.from(wrapper.element.querySelectorAll('v-subheader, v-divider, v-list-item'))
+      .filter(element => !element.closest('[style*="display: none"]'))
+      .map(element => {
+        if (element.tagName === 'V-SUBHEADER') {
+          return `H:${element.textContent.trim()}`;
+        }
+        return element.tagName === 'V-DIVIDER' ? 'DIV' : `I:${element.getAttribute('aria-label')}`;
+      });
+  }
+
+  const OPEN = ['H:emailConnector.mailBox.list.drawer.menu.folders',
+    'I:emailConnector.mailBox.list.drawer.folder.inbox', 'I:emailConnector.mailBox.list.drawer.folder.sent',
+    'I:emailConnector.mailBox.list.drawer.folder.drafts', 'I:emailConnector.mailBox.list.drawer.folder.junk', 'I:Factures',
+    'DIV', 'H:emailConnector.mailBox.list.drawer.menu.categories', 'I:Important', 'I:Invitation'];
+
+  it('keeps each section\'s header, divider and entries together, open again after a rail', async () => {
+    const wrapper = mountOpenColumn();
+    expect(visibleOrder(wrapper)).toEqual(OPEN);
+
+    await wrapper.setProps({ rail: true });
+    await wrapper.setProps({ rail: false });
+
+    expect(visibleOrder(wrapper)).toEqual(OPEN);
+    // The real VTooltip's patching put the CATEGORIES header above the folders when the
+    // headers were loose siblings of the entries; each section is its own element now.
+    const sections = wrapper.findAll('[data-section]').wrappers;
+    expect(sections.map(section => section.attributes('data-section'))).toEqual(['folders', 'categories']);
+    expect(sections[0].findAll('v-list-item').length).toBe(5);
+    expect(sections[1].findAll('v-list-item').length).toBe(2);
+    expect(sections[1].find('v-subheader').text()).toBe('emailConnector.mailBox.list.drawer.menu.categories');
+  });
+
+  it('shows no divider, header or top spacing as a rail: the first icon is on the first row', async () => {
+    const wrapper = mountOpenColumn();
+    await wrapper.setProps({ rail: true });
+
+    expect(visibleOrder(wrapper)).toEqual(['I:emailConnector.mailBox.list.drawer.folder.inbox',
+      'I:emailConnector.mailBox.list.drawer.folder.sent', 'I:emailConnector.mailBox.list.drawer.folder.drafts',
+      'I:emailConnector.mailBox.list.drawer.folder.junk', 'I:Factures', 'I:Important', 'I:Invitation']);
+    expect(wrapper.element.classList.contains('py-0')).toBe(true);
+    expect(wrapper.element.classList.contains('py-2')).toBe(false);
+  });
+});
+
+describe('the folder column\'s icons sit on the axis of their names (EXO-90415)', () => {
+  it('centres every icon, open and as a rail, folders and categories, with the platform\'s nav gap', async () => {
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerNavigation, {
+      propsData: { folders: FOLDERS, categories: CATEGORIES },
+      mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+      stubs: { 'v-tooltip': { template: '<div><slot name="activator" :on="{}" :attrs="{}" /></div>' } },
+    });
+    // Vuetify's own list icon is top-aligned (align-self: flex-start, 8 px margins on a
+    // dense item), which put a 16 px icon above its name's centre line; the social
+    // hamburger menus centre it the same way (my-auto, me-2).
+    const icons = () => wrapper.findAll('v-list-item-icon').wrappers;
+    expect(icons()).toHaveLength(7);
+    icons().forEach(icon => expect(icon.classes()).toEqual(expect.arrayContaining(['my-auto', 'align-self-center', 'align-center', 'ms-0', 'me-2'])));
+
+    await wrapper.setProps({ rail: true });
+    icons().forEach(icon => {
+      expect(icon.classes()).toEqual(expect.arrayContaining(['my-auto', 'align-self-center', 'align-center', 'mx-auto']));
+      expect(icon.classes()).not.toContain('me-2');
+    });
+  });
+});
+
+describe('the folder column\'s counts cap at 99+ (EXO-90415)', () => {
+  it('formats a count as the platform\'s badges do', () => {
+    expect(emailConnectorMailBoxService.formatCount(99)).toBe('99');
+    expect(emailConnectorMailBoxService.formatCount(100)).toBe('99+');
+    expect(emailConnectorMailBoxService.formatCount(0)).toBe('');
+    expect(emailConnectorMailBoxService.formatCount(null)).toBe('');
+  });
+
+  it('shows 99+ in the column and keeps the exact number for a screen reader and a hover', () => {
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerNavigation, {
+      propsData: {
+        folders: FOLDERS,
+        categories: [],
+        folderCounts: { INBOX: { count: 99, unread: true }, DRAFTS: { count: 100, unread: false } },
+      },
+      mocks: {
+        $t: (key, params) => (params ? `${key}|${Object.values(params).join('|')}` : key),
+        $emailConnectorMailBoxService: emailConnectorMailBoxService,
+      },
+      stubs: { 'v-tooltip': { template: '<div><slot name="activator" :on="{}" :attrs="{}" /></div>' } },
+    });
+    expect(wrapper.findAll('v-list-item-action-text').wrappers.map(count => count.text())).toEqual(['99', '99+']);
+    const drafts = wrapper.findAll('v-list-item').at(2);
+    expect(drafts.attributes('aria-label')).toBe('emailConnector.mailBox.list.drawer.navigation.total|emailConnector.mailBox.list.drawer.folder.drafts|100');
+    expect(drafts.attributes('title')).toBe(drafts.attributes('aria-label'));
   });
 });
 
@@ -331,6 +447,34 @@ describe('the full-screen left pane (EXO-90415)', () => {
     expect(fixture.wrapper.find('email-connector-mail-box-drawer-navigation').exists()).toBe(false);
     expect(fixture.wrapper.find('[data-slot="titleIcons"] email-connector-mail-box-drawer-actions')
       .attributes('hide-views')).toBeUndefined();
+  });
+
+  it('sets the list, folder or search, on white beside the grey column, with a border between, open and as a rail', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    await fixture.wrapper.setData({ navigationRail: false });
+    await expand(fixture);
+
+    const pane = () => fixture.wrapper.vm.$refs.expandedListPane;
+    const column = () => fixture.wrapper.find('email-connector-mail-box-drawer-navigation');
+    expect(pane().classList.contains('white-background')).toBe(true);
+    expect(column().classes()).toContain('border-right-color');
+    // The column keeps the pane's platform grey: it paints no background of its own.
+    expect(column().classes().some(name => name.includes('background'))).toBe(false);
+
+    await fixture.wrapper.setData({ navigationRail: true, searchTerm: 'mail' });
+    expect(pane().classList.contains('white-background')).toBe(true);
+    expect(pane().querySelector('email-connector-mail-box-drawer-search-results')).not.toBeNull();
+    expect(column().classes()).toContain('border-right-color');
+  });
+
+  it('draws the border on the column\'s other side in a right-to-left language', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    fixture.wrapper.vm.$vuetify.rtl = true;
+    await expand(fixture);
+
+    const column = fixture.wrapper.find('email-connector-mail-box-drawer-navigation');
+    expect(column.classes()).toContain('border-left-color');
+    expect(column.classes()).not.toContain('border-right-color');
   });
 
   it('stays on screen over an empty folder, where it is the way out', async () => {
