@@ -58,6 +58,7 @@ import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
 import org.exoplatform.emailConnector.utils.EmailConnectorUtils;
 import org.exoplatform.services.listener.ListenerService;
@@ -136,6 +137,14 @@ public class EmailThreadAiSummaryTest {
 
   @MockitoBean
   private EmailFavoriteService    emailFavoriteService;
+
+  // Scheduled send (EXO-90434): the schedule table, read by the draft lock and the
+  // "Scheduled" view, and the two-step transmitter only the scheduled send uses.
+  @MockitoBean
+  private EmailScheduledSendStorage emailScheduledSendStorage;
+
+  @MockitoBean
+  private SmtpTransmitter         smtpTransmitter;
 
   @MockitoBean
   private EmailSignatureService   emailSignatureService;
