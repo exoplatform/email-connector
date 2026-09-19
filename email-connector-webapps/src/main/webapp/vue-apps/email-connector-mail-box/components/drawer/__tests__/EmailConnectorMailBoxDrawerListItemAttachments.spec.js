@@ -45,6 +45,12 @@ describe('the attachment counter of a list row (EXO-90415)', () => {
       expect(counter.attributes('aria-label')).toBe(counter.attributes('title'));
     });
 
+  it('says one more attachment in the singular', () => {
+    const counter = mountWith(3).find('v-chip');
+    expect(counter.text()).toBe('+1');
+    expect(counter.attributes('title')).toBe('emailConnector.mailBox.attachments.more.one');
+  });
+
   it('is a pill that grows with its number and never shrinks, not a fixed circle', () => {
     const counter = mountWith(64).find('v-chip');
     expect(counter.classes()).toEqual(expect.arrayContaining(['rounded-pill', 'flex-shrink-0', 'px-2']));
