@@ -3755,12 +3755,16 @@ public class EmailBoxService {
       return null;
     }
     String expected = StringUtils.trim(mailHeaderId);
-    Message[] hits = folder.search(new MessageIDTerm(expected));
+    // Searched by the id's local part: IMAP SEARCH matches a substring of the raw
+    // header, and the row may hold the ENVELOPE's spelling of a domain literal
+    // (x@10.0.0.1 for x@[10.0.0.1], EXO-90437), which the raw header does not contain.
+    // The exact filter below still decides.
+    Message[] hits = folder.search(new MessageIDTerm(messageIdSearchKey(expected)));
     List<Message> exact = new ArrayList<>();
     for (Message hit : hits == null ? new Message[0] : hits) {
       String[] messageIds = hit.getHeader(HEADER_MESSAGE_ID);
       String actual = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
-      if (StringUtils.equals(actual, expected)) {
+      if (sameMessageId(actual, expected)) {
         exact.add(hit);
       }
     }
@@ -8743,7 +8747,7 @@ public class EmailBoxService {
     }
     String[] messageIds = message.getHeader(HEADER_MESSAGE_ID);
     String actualMessageId = messageIds != null && messageIds.length > 0 ? StringUtils.trim(messageIds[0]) : null;
-    if (StringUtils.equals(actualMessageId, StringUtils.trim(expectedMessageId))) {
+    if (sameMessageId(actualMessageId, expectedMessageId)) {
       return true;
     }
     // Warn rather than debug: nothing was lost, but the mailbox has renumbered itself
@@ -8755,6 +8759,67 @@ public class EmailBoxService {
              actualMessageId,
              expectedMessageId);
     return false;
+  }
+
+  /**
+   * Whether two spellings of a Message-ID name the same message. The row keeps the id as
+   * the server's ENVELOPE gave it ({@code MimeMessage#getMessageID} on a prefetched IMAP
+   * message), while {@link #isExpectedMessageAtUid} reads the raw header, and servers
+   * rewrite a domain literal in the ENVELOPE: {@code <x@[192.168.0.248]>} in the header
+   * comes back as {@code <x@192.168.0.248>}. Such ids are what JavaMail mints on a host
+   * whose name does not resolve, so a mail sent from such a host could never be deleted
+   * or moved (EXO-90437). Compared after {@link #normalizeMessageId}, which only undoes
+   * those spellings: two genuinely different ids stay different.
+   *
+   * @param actual the Message-ID the server's message carries, may be null
+   * @param expected the Message-ID the row remembers
+   * @return true when both name the same message
+   */
+  static boolean sameMessageId(String actual, String expected) {
+    return actual != null && StringUtils.equals(normalizeMessageId(actual), normalizeMessageId(expected));
+  }
+
+  /**
+   * What to search a folder for to find a Message-ID whatever the spelling of its
+   * domain: the id itself when its domain is a plain name, else its local part and the
+   * "@" -- a substring every spelling of the raw header contains.
+   *
+   * @param messageId the Message-ID, as the row remembers it
+   * @return the search key
+   */
+  static String messageIdSearchKey(String messageId) {
+    String normalized = normalizeMessageId(messageId);
+    if (normalized == null || normalized.indexOf('@') < 0) {
+      return messageId;
+    }
+    String domain = StringUtils.substringAfterLast(normalized, "@");
+    boolean literal = domain.matches("[0-9.]+") || domain.contains(":") || StringUtils.contains(messageId, "[");
+    return literal ? StringUtils.substringBeforeLast(normalized, "@") + "@" : messageId;
+  }
+
+  /**
+   * A Message-ID reduced to what identifies it: trimmed, without its angle brackets,
+   * with a domain literal's square brackets removed and the domain lower-cased (domains
+   * are case-insensitive; the local part is left exactly as written).
+   *
+   * @param messageId the Message-ID, possibly null
+   * @return the normalized form, or null
+   */
+  static String normalizeMessageId(String messageId) {
+    String id = StringUtils.trimToNull(messageId);
+    if (id == null) {
+      return null;
+    }
+    id = StringUtils.removeEnd(StringUtils.removeStart(id, "<"), ">").trim();
+    int at = id.lastIndexOf('@');
+    if (at < 0) {
+      return id;
+    }
+    String domain = id.substring(at + 1);
+    if (domain.startsWith("[") && domain.endsWith("]")) {
+      domain = domain.substring(1, domain.length() - 1);
+    }
+    return id.substring(0, at + 1) + domain.toLowerCase(java.util.Locale.ROOT);
   }
 
   /**

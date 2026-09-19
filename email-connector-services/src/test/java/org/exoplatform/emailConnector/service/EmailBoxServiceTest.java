@@ -1041,6 +1041,49 @@ public class EmailBoxServiceTest {
     verify(emailBoxStorage).createEmail(any(Email.class));
   }
 
+  /**
+   * EXO-90437: the row keeps the ENVELOPE's spelling of the Message-ID, which drops the
+   * square brackets of a domain literal, while the identity check reads the raw header,
+   * which keeps them. The same message must be recognised, or it can never be deleted.
+   */
+  @Test
+  @SneakyThrows
+  void aDeleteRecognisesTheSameMessageWhenTheEnvelopeDropsTheDomainLiteralBrackets() {
+    IMAPFolder sent = givenASubscribedSentFolder();
+    Message mine = givenAMessageInFolderAt(sent, 1212L, "<1525267343.1.1789851293801@[192.168.0.248]>");
+    givenACachedRow(MailFolder.SENT, 1212L, "<1525267343.1.1789851293801@192.168.0.248>");
+
+    int failed = emailBoxService.deleteEmail(List.of(1212L), TEST_USER, MailFolder.SENT);
+
+    assertEquals(0, failed);
+    verify(emailBoxStorage, never()).createEmail(any(Email.class));
+  }
+
+  /**
+   * The normalization only undoes spellings of one id: brackets, angle brackets, the
+   * domain's case. A different local part, or a different domain, is still refused.
+   */
+  @Test
+  void messageIdsCompareAcrossSpellingsButNotAcrossMessages() {
+    assertTrue(EmailBoxService.sameMessageId("<a.1@[10.0.0.1]>", "<a.1@10.0.0.1>"));
+    assertTrue(EmailBoxService.sameMessageId(" <a.1@Host.Example> ", "<a.1@host.example>"));
+    assertTrue(EmailBoxService.sameMessageId("a.1@host", "<a.1@host>"));
+    assertFalse(EmailBoxService.sameMessageId("<A.1@host>", "<a.1@host>"));
+    assertFalse(EmailBoxService.sameMessageId("<a.1@[10.0.0.1]>", "<a.1@10.0.0.2>"));
+    assertFalse(EmailBoxService.sameMessageId(null, "<a.1@host>"));
+  }
+
+  /**
+   * The undo-move search looks a domain-literal id up by its local part, which every
+   * spelling of the raw header contains; a plain domain is searched as it is.
+   */
+  @Test
+  void aDomainLiteralIdIsSearchedByItsLocalPart() {
+    assertEquals("a.1@", EmailBoxService.messageIdSearchKey("<a.1@192.168.0.248>"));
+    assertEquals("a.1@", EmailBoxService.messageIdSearchKey("<a.1@[192.168.0.248]>"));
+    assertEquals("<a.1@host.example>", EmailBoxService.messageIdSearchKey("<a.1@host.example>"));
+  }
+
   @Test
   @SneakyThrows
   void anArchiveWithNowhereToFileItFailsEveryIdAndKeepsEveryRow() {
