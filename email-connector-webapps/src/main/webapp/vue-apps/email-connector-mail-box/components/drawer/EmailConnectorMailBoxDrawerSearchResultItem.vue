@@ -16,11 +16,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- data-thread-key is how the arrow keys find the hit they stand on, and aria-current
-       tells a screen reader which hit the reader shows (EXO-90414). -->
+       tells a screen reader which hit the reader shows (EXO-90414). No outline: the row's
+       own background, lit on focus, is the cue, as on the folder list's rows. -->
   <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
   <div
     :class="backgroundClass"
     class="clickable ps-7 pe-4 pt-3 pb-3 no-border"
+    style="outline: none;"
     tabindex="0"
     :data-thread-key="rowKey"
     :aria-current="opened ? 'true' : null"

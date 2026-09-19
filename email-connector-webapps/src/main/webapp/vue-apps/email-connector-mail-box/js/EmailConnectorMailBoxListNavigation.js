@@ -453,13 +453,37 @@ export default {
      */
     openAutomatically(row) {
       const opening = this.openListedEmail(row, { automatic: true });
-      this.startAutoOpenDwell(row);
+      // The opening's own request, current right after it started (every opening
+      // supersedes the one before, synchronously).
+      const request = this.emailRequest;
+      // Held from the start: the reader must not read the conversation while the mail
+      // is on its way either.
+      this.autoOpenReadPending = true;
+      // The wait starts once the mail is on screen, not when it was asked for: an
+      // uncached search hit is pulled in first, a synchronization can hold that for
+      // seconds, and the wait would otherwise end on the previous mail.
+      Promise.resolve(opening).then(() => {
+        if (this.emailRequest === request && this.readerShows(row)) {
+          this.startAutoOpenDwell(row);
+        }
+      });
       return opening;
+    },
+    /**
+     * Whether the reader shows a given message: same UID in the same folder, the
+     * placeholder down.
+     *
+     * @param {Object} row the message
+     * @returns {Boolean} true when it is the one on screen
+     */
+    readerShows(row) {
+      return !this.selectEmailPlaceHolder && !!this.email && this.email.mailRemoteId === row.mailRemoteId
+        && (this.email.folder || 'INBOX') === (row.folder || 'INBOX');
     },
     /**
      * Starts the wait of an automatically opened mail (AUTO_OPEN_MARK_READ_DELAY_MS).
      * <p>
-     * Called right after the opening. Every other opening, the placeholder, the drawer
+     * Called once the opening is on screen. Every other opening, the placeholder, the drawer
      * closing (they all supersede the reader's request, which cancels this wait), a key
      * moving on and a collapse end the wait; the mail is read only if the reader still
      * shows it when the wait ends.
@@ -473,7 +497,7 @@ export default {
       this.autoOpenReadTimer = window.setTimeout(() => {
         this.autoOpenReadTimer = null;
         this.autoOpenReadPending = false;
-        if (!this.selectEmailPlaceHolder && this.email?.mailRemoteId === row.mailRemoteId) {
+        if (this.readerShows(row)) {
           this.markAutoOpenedEmailRead(row);
         }
       }, AUTO_OPEN_MARK_READ_DELAY_MS);
@@ -502,8 +526,10 @@ export default {
       const index = threadIndexOf(threads, row);
       const messages = index >= 0 ? threads[index].emails : [row];
       const unread = messages.filter(message => !message.read).map(message => message.mailRemoteId);
+      // With the folder those UIDs are numbered in: a search hit's is not the listed one,
+      // and the listing may hold another message under the same number (EXO-90414).
       if (unread.length) {
-        this.$root.$emit('update-email-read-status', true, unread);
+        this.$root.$emit('update-email-read-status', true, unread, row.folder || null);
       }
       this.onAutoOpenedEmailRead?.(row);
       this.$emailConnectorMailBoxService.broadcastOpenEmail().catch(() => null);
@@ -555,10 +581,12 @@ export default {
      *
      * @param {Array<Number>} removedIds the IMAP UIDs the action applied to
      * @param {Array} listedBefore the listed messages before the action
+     * @param {String} folder the folder those UIDs are numbered in, when the emitter knows it
      * @returns {Object} the row opened, or null
      */
-    openNextAfterRemoval(removedIds, listedBefore) {
-      if (!this.expanded || !this.email || !(removedIds || []).includes(this.email.mailRemoteId)) {
+    openNextAfterRemoval(removedIds, listedBefore, folder = null) {
+      if (!this.expanded || !this.email || !(removedIds || []).includes(this.email.mailRemoteId)
+          || (folder && (this.email.folder || 'INBOX') !== folder)) {
         return null;
       }
       const next = threadTakingThePlaceOf(this.navigationEntriesOf(listedBefore),

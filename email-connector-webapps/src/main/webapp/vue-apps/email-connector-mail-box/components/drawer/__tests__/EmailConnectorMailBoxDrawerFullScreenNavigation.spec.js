@@ -26,6 +26,9 @@ import EmailConnectorMailBoxDrawerList from '../EmailConnectorMailBoxDrawerList.
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 import { AUTO_OPEN_MARK_READ_DELAY_MS, KEY_OPEN_DELAY_MS } from '../../../js/EmailConnectorMailBoxListNavigation.js';
 import EmailConnectorMailBoxDrawerSearchResults from '../EmailConnectorMailBoxDrawerSearchResults.vue';
+import EmailConnectorMailBoxMoveToFolderDrawer from '../EmailConnectorMailBoxMoveToFolderDrawer.vue';
+import EmailConnectorMailBoxDrawerListItem from '../EmailConnectorMailBoxDrawerListItem.vue';
+import EmailConnectorMailBoxDrawerSearchResultItem from '../EmailConnectorMailBoxDrawerSearchResultItem.vue';
 import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 
 const FOLDERS = [
@@ -1041,6 +1044,129 @@ describe('the arrow keys and the next mail after an action work on search result
   });
 });
 
+describe('a search hit is addressed in its own folder, never by its number alone (EXO-90414)', () => {
+  let fixture;
+
+  afterEach(() => {
+    jest.useRealTimers();
+    fixture?.teardown();
+  });
+
+  /**
+   * A server search hit.
+   *
+   * @param {Number} mailRemoteId its UID
+   * @param {String} folder the folder it is numbered in
+   * @param {Object} extra further fields
+   * @returns {Object} the hit
+   */
+  function hit(mailRemoteId, folder, extra = {}) {
+    return { ...row(mailRemoteId), folder, subject: `archived ${mailRemoteId}`, cached: true, ...extra };
+  }
+
+  /**
+   * Mounts the drawer listing INBOX:5 (unread), full screen, searching, the server
+   * having found ARCHIVE:5 -- another message under the same number.
+   *
+   * @returns {Promise<void>} resolved once mounted
+   */
+  async function mountWithTwins() {
+    fixture = await mountDrawer([{ ...row(5), read: false }, row(6)]);
+    await fixture.wrapper.setData({ expanded: true, searchTerm: 'archived',
+      searchServerResults: [hit(5, 'ARCHIVE', { read: false }), hit(7, 'ARCHIVE')] });
+  }
+
+  it('reads an automatically opened hit in its folder, not the listed mail sharing its number', async () => {
+    await mountWithTwins();
+    jest.useFakeTimers();
+
+    fixture.wrapper.vm.openAutomatically(fixture.wrapper.vm.mergedSearchResults.find(result => result.mailRemoteId === 5));
+    for (let i = 0; i < 8; i++) {
+      await Promise.resolve(); // eslint-disable-line no-await-in-loop
+    }
+    jest.advanceTimersByTime(AUTO_OPEN_MARK_READ_DELAY_MS + 100);
+
+    expect(fixture.service.updateEmailsReadStatus.mock.calls).toEqual([[[5], true, 'ARCHIVE']]);
+    expect(fixture.wrapper.vm.emails.find(email => email.mailRemoteId === 5).read).toBe(false);
+  });
+
+  it('acts on the hit in its folder: delete, archive, spam, move and mark unread never reach the listed twin', async () => {
+    await mountWithTwins();
+
+    fixture.wrapper.vm.$root.$emit('delete-email', [5], 'ARCHIVE');
+    fixture.wrapper.vm.$root.$emit('junk-email', [7], 'ARCHIVE');
+    await flush();
+    expect(fixture.service.deleteEmails).toHaveBeenCalledWith([5], 'ARCHIVE', true);
+    expect(fixture.service.markAsJunk).toHaveBeenCalledWith([7], 'ARCHIVE', true);
+
+    fixture.wrapper.vm.$root.$emit('archive-email', [5], 'CUSTOM:1');
+    fixture.wrapper.vm.$root.$emit('move-email', [5], 'CUSTOM:1', 'SENT');
+    fixture.wrapper.vm.$root.$emit('update-email-read-status', false, [5], 'SENT');
+    await flush();
+    expect(fixture.service.archiveEmails).toHaveBeenCalledWith([5], 'CUSTOM:1');
+    expect(fixture.service.moveEmails).toHaveBeenCalledWith([5], 'SENT', 'CUSTOM:1');
+    expect(fixture.service.updateEmailsReadStatus).toHaveBeenCalledWith([5], false, 'SENT');
+
+    // The listed INBOX:5 was never touched, and is still listed.
+    expect(fixture.service.deleteEmails).not.toHaveBeenCalledWith([5], 'INBOX', true);
+    expect(fixture.wrapper.vm.emails.map(email => email.mailRemoteId)).toEqual([5, 6]);
+  });
+
+  it('undoes a move of the hit, not of the listed mail sharing its number', async () => {
+    await mountWithTwins();
+    fixture.wrapper.vm.searchServerResults[0].mailHeaderId = '<5-archived@host>';
+
+    fixture.wrapper.vm.$root.$emit('move-email', [5], 'CUSTOM:1', 'ARCHIVE');
+    await flush();
+    await fixture.alerts[0].alertLinkCallback();
+
+    expect(fixture.service.undoMoveEmails).toHaveBeenCalledWith(['<5-archived@host>'], 'CUSTOM:1', 'ARCHIVE');
+  });
+
+  it('files the move the picker was opened for in the folder it was opened from', () => {
+    const emit = jest.fn();
+    const picker = { mailRemoteIds: [5], sourceFolder: 'ARCHIVE', $root: { $emit: emit }, $refs: { moveToFolderDrawer: { close: jest.fn() } } };
+
+    EmailConnectorMailBoxMoveToFolderDrawer.methods.moveTo.call(picker, { key: 'CUSTOM:1' });
+
+    expect(emit).toHaveBeenCalledWith('move-email', [5], 'CUSTOM:1', 'ARCHIVE');
+  });
+
+  it('hides only the hit acted on, not every hit sharing its number', async () => {
+    fixture = await mountDrawer([row(6)]);
+    await fixture.wrapper.setData({ expanded: true, searchTerm: 'archived',
+      searchServerResults: [hit(5, 'INBOX'), hit(5, 'ARCHIVE')] });
+
+    fixture.wrapper.vm.$root.$emit('delete-email', [5], 'ARCHIVE');
+    await flush();
+
+    expect(fixture.wrapper.vm.mergedSearchResults.map(result => `${result.folder}:${result.mailRemoteId}`)).toEqual(['INBOX:5']);
+  });
+
+  it('starts the wait of a slow automatic opening only once it is on screen', async () => {
+    fixture = await mountDrawer([row(6)]);
+    await fixture.wrapper.setData({ expanded: true, searchTerm: 'archived',
+      searchServerResults: [hit(8, 'ARCHIVE', { read: false, cached: false })] });
+    jest.useFakeTimers();
+    // Pulling the hit in takes three seconds (a synchronization holding the mailbox).
+    fixture.service.fetchSearchedEmail.mockImplementation(() => new Promise(resolve => window.setTimeout(resolve, 3000)));
+
+    fixture.wrapper.vm.openAutomatically(fixture.wrapper.vm.mergedSearchResults[0]);
+    jest.advanceTimersByTime(3000);
+    for (let i = 0; i < 12; i++) {
+      await Promise.resolve(); // eslint-disable-line no-await-in-loop
+    }
+    expect(fixture.wrapper.vm.email.mailRemoteId).toBe(8);
+    expect(fixture.wrapper.vm.autoOpenReadPending).toBe(true);
+    jest.advanceTimersByTime(AUTO_OPEN_MARK_READ_DELAY_MS - 100);
+    expect(fixture.service.updateEmailsReadStatus).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(100);
+
+    expect(fixture.service.updateEmailsReadStatus.mock.calls).toEqual([[[8], true, 'ARCHIVE']]);
+    expect(fixture.service.broadcastOpenEmail).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('the list reveals the row the keys go to', () => {
   let wrapper;
 
@@ -1161,7 +1287,13 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
     'moves on after %s too, which its toolbar offers as well', async event => {
       await mountExpanded([row(1), row(2), row(3)], 2);
 
-      wrapper.vm.$root.$emit(event, [2], 'CUSTOM:1');
+      // As the toolbar and the move picker emit them: the folder the ids are numbered in
+      // last, after a move's target.
+      if (event === 'move-email') {
+        wrapper.vm.$root.$emit(event, [2], 'CUSTOM:1', 'INBOX');
+      } else {
+        wrapper.vm.$root.$emit(event, [2], 'INBOX');
+      }
       await flush();
 
       expect(wrapper.vm.email.mailRemoteId).toBe(3);
@@ -1200,6 +1332,23 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
     expect(wrapper.vm.autoOpenReadPending).toBe(false);
   });
 
+  it('opens a search hit from its own folder, and removes only it after an action', async () => {
+    // Two different messages under one number, in two folders (another Message-ID).
+    const twin = { ...row(5), folder: 'ARCHIVE', mailHeaderId: '<5-archived@host>' };
+    await mountExpanded([row(4), row(5), twin], 4);
+    await wrapper.setData({ detachedFromList: true });
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    await settle();
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    await settle();
+    expect(service.getEmailByRemoteId).toHaveBeenLastCalledWith(5, 'ARCHIVE', { broadcast: false });
+
+    wrapper.vm.$root.$emit('delete-email', [5], 'ARCHIVE');
+    await flush();
+    expect(wrapper.vm.emails.map(email => `${email.folder}:${email.mailRemoteId}`)).toEqual(['INBOX:4', 'INBOX:5']);
+  });
+
   it('reads an automatically opened mail only once the user stayed on it', async () => {
     const unread = { ...row(1), read: false };
     await mountExpanded([unread, row(2), row(3)], 2);
@@ -1209,7 +1358,10 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
     try {
       document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
       jest.advanceTimersByTime(KEY_OPEN_DELAY_MS);
-      await Promise.resolve();
+      // The wait starts once the mail is on screen: let its opening land.
+      for (let i = 0; i < 8; i++) {
+        await Promise.resolve(); // eslint-disable-line no-await-in-loop
+      }
       jest.advanceTimersByTime(AUTO_OPEN_MARK_READ_DELAY_MS - 100);
       expect(reads).toEqual([]);
       jest.advanceTimersByTime(100);
@@ -1246,5 +1398,59 @@ describe('the mail drawer, expanded beside its list, moves the same way (EXO-904
 
     expect(wrapper.vm.email).toBe(draft);
     expect(wrapper.vm.loadingEmail).toBe(false);
+  });
+});
+
+describe('the row the arrow keys focus is lit, without the browser\'s focus ring (EXO-90414)', () => {
+  let wrapper;
+
+  afterEach(() => {
+    wrapper?.destroy();
+    document.body.innerHTML = '';
+  });
+
+  it('on a row of the folder list, narrow and full screen', async () => {
+    for (const expanded of [false, true]) {
+      const localVue = createLocalVue();
+      localVue.directive('touch', {});
+      localVue.directive('touch-hold', {});
+      const email = { ...row(3), content: { excerpt: 'x', attachments: [] } };
+      wrapper = shallowMount(EmailConnectorMailBoxDrawerListItem, {
+        localVue,
+        attachTo: document.body,
+        propsData: { email, expanded },
+        mocks: {
+          $t: key => key,
+          // The dates need the portal's locale, which a unit test has none of.
+          $emailConnectorMailBoxService: { ...emailConnectorMailBoxService, formatDateString: () => 'today' },
+          $vuetify: { breakpoint: { smAndDown: false } },
+        },
+      });
+      const focusable = wrapper.find('[data-thread-key]');
+
+      focusable.element.focus();
+      await wrapper.vm.$nextTick(); // eslint-disable-line no-await-in-loop
+
+      expect(document.activeElement).toBe(focusable.element);
+      expect(focusable.element.style.outline).toBe('none');
+      expect(wrapper.classes()).toContain(expanded ? 'grey-lighten1-background-opacity-3' : 'light-grey-background-color');
+      wrapper.destroy();
+      wrapper = null;
+    }
+  });
+
+  it('on a search hit', async () => {
+    wrapper = shallowMount(EmailConnectorMailBoxDrawerSearchResultItem, {
+      attachTo: document.body,
+      propsData: { result: row(4), rowKey: 'INBOX:4' },
+      mocks: { $t: key => key, $emailConnectorMailBoxService: { ...emailConnectorMailBoxService, formatDateString: () => 'today' } },
+    });
+
+    wrapper.element.focus();
+    await wrapper.vm.$nextTick();
+
+    expect(document.activeElement).toBe(wrapper.element);
+    expect(wrapper.element.style.outline).toBe('none');
+    expect(wrapper.classes()).toContain('light-grey-background-color');
   });
 });
