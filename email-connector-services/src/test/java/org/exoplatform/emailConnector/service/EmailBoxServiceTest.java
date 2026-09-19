@@ -733,7 +733,12 @@ public class EmailBoxServiceTest {
     IMAPFolder inbox = mockInboxForSkipCheck(userEmailSetting(), state, 12L, 501L, 100, 777L, true);
     lenient().when(inbox.getMessages(anyInt(), anyInt())).thenReturn(new Message[0]);
     emailBoxService.synchronize(TEST_USER);
-    verify(emailSyncStateStorage).bumpInboxEpoch(TEST_USER);
+    // Before the sync's notification window opens and before its broadcasts: a consumer
+    // woken by them must already read the new epoch.
+    InOrder order = inOrder(emailSyncStateStorage, listenerService);
+    order.verify(emailSyncStateStorage).bumpInboxEpoch(TEST_USER);
+    order.verify(emailSyncStateStorage).initNotifiedUid(eq(TEST_USER), anyLong());
+    order.verify(listenerService).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED), eq(TEST_USER), any());
   }
 
   /**
