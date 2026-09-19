@@ -161,6 +161,14 @@ class EmailBoxReadReceiptDAOTest {
     entityManager.clear();
     assertEquals(ReadReceiptState.IGNORED, emailBoxDAO.findById(ignoredId).orElseThrow().getReadReceiptState(),
                  "an answer is never overwritten");
+
+    // By Message-ID, the answer reaches the other copies of the message, and only them.
+    assertEquals(1, emailBoxDAO.markReadReceiptsAnsweredByMailHeaderIds(USER,
+                                                                        List.of("<archived@partner.example>", "<ignored@partner.example>"),
+                                                                        ReadReceiptState.SENT));
+    assertEquals(0, emailBoxDAO.markReadReceiptsAnsweredByMailHeaderIds("bob", List.of(MESSAGE_ID), ReadReceiptState.SENT));
+    entityManager.clear();
+    assertEquals(ReadReceiptState.IGNORED, emailBoxDAO.findById(ignoredId).orElseThrow().getReadReceiptState());
   }
 
   /** The light sync view carries the request and its answer, in the last two columns. */

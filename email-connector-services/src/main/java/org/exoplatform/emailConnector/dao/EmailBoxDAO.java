@@ -1093,4 +1093,22 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
   String folder, @Param("mailRemoteIds")
   List<Long> mailRemoteIds, @Param("state")
   ReadReceiptState state);
+
+  /**
+   * The same mirror, carried to every other cached copy of the answered messages, by
+   * their Message-ID: one message is one answer to its sender, wherever it is cached
+   * (the Inbox copy and Gmail's All Mail copy share one request).
+   *
+   * @param userId the mailbox owner
+   * @param mailHeaderIds the Message-IDs of the messages carrying the keyword
+   * @param state the state to record
+   * @return the number of rows updated
+   */
+  @Transactional
+  @Modifying
+  @Query("UPDATE EmailBoxEntity email SET email.readReceiptState = :state WHERE email.userId = :userId AND email.mailHeaderId IN :mailHeaderIds AND email.readReceiptRequested = true AND email.readReceiptState IS NULL")
+  int markReadReceiptsAnsweredByMailHeaderIds(@Param("userId")
+  String userId, @Param("mailHeaderIds")
+  List<String> mailHeaderIds, @Param("state")
+  ReadReceiptState state);
 }
