@@ -24,7 +24,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     allow-expand
     :drawer-width="drawerWidth"
     @expand-updated="updateExpand"
-    :loading="loading || syncInProgress || (searchActive && searchServerRunning) || readerLoading || (loadingEmail && readerPartial)"
+    :loading="loading || syncInProgress || (searchActive && searchServerRunning) || readerLoading || scheduledLoading || (loadingEmail && readerPartial)"
     :use-filter="canSearch"
     :filter-placeholder="$t('emailConnector.mailBox.search.placeholder')"
     @filter-updated="onFilterUpdated"
@@ -153,7 +153,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <email-connector-mail-box-scheduled-list
             v-else-if="scheduledView"
             :signal="scheduledViewSignal"
-            compact />
+            compact
+            @loading="scheduledLoading = $event" />
           <template v-else>
             <email-connector-mail-box-drawer-filter-chips
               :important-category="importantCategory"
@@ -248,7 +249,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </template>
       <email-connector-mail-box-scheduled-list
         v-else-if="scheduledView"
-        :signal="scheduledViewSignal" />
+        :signal="scheduledViewSignal"
+        @loading="scheduledLoading = $event" />
       <template v-else>
         <email-connector-mail-box-drawer-filter-chips
           :important-category="importantCategory"
@@ -446,6 +448,9 @@ export default {
       loadingEmail: false,
       readerLoading: false,
       readerPartial: false,
+      // The Scheduled view's list is waiting on the server (EXO-90434): relayed to this
+      // drawer's header bar, the only loading bar there is (EXO-90412).
+      scheduledLoading: false,
       // A mail opened from outside the mailbox (the global Favorites drawer) is
       // pinned open: it is legitimately absent from the listed window, and a list
       // reload must not take the reader back from the user. Cleared as soon as they
