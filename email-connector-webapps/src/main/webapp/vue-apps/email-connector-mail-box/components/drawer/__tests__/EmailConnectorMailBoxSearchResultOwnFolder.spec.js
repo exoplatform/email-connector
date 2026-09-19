@@ -166,6 +166,48 @@ describe('the mailbox addresses a search result in its own folder, never its lis
     expect(wrapper.vm.searchServerResults[0].read).toBe(true);
   });
 
+  it('reads a message opened from outside once, in its folder, and not one already read', async () => {
+    await mountWithTwin();
+
+    // What the mail drawer sends as it opens a mail it knows nothing of (a favorite, a
+    // unified-search hit), then one it knows read, then the search row itself.
+    wrapper.vm.$root.$emit('update-email-read-status', true, [9], 'ARCHIVE');
+    wrapper.vm.$root.$emit('update-email-read-status', true, [7], 'ARCHIVE', true);
+    await flush();
+    expect(service.updateEmailsReadStatus.mock.calls).toEqual([[[9], true, 'ARCHIVE']]);
+
+    wrapper.vm.$root.$emit('update-email-read-status', true, [5], 'ARCHIVE');
+    wrapper.vm.$root.$emit('update-email-read-status', true, [5], 'ARCHIVE');
+    await flush();
+    expect(service.updateEmailsReadStatus.mock.calls).toEqual([[[9], true, 'ARCHIVE'], [[5], true, 'ARCHIVE']]);
+  });
+
+  it('reads a result opened in full screen in its folder, once, and not when it already was', async () => {
+    await mountWithTwin();
+    await wrapper.setData({ expanded: true });
+
+    await wrapper.vm.openSearchResult(wrapper.vm.searchServerResults[0]);
+    await flush();
+    expect(service.updateEmailsReadStatus.mock.calls).toEqual([[[5], true, 'ARCHIVE']]);
+    expect(wrapper.vm.selectEmailPlaceHolder).toBe(false);
+    expect(wrapper.vm.emails.find(email => email.mailRemoteId === 5).read).toBe(false);
+
+    service.updateEmailsReadStatus.mockClear();
+    await wrapper.vm.openSearchResult({ ...wrapper.vm.searchServerResults[0] });
+    await flush();
+    expect(service.updateEmailsReadStatus).not.toHaveBeenCalled();
+  });
+
+  it('keeps a selection by folder and UID', async () => {
+    await mountWithTwin();
+
+    wrapper.vm.$root.$emit('select-email', { emailId: 5, folder: 'ARCHIVE', selected: true });
+    wrapper.vm.$root.$emit('select-email', { emailId: 5, folder: 'INBOX', selected: true });
+    wrapper.vm.$root.$emit('select-email', { emailId: 5, folder: 'INBOX', selected: false });
+
+    expect(wrapper.vm.selectedEmails).toEqual(['ARCHIVE:5']);
+  });
+
   it('never pushes a read status into a folder the interface only reads', async () => {
     await mountWithTwin();
 
@@ -275,14 +317,25 @@ describe('every emitter of an action or a read says which folder its ids are num
       wrapper.destroy();
     });
 
-    it('sends a swipe once per folder of the conversation it gathers', () => {
+    it('sends a swipe as its menu acts: the conversation in the row\'s own folder, with that folder', () => {
       const inbox = message(3, 'INBOX');
-      const thread = { threadId: 't', emails: [archived, inbox], mailRemoteIds: [5, 3], count: 2, unreadCount: 0 };
+      const alsoArchived = message(4, 'ARCHIVE');
+      const thread = { threadId: 't', emails: [archived, inbox, alsoArchived], mailRemoteIds: [5, 3, 4], count: 3, unreadCount: 0 };
       const { wrapper, emit } = mountRow({ email: archived, thread });
 
-      wrapper.vm.emitPerFolder('delete-email');
+      wrapper.vm.emitForRow('delete-email');
 
-      expect(emit.mock.calls).toEqual([['delete-email', [5], 'ARCHIVE'], ['delete-email', [3], 'INBOX']]);
+      expect(emit.mock.calls).toEqual([['delete-email', [5, 4], 'ARCHIVE']]);
+      wrapper.destroy();
+    });
+
+    it('selects only its own messages, by folder and UID, never another folder\'s message sharing a number', () => {
+      const { wrapper, emit } = mountRow({ email: archived, selectMode: true, selectedEmails: ['INBOX:5'] });
+
+      expect(wrapper.vm.selected).toBe(false);
+      wrapper.vm.emitSelect(true);
+
+      expect(emit).toHaveBeenCalledWith('select-email', { emailId: 5, folder: 'ARCHIVE', selected: true });
       wrapper.destroy();
     });
   });
@@ -292,7 +345,7 @@ describe('every emitter of an action or a read says which folder its ids are num
      * Mounts the bulk toolbar over a list and a selection.
      *
      * @param {Array} emails the list
-     * @param {Array} selectedEmails the selected UIDs
+     * @param {Array} selectedEmails the selection keys (folder:uid)
      * @returns {Object} {wrapper, emit}
      */
     function mountBar(emails, selectedEmails) {
@@ -304,7 +357,7 @@ describe('every emitter of an action or a read says which folder its ids are num
     }
 
     it('send each folder\'s ids with that folder', () => {
-      const { wrapper, emit } = mountBar([message(5, 'ARCHIVE'), message(6, 'INBOX')], [5, 6]);
+      const { wrapper, emit } = mountBar([message(5, 'ARCHIVE'), message(6, 'INBOX')], ['ARCHIVE:5', 'INBOX:6']);
 
       wrapper.vm.deleteEmails();
       wrapper.vm.updateEmailsReadStatus(false);
@@ -316,23 +369,37 @@ describe('every emitter of an action or a read says which folder its ids are num
       wrapper.destroy();
     });
 
-    it('offer "Move to..." only for a selection in one folder, the picker taking one source', async () => {
+    it('enable "Move to..." only for a selection in one folder, and say why otherwise', async () => {
       // The folder list lives on the root, unobserved (see the mailbox drawer's
       // loadEmailBox): a new selection is what makes the bar read it again.
-      const { wrapper: single } = mountBar([message(5, 'INBOX'), message(6, 'INBOX')], [5, 6]);
+      const { wrapper: single, emit } = mountBar([message(5, 'INBOX'), message(6, 'INBOX')], ['INBOX:5']);
       single.vm.$root.mailFolders = FOLDERS;
-      await single.setProps({ selectedEmails: [5, 6] });
-      const offeredInOneFolder = single.vm.canMoveSelection;
+      await single.setProps({ selectedEmails: ['INBOX:5', 'INBOX:6'] });
+      const enabledInOneFolder = single.vm.canMoveSelection;
+      single.vm.moveEmails();
+      expect(emit).toHaveBeenCalledWith('open-move-to-folder-drawer', [5, 6], 'INBOX');
       single.destroy();
 
-      const { wrapper: mixed } = mountBar([message(5, 'ARCHIVE'), message(6, 'INBOX')], [5, 6]);
+      const { wrapper: mixed } = mountBar([message(5, 'ARCHIVE'), message(6, 'INBOX')], ['ARCHIVE:5']);
       mixed.vm.$root.mailFolders = FOLDERS;
-      await mixed.setProps({ selectedEmails: [5, 6] });
-      expect(mixed.vm.selectionByFolder).toHaveLength(2);
+      await mixed.setProps({ selectedEmails: ['ARCHIVE:5', 'INBOX:6'] });
+      expect(mixed.vm.canOfferMove).toBe(true);
       expect(mixed.vm.canMoveSelection).toBe(false);
+      expect(mixed.vm.moveTitle).toBe('emailConnector.mailBox.list.drawer.detail.moveTo.oneFolder');
+      expect(mixed.find('[title="emailConnector.mailBox.list.drawer.detail.moveTo.oneFolder"]').exists()).toBe(true);
       mixed.destroy();
 
-      expect(offeredInOneFolder).toBe(true);
+      expect(enabledInOneFolder).toBe(true);
+    });
+
+    it('act on the selected twin only: ticking ARCHIVE:5 leaves INBOX:5 out', () => {
+      const { wrapper, emit } = mountBar([message(5, 'INBOX'), message(5, 'ARCHIVE')], ['ARCHIVE:5']);
+
+      wrapper.vm.archiveEmails();
+      wrapper.vm.restoreEmails();
+
+      expect(emit.mock.calls).toEqual([['archive-email', [5], 'ARCHIVE'], ['restore-email', [5]]]);
+      wrapper.destroy();
     });
   });
 
@@ -377,7 +444,7 @@ describe('the mail drawer opened on search results opens, reads and removes the 
       stubs: { 'exo-drawer': true },
     });
     reads = [];
-    wrapper.vm.$root.$on('update-email-read-status', (read, ids, folder) => reads.push([read, ids, folder]));
+    wrapper.vm.$root.$on('update-email-read-status', (read, ids, folder, known) => reads.push(typeof known === 'boolean' ? [read, ids, folder, known] : [read, ids, folder]));
   }
 
   afterEach(() => wrapper?.destroy());
@@ -390,7 +457,26 @@ describe('the mail drawer opened on search results opens, reads and removes the 
     await flush();
 
     expect(service.getEmailByRemoteId).toHaveBeenCalledWith(5, 'ARCHIVE');
-    expect(reads).toEqual([[true, [5], 'ARCHIVE']]);
+    // With what the list knows of it: read already, so nothing is pushed again.
+    expect(reads).toEqual([[true, [5], 'ARCHIVE', true]]);
+  });
+
+  it('opens a mail from outside with a single read, and tells what it knows of it', async () => {
+    mountOnTwins();
+
+    wrapper.vm.$root.$emit('open-email-detail-drawer', 9, [{ mailRemoteId: 9, folder: 'ARCHIVE', cached: true }], false, null, true, true, 'ARCHIVE');
+    wrapper.vm.$root.$emit('open-email-detail-drawer', 5, [message(5, 'ARCHIVE', { read: true })], false, null, true, false, 'ARCHIVE');
+    await flush();
+
+    expect(reads).toEqual([[true, [9], 'ARCHIVE'], [true, [5], 'ARCHIVE', true]]);
+    // The row it was handed turned read with that first read: the reader's own read of
+    // the conversation has nothing left to send.
+    const emit = jest.fn();
+    EmailConnectorMailBoxDrawerThreadContent.methods.markThreadRead.call({
+      email: wrapper.vm.emails[0], emails: wrapper.vm.emails,
+      threadKey: EmailConnectorMailBoxDrawerThreadContent.methods.threadKey, $root: { $emit: emit },
+    });
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('switches to a row of its list from the row\'s folder', async () => {
@@ -401,7 +487,17 @@ describe('the mail drawer opened on search results opens, reads and removes the 
     await flush();
 
     expect(service.getEmailByRemoteId).toHaveBeenCalledWith(5, 'ARCHIVE');
-    expect(reads).toEqual([[true, [5], 'ARCHIVE']]);
+    // With what the list knows of it: read already, so nothing is pushed again.
+    expect(reads).toEqual([[true, [5], 'ARCHIVE', true]]);
+  });
+
+  it('keeps its selection by folder and UID', async () => {
+    mountOnTwins();
+    await wrapper.setData({ emailDetailDrawer: true });
+
+    wrapper.vm.$root.$emit('select-email', { emailId: 5, folder: 'ARCHIVE', selected: true });
+
+    expect(wrapper.vm.selectedEmails).toEqual(['ARCHIVE:5']);
   });
 
   it('removes only the hit acted on from its list, and turns only it read', async () => {

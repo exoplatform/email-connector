@@ -162,7 +162,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   </div>
 </template>
 
-<script>  
+<script>
+import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+
 export default {
   data() {
     return {
@@ -358,8 +360,23 @@ export default {
     readOnly() {
       return this.$emailConnectorMailBoxService.isReadOnlyFolder(this.email.folder);
     },
+    /**
+     * Whether the row is selected: every message it gathers, by folder and UID -- a row
+     * of a search list is not selected because another folder's message shares a number
+     * with it (EXO-90416).
+     *
+     * @returns {Boolean} true when selected
+     */
     selected() {
-      return this.threadIds.every(id => this.selectedEmails.includes(id));
+      return this.rowMessages.every(message => this.selectedEmails.includes(selectionKey(message)));
+    },
+    /**
+     * The messages the row gathers: its conversation's, or its own.
+     *
+     * @returns {Array} the messages
+     */
+    rowMessages() {
+      return this.thread ? this.thread.emails : [this.email];
     },
     opened() {
       return this.openedEmailId === this.email.mailRemoteId;
@@ -388,26 +405,22 @@ export default {
   },
   methods: {
     /**
-     * Sends a swipe's action for the whole row, one event per folder its messages are
-     * numbered in: a row of a search list may gather a conversation's hits from several
-     * folders, and a bare UID would be resolved in the listed folder, where the same
-     * number is another message (EXO-90416).
+     * Sends a swipe's action on the row as its ⋮ menu does: the conversation's messages
+     * in the row's own folder (threadIdsInFolder), with that folder -- a row of a search
+     * list may gather hits from several folders, and a bare UID would be resolved in the
+     * listed folder, where the same number is another message (EXO-90416).
      *
      * @param {String} event the action's event
      * @returns {void}
      */
-    emitPerFolder(event) {
-      const messages = this.thread ? this.thread.emails : [this.email];
-      const groups = new Map();
-      messages.forEach(message => {
-        const folder = message.folder || 'INBOX';
-        groups.set(folder, (groups.get(folder) || []).concat(message.mailRemoteId));
-      });
-      groups.forEach((ids, folder) => this.$root.$emit(event, ids, folder));
+    emitForRow(event) {
+      this.$root.$emit(event, this.$emailConnectorMailBoxService.threadIdsInFolder(this.email, this.thread), this.email.folder || 'INBOX');
     },
     emitSelect(selected) {
-      // A thread selects/deselects as a whole: one select-email per message id.
-      this.threadIds.forEach(emailId => this.$root.$emit('select-email', { emailId, selected }));
+      // A thread selects/deselects as a whole: one select-email per message, with the
+      // folder it is numbered in.
+      this.rowMessages.forEach(message => this.$root.$emit('select-email',
+        { emailId: message.mailRemoteId, folder: message.folder || 'INBOX', selected }));
     },
     // Favorite/unfavorite the whole row, i.e. every listed message of the thread —
     // matching how the row's read/unread action treats a conversation.
@@ -508,9 +521,9 @@ export default {
       const confirm = Math.abs(this.left) > (this.minWidth / 2);
       if (confirm) {
         if (deleteEmail) {
-          this.emitPerFolder('delete-email');
+          this.emitForRow('delete-email');
         } else {
-          this.emitPerFolder('archive-email');
+          this.emitForRow('archive-email');
         }
       } else {
         this.reset();
