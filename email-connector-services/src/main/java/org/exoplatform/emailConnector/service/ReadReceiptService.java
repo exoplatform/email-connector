@@ -362,9 +362,10 @@ public class ReadReceiptService {
    * a mirror; if one of them turns out answered already -- the sync mirrored another
    * client's keyword a moment ago -- nothing is sent either, and the store keeps the
    * record that the request is answered. That record's STATE and ORIGIN are then this
-   * call's, not those of whoever answered: only "answered" is authoritative in it. When the store holds an answer already, the
-   * copies still pending are brought in line with it before refusing. A message that
-   * came with no Message-ID is decided by its cached copies, as before the store.
+   * call's, not those of whoever answered: only "answered" is authoritative in it.
+   * When the store holds an answer already, the copies still pending are brought in
+   * line with it before refusing. A message that came with no Message-ID is decided
+   * by its cached copies, as before the store.
    *
    * @param username the user answering
    * @param email the message
