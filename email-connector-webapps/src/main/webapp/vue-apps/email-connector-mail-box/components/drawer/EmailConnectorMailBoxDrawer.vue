@@ -2003,13 +2003,27 @@ export default {
         }
         return false;
       });
-      this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) =>
-        this.$emailConnectorMailBoxService.updateEmailsReadStatus(ids, read, ownFolder));
+      // The answer's count is shown, like every other action's (EXO-90438). It used to
+      // be dropped on the floor: the row was flipped here optimistically, the server
+      // reverted its own copy of the ones it could not push, and the interface went on
+      // showing a state the next synchronization silently took back -- the same silence
+      // the Drafts Delete was reported for, on the one action that had not yet been
+      // wired to alertOnActionFailures. A rejected request is the whole batch failing,
+      // which is also what stops it from being an unhandled rejection in the console.
+      //
+      // Once per request, and a read status may take two: the listed rows go folder by
+      // folder (byOwnFolder), and the search hits the listing does not hold go on their
+      // own, below. A request that succeeds says nothing, so nothing is said twice.
+      const pushReadStatus = (ids, ownFolder) =>
+        this.$emailConnectorMailBoxService.updateEmailsReadStatus(ids, read, ownFolder)
+          .then(result => result?.failedUpdates ?? 0, () => ids.length)
+          .then(failures => this.alertOnActionFailures(failures, read && 'read' || 'unread'));
+      this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) => pushReadStatus(ids, ownFolder));
       if (unlisted.length) {
         this.searchServerResults
           .filter(result => unlisted.includes(result.mailRemoteId) && (result.folder || 'INBOX') === folder)
           .forEach(result => this.$set(result, 'read', read));
-        this.$emailConnectorMailBoxService.updateEmailsReadStatus(unlisted, read, folder);
+        pushReadStatus(unlisted, folder);
       }
     },
     /**
@@ -2608,10 +2622,12 @@ export default {
      * partial-failure story is told: a selection can fail halfway, the earlier messages
      * having already moved, so the count is what is shown rather than "it failed".
      *
-     * One alert for all four rather than a copy per action, because the count they are
-     * reporting only recently started meaning the same thing in all of them: a delete or
-     * an archive the mail server did not perform used to be counted as nothing at all
-     * and shown as a success (EXO-89367). The four i18n keys differ only by the verb.
+     * One alert for all of them rather than a copy per action, because the count they
+     * are reporting only recently started meaning the same thing in all of them: a
+     * delete or an archive the mail server did not perform used to be counted as nothing
+     * at all and shown as a success (EXO-89367). The i18n keys differ only by the verb,
+     * which is what made read/unread cheap to add once it turned out to be the last
+     * action still throwing its own count away (EXO-90438).
      *
      * Nothing is put back into the listing on failure. The failed rows are back in the
      * database (the backend re-created them), so the honest way to see them again is the
@@ -2620,7 +2636,8 @@ export default {
      *
      * @param {Number} failures how many messages the action could not be applied to
      * @param {String} action 'delete', 'archive', 'restore', 'purge', 'junk', 'notJunk',
-     *        'move', 'undoMove' or 'categorize', which picks the message
+     *        'move', 'undoMove', 'categorize', 'read' or 'unread', which picks the
+     *        message
      * @returns {void}
      */
     alertOnActionFailures(failures, action) {
