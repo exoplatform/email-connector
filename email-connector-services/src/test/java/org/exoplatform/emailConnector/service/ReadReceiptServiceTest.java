@@ -631,15 +631,15 @@ class ReadReceiptServiceTest {
   }
 
   /**
-   * A message with no Message-ID of its own -- none, or the placeholder this add-on
-   * synthesized -- has nothing to be recognised by once its row is gone: the store is
-   * not consulted, and its cached copies decide, as before the store.
+   * A message that came with no Message-ID has nothing to be recognised by once its row
+   * is gone: the store is not consulted, and its cached copies decide, as before the
+   * store.
    *
    * @throws Exception when the mocked plumbing misbehaves
    */
   @Test
   void aMessageWithoutItsOwnMessageIdIsDecidedByItsRows() throws Exception {
-    for (String messageId : java.util.Arrays.asList(null, "<7.alice@email-connector.local>")) {
+    for (String messageId : java.util.Arrays.asList(null, " ")) {
       Email email = incoming();
       email.setMailHeaderId(messageId);
       when(emailBoxService.getOwnedEmailById(EMAIL_ID, USER)).thenReturn(email);
