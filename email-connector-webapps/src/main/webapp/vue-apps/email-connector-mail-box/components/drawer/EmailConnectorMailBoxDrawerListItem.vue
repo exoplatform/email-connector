@@ -81,12 +81,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="flex-grow-1 no-min-width">    
         <!-- eslint-disable vuejs-accessibility/no-static-element-interactions -->
         <!-- data-thread-key is how the arrow keys find the row they stand on, and
-             aria-current tells a screen reader which conversation the reader shows. -->
+             aria-current tells a screen reader which conversation the reader shows --
+             the one it shows, not the one the keyboard highlight is passing over. -->
         <div
           class="clickable"
           tabindex="0"
           :data-thread-key="threadKey"
-          :aria-current="opened ? 'true' : null"
+          :aria-current="inReader ? 'true' : null"
           :aria-label="ariaLabel"
           @click="openDetail"
           @keydown.enter="openDetail"
@@ -213,6 +214,12 @@ export default {
     },
     openedEmailId: {
       type: String,
+      default: null,
+    },
+    // The message the full-screen reader shows beside the list; none in the narrow
+    // layout, where there is no reader beside it.
+    readerEmailId: {
+      type: [Number, String],
       default: null,
     },
     webmailUrl: {
@@ -398,6 +405,14 @@ export default {
     },
     opened() {
       return this.openedEmailId === this.email.mailRemoteId;
+    },
+    /**
+     * Whether the reader beside the list shows this row's message, for aria-current.
+     *
+     * @returns {Boolean} true when it does
+     */
+    inReader() {
+      return this.readerEmailId != null && this.threadIds.includes(this.readerEmailId);
     },
     backgroundClass() {
       if (this.isMobile) {

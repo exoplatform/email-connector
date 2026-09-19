@@ -157,6 +157,13 @@ export default {
       type: Boolean,
       default: false,
     },
+    // The drawer opened this conversation on its own (the first mail in full screen, the
+    // next one after an action, the one the arrow keys stopped on) and reads it once the
+    // user stayed on it (EXO-90414): until then, opening it reads nothing.
+    deferThreadRead: {
+      type: Boolean,
+      default: false,
+    },
   },
   computed: {
     subject() {
@@ -779,13 +786,17 @@ export default {
       });
       return deduped;
     },
-    // Opening a conversation reads all of its messages, via the existing bulk endpoint.
+    // Opening a conversation reads all of its messages, via the existing bulk endpoint --
+    // unless the drawer opened it on its own, and reads it itself once the user stayed.
     //
     // The conversation's own rows, not every row whose number it holds -- and sent per
     // folder, with the folder: the list may be a search's, whose rows come from several
     // folders, and a bare UID is resolved in the listed folder, where the same number is
     // another message that would be marked read on the mail server (EXO-90416).
     markThreadRead() {
+      if (this.deferThreadRead) {
+        return;
+      }
       const key = this.email && this.threadKey(this.email);
       const conversation = (this.emails || []).filter(e => this.threadKey(e) === key);
       const rows = conversation.length ? conversation : (this.emails || []).filter(e => this.email

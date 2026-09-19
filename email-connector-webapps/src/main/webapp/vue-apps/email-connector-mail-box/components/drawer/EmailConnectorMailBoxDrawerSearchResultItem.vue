@@ -16,10 +16,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -->
+  <!-- data-thread-key is how the arrow keys find the hit they stand on, and aria-current
+       tells a screen reader which hit the reader shows (EXO-90414). -->
   <div
-    :class="isHover && 'light-grey-background-color'"
+    :class="backgroundClass"
     class="clickable ps-7 pe-4 pt-3 pb-3 no-border"
     tabindex="0"
+    :data-thread-key="rowKey"
+    :aria-current="opened ? 'true' : null"
     :aria-label="ariaLabel"
     @mouseenter="isHover = true"
     @mouseleave="isHover = false"
@@ -80,8 +84,30 @@ export default {
       type: Object,
       default: () => null,
     },
+    // The hit's key in the results (folder and UID), for the arrow keys.
+    rowKey: {
+      type: String,
+      default: null,
+    },
+    // Whether the reader shows this hit.
+    opened: {
+      type: Boolean,
+      default: false,
+    },
   },
   computed: {
+    /**
+     * The row's background: lit like the folder list's opened row when the reader shows
+     * this hit, lighter under the pointer or the keyboard focus.
+     *
+     * @returns {String} the class, or null
+     */
+    backgroundClass() {
+      if (this.opened) {
+        return 'grey-lighten1-background-opacity-3';
+      }
+      return this.isHover ? 'light-grey-background-color' : null;
+    },
     unread() {
       return !this.result.read;
     },

@@ -23,6 +23,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :email="thread.latest"
       :thread="thread"
       :opened-email-id="openedEmailId"
+      :reader-email-id="currentEmail && currentEmail.mailRemoteId"
       :emails="emails"
       :webmail-url="webmailUrl"
       :sync-in-progress="syncInProgress"
