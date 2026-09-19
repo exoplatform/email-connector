@@ -749,6 +749,10 @@ public class EmailBoxService {
 
   // The message code the size cap is refused with, which a scheduled send maps to its own
   // error code rather than letting it read as an internal failure.
+  // The message code a scheduling carrying files not yet stored on the draft is refused with.
+  private static final String     ATTACHMENTS_NOT_STORED_CODE                                 =
+                                                              "emailConnector.scheduled.attachmentsNotStored";
+
   // The message code a draft whose files cannot all be carried is refused with.
   private static final String     ATTACHMENT_GONE_CODE                                        =
                                                        "emailConnector.drafts.send.attachmentGone";
@@ -7912,8 +7916,9 @@ public class EmailBoxService {
    * @return the schedule row
    * @throws IllegalAccessException if the user may not use their mailbox
    * @throws ObjectNotFoundException if the user has no draft under that local id
-   * @throws IllegalArgumentException {@code emailConnector.drafts.send.localIdMandatory}
-   *           or {@code emailConnector.drafts.send.attachmentGone}, or what
+   * @throws IllegalArgumentException {@code emailConnector.drafts.send.localIdMandatory},
+   *           {@code emailConnector.scheduled.attachmentsNotStored} (a file still held as
+   *           an upload) or {@code emailConnector.drafts.send.attachmentGone}, or what
    *           {@code scheduler} refuses with
    * @throws ScheduledSendConflictException when the draft is already scheduled or being
    *           sent
@@ -7931,6 +7936,13 @@ public class EmailBoxService {
     }
     if (draft == null || StringUtils.isBlank(draft.getDraftLocalId())) {
       throw new IllegalArgumentException("emailConnector.drafts.send.localIdMandatory");
+    }
+    if (!CollectionUtils.isEmpty(draft.getAttachments())
+        && draft.getAttachments().stream().anyMatch(upload -> upload != null && StringUtils.isNotBlank(upload.getUploadId()))) {
+      // A scheduled mail is sent from its stored row, and a file still held as a session
+      // upload is not on it: it would go out later without that file, which its sender
+      // could neither see nor take back. The composer stores its files first.
+      throw new IllegalArgumentException(ATTACHMENTS_NOT_STORED_CODE);
     }
     String draftLocalId = draft.getDraftLocalId();
     ReentrantLock lock = draftLocks.computeIfAbsent(draftLockKey(username, draftLocalId), key -> new ReentrantLock());
@@ -8013,6 +8025,12 @@ public class EmailBoxService {
       Email stored = emailBoxStorage.getDraftByLocalId(username, draftLocalId);
       if (stored == null) {
         throw new ObjectNotFoundException("emailConnector.drafts.send.gone");
+      }
+      if (DraftState.SENDING.equals(stored.getDraftState())) {
+        // An interactive send of this draft is in flight on some node (it passed the
+        // schedule lock just before the schedule landed). Nothing is transmitted here:
+        // the retry finds the draft gone (sent) or back to its state (refused).
+        throw new ScheduledSendFailure(ScheduledSendFailure.Kind.TRANSIENT, ScheduledSendError.NETWORK, null);
       }
       List<EmailAttachment> storedAttachments;
       try {

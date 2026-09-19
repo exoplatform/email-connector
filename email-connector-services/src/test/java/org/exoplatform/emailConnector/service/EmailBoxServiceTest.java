@@ -11198,6 +11198,45 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * A scheduling that carries a file still held as a session upload is refused before
+   * anything is written: the scheduled send builds from the stored row, and the file
+   * would be silently missing from the mail.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aSchedulingCarryingAnUnstoredFileIsRefusedBeforeAnythingIsWritten() throws Exception {
+    givenAUsableMailbox();
+    Email draft = draft("draft-1");
+    draft.setAttachments(List.of(new EmailOutgoingAttachment("upload-1", "a.pdf", "application/pdf", 3L)));
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailBoxService.scheduleDraft(draft, TEST_USER, saved -> null));
+    assertEquals("emailConnector.scheduled.attachmentsNotStored", refused.getMessage());
+    verify(emailBoxStorage, never()).saveDraft(any(Email.class));
+  }
+
+  /**
+   * A stored send never transmits a draft an interactive send has claimed: it is retried
+   * later, never sent alongside.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aStoredSendNeverTransmitsADraftAnInteractiveSendHolds() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setDraftState(DraftState.SENDING);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    ScheduledSendFailure failure = assertThrows(ScheduledSendFailure.class,
+                                                () -> emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+                                                }));
+    assertEquals(ScheduledSendFailure.Kind.TRANSIENT, failure.getKind());
+    verify(smtpTransmitter, never()).transmit(any(MimeMessage.class));
+  }
+
+  /**
    * A scheduled draft is frozen: an autosave, an attachment added or removed, a
    * forward's files and an interactive send are all refused, and nothing is written.
    *
