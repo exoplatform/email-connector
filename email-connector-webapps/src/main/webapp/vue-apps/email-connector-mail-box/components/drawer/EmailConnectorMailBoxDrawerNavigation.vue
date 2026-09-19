@@ -15,21 +15,19 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <!-- Full-screen folder column (EXO-90415): the 3-dots menu's FOLDERS/CATEGORIES, same
-       events and highlight; the pen opens the settings' folders drawer. Rail: icons,
-       tooltips, unread dot. No SFC style. -->
+  <!-- Full-screen folder column (EXO-90415): the menu's FOLDERS/CATEGORIES, same events
+       and highlight; the pen opens the settings' folders drawer. No SFC style. -->
   <v-list
-    :class="rail ? 'px-1 py-0' : 'px-2 py-2'"
-    class="transparent"
+    :class="rail ? 'px-1' : 'px-2'"
+    :style="{ paddingTop: rail ? RAIL_TOP_PADDING : 0 }"
+    class="pb-2"
     dense
     nav>
     <v-list-item-group
       :value="activeKey"
       color="primary"
       mandatory>
-      <!-- One element per section: as flat siblings, VTooltip's patching put the
-           CATEGORIES header above the folders after a rail. The rail hides headers and
-           divider. Entries are the listbox's options, selected when lit. -->
+      <!-- One element per section (VTooltip reorders loose siblings on a rail). -->
       <div
         v-for="(section, index) in sections"
         :key="section.key"
@@ -42,6 +40,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           class="my-2" />
         <v-subheader
           v-show="!rail"
+          :style="index === 0 ? { height: TOP_ROW_HEIGHT } : null"
           class="text-uppercase caption px-2">
           <span class="flex-grow-1">{{ section.title }}</span>
           <v-btn
@@ -101,10 +100,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+// The first row sits on the list's chips row (the FOLDERS header, or the rail's first entry).
+import { LIST_TOP_ROW_HEIGHT as TOP_ROW_HEIGHT, RAIL_TOP_PADDING } from '../../js/EmailConnectorMailBoxService.js';
+
 export default {
+  data: () => ({ TOP_ROW_HEIGHT, RAIL_TOP_PADDING }),
   props: {
-    // The menu's folders and categories, the listed folder, the open view (or null);
-    // counts: by folder key {count, unread} (unread mail or a total), by category id.
+    // The menu's folders, categories, listed folder, open view; counts by key / id.
     folders: { type: Array, default: () => [{ key: 'INBOX', type: 'BUILT_IN' }] },
     currentFolder: { type: String, default: 'INBOX' },
     categories: { type: Array, default: () => [] },
