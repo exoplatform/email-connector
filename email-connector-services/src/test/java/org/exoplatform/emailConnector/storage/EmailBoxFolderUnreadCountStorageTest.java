@@ -30,6 +30,7 @@ import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -72,10 +73,15 @@ public class EmailBoxFolderUnreadCountStorageTest {
 
   private static final String OTHER_USER  = "unread-other";
 
+  private static final String NULL_READ   = "unread-null";
+
   private static final long   MONDAY      = 1_000_000_000_000L;
 
   @Autowired
   private EmailBoxStorage     emailBoxStorage;
+
+  @Autowired
+  private JdbcTemplate        jdbcTemplate;
 
   @MockitoBean
   private CategoryLinkService categoryLinkService;
@@ -129,6 +135,21 @@ public class EmailBoxFolderUnreadCountStorageTest {
 
     assertEquals(Integer.valueOf(0), counts.getUnreadCounts().get(MailFolder.INBOX));
     assertNull(counts.getUnreadCounts().get(MailFolder.JUNK), "an empty folder has no entry at all");
+  }
+
+  /**
+   * A row with no read flag counts as unread, as the badge counts it
+   * ({@code EmailBoxDAO#countUnreadByUserIdAndFolder}): the column's inbox figure and
+   * the badge's agree by construction. The column is nullable in the changelog; the
+   * row is written by hand because the entity's primitive flag never writes a null.
+   */
+  @Test
+  void aRowWithNoReadFlagCountsAsUnreadAsTheBadgeCountsIt() {
+    emailBoxStorage.createEmail(mail(NULL_READ, MailFolder.INBOX, 1L, true));
+    emailBoxStorage.createEmail(mail(NULL_READ, MailFolder.INBOX, 2L, true));
+    jdbcTemplate.update("UPDATE EMAIL_BOX SET IS_READ = NULL WHERE USER_ID = ? AND MAIL_REMOTE_ID = 2", NULL_READ);
+
+    assertEquals(Integer.valueOf(1), emailBoxStorage.getFolderCounts(NULL_READ).getUnreadCounts().get(MailFolder.INBOX));
   }
 
   /**
