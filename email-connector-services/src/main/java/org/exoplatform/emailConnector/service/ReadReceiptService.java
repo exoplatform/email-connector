@@ -17,9 +17,11 @@
 package org.exoplatform.emailConnector.service;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Stream;
 
@@ -49,12 +51,15 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptAction;
+import org.exoplatform.emailConnector.model.ReadReceiptAnswerOrigin;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptPrompt;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
+import org.exoplatform.emailConnector.utils.EmailThreadingUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -75,13 +80,16 @@ import io.meeds.social.util.JsonUtils;
  * The rules are re-checked on the server at every answer, whatever the reader was
  * told: the prompt is advice to the reader, never an authorisation.
  * <p>
- * <b>Known limit, pending a decision (EXO-90435 review, round 1).</b> The answer is
- * kept on the cached rows of the message and, where the mailbox stores keywords, as
- * {@code $MDNSent} on the server. On a mailbox that stores no keywords (Exchange), a
- * row the sync deletes and later re-creates -- a move, an archive, a reset, a message
- * leaving and re-entering the sync window -- comes back unanswered, and the request is
- * offered again. Making the answer survive its rows needs a store keyed by user and
- * Message-ID; that decision is pending (EXO-90435 review, round 1).
+ * <b>An answer is final, and outlives the cache.</b> It is recorded in the answer
+ * store ({@code EMAIL_READ_RECEIPT_ANSWER}, keyed by user and Message-ID), then on the
+ * cached rows of the message and, where the mailbox stores keywords, as
+ * {@code $MDNSent} on the server. The store is what makes it final on a mailbox that
+ * stores no keywords (Exchange): a row the sync deletes and re-creates -- a move, an
+ * archive, a reset, a message leaving and re-entering the sync window -- comes back
+ * answered, because the prompt and the answer both read the store. Its unique index is
+ * the at-most-once decision. The one exception is a message with no Message-ID of its
+ * own, which has nothing to be recognised by once its row is gone: its answer lives on
+ * its rows only, as it did before the store (PO decision of 2026-09-19, EXO-90435).
  */
 @Service
 public class ReadReceiptService {
@@ -133,10 +141,6 @@ public class ReadReceiptService {
   /** Auto-Submitted, RFC 3834, set on a receipt sent without asking. */
   static final String          HEADER_AUTO_SUBMITTED = "Auto-Submitted";
 
-  // The suffix of the Message-ID synthesized for a message that had none: a local
-  // placeholder that never left this box, so it is never quoted back to anybody.
-  private static final String  SYNTHETIC_ID_SUFFIX   = "@email-connector.local>";
-
   private static final String  CRLF                  = "\r\n";
 
   @Autowired
@@ -150,6 +154,9 @@ public class ReadReceiptService {
 
   @Autowired
   private SettingService          settingService;
+
+  @Autowired
+  private EmailReadReceiptAnswerStorage answerStorage;
 
   /**
    * The user's read-receipt preferences, with the defaults (no request by default,
@@ -218,7 +225,9 @@ public class ReadReceiptService {
   /**
    * Tells the reader what to do about each message's read-receipt request, for the
    * user reading them: sets {@code readReceiptPrompt} on every message given. The
-   * preferences are read once for the lot.
+   * preferences are read once for the lot, and the answer store once for the pending
+   * requests among them: a request answered before its row was re-created (on a
+   * mailbox that stores no keywords) reads as answered, and is not offered again.
    *
    * @param emails the messages about to be shown, may be null or hold nulls
    * @param username the user reading them
@@ -227,8 +236,7 @@ public class ReadReceiptService {
     if (emails == null || emails.isEmpty()) {
       return;
     }
-    ReadReceiptSettings settings = null;
-    String ownAddress = null;
+    List<Email> pending = new ArrayList<>();
     for (Email email : emails) {
       if (email == null) {
         continue;
@@ -236,13 +244,21 @@ public class ReadReceiptService {
       if (!email.isReadReceiptRequested() || email.getReadReceiptState() != null) {
         // The common case, decided without reading anything.
         email.setReadReceiptPrompt(ReadReceiptPrompt.NONE);
-        continue;
+      } else {
+        pending.add(email);
       }
-      if (settings == null) {
-        settings = getSettings(username);
-        ownAddress = ownAddress(username);
-      }
-      email.setReadReceiptPrompt(promptFor(email, ownAddress, settings));
+    }
+    if (pending.isEmpty()) {
+      return;
+    }
+    ReadReceiptSettings settings = getSettings(username);
+    String ownAddress = ownAddress(username);
+    Map<String, ReadReceiptState> answered = answerStorage.findAnswers(username,
+                                                                       pending.stream().map(Email::getMailHeaderId).toList());
+    for (Email email : pending) {
+      String key = EmailReadReceiptAnswerStorage.messageIdHash(email.getMailHeaderId());
+      email.setReadReceiptPrompt(key != null && answered.containsKey(key) ? ReadReceiptPrompt.NONE
+                                                                          : promptFor(email, ownAddress, settings));
     }
   }
 
@@ -262,12 +278,13 @@ public class ReadReceiptService {
    * Answers a message's read-receipt request, for the user who owns it.
    * <p>
    * Everything is checked again here, whatever the reader was told. Then the answer is
-   * claimed in the database -- on every cached copy of the message at once, and only
-   * if none of them was answered -- which is what makes a receipt leave at most once
-   * however many tabs, clicks or nodes race. SEND then transmits the receipt as the
-   * user; IGNORE transmits nothing. Either way {@code $MDNSent} is set on the server
-   * copy when the mailbox accepts keywords, so the user's other clients do not ask
-   * again; the database answer stands on its own where it does not.
+   * claimed in the database -- in the answer store, keyed by user and Message-ID, and
+   * on every cached copy of the message -- which is what makes a receipt leave at most
+   * once however many tabs, clicks or nodes race, and whatever became of the cached
+   * rows since an earlier answer ({@link #claim}). SEND then transmits the receipt as
+   * the user; IGNORE transmits nothing. Either way {@code $MDNSent} is set on the
+   * server copy when the mailbox accepts keywords, so the user's other clients do not
+   * ask again; the database answer stands on its own where it does not.
    * <p>
    * A receipt that cannot leave gives its claim back, so the user can try again. One
    * whose transmission failed after the mail server may have accepted it keeps its
@@ -327,14 +344,68 @@ public class ReadReceiptService {
       throw new IllegalArgumentException(ASK_FIRST);
     }
     ReadReceiptState answer = action == ReadReceiptAction.SEND ? ReadReceiptState.SENT : ReadReceiptState.IGNORED;
+    Long answerId = claim(username, email, answer);
+    try (EmailBoxService.ServerCopy serverCopy = emailBoxService.openServerCopy(username, email)) {
+      if (action == ReadReceiptAction.SEND) {
+        sendReceipt(email, username, ownAddress, automatic, serverCopy, answerId);
+      }
+      serverCopy.addKeyword(EmailBoxService.MDN_SENT_KEYWORD);
+    }
+  }
+
+  /**
+   * Takes the answer to a message's request, or refuses: the at-most-once decision.
+   * <p>
+   * A message with a Message-ID of its own is decided by the answer store: the insert
+   * its unique index lets through once per user and message, whoever races (tabs,
+   * nodes, the sync recording the server's keyword). Its cached copies then follow, as
+   * a mirror; if one of them turns out answered already -- the sync mirrored another
+   * client's keyword a moment ago -- nothing is sent either, and the store keeps the
+   * record that the request is answered. When the store holds an answer already, the
+   * copies still pending are brought in line with it before refusing. A message
+   * without a Message-ID is decided by its cached copies, as before the store.
+   *
+   * @param username the user answering
+   * @param email the message
+   * @param answer the answer
+   * @return the id of the store's record, null when the message has none
+   * @throws ReadReceiptConflictException when the request was already answered
+   */
+  private Long claim(String username, Email email, ReadReceiptState answer) {
+    String key = EmailReadReceiptAnswerStorage.messageIdHash(email.getMailHeaderId());
+    if (key == null) {
+      if (!emailBoxStorage.claimReadReceipt(username, email, answer)) {
+        throw new ReadReceiptConflictException(ReadReceiptConflictException.ALREADY_HANDLED);
+      }
+      return null;
+    }
+    Long answerId = answerStorage.claim(username, email.getMailHeaderId(), answer, ReadReceiptAnswerOrigin.LOCAL, new Date());
+    if (answerId == null) {
+      ReadReceiptState stored = answerStorage.findAnswers(username, List.of(email.getMailHeaderId())).get(key);
+      if (stored != null) {
+        emailBoxStorage.claimReadReceipt(username, email, stored);
+      }
+      throw new ReadReceiptConflictException(ReadReceiptConflictException.ALREADY_HANDLED);
+    }
     if (!emailBoxStorage.claimReadReceipt(username, email, answer)) {
       throw new ReadReceiptConflictException(ReadReceiptConflictException.ALREADY_HANDLED);
     }
-    try (EmailBoxService.ServerCopy serverCopy = emailBoxService.openServerCopy(username, email)) {
-      if (action == ReadReceiptAction.SEND) {
-        sendReceipt(email, username, ownAddress, automatic, serverCopy);
-      }
-      serverCopy.addKeyword(EmailBoxService.MDN_SENT_KEYWORD);
+    return answerId;
+  }
+
+  /**
+   * Gives back an answer taken by {@link #claim}, when the receipt it was taken for
+   * could not leave at all: the cached copies first, then the store's record, so a
+   * concurrent answer is refused by the store until the copies are free again.
+   *
+   * @param username the user
+   * @param email the message
+   * @param answerId the store's record, null when there is none
+   */
+  private void release(String username, Email email, Long answerId) {
+    emailBoxStorage.releaseReadReceipt(username, email, ReadReceiptState.SENT);
+    if (answerId != null) {
+      answerStorage.release(username, answerId);
     }
   }
 
@@ -347,13 +418,15 @@ public class ReadReceiptService {
    * @param ownAddress the user's mailbox address, the Final-Recipient
    * @param automatic whether it is sent without asking (ALWAYS)
    * @param serverCopy the server copy, for the Original-Recipient it may carry
+   * @param answerId the answer store's record of the claim, null when there is none
    * @throws IllegalAccessException when the user's connector is not usable
    */
   private void sendReceipt(Email email,
                            String username,
                            String ownAddress,
                            boolean automatic,
-                           EmailBoxService.ServerCopy serverCopy) throws IllegalAccessException {
+                           EmailBoxService.ServerCopy serverCopy,
+                           Long answerId) throws IllegalAccessException {
     String originalRecipient = serverCopy.header("Original-Recipient");
     InternetAddress[] to = requestedAddresses(email.getReadReceiptTo());
     try {
@@ -366,7 +439,7 @@ public class ReadReceiptService {
                                                                      originalRecipient,
                                                                      automatic));
     } catch (IllegalAccessException e) {
-      emailBoxStorage.releaseReadReceipt(username, email, ReadReceiptState.SENT);
+      release(username, email, answerId);
       throw e;
     } catch (SmtpTransmitter.TransmissionException e) {
       if (e.getPhase() == SmtpTransmitter.Phase.SEND) {
@@ -376,13 +449,13 @@ public class ReadReceiptService {
         LOG.warn("The read receipt of a message of user {} may or may not have been sent; it is not sent again", username, e);
         throw new IllegalStateException(UNCONFIRMED, e);
       }
-      emailBoxStorage.releaseReadReceipt(username, email, ReadReceiptState.SENT);
+      release(username, email, answerId);
       LOG.warn("The read receipt of a message of user {} could not be sent ({})", username, e.getPhase(), e);
       throw new IllegalStateException(SEND_FAILED, e);
     } catch (RuntimeException e) {
       // Nothing was transmitted: the transmitter's own failures all arrive above,
       // classified, so this is a lookup failing before it. The claim goes back.
-      emailBoxStorage.releaseReadReceipt(username, email, ReadReceiptState.SENT);
+      release(username, email, answerId);
       LOG.warn("The read receipt of a message of user {} could not be prepared", username, e);
       throw new IllegalStateException(SEND_FAILED, e);
     }
@@ -628,7 +701,7 @@ public class ReadReceiptService {
    */
   private static String quotableMessageId(String mailHeaderId) {
     String id = StringUtils.trimToNull(oneLine(StringUtils.defaultString(mailHeaderId)));
-    return id == null || id.endsWith(SYNTHETIC_ID_SUFFIX) ? null : id;
+    return id == null || EmailThreadingUtils.isSynthesizedMessageId(id) ? null : id;
   }
 
   /**
