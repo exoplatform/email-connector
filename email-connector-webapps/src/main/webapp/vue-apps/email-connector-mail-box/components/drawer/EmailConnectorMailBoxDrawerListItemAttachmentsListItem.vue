@@ -18,7 +18,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   <v-chip
     @click="openAttachment"
     :title="attachmentTitle"
-    style="max-width:132px; height:24px"
+    style="max-width:132px; min-width:0; height:24px"
     color="primary"
     class="me-2"
     outlined>
