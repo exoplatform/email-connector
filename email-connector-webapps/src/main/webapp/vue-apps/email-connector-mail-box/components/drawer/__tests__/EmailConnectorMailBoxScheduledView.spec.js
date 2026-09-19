@@ -326,10 +326,12 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
       ...answers,
     });
     const confirmOpen = jest.fn();
+    const modalClose = jest.fn();
     const wrapper = shallowMount(EmailConnectorMailBoxScheduledList, {
       mocks: { $t: translate, $te: key => key.startsWith('emailConnector.scheduled.'), $emailConnectorMailBoxService: service },
       stubs: {
         'exo-confirm-dialog': { props: ['title', 'message', 'okLabel'], template: '<div class="confirm" />', methods: { open: confirmOpen } },
+        'exo-modal': { template: '<div class="modal"><slot /></div>', methods: { open: jest.fn(), close: modalClose } },
       },
     });
     const emitted = [];
@@ -339,7 +341,7 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
       return emit(...args);
     };
     await flush();
-    return { wrapper, service, emitted, confirmOpen };
+    return { wrapper, service, emitted, confirmOpen, modalClose };
   }
 
   const alerts = emitted => emitted.filter(event => event[0] === 'alert-message').map(event => [event[1], event[2]]);
@@ -430,7 +432,7 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
   });
 
   it('reschedules with the shared picker, starting on the previous time, by PUT', async () => {
-    const { wrapper, service, emitted } = await mountList({
+    const { wrapper, service, emitted, modalClose } = await mountList({
       rescheduleEmail: jest.fn((id, date, zone) => Promise.resolve(scheduledRow(id, { scheduledDate: date, timeZone: zone }))),
     });
     wrapper.vm.onAction('reschedule', scheduledRow('d1'));
@@ -441,7 +443,7 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
 
     await wrapper.vm.reschedule(Date.UTC(2026, 9, 2, 6, 0), 'UTC');
     expect(service.rescheduleEmail).toHaveBeenCalledWith('d1', Date.UTC(2026, 9, 2, 6, 0), 'UTC');
-    expect(wrapper.vm.rescheduleDialog).toBe(false);
+    expect(modalClose).toHaveBeenCalled();
     expect(alerts(emitted)[0][1]).toBe('success');
     expect(emitted.map(event => event[0])).toContain('refresh-email-box');
   });

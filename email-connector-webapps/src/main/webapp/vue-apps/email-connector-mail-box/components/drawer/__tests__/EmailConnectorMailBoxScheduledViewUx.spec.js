@@ -91,9 +91,10 @@ function scheduledRow(id, extra = {}) {
  *
  * @param {Object} answers the service's functions under test
  * @param {Object} propsData the list's props
+ * @param {Object} modal the reschedule popup's open and close
  * @returns {Promise<Object>} {wrapper, service, emitted}
  */
-async function mountList(answers = {}, propsData = {}) {
+async function mountList(answers = {}, propsData = {}, modal = { open: jest.fn(), close: jest.fn() }) {
   const service = serviceStub({
     getScheduledEmails: jest.fn(() => Promise.resolve([scheduledRow('d1'), scheduledRow('d2')])),
     ...answers,
@@ -103,6 +104,7 @@ async function mountList(answers = {}, propsData = {}) {
     mocks: { $t: translate, $te: () => false, $emailConnectorMailBoxService: service },
     stubs: {
       'exo-confirm-dialog': { template: '<div class="confirm" />', methods: { open: jest.fn() } },
+      'exo-modal': { props: { title: String, width: String, hideActions: Boolean }, template: '<div class="modal"><slot /></div>', methods: modal },
     },
   });
   const emitted = [];
@@ -354,5 +356,50 @@ describe('the opened scheduled mail in the reader (EXO-90434, PO decision (a))',
     expect(vm.emails).toEqual([moved]);
     onScheduledEmailUpdated.call(vm, 'd1', null);
     expect(close).toHaveBeenCalled();
+  });
+});
+
+describe('Reschedule is the platform\'s popup, and it applies the new time (EXO-90434)', () => {
+  it('opens the shared picker in exo-modal, sized and titled, with the picker\'s check as its one confirm', async () => {
+    const modal = { open: jest.fn(), close: jest.fn() };
+    const { wrapper } = await mountList({}, {}, modal);
+    expect(wrapper.find('v-dialog').exists()).toBe(false);
+    wrapper.vm.onAction('reschedule', scheduledRow('d1'));
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+    expect(modal.open).toHaveBeenCalled();
+    const popup = wrapper.find('.modal');
+    expect(popup.vm.$props).toEqual({ title: 'emailConnector.mailBox.scheduled.reschedule.title', width: '460px', hideActions: true });
+    const picker = popup.find('email-connector-schedule-picker');
+    expect(picker.attributes('value')).toBe(String(Date.UTC(2026, 9, 1, 6, 0)));
+  });
+
+  it('PUTs the picked time and closes on success; a refusal says why and leaves the popup open', async () => {
+    const modal = { open: jest.fn(), close: jest.fn() };
+    let refuse = false;
+    const rescheduleEmail = jest.fn((id, date, zone) => (refuse
+      ? Promise.reject(Object.assign(new Error('x'), { status: 400, code: 'emailConnector.scheduled.date.tooSoon' }))
+      : Promise.resolve(scheduledRow(id, { scheduledDate: date, timeZone: zone }))));
+    const { wrapper, emitted } = await mountList({ rescheduleEmail }, {}, modal);
+    wrapper.vm.onAction('reschedule', scheduledRow('d1'));
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.reschedule(Date.UTC(2026, 9, 2, 6, 0), 'UTC');
+    expect(rescheduleEmail).toHaveBeenCalledWith('d1', Date.UTC(2026, 9, 2, 6, 0), 'UTC');
+    expect(modal.close).toHaveBeenCalledTimes(1);
+    expect(emitted.filter(event => event[0] === 'alert-message').pop()[2]).toBe('success');
+
+    refuse = true;
+    wrapper.vm.onAction('reschedule', scheduledRow('d1'));
+    await wrapper.vm.reschedule(Date.UTC(2026, 9, 2, 6, 0), 'UTC');
+    expect(modal.close).toHaveBeenCalledTimes(1);
+    expect(emitted.filter(event => event[0] === 'alert-message').pop()[2]).toBe('error');
+  });
+
+  it('forgets the mail once the popup closed, so the next opening starts afresh', async () => {
+    const { wrapper } = await mountList();
+    wrapper.vm.onAction('reschedule', scheduledRow('d1'));
+    await wrapper.vm.$nextTick();
+    wrapper.find('.modal').vm.$emit('dialog-closed');
+    expect(wrapper.vm.rescheduled).toBeNull();
   });
 });
