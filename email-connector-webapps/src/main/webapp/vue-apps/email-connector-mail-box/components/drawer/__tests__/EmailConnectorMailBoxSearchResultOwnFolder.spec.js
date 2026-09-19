@@ -23,7 +23,7 @@
 // messages under one number -- and assert every path addresses the hit's own folder and
 // leaves the twin alone.
 
-import { createLocalVue, shallowMount } from '@vue/test-utils';
+import { createLocalVue, mount, shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import EmailConnectorMailBoxDrawerActions from '../EmailConnectorMailBoxDrawerActions.vue';
 import EmailConnectorMailBoxDrawerListItem from '../EmailConnectorMailBoxDrawerListItem.vue';
@@ -511,5 +511,78 @@ describe('the mail drawer opened on search results opens, reads and removes the 
     wrapper.vm.$root.$emit('delete-email', [5], 'ARCHIVE');
     await flush();
     expect(wrapper.vm.emails.map(email => `${email.folder}:${email.mailRemoteId}`)).toEqual(['INBOX:5']);
+  });
+});
+
+describe('an unread result opened in the narrow layout is read on the server, once (EXO-90416)', () => {
+  it('through the mailbox drawer handing it to the mail drawer', async () => {
+    const service = serviceStub({
+      folderLabel: emailConnectorMailBoxService.folderLabel,
+      isReadOnlyFolder: emailConnectorMailBoxService.isReadOnlyFolder,
+      threadIdsInFolder: emailConnectorMailBoxService.threadIdsInFolder,
+      getEmailByRemoteId: jest.fn((mailRemoteId, folder) => Promise.resolve(message(mailRemoteId, folder, { read: false }))),
+      getAvailableEmailCategories: jest.fn(() => Promise.resolve([])),
+    });
+    // Both drawers under one root, the way the page holds them: they talk through it.
+    const host = mount({
+      render(createElement) {
+        return createElement('div', [
+          createElement(EmailConnectorMailBoxDrawer, { ref: 'mailbox' }),
+          createElement(EmailConnectorMailBoxDrawerListItemDetail, { ref: 'mail' }),
+        ]);
+      },
+    }, {
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: service,
+        $emailConnectorCommonService: serviceStub({}),
+        $vuetify: { breakpoint: {}, rtl: false },
+      },
+      stubs: { 'exo-drawer': true },
+    });
+    const mailbox = host.vm.$refs.mailbox;
+    mailbox.emailBoxDrawer = true;
+    mailbox.emailBox = { emails: [message(6, 'INBOX')], folders: FOLDERS };
+    mailbox.searchTerm = 'nothing listed matches';
+    mailbox.searchServerResults = [message(5, 'ARCHIVE', { read: false, cached: true })];
+    await host.vm.$nextTick();
+
+    await mailbox.openSearchResult(mailbox.mergedSearchResults[0]);
+    await flush();
+
+    expect(host.vm.$refs.mail.emailDetailDrawer).toBe(true);
+    expect(service.updateEmailsReadStatus.mock.calls).toEqual([[[5], true, 'ARCHIVE']]);
+    expect(mailbox.searchServerResults[0].read).toBe(true);
+    mailbox.stopAutoRefresh();
+    host.destroy();
+  });
+});
+
+describe('a search row selects one scope: its conversation in its own folder (EXO-90416)', () => {
+  it('the checkbox, the row\'s ticked state and the menu\'s "Select" agree', () => {
+    const localVue = createLocalVue();
+    localVue.directive('touch', {});
+    localVue.directive('touch-hold', {});
+    const archived = message(5, 'ARCHIVE', { threadId: 't' });
+    const sentCopy = message(8, 'SENT', { threadId: 't' });
+    const thread = { threadId: 't', emails: [archived, sentCopy], mailRemoteIds: [5, 8], count: 2, unreadCount: 0 };
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItem, {
+      localVue,
+      propsData: { email: archived, thread, selectMode: true, selectedEmails: ['ARCHIVE:5'] },
+      mocks: {
+        $t: key => key,
+        $emailConnectorMailBoxService: { ...emailConnectorMailBoxService, formatDateString: () => 'today' },
+        $vuetify: { breakpoint: { smAndDown: false } },
+      },
+    });
+    const emit = jest.fn();
+    wrapper.vm.$root.$emit = emit;
+
+    // What the menu's "Select" leaves behind reads as ticked...
+    expect(wrapper.vm.selected).toBe(true);
+    // ...and the checkbox selects the same messages, never the Sent copy.
+    wrapper.vm.emitSelect(true);
+    expect(emit.mock.calls).toEqual([['select-email', { emailId: 5, folder: 'ARCHIVE', selected: true }]]);
+    wrapper.destroy();
   });
 });
