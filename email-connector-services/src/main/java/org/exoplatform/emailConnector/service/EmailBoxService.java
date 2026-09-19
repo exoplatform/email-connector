@@ -84,6 +84,7 @@ import javax.mail.Store;
 import javax.mail.Transport;
 import javax.mail.UIDFolder;
 import javax.mail.internet.AddressException;
+import javax.mail.internet.ContentType;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeBodyPart;
 import javax.mail.internet.MimeMessage;
@@ -146,6 +147,7 @@ import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
@@ -237,6 +239,22 @@ public class EmailBoxService {
 
   private static final String     HEADER_ORIGINAL_SENDER                                      = "X-Original-Sender";
 
+  // Read receipts (EXO-90435, RFC 8098): where a message asks its receipt to go, and
+  // the envelope sender a request is checked against before any receipt may leave
+  // without asking. Return-Path is read at sync, never stored as such.
+  static final String             HEADER_DISPOSITION_NOTIFICATION_TO                          = "Disposition-Notification-To";
+
+  private static final String     HEADER_RETURN_PATH                                          = "Return-Path";
+
+  // The IMAP keyword every client reads as "this message's read-receipt request was
+  // answered" (RFC 3503) -- sent or declined alike, so no other client asks again.
+  static final String             MDN_SENT_KEYWORD                                            = "$MDNSent";
+
+  // The width of EMAIL_BOX.READ_RECEIPT_TO. A request naming a longer list of
+  // addresses is kept as requested with nowhere to answer, which the service reads as
+  // "never answered" -- truncating an address list could answer to half an address.
+  private static final int        READ_RECEIPT_TO_MAX_LENGTH                                  = 1000;
+
   // The IMAP name of the inbox, as opposed to MailFolder.INBOX, our own folder discriminator.
   private static final String     INBOX_FOLDER_NAME                                           = "INBOX";
 
@@ -322,7 +340,9 @@ public class EmailBoxService {
                                                                                                       HEADER_LIST_ID,
                                                                                                       HEADER_LIST_POST,
                                                                                                       HEADER_LIST_UNSUBSCRIBE,
-                                                                                                      HEADER_ORIGINAL_SENDER);
+                                                                                                      HEADER_ORIGINAL_SENDER,
+                                                                                                      HEADER_DISPOSITION_NOTIFICATION_TO,
+                                                                                                      HEADER_RETURN_PATH);
 
   // How long a new-mail notification waits for someone to classify the messages first. Short,
   // because with no such consumer this is pure added latency.
@@ -6925,6 +6945,10 @@ public class EmailBoxService {
     MimeMessage message = new PinnedMessageIdMimeMessage(smtpSession(emailConnector, username, boundedTimeouts), pinnedMessageId);
     Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
     message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+    // Here, because every send builds its message here: the composer's send, the
+    // interactive send of a draft and the scheduled one (both through
+    // buildOutgoingDraftMessage), the MCP tools'. One place, so no path can forget it.
+    applyReadReceiptRequest(message, email, emailAddress);
     if (!CollectionUtils.isEmpty(email.getTo())) {
       String toRecipients = email.getTo()
                                  .stream()
@@ -7032,6 +7056,206 @@ public class EmailBoxService {
       LOG.warn("Email sent but could not be copied to Sent folder for user {}", username, e);
     }
     scheduleSentFolderRefresh(username);
+  }
+
+  /**
+   * Builds a message on the SMTP session of a user, from the address that user sends
+   * as. What {@link #transmitAsUser} is given to build a message that is not a
+   * composed mail.
+   */
+  @FunctionalInterface
+  public interface OutgoingMessageFactory {
+
+    /**
+     * Builds the message.
+     *
+     * @param session the user's SMTP session, the one the message is transmitted on
+     * @param from the address the user sends as, with their display name
+     * @return the message, with its recipients set
+     * @throws MessagingException if the message cannot be built
+     */
+    MimeMessage build(Session session, InternetAddress from) throws MessagingException;
+  }
+
+  /**
+   * Transmits a message over the user's own SMTP connector, authenticated as them and
+   * sent from the address their connector sends as -- and nothing else: no copy in
+   * Sent, no {@code SEND_EMAIL} broadcast, no sent-recipients event for contact
+   * collection. That is the whole difference with {@link #deliver}, and the reason
+   * this exists: a read receipt (EXO-90435) is mail the user sends, and not mail they
+   * wrote. The one door for such messages, so the session, the credentials contract
+   * and the sender address are never assembled a second way.
+   * <p>
+   * The session bounds its socket timeouts, as a scheduled send's does: the caller is
+   * a request thread holding a claim, and a transmission that can hang forever holds
+   * it forever.
+   * <p>
+   * Public, like {@link #openServerCopy}, though only this add-on calls it: the caller
+   * is another bean, and a package-private method of this proxied bean is not reliably
+   * intercepted when the class and the proxy come from different class loaders (the
+   * add-on's jars are shipped beside its WAR) -- the call would then run on the proxy's
+   * own, empty, instance.
+   *
+   * @param username the user sending
+   * @param factory builds the message on the user's session and address
+   * @throws IllegalAccessException if the user has no usable connector
+   * @throws SmtpTransmitter.TransmissionException naming the step that failed; a
+   *           message that could not be built fails in {@code PREPARE}
+   */
+  public void transmitAsUser(String username, OutgoingMessageFactory factory) throws IllegalAccessException,
+                                                                       SmtpTransmitter.TransmissionException {
+    UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+    if (userEmailSetting == null || userEmailSetting.getEmailConnectorId() == null
+        || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE, username));
+    }
+    EmailConnector emailConnector =
+                                  emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
+    if (emailConnector == null) {
+      throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_SEND_EMAIL_MESSAGE, username));
+    }
+    MimeMessage message;
+    try {
+      // The address resolved exactly as buildOutgoingMessage resolves it.
+      String resolved = credentialsResolver().senderAddress(emailConnector.getId(),
+                                                            emailConnector.getAuthProviderName(),
+                                                            username);
+      String emailAddress = StringUtils.defaultIfBlank(resolved, userEmailSetting.getEmailAddress());
+      Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
+      message = factory.build(smtpSession(emailConnector, username, true),
+                              new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+    } catch (MessagingException | UnsupportedEncodingException | ConnectorCredentialsException | RuntimeException e) {
+      throw new SmtpTransmitter.TransmissionException(SmtpTransmitter.Phase.PREPARE, e);
+    }
+    smtpTransmitter.transmit(message);
+  }
+
+  /**
+   * Opens the server copy of a cached message, read-write, for the few things a read
+   * receipt needs from it: a header the cache does not keep, and the {@code $MDNSent}
+   * keyword. Best effort from end to end -- it never fails and never answers null: a
+   * mailbox that cannot be reached, a folder that no longer exists or a UID that now
+   * names another message all give a copy with no message, whose reads answer null
+   * and whose writes answer false. The caller closes it.
+   *
+   * @param username the mailbox owner
+   * @param email the cached message, for its folder, UID and Message-ID
+   * @return the server copy, possibly empty; never null
+   */
+  public ServerCopy openServerCopy(String username, Email email) {
+    if (email == null || email.getMailRemoteId() == null || email.getMailRemoteId() <= 0) {
+      return new ServerCopy(null, null, null, username);
+    }
+    Store store = null;
+    Folder folder = null;
+    try {
+      UserEmailSetting userEmailSetting = userEmailSettingService.getUserEmailSetting(username);
+      store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
+      folder = resolveCachedFolder(store, email.getFolder(), username);
+      if (folder == null) {
+        closeQuietly(null, store, username);
+        return new ServerCopy(null, null, null, username);
+      }
+      folder.open(Folder.READ_WRITE);
+      Message message = ((UIDFolder) folder).getMessageByUID(email.getMailRemoteId());
+      if (message != null
+          && !isExpectedMessageAtUid(message, email.getMailHeaderId(), email.getMailRemoteId(), email.getFolder(), username)) {
+        message = null;
+      }
+      return new ServerCopy(store, folder, message, username);
+    } catch (Exception e) {
+      LOG.warn("The server copy of a message of user {} could not be opened for its read receipt", username, e);
+      closeQuietly(folder, store, username);
+      return new ServerCopy(null, null, null, username);
+    }
+  }
+
+  /**
+   * The server copy of a cached message, opened by {@link #openServerCopy}: a header
+   * read and a keyword write, both best effort, and the connection it holds.
+   */
+  public final class ServerCopy implements AutoCloseable {
+
+    private final Store   store;
+
+    private final Folder  folder;
+
+    private final Message message;
+
+    private final String  username;
+
+    /**
+     * @param store the connection, null when none was opened
+     * @param folder the open folder, null when none
+     * @param message the message, null when it could not be found
+     * @param username the mailbox owner, for the logs
+     */
+    private ServerCopy(Store store, Folder folder, Message message, String username) {
+      this.store = store;
+      this.folder = folder;
+      this.message = message;
+      this.username = username;
+    }
+
+    /**
+     * Whether the message was found on the server.
+     *
+     * @return true when there is a message to read and flag
+     */
+    public boolean isPresent() {
+      return message != null;
+    }
+
+    /**
+     * The first value of a header of the server copy.
+     *
+     * @param name the header name
+     * @return the value, or null when absent or unreadable
+     */
+    public String header(String name) {
+      if (message == null) {
+        return null;
+      }
+      try {
+        return firstHeader(message, name);
+      } catch (MessagingException | RuntimeException e) {
+        LOG.debug("Header {} of a message of user {} could not be read", name, username, e);
+        return null;
+      }
+    }
+
+    /**
+     * Sets a keyword on the server copy, when the folder accepts keywords at all --
+     * Exchange does not, which is why the answer is also kept in the database.
+     *
+     * @param keyword the keyword
+     * @return true when it was set
+     */
+    public boolean addKeyword(String keyword) {
+      if (message == null) {
+        return false;
+      }
+      try {
+        Flags permanent = folder.getPermanentFlags();
+        if (permanent == null || !(permanent.contains(Flags.Flag.USER) || permanent.contains(keyword))) {
+          LOG.debug("The mailbox of user {} does not store keywords; {} is kept locally only", username, keyword);
+          return false;
+        }
+        message.setFlags(new Flags(keyword), true);
+        return true;
+      } catch (MessagingException | RuntimeException e) {
+        LOG.warn("Keyword {} could not be set on a message of user {}", keyword, username, e);
+        return false;
+      }
+    }
+
+    /**
+     * Closes the folder and the connection, quietly.
+     */
+    @Override
+    public void close() {
+      closeQuietly(folder, store, username);
+    }
   }
 
   /**
@@ -9076,6 +9300,7 @@ public class EmailBoxService {
     toStore.setTo(draft.getTo());
     toStore.setCc(draft.getCc());
     toStore.setBcc(draft.getBcc());
+    toStore.setReadReceiptRequested(draft.isReadReceiptRequested());
     toStore.setSender(ownSender(userEmailSetting));
     // Our own Message-ID, minted now and reused when the draft is finally sent. It is
     // also, on a server without UIDPLUS, the only handle we have on a message we just
@@ -9136,6 +9361,9 @@ public class EmailBoxService {
     toStore.setTo(draft.getTo());
     toStore.setCc(draft.getCc());
     toStore.setBcc(draft.getBcc());
+    // The author's read-receipt choice is part of what they are editing, like the
+    // recipients: what the composer shows now is what the draft asks for.
+    toStore.setReadReceiptRequested(draft.isReadReceiptRequested());
     // Whatever was on the server is now stale. A draft that had never reached it stays
     // LOCAL_ONLY, which is what the composer reads to tell the user their words live
     // only here. It is NOT what says whether there is a copy to replace up there — the
@@ -9640,6 +9868,10 @@ public class EmailBoxService {
     MimeMessage message = new PinnedMessageIdMimeMessage(Session.getInstance(new Properties()), draft.getMailHeaderId());
     Profile userProfile = EmailConnectorUtils.getUserProfileByEmail(emailAddress);
     message.setFrom(new InternetAddress(emailAddress, userProfile != null ? userProfile.getFullName() : null));
+    // The copy in the server's Drafts folder carries the request too: another client
+    // resuming it sends it with the receipt asked for, and this one reads the choice
+    // back when it imports the draft (createDraftFromServerMessage).
+    applyReadReceiptRequest(message, draft, emailAddress);
     setDraftRecipients(message, Message.RecipientType.TO, draft.getTo());
     setDraftRecipients(message, Message.RecipientType.CC, draft.getCc());
     setDraftRecipients(message, Message.RecipientType.BCC, draft.getBcc());
@@ -10445,7 +10677,7 @@ public class EmailBoxService {
           String references = firstHeader(message, HEADER_REFERENCES);
           String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, HEADER_THREAD_INDEX));
           String threadId = computeThreadId(username, mailHeaderId, messageUid, inReplyTo, references, threadIndexRoot);
-          emailBoxStorage.createEmail(new Email(null,
+          Email cached = new Email(null,
                                                 messageUid,
                                                 mailHeaderId,
                                                 username,
@@ -10488,7 +10720,11 @@ public class EmailBoxService {
                                                 // And no stored attachments: that field is the send path's
                                                 // way of carrying a draft's own files, and this row's
                                                 // attachments are parts of a message on the server.
-                                                null, false, null, null, null));
+                                                null, false, null, null, null,
+                                                // The read-receipt fields, set by name just below.
+                                                false, null, null, false, null);
+          captureReadReceiptRequest(message, cached, folderKey);
+          emailBoxStorage.createEmail(cached);
           newEmailIds.add(messageUid);
 
         }
@@ -10535,6 +10771,8 @@ public class EmailBoxService {
     List<Long> uidsToClearRecent = new ArrayList<>();
     List<Long> uidsToStar = new ArrayList<>();
     List<Long> uidsToUnstar = new ArrayList<>();
+    List<Long> uidsAnsweredElsewhere = new ArrayList<>();
+    List<String> messageIdsAnsweredElsewhere = new ArrayList<>();
     for (Message message : serverMessages) {
       try {
         long messageUid = uidFolder.getUID(message);
@@ -10557,6 +10795,16 @@ public class EmailBoxService {
         if (email.isRecent()) {
           uidsToClearRecent.add(messageUid);
         }
+        // A pending read-receipt request another client answered: $MDNSent rides the
+        // same prefetched FLAGS, and only pending requests are looked at, so a mirrored
+        // row costs nothing on the syncs after it.
+        if (email.isReadReceiptRequested() && email.getReadReceiptState() == null && hasKeyword(message, MDN_SENT_KEYWORD)) {
+          uidsAnsweredElsewhere.add(messageUid);
+          String messageId = ((MimeMessage) message).getMessageID();
+          if (StringUtils.isNotBlank(messageId)) {
+            messageIdsAnsweredElsewhere.add(messageId);
+          }
+        }
         backfillThreadingIfNeeded(email, message, messageUid, username, folderKey);
       } catch (Exception e) {
         LOG.warn("Error reconciling a cached email of user {} in folder {}", username, folderKey, e);
@@ -10577,6 +10825,7 @@ public class EmailBoxService {
     if (!uidsToClearRecent.isEmpty()) {
       emailBoxStorage.markEmailsAsNotRecent(uidsToClearRecent, username, folderKey);
     }
+    emailBoxStorage.markReadReceiptsAnswered(username, folderKey, uidsAnsweredElsewhere, messageIdsAnsweredElsewhere);
     return uidsToMarkRead.size() + uidsToMarkUnread.size() + uidsToStar.size() + uidsToUnstar.size();
   }
 
@@ -11680,6 +11929,118 @@ public class EmailBoxService {
   }
 
   /**
+   * Asks for a read receipt on an outgoing message when its author did (RFC 8098):
+   * {@code Disposition-Notification-To} naming the address the message is sent from.
+   * Never {@code Return-Receipt-To}, a pre-standard header recipients' servers may
+   * answer on their own; and never on a message whose author did not ask -- the
+   * user's "request by default" setting is the composer's starting point, not
+   * something the server adds.
+   *
+   * @param message the message being built, its From already set
+   * @param email what the author composed, carrying their choice
+   * @param fromAddress the address the message is sent from
+   * @throws MessagingException if the header cannot be set
+   */
+  static void applyReadReceiptRequest(MimeMessage message, Email email, String fromAddress) throws MessagingException {
+    if (email != null && email.isReadReceiptRequested() && StringUtils.isNotBlank(fromAddress)) {
+      message.setHeader(HEADER_DISPOSITION_NOTIFICATION_TO, fromAddress.trim());
+    }
+  }
+
+  /**
+   * Records what a synced message says about read receipts: whether it asks for one;
+   * for a received one, where to and whether its Return-Path vouches for that address;
+   * and whether its request was already answered ({@code $MDNSent}, by this or another
+   * client). A message in Sent is our own: its request is "I asked", with nowhere
+   * to answer.
+   *
+   * @param message the server message, headers and flags prefetched
+   * @param email the row being built for it
+   * @param folderKey the folder it is cached in
+   * @throws MessagingException if a header or the flags cannot be read
+   */
+  static void captureReadReceiptRequest(Message message, Email email, String folderKey) throws MessagingException {
+    String requestedTo = firstHeader(message, HEADER_DISPOSITION_NOTIFICATION_TO);
+    // A read receipt asking for a read receipt is not a request anybody answers: RFC
+    // 8098 section 2.1 forbids generating an MDN in response to an MDN, so one is
+    // recorded as asking for nothing. Its Content-Type rides the prefetched
+    // CONTENT_INFO, so this costs no round-trip.
+    email.setReadReceiptRequested(StringUtils.isNotBlank(requestedTo) && !isDispositionNotification(message));
+    if (!email.isReadReceiptRequested()) {
+      return;
+    }
+    if (!MailFolder.SENT.equals(folderKey) && !MailFolder.DRAFTS.equals(folderKey)) {
+      String unfolded = MimeUtility.unfold(requestedTo).trim();
+      if (unfolded.length() <= READ_RECEIPT_TO_MAX_LENGTH) {
+        email.setReadReceiptTo(unfolded);
+        email.setReadReceiptReturnPathMatch(returnPathMatches(unfolded, firstHeader(message, HEADER_RETURN_PATH)));
+      }
+    }
+    if (hasKeyword(message, MDN_SENT_KEYWORD)) {
+      email.setReadReceiptState(ReadReceiptState.SENT);
+    }
+  }
+
+  /**
+   * Whether a read-receipt request names exactly one address, and that address is the
+   * message's Return-Path: the check RFC 8098 section 2.1 asks for before a receipt is
+   * sent without asking, since anyone can write a Disposition-Notification-To and only
+   * the sender's own mail system writes the envelope. No Return-Path, a null one
+   * ({@code <>}), several addresses or an unparsable header all answer false.
+   *
+   * @param requestedTo the Disposition-Notification-To value, unfolded
+   * @param returnPath the Return-Path header, may be null
+   * @return true when the one requested address is the Return-Path
+   */
+  static boolean returnPathMatches(String requestedTo, String returnPath) {
+    if (StringUtils.isBlank(requestedTo) || StringUtils.isBlank(returnPath)) {
+      return false;
+    }
+    try {
+      InternetAddress[] targets = InternetAddress.parseHeader(requestedTo, false);
+      String envelope = StringUtils.strip(MimeUtility.unfold(returnPath).trim(), "<>").trim();
+      return targets.length == 1 && StringUtils.isNotBlank(envelope)
+          && StringUtils.equalsIgnoreCase(StringUtils.trim(targets[0].getAddress()), envelope);
+    } catch (AddressException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether a message is itself a read receipt: {@code multipart/report} of report
+   * type {@code disposition-notification}.
+   *
+   * @param message the message
+   * @return true for a read receipt; false too when the type cannot be read
+   */
+  private static boolean isDispositionNotification(Message message) {
+    try {
+      String contentType = message.getContentType();
+      if (contentType == null) {
+        return false;
+      }
+      ContentType type = new ContentType(contentType);
+      return type.match("multipart/report") && "disposition-notification".equalsIgnoreCase(type.getParameter("report-type"));
+    } catch (MessagingException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether a message carries an IMAP keyword, tolerating a message whose flags were
+   * not fetched (null).
+   *
+   * @param message the message
+   * @param keyword the keyword, e.g. {@code $MDNSent}
+   * @return true when the keyword is set
+   * @throws MessagingException if the flags cannot be read
+   */
+  private static boolean hasKeyword(Message message, String keyword) throws MessagingException {
+    Flags flags = message.getFlags();
+    return flags != null && flags.contains(keyword);
+  }
+
+  /**
    * Whether nobody typed this message: {@code Auto-Submitted} (RFC 3834, generated without
    * human intervention -- the explicit value {@code no} means the opposite and is ignored) or
    * the legacy {@code Precedence: bulk|junk}.
@@ -11980,6 +12341,9 @@ public class EmailBoxService {
     draft.setTo(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.TO), username, false));
     draft.setCc(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.CC), username, false));
     draft.setBcc(EmailConnectorUtils.getEmailRecipients(message.getRecipients(Message.RecipientType.BCC), username, false));
+    // A draft another client wrote -- or this one, whose Drafts copy carries the
+    // request (buildDraftMessage) -- keeps its read-receipt choice when imported.
+    draft.setReadReceiptRequested(StringUtils.isNotBlank(firstHeader(message, HEADER_DISPOSITION_NOTIFICATION_TO)));
     String inReplyTo = firstHeader(message, HEADER_IN_REPLY_TO);
     String references = firstHeader(message, HEADER_REFERENCES);
     String threadIndexRoot = EmailThreadingUtils.extractThreadIndexRoot(firstHeader(message, HEADER_THREAD_INDEX));

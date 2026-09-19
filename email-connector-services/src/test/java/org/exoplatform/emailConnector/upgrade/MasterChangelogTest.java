@@ -18,6 +18,7 @@ package org.exoplatform.emailConnector.upgrade;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
@@ -247,6 +248,122 @@ public class MasterChangelogTest {
   }
 
   /**
+   * The read-receipt columns (1.0.0-66, EXO-90435) apply, roll back and apply again, to
+   * a tag placed immediately before them. After the update an existing row has the safe
+   * defaults (nothing asked, no Return-Path match) and a row inserted without the
+   * columns gets them too; after the rollback all four columns are gone and the
+   * scheduled-send table before them still stands; the re-apply is what shows nothing
+   * was left behind (a surviving column would fail the second ADD).
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theReadReceiptColumnsRollBackAndReapply() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback66" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-66"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-read-receipts");
+      try (Statement statement = connection.createStatement()) {
+        statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER) VALUES (9101, 'alice', 's',"
+            + " 'Bob,bob@example.org', CURRENT_TIMESTAMP, 'INBOX')");
+      }
+      assertFalse(columnExists(connection, "EMAIL_BOX", "READ_RECEIPT_REQUESTED"), "sanity: not there before 1.0.0-66");
+      liquibase.update("");
+      for (String column : READ_RECEIPT_COLUMNS) {
+        assertTrue(columnExists(connection, "EMAIL_BOX", column), "1.0.0-66 adds " + column);
+      }
+      assertReadReceiptDefaults(connection);
+
+      liquibase.rollback("before-read-receipts", "");
+      for (String column : READ_RECEIPT_COLUMNS) {
+        assertFalse(columnExists(connection, "EMAIL_BOX", column), "rolling back drops " + column);
+      }
+      assertTrue(tableExists(connection, "EMAIL_SCHEDULED_SEND"), "and nothing before it");
+
+      liquibase.update("");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "READ_RECEIPT_STATE"), "the changeset applies again after its rollback");
+      assertReadReceiptDefaults(connection);
+    }
+  }
+
+  /**
+   * The read-receipt columns as MySQL and PostgreSQL get them, generated through
+   * Liquibase's own dialects on offline connections: the two flags NOT NULL with a
+   * false default (so every existing row is filled in the same statement), the two
+   * others nullable; and the rollback drops each of the four.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theReadReceiptColumnsOnMySqlAndPostgreSql() throws Exception {
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-66").toUpperCase(Locale.ROOT);
+      // MySQL renders the flags TINYINT DEFAULT 0, PostgreSQL BOOLEAN DEFAULT FALSE: the
+      // types every other flag of EMAIL_BOX already has on each.
+      for (String flag : List.of("READ_RECEIPT_REQUESTED", "READ_RECEIPT_RETURN_PATH_MATCH")) {
+        assertTrue(Pattern.compile("ADD " + flag + " (TINYINT DEFAULT 0|BOOLEAN DEFAULT FALSE) NOT NULL").matcher(update).find(),
+                   vendor + " " + flag + ": " + update);
+      }
+      for (String nullable : List.of("READ_RECEIPT_TO N?VARCHAR\\(1000\\)", "READ_RECEIPT_STATE N?VARCHAR\\(20\\)")) {
+        Matcher column = Pattern.compile("ADD " + nullable + "[^,;]*").matcher(update);
+        assertTrue(column.find() && !column.group().contains("NOT NULL"), vendor + " " + nullable + ": " + update);
+      }
+      String rollback = offlineRollbackSql(vendor, "1.0.0-66").toUpperCase(Locale.ROOT);
+      for (String column : READ_RECEIPT_COLUMNS) {
+        assertTrue(rollback.contains("DROP COLUMN " + column), vendor + " rollback drops " + column + ": " + rollback);
+      }
+    }
+  }
+
+  // The four columns 1.0.0-66 adds to EMAIL_BOX.
+  private static final List<String> READ_RECEIPT_COLUMNS = List.of("READ_RECEIPT_REQUESTED",
+                                                                   "READ_RECEIPT_TO",
+                                                                   "READ_RECEIPT_STATE",
+                                                                   "READ_RECEIPT_RETURN_PATH_MATCH");
+
+  /**
+   * The row inserted before 1.0.0-66, and one inserted after without naming the new
+   * columns, both carry the safe defaults: nothing asked, no match, no answer.
+   *
+   * @param connection the database
+   * @throws SQLException when a statement fails
+   */
+  private void assertReadReceiptDefaults(Connection connection) throws SQLException {
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("DELETE FROM EMAIL_BOX WHERE ID = 9102");
+      statement.executeUpdate("INSERT INTO EMAIL_BOX (ID, USER_ID, SUBJECT, SENDER, RECEIVED_DATE, FOLDER) VALUES (9102, 'alice', 's',"
+          + " 'Bob,bob@example.org', CURRENT_TIMESTAMP, 'INBOX')");
+      try (ResultSet rows = statement.executeQuery("SELECT READ_RECEIPT_REQUESTED, READ_RECEIPT_RETURN_PATH_MATCH, READ_RECEIPT_TO,"
+          + " READ_RECEIPT_STATE FROM EMAIL_BOX WHERE ID IN (9101, 9102)")) {
+        int count = 0;
+        while (rows.next()) {
+          count++;
+          assertFalse(rows.getBoolean(1));
+          assertFalse(rows.getBoolean(2));
+          assertNull(rows.getString(3));
+          assertNull(rows.getString(4));
+        }
+        assertEquals(2, count);
+      }
+    }
+  }
+
+  /**
+   * Whether a column exists, asked of the JDBC metadata.
+   *
+   * @param connection the database
+   * @param tableName the table
+   * @param columnName the column
+   * @return true when it exists
+   * @throws SQLException when the metadata cannot be read
+   */
+  private boolean columnExists(Connection connection, String tableName, String columnName) throws SQLException {
+    try (ResultSet columns = connection.getMetaData().getColumns(null, null, tableName, columnName)) {
+      return columns.next();
+    }
+  }
+
+  /**
    * Inserts a draft row and its schedule, deletes the draft row, and requires the
    * schedule row to be gone.
    *
@@ -452,7 +569,7 @@ public class MasterChangelogTest {
 
   // The changesets this add-on's branches added since the checksum pin below exists
   // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
-  // -59; the scheduled-send table, 1.0.0-62 to -65). They are the ones a second evaluation computes ahead of the update in the
+  // -59; the scheduled-send table, 1.0.0-62 to -65; the read-receipt columns, 1.0.0-66). They are the ones a second evaluation computes ahead of the update in the
   // pin, and nothing on this list may ever drift.
   private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53",
                                                               "1.0.0-54",
@@ -463,7 +580,8 @@ public class MasterChangelogTest {
                                                               "1.0.0-62",
                                                               "1.0.0-63",
                                                               "1.0.0-64",
-                                                              "1.0.0-65");
+                                                              "1.0.0-65",
+                                                              "1.0.0-66");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,

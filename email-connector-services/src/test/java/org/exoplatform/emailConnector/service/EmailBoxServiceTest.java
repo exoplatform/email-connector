@@ -156,6 +156,7 @@ import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.MailboxSyncState;
 import org.exoplatform.emailConnector.model.EmailAttachment;
@@ -8363,7 +8364,8 @@ public class EmailBoxServiceTest {
                      null,
                      null,
                      null,
-                     null, null, false, null, null, null);
+                     null, null, false, null, null, null,
+                     false, null, null, false, null);
   }
 
   private EmailConnector emailConnector() {
@@ -11137,5 +11139,366 @@ public class EmailBoxServiceTest {
   private void assertLocked(org.junit.jupiter.api.function.Executable call) {
     ScheduledSendConflictException locked = assertThrows(ScheduledSendConflictException.class, call);
     assertEquals(ScheduledSendConflictException.LOCKED, locked.getMessage());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Read receipts (EXO-90435): the request on every send path and on the Drafts copy,
+  // what the sync records, and the two doors the receipt service goes through.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * An ordinary send asks for a read receipt when -- and only when -- its author did,
+   * naming the address the message is sent from (the provider's, not the stored one),
+   * and never with the pre-standard Return-Receipt-To.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anOrdinarySendAsksForAReadReceiptOnlyWhenItsAuthorDid() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(SENDER_THE_PROVIDER_NAMES);
+    IMAPStore store = mock(IMAPStore.class);
+    lenient().when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    Folder defaultFolder = mock(Folder.class);
+    lenient().when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    lenient().when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[0]);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      Email asking = email(TEST_USER);
+      asking.setTo(List.of(new EmailRecipient("Bob", "bob@example.org", null, false)));
+      asking.setReadReceiptRequested(true);
+      emailBoxService.sendEmail(asking, TEST_USER);
+      Email notAsking = email(TEST_USER);
+      notAsking.setTo(List.of(new EmailRecipient("Bob", "bob@example.org", null, false)));
+      emailBoxService.sendEmail(notAsking, TEST_USER);
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()), times(2));
+      assertArrayEquals(new String[] { SENDER_THE_PROVIDER_NAMES }, sent.getAllValues().get(0).getHeader("Disposition-Notification-To"));
+      assertNull(sent.getAllValues().get(0).getHeader("Return-Receipt-To"));
+      assertNull(sent.getAllValues().get(1).getHeader("Disposition-Notification-To"), "not asked, not added");
+    }
+  }
+
+  /**
+   * The interactive send of a draft carries the request the composer shows.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anInteractiveDraftSendCarriesTheReadReceiptRequest() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    IMAPFolder draftsFolder = givenADraftsFolder();
+    lenient().when(draftsFolder.isOpen()).thenReturn(true);
+    Email stored = storedDraft();
+    stored.setMailRemoteId(null);
+    stored.setDraftState(DraftState.LOCAL_ONLY);
+    when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+    Email shown = draft("draft-1");
+    shown.setReadReceiptRequested(true);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      emailBoxService.sendDraft(shown, TEST_USER);
+
+      ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
+      transportMock.verify(() -> Transport.send(sent.capture()));
+      assertArrayEquals(new String[] { "testEmail" }, sent.getValue().getHeader("Disposition-Notification-To"));
+      ArgumentCaptor<Email> saved = ArgumentCaptor.forClass(Email.class);
+      verify(emailBoxStorage).saveDraft(saved.capture());
+      assertTrue(saved.getValue().isReadReceiptRequested(), "the text saved before the send keeps the choice");
+    }
+  }
+
+  /**
+   * A scheduled send is built from the stored row, so it carries the request the draft
+   * was saved with -- and none when it was saved without.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aScheduledSendCarriesTheStoredReadReceiptRequest() throws Exception {
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    List<MimeMessage> transmitted = new ArrayList<>();
+    doAnswer(invocation -> transmitted.add(invocation.getArgument(0))).when(smtpTransmitter).transmit(any(MimeMessage.class));
+    for (boolean requested : new boolean[] { true, false }) {
+      Email stored = storedDraft();
+      stored.setMailRemoteId(null);
+      stored.setDraftState(DraftState.LOCAL_ONLY);
+      stored.setReadReceiptRequested(requested);
+      when(emailBoxStorage.getDraftByLocalId(TEST_USER, "draft-1")).thenReturn(stored);
+      emailBoxService.sendStoredDraft(TEST_USER, "draft-1", () -> {
+      });
+    }
+    assertEquals(2, transmitted.size());
+    assertArrayEquals(new String[] { "testEmail" }, transmitted.get(0).getHeader("Disposition-Notification-To"));
+    assertNull(transmitted.get(1).getHeader("Disposition-Notification-To"));
+  }
+
+  /**
+   * The copy in the server's Drafts folder carries the request too, and a draft
+   * imported from the server reads it back.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void theDraftsCopyCarriesTheRequestAndAnImportReadsItBack() throws Exception {
+    Email draft = draft("draft-1");
+    draft.setReadReceiptRequested(true);
+    MimeMessage copy = ReflectionTestUtils.invokeMethod(emailBoxService, "buildDraftMessage", draft, userEmailSetting(), TEST_USER);
+    assertArrayEquals(new String[] { "testEmail" }, copy.getHeader("Disposition-Notification-To"));
+    draft.setReadReceiptRequested(false);
+    MimeMessage plain = ReflectionTestUtils.invokeMethod(emailBoxService, "buildDraftMessage", draft, userEmailSetting(), TEST_USER);
+    assertNull(plain.getHeader("Disposition-Notification-To"));
+
+    copy.setText("half a sentence");
+    copy.saveChanges();
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "createDraftFromServerMessage",
+                                     copy,
+                                     77L,
+                                     "<draft@example.org>",
+                                     TEST_USER,
+                                     userEmailSetting());
+    ArgumentCaptor<Email> imported = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(imported.capture());
+    assertTrue(imported.getValue().isReadReceiptRequested());
+  }
+
+  /**
+   * The draft revisions carry the author's choice, the first as every later one.
+   */
+  @Test
+  void theDraftRevisionsCarryTheReadReceiptChoice() {
+    Email composed = draft("draft-1");
+    composed.setReadReceiptRequested(true);
+    Email first = ReflectionTestUtils.invokeMethod(emailBoxService,
+                                                   "buildFirstDraftRevision",
+                                                   composed,
+                                                   "draft-1",
+                                                   TEST_USER,
+                                                   userEmailSetting());
+    assertTrue(first.isReadReceiptRequested());
+    Email next = ReflectionTestUtils.invokeMethod(emailBoxService, "buildNextDraftRevision", composed, storedDraft());
+    assertTrue(next.isReadReceiptRequested());
+    composed.setReadReceiptRequested(false);
+    Email unchecked = ReflectionTestUtils.invokeMethod(emailBoxService, "buildNextDraftRevision", composed, first);
+    assertFalse(unchecked.isReadReceiptRequested(), "unchecking it is an edit like any other");
+  }
+
+  /**
+   * What the sync records of a received request: that it asks, where to, whether the
+   * Return-Path vouches for that address, and whether it was already answered. A
+   * message in Sent asks on our behalf and has nowhere to answer.
+   *
+   * @throws Exception when a message cannot be built
+   */
+  @Test
+  void theSyncRecordsAReceivedRequest() throws Exception {
+    MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+    message.setHeader("Disposition-Notification-To", "Bob\r\n <bob@partner.example>");
+    message.setHeader("Return-Path", "<BOB@partner.example>");
+    Email row = new Email();
+    EmailBoxService.captureReadReceiptRequest(message, row, MailFolder.INBOX);
+    assertTrue(row.isReadReceiptRequested());
+    assertEquals("Bob <bob@partner.example>", row.getReadReceiptTo(), "unfolded");
+    assertTrue(row.isReadReceiptReturnPathMatch());
+    assertNull(row.getReadReceiptState());
+
+    message.setFlags(new Flags("$MDNSent"), true);
+    Email answered = new Email();
+    EmailBoxService.captureReadReceiptRequest(message, answered, MailFolder.INBOX);
+    assertEquals(ReadReceiptState.SENT, answered.getReadReceiptState(), "answered by another client");
+
+    Email sent = new Email();
+    EmailBoxService.captureReadReceiptRequest(message, sent, MailFolder.SENT);
+    assertTrue(sent.isReadReceiptRequested(), "I asked");
+    assertNull(sent.getReadReceiptTo());
+
+    MimeMessage plain = new MimeMessage(Session.getInstance(new Properties()));
+    plain.setFlags(new Flags("$MDNSent"), true);
+    Email notAsked = new Email();
+    EmailBoxService.captureReadReceiptRequest(plain, notAsked, MailFolder.INBOX);
+    assertFalse(notAsked.isReadReceiptRequested());
+    assertNull(notAsked.getReadReceiptState());
+
+    // A read receipt asking for a read receipt asks for nothing: no MDN answers an MDN.
+    MimeMessage receipt = new MimeMessage(Session.getInstance(new Properties()));
+    receipt.setHeader("Disposition-Notification-To", "bob@partner.example");
+    MimeMultipart report = new MimeMultipart("report");
+    MimeBodyPart text = new MimeBodyPart();
+    text.setText("read");
+    report.addBodyPart(text);
+    receipt.setContent(report);
+    receipt.saveChanges();
+    receipt.setHeader("Content-Type", receipt.getContentType() + "; report-type=disposition-notification");
+    Email mdn = new Email();
+    EmailBoxService.captureReadReceiptRequest(receipt, mdn, MailFolder.INBOX);
+    assertFalse(mdn.isReadReceiptRequested(), receipt.getContentType());
+  }
+
+  /**
+   * The Return-Path vouches for a request only when it names its one address.
+   */
+  @Test
+  void theReturnPathVouchesOnlyForTheOneAddressItNames() {
+    assertTrue(EmailBoxService.returnPathMatches("bob@partner.example", "<bob@partner.example>"));
+    assertFalse(EmailBoxService.returnPathMatches("bob@partner.example", "<bounces@list.example>"));
+    assertFalse(EmailBoxService.returnPathMatches("bob@partner.example", "<>"), "a null envelope vouches for nothing");
+    assertFalse(EmailBoxService.returnPathMatches("bob@partner.example", null));
+    assertFalse(EmailBoxService.returnPathMatches("bob@partner.example, eve@tracker.example", "<bob@partner.example>"));
+    assertFalse(EmailBoxService.returnPathMatches("not an address <<", "<bob@partner.example>"));
+  }
+
+  /**
+   * A new message of the sync window is cached with its request, and one already
+   * cached has its pending request marked answered when the server says $MDNSent --
+   * only when pending, so a mirrored row costs nothing on the next sync.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void theSyncCachesTheRequestAndMirrorsAnswersGivenElsewhere() throws Exception {
+    MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+    message.setHeader("Disposition-Notification-To", "bob@partner.example");
+    message.setText("hello");
+    message.saveChanges();
+    UIDFolder uidFolder = mock(UIDFolder.class);
+    when(uidFolder.getUID(message)).thenReturn(5L);
+    java.lang.reflect.Method createEmails = null;
+    for (java.lang.reflect.Method method : EmailBoxService.class.getDeclaredMethods()) {
+      if (method.getName().equals("createEmails")) {
+        createEmails = method;
+      }
+    }
+    assertNotNull(createEmails);
+    createEmails.setAccessible(true);
+    createEmails.invoke(emailBoxService,
+                        uidFolder,
+                        new Message[] { message },
+                        TEST_USER,
+                        MailFolder.INBOX,
+                        Map.of(5L, new EmailContent("hello")),
+                        new HashMap<Long, Email>(),
+                        null);
+    ArgumentCaptor<Email> cached = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(cached.capture());
+    assertTrue(cached.getValue().isReadReceiptRequested());
+    assertEquals("bob@partner.example", cached.getValue().getReadReceiptTo());
+
+    message.setFlags(new Flags("$MDNSent"), true);
+    Email pending = new Email();
+    pending.setMailRemoteId(5L);
+    pending.setThreadId("thread");
+    pending.setThreadIndexRoot("");
+    pending.setReadReceiptRequested(true);
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "reconcileKnownEmails",
+                                     uidFolder,
+                                     new Message[] { message },
+                                     Map.of(5L, pending),
+                                     TEST_USER,
+                                     MailFolder.INBOX);
+    verify(emailBoxStorage).markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of(5L), List.of(message.getMessageID()));
+
+    pending.setReadReceiptState(ReadReceiptState.IGNORED);
+    ReflectionTestUtils.invokeMethod(emailBoxService,
+                                     "reconcileKnownEmails",
+                                     uidFolder,
+                                     new Message[] { message },
+                                     Map.of(5L, pending),
+                                     TEST_USER,
+                                     MailFolder.INBOX);
+    verify(emailBoxStorage).markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of(), List.of());
+  }
+
+  /**
+   * The one "as the user" door transmits on the user's SMTP session, from the address
+   * the provider names -- and does nothing else a delivered mail entails: no Sent
+   * copy, no send broadcast, no sent-recipients event.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void transmittingAsTheUserFilesNothingAndAnnouncesNothing() throws Exception {
+    ReflectionTestUtils.setField(emailBoxService, "eventPublisher", eventPublisher);
+    givenAUsableMailbox();
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+    when(emailCredentialsResolver.senderAddress(any(), any(), any())).thenReturn(SENDER_THE_PROVIDER_NAMES);
+    List<InternetAddress> froms = new ArrayList<>();
+
+    emailBoxService.transmitAsUser(TEST_USER, (session, from) -> {
+      froms.add(from);
+      MimeMessage receipt = new MimeMessage(session);
+      receipt.setFrom(from);
+      receipt.setRecipients(Message.RecipientType.TO, "bob@partner.example");
+      receipt.setText("read");
+      return receipt;
+    });
+
+    assertEquals(SENDER_THE_PROVIDER_NAMES, froms.get(0).getAddress());
+    verify(smtpTransmitter).transmit(any(MimeMessage.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+    verify(listenerService, never()).broadcast(anyString(), any(), any());
+    verify(eventPublisher, never()).publishEvent(any());
+
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(false);
+    assertThrows(IllegalAccessException.class, () -> emailBoxService.transmitAsUser(TEST_USER, (session, from) -> null));
+    verify(smtpTransmitter, times(1)).transmit(any(MimeMessage.class));
+  }
+
+  /**
+   * The server copy is found by its folder and UID, and refused when that UID now
+   * names another message; $MDNSent is written where the mailbox keeps keywords and
+   * skipped, without failing, where it does not (Exchange).
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void theServerCopyTakesTheKeywordWhereTheMailboxKeepsKeywords() throws Exception {
+    givenAUsableMailbox();
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    IMAPFolder inbox = mock(IMAPFolder.class);
+    when(store.getFolder("INBOX")).thenReturn(inbox);
+    when(inbox.isOpen()).thenReturn(true);
+    Message message = mock(Message.class);
+    when(inbox.getMessageByUID(34L)).thenReturn(message);
+    when(message.getHeader("Message-ID")).thenReturn(new String[] { "<original@partner.example>" });
+    when(message.getHeader("Original-Recipient")).thenReturn(new String[] { "rfc822;alias@example.org" });
+    Email email = new Email();
+    email.setFolder(MailFolder.INBOX);
+    email.setMailRemoteId(34L);
+    email.setMailHeaderId("<original@partner.example>");
+
+    Flags keywords = new Flags();
+    keywords.add(Flags.Flag.USER);
+    when(inbox.getPermanentFlags()).thenReturn(keywords);
+    try (EmailBoxService.ServerCopy copy = emailBoxService.openServerCopy(TEST_USER, email)) {
+      assertTrue(copy.isPresent());
+      assertEquals("rfc822;alias@example.org", copy.header("Original-Recipient"));
+      assertTrue(copy.addKeyword("$MDNSent"));
+    }
+    verify(inbox).open(Folder.READ_WRITE);
+    verify(message).setFlags(new Flags("$MDNSent"), true);
+    verify(inbox).close(false);
+
+    when(inbox.getPermanentFlags()).thenReturn(new Flags(Flags.Flag.SEEN));
+    try (EmailBoxService.ServerCopy copy = emailBoxService.openServerCopy(TEST_USER, email)) {
+      assertFalse(copy.addKeyword("$MDNSent"), "Exchange keeps no keyword; the database does");
+    }
+    verify(message, times(1)).setFlags(any(Flags.class), eq(true));
+
+    email.setMailHeaderId("<another@partner.example>");
+    try (EmailBoxService.ServerCopy copy = emailBoxService.openServerCopy(TEST_USER, email)) {
+      assertFalse(copy.isPresent(), "the UID names another message now");
+      assertFalse(copy.addKeyword("$MDNSent"));
+      assertNull(copy.header("Original-Recipient"));
+    }
+
+    when(userEmailSettingService.connect(anyString(), anyString())).thenThrow(new MessagingException("down"));
+    try (EmailBoxService.ServerCopy copy = emailBoxService.openServerCopy(TEST_USER, email)) {
+      assertFalse(copy.isPresent(), "unreachable: an empty copy, never a failure");
+    }
   }
 }

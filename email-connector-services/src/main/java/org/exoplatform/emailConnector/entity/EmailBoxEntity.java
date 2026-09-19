@@ -20,6 +20,7 @@ import java.util.Date;
 import java.util.List;
 
 import org.exoplatform.emailConnector.model.DraftState;
+import org.exoplatform.emailConnector.model.ReadReceiptState;
 
 import io.meeds.common.persistence.PortableSequence;
 
@@ -187,4 +188,26 @@ public class EmailBoxEntity {
   // is the last positional argument and the draft ones keep the places they took.
   @Column(name = "IS_HTML")
   private Boolean                     html;
+
+  // Read receipts (EXO-90435). Declared after IS_HTML for the reason given above, and
+  // set by name in the storage mapper rather than through the positional constructor.
+  // READ_RECEIPT_REQUESTED: on a draft the author's choice, on Sent "I asked", on a
+  // received message "they ask" (a Disposition-Notification-To header is present).
+  @Column(name = "READ_RECEIPT_REQUESTED", nullable = false)
+  private boolean                     readReceiptRequested;
+
+  // Where a received message asks its receipt to go, as its header says it.
+  @Column(name = "READ_RECEIPT_TO")
+  private String                      readReceiptTo;
+
+  // How a received request was answered, null while pending: the local mirror of the
+  // IMAP $MDNSent keyword, which some servers (Exchange) cannot store.
+  @Enumerated(EnumType.STRING)
+  @Column(name = "READ_RECEIPT_STATE")
+  private ReadReceiptState            readReceiptState;
+
+  // Whether the request's Return-Path named the address the receipt would go to,
+  // decided at sync from the headers, which the cache does not otherwise keep.
+  @Column(name = "READ_RECEIPT_RETURN_PATH_MATCH", nullable = false)
+  private boolean                     readReceiptReturnPathMatch;
 }
