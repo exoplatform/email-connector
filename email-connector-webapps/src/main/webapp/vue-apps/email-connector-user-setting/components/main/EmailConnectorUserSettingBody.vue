@@ -235,6 +235,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-action>
         </v-list-item>
         <v-divider class="mx-4" />
+        <!-- Read receipts (EXO-90435): the composer's default and the answer to other
+             people's requests, after the signature -- the other preference about the
+             mail the user sends. Its own component, as the folders row is. -->
+        <email-connector-user-setting-read-receipts />
+        <v-divider class="mx-4" />
         <v-list-item>
           <v-list-item-content>
             <v-list-item-title class="text-color">
