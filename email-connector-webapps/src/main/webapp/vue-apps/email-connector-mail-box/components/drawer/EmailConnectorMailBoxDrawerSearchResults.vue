@@ -29,6 +29,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         v-for="result in results"
         :key="`${result.folder}-${result.mailRemoteId}`"
         :result="result"
+        :row-key="rowKey(result)"
+        :opened="rowKey(result) === openedKey"
         @open="$emit('open-result', result)" />
     </template>
     <div
@@ -46,6 +48,11 @@ export default {
     results: {
       type: Array,
       default: () => [],
+    },
+    // The hit the reader shows, as rowKey keys it; null when it shows none.
+    openedKey: {
+      type: String,
+      default: null,
     },
     // The full server-side match count, to say 'showing 20 of 1,234'.
     totalMatches: {
@@ -82,6 +89,38 @@ export default {
         });
       }
       return null;
+    },
+  },
+  methods: {
+    /**
+     * A hit's key: its folder and UID, a UID being unique only within its folder --
+     * the key the arrow keys walk the results by (searchRows).
+     *
+     * @param {Object} result the hit
+     * @returns {String} the key
+     */
+    rowKey(result) {
+      return `${result.folder || 'INBOX'}:${result.mailRemoteId}`;
+    },
+    /**
+     * Gives one hit the keyboard focus and brings it into view -- the arrow keys' way of
+     * walking the results (EXO-90414). Every hit is rendered, so there is nothing to
+     * build first.
+     *
+     * @param {String} key the hit's key (rowKey)
+     * @returns {Promise<void>} resolved once the hit has the focus
+     */
+    async revealThread(key) {
+      await this.$nextTick();
+      const row = Array.from(this.$el.querySelectorAll('[data-thread-key]'))
+        .find(element => element.getAttribute('data-thread-key') === String(key));
+      if (!row) {
+        return;
+      }
+      row.focus({ preventScroll: true });
+      if (row.scrollIntoView) {
+        row.scrollIntoView({ block: 'nearest' });
+      }
     },
   },
 };
