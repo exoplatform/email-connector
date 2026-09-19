@@ -175,10 +175,14 @@ public class EmailScheduledSendStorage {
    * SCHEDULED rows due at an instant, the longest waiting first.
    *
    * @param now the reference instant
-   * @param limit the bound
+   * @param limit the bound; nothing is read below one
    * @return the due ids
    */
   public List<Long> findDueToSend(Date now, int limit) {
+    if (limit < 1) {
+      // A full pool asks for nothing; a page of size zero is refused by Spring Data.
+      return List.of();
+    }
     return emailScheduledSendDAO.findDueIds(ScheduledSendStatus.SCHEDULED, now, PageRequest.of(0, limit));
   }
 
@@ -186,10 +190,13 @@ public class EmailScheduledSendStorage {
    * UNCERTAIN rows whose Sent-folder check is due.
    *
    * @param now the reference instant
-   * @param limit the bound
+   * @param limit the bound; nothing is read below one
    * @return the due ids
    */
   public List<Long> findDueToCheck(Date now, int limit) {
+    if (limit < 1) {
+      return List.of();
+    }
     return emailScheduledSendDAO.findDueIds(ScheduledSendStatus.UNCERTAIN, now, PageRequest.of(0, limit));
   }
 
