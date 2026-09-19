@@ -192,6 +192,7 @@ import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
+import org.exoplatform.emailConnector.storage.EmailReadReceiptAnswerStorage;
 import org.exoplatform.emailConnector.storage.EmailScheduledSendStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
@@ -287,6 +288,11 @@ public class EmailBoxServiceTest {
 
   @MockitoBean
   private SmtpTransmitter         smtpTransmitter;
+
+  // Read receipts, phase 2 (EXO-90435): the durable answer store the sync writes the
+  // server's $MDNSent to and a newly cached request reads its answer from.
+  @MockitoBean
+  private EmailReadReceiptAnswerStorage readReceiptAnswerStorage;
 
   @Autowired
   private EmailBoxService         emailBoxService;
@@ -11983,7 +11989,12 @@ public class EmailBoxServiceTest {
                                      Map.of(5L, pending),
                                      TEST_USER,
                                      MailFolder.INBOX);
-    verify(emailBoxStorage).markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of(5L), List.of(message.getMessageID()));
+    // The store first, then the rows: an answer being given now collides with the
+    // store's record, never with a row alone.
+    org.mockito.InOrder storeThenRows = org.mockito.Mockito.inOrder(readReceiptAnswerStorage, emailBoxStorage);
+    storeThenRows.verify(readReceiptAnswerStorage).recordServerAnswers(eq(TEST_USER), eq(List.of(message.getMessageID())), any());
+    storeThenRows.verify(emailBoxStorage)
+                 .markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of(5L), List.of(message.getMessageID()));
 
     pending.setReadReceiptState(ReadReceiptState.IGNORED);
     ReflectionTestUtils.invokeMethod(emailBoxService,
@@ -11994,6 +12005,71 @@ public class EmailBoxServiceTest {
                                      TEST_USER,
                                      MailFolder.INBOX);
     verify(emailBoxStorage).markReadReceiptsAnswered(TEST_USER, MailFolder.INBOX, List.of(), List.of());
+  }
+
+  /**
+   * A request cached anew is lined up with the answer store (EXO-90435, phase 2): on a
+   * mailbox that stores no keywords, a message whose row was re-created (a move, an
+   * archive, a reset) takes the answer the user gave before, and is not offered again;
+   * one the server says was answered ($MDNSent) is recorded in the store. A message
+   * that asks nothing costs the store nothing.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void aRecreatedRequestTakesItsAnswerFromTheStore() throws Exception {
+    MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+    message.setHeader("Disposition-Notification-To", "bob@partner.example");
+    message.setText("hello");
+    message.saveChanges();
+    String messageId = message.getMessageID();
+    UIDFolder uidFolder = mock(UIDFolder.class);
+    when(uidFolder.getUID(message)).thenReturn(5L);
+    when(readReceiptAnswerStorage.findAnswers(TEST_USER, List.of(messageId))).thenReturn(Map.of(EmailReadReceiptAnswerStorage.messageIdHash(messageId),
+                                                                                                ReadReceiptState.IGNORED));
+    invokeCreateEmails(uidFolder, message);
+    ArgumentCaptor<Email> cached = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(cached.capture());
+    assertEquals(ReadReceiptState.IGNORED, cached.getValue().getReadReceiptState(), "answered before its row was re-created");
+    verify(readReceiptAnswerStorage, never()).recordServerAnswers(anyString(), any(), any());
+
+    message.setFlags(new Flags("$MDNSent"), true);
+    invokeCreateEmails(uidFolder, message);
+    verify(readReceiptAnswerStorage).recordServerAnswers(eq(TEST_USER), eq(List.of(messageId)), any());
+
+    MimeMessage plain = new MimeMessage(Session.getInstance(new Properties()));
+    plain.setText("hello");
+    plain.saveChanges();
+    when(uidFolder.getUID(plain)).thenReturn(6L);
+    org.mockito.Mockito.clearInvocations(readReceiptAnswerStorage);
+    invokeCreateEmails(uidFolder, plain);
+    org.mockito.Mockito.verifyNoInteractions(readReceiptAnswerStorage);
+  }
+
+  /**
+   * Runs the sync's row creation on one server message of the Inbox.
+   *
+   * @param uidFolder the folder resolving its UID
+   * @param message the message
+   * @throws Exception when the reflective call fails
+   */
+  private void invokeCreateEmails(UIDFolder uidFolder, Message message) throws Exception {
+    java.lang.reflect.Method createEmails = null;
+    for (java.lang.reflect.Method method : EmailBoxService.class.getDeclaredMethods()) {
+      if (method.getName().equals("createEmails")) {
+        createEmails = method;
+      }
+    }
+    assertNotNull(createEmails);
+    createEmails.setAccessible(true);
+    createEmails.invoke(emailBoxService,
+                        uidFolder,
+                        new Message[] { message },
+                        TEST_USER,
+                        MailFolder.INBOX,
+                        Map.of(uidFolder.getUID(message), new EmailContent("hello")),
+                        new HashMap<Long, Email>(),
+                        null);
   }
 
   /**

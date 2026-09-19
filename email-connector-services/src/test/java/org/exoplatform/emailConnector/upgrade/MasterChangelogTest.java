@@ -19,6 +19,7 @@ package org.exoplatform.emailConnector.upgrade;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
@@ -292,7 +293,10 @@ public class MasterChangelogTest {
     for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
       String rollback = offlineRollbackSql(vendor, "1.0.0-62").toUpperCase(Locale.ROOT);
       assertTrue(rollback.contains("DROP TABLE") && rollback.contains("EMAIL_SCHEDULED_SEND"), vendor + " rollback drops the table: " + rollback);
-      assertTrue(rollback.indexOf("FK_EMAIL_SCHED_SEND_EMAIL") >= 0 && rollback.indexOf("FK_EMAIL_SCHED_SEND_EMAIL") < rollback.indexOf("DROP TABLE"),
+      // Its own DROP TABLE, not the first one: the rollback from 1.0.0-62 runs every
+      // later changeset's rollback too, and those come first.
+      assertTrue(rollback.indexOf("FK_EMAIL_SCHED_SEND_EMAIL") >= 0
+          && rollback.indexOf("FK_EMAIL_SCHED_SEND_EMAIL") < rollback.indexOf("DROP TABLE EMAIL_SCHEDULED_SEND"),
                  vendor + " rollback drops the foreign key first: " + rollback);
     }
     assertTrue(offlineRollbackSql("postgresql?version=15", "1.0.0-62").contains("DROP SEQUENCE SEQ_EMAIL_SCHEDULED_SEND_ID"),
@@ -364,6 +368,102 @@ public class MasterChangelogTest {
       for (String column : READ_RECEIPT_COLUMNS) {
         assertTrue(rollback.contains("DROP COLUMN " + column), vendor + " rollback drops " + column + ": " + rollback);
       }
+    }
+  }
+
+  /**
+   * The read-receipt answer store (1.0.0-67 to -69, EXO-90435 phase 2) applies, rolls
+   * back and applies again, to a tag placed immediately before it. Applied, the table,
+   * its sequence and its unique index exist, and the index refuses a second answer of
+   * one user to one message while letting another user's through; rolled back, all
+   * three are gone and the read-receipt columns before them still stand; the re-apply
+   * shows nothing was left behind (a surviving sequence, index or table would fail the
+   * second CREATE).
+   *
+   * @throws Exception when a changeset does not apply or roll back
+   */
+  @Test
+  void theReadReceiptAnswerStoreRollsBackAndReapplies() throws Exception {
+    try (Connection connection = DriverManager.getConnection("jdbc:hsqldb:mem:rollback67" + System.nanoTime(), "sa", "")) {
+      Liquibase liquibase = newLiquibase(connection);
+      liquibase.update(applicableChangeSetsBefore("1.0.0-67"), new Contexts(), new LabelExpression());
+      liquibase.tag("before-read-receipt-answers");
+      assertFalse(tableExists(connection, "EMAIL_READ_RECEIPT_ANSWER"), "sanity: not there before 1.0.0-68");
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_READ_RECEIPT_ANSWER"), "1.0.0-68 creates EMAIL_READ_RECEIPT_ANSWER");
+      assertTrue(indexExists(connection, "EMAIL_READ_RECEIPT_ANSWER", "UQ_EMAIL_READ_RECEIPT_ANSWER"), "and its unique index");
+      assertTrue(sequenceExists(connection, "SEQ_EMAIL_RR_ANSWER_ID"), "1.0.0-67 creates its sequence");
+      assertOneAnswerPerUserAndMessage(connection);
+
+      liquibase.rollback("before-read-receipt-answers", "");
+      assertFalse(tableExists(connection, "EMAIL_READ_RECEIPT_ANSWER"), "rolling back drops the table");
+      assertFalse(sequenceExists(connection, "SEQ_EMAIL_RR_ANSWER_ID"), "and its sequence");
+      assertTrue(columnExists(connection, "EMAIL_BOX", "READ_RECEIPT_STATE"), "and nothing before them");
+
+      liquibase.update("");
+      assertTrue(tableExists(connection, "EMAIL_READ_RECEIPT_ANSWER"), "the changesets apply again after their rollback");
+      assertOneAnswerPerUserAndMessage(connection);
+    }
+  }
+
+  /**
+   * The answer store as MySQL and PostgreSQL get it, generated through Liquibase's own
+   * dialects on offline connections: on MySQL an auto-increment id, the table options
+   * of 1.0.0-69 as literal SQL, and no sequence; on PostgreSQL the sequence the
+   * entity's {@code @PortableSequence} names, created before its table. Both get the
+   * unique index on (USER_ID, MESSAGE_ID_HASH) and NOT NULL on every column; the
+   * rollback drops the index, then the table, then (PostgreSQL) the sequence.
+   *
+   * @throws Exception when the SQL cannot be generated
+   */
+  @Test
+  void theReadReceiptAnswerStoreOnMySqlAndPostgreSql() throws Exception {
+    String mysql = offlineUpdateSql("mysql?version=8.0.17", "1.0.0-67");
+    Matcher createMysql = Pattern.compile("CREATE TABLE EMAIL_READ_RECEIPT_ANSWER \\(.*?\\)[^;]*", Pattern.DOTALL).matcher(mysql);
+    assertTrue(createMysql.find(), "no CREATE TABLE EMAIL_READ_RECEIPT_ANSWER in the MySQL SQL: " + mysql);
+    assertTrue(createMysql.group().contains("AUTO_INCREMENT"), "MySQL ids come from an auto-increment: " + createMysql.group());
+    assertTrue(mysql.contains("ALTER TABLE EMAIL_READ_RECEIPT_ANSWER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"),
+               "the table options of 1.0.0-69: " + mysql);
+    assertFalse(mysql.contains("SEQ_EMAIL_RR_ANSWER_ID"), "no sequence on MySQL");
+
+    String postgresql = offlineUpdateSql("postgresql?version=15", "1.0.0-67");
+    assertTrue(postgresql.contains("CREATE SEQUENCE  IF NOT EXISTS SEQ_EMAIL_RR_ANSWER_ID START WITH 1"), postgresql);
+    assertTrue(postgresql.indexOf("CREATE SEQUENCE") < postgresql.indexOf("CREATE TABLE EMAIL_READ_RECEIPT_ANSWER (ID BIGINT NOT NULL,"),
+               "created before its table, with no auto-increment on the id: " + postgresql);
+
+    for (String vendor : List.of("mysql?version=8.0.17", "postgresql?version=15")) {
+      String update = offlineUpdateSql(vendor, "1.0.0-67").toUpperCase(Locale.ROOT);
+      assertTrue(update.contains("CREATE UNIQUE INDEX UQ_EMAIL_READ_RECEIPT_ANSWER ON EMAIL_READ_RECEIPT_ANSWER(USER_ID, MESSAGE_ID_HASH)"),
+                 vendor + ": " + update);
+      for (String column : List.of("USER_ID VARCHAR(250) NOT NULL", "MESSAGE_ID_HASH VARCHAR(64) NOT NULL", "STATE VARCHAR(20) NOT NULL",
+                                   "ORIGIN VARCHAR(20) NOT NULL")) {
+        assertTrue(update.contains(column), vendor + " " + column + ": " + update);
+      }
+      assertTrue(Pattern.compile("ANSWERED_DATE (TIMESTAMP|DATETIME)[^,]* NOT NULL").matcher(update).find(), vendor + ": " + update);
+      String rollback = offlineRollbackSql(vendor, "1.0.0-67").toUpperCase(Locale.ROOT);
+      int index = rollback.indexOf("UQ_EMAIL_READ_RECEIPT_ANSWER");
+      int table = rollback.indexOf("DROP TABLE EMAIL_READ_RECEIPT_ANSWER");
+      assertTrue(index >= 0 && table > index, vendor + " rollback drops the index, then the table: " + rollback);
+    }
+    assertTrue(offlineRollbackSql("postgresql?version=15", "1.0.0-67").contains("DROP SEQUENCE SEQ_EMAIL_RR_ANSWER_ID"),
+               "and the sequence, where there is one");
+  }
+
+  /**
+   * On the applied schema, the unique index refuses a second answer of one user to one
+   * message and lets another user's answer to the same message through.
+   *
+   * @param connection the database
+   * @throws SQLException when a statement other than the refused one fails
+   */
+  private void assertOneAnswerPerUserAndMessage(Connection connection) throws SQLException {
+    try (Statement statement = connection.createStatement()) {
+      String insert = "INSERT INTO EMAIL_READ_RECEIPT_ANSWER (ID, USER_ID, MESSAGE_ID_HASH, STATE, ORIGIN, ANSWERED_DATE) VALUES (%d, '%s',"
+          + " 'abc', 'SENT', 'LOCAL', CURRENT_TIMESTAMP)";
+      statement.executeUpdate(String.format(insert, 1, "alice"));
+      assertThrows(SQLException.class, () -> statement.executeUpdate(String.format(insert, 2, "alice")), "one answer per user and message");
+      statement.executeUpdate(String.format(insert, 3, "bob"));
+      statement.executeUpdate("DELETE FROM EMAIL_READ_RECEIPT_ANSWER");
     }
   }
 
@@ -607,8 +707,9 @@ public class MasterChangelogTest {
   // The changesets this add-on's branches added since the checksum pin below exists
   // (the custom-folder registry, 1.0.0-53 to -56; the sync-state table, 1.0.0-58 and
   // -59; the notification boundary, 1.0.0-61; the scheduled-send table, 1.0.0-62 to
-  // -65; the read-receipt columns, 1.0.0-66). They are the ones a second evaluation
-  // computes ahead of the update in the pin, and nothing on this list may ever drift.
+  // -65; the read-receipt columns, 1.0.0-66; the read-receipt answer store, 1.0.0-67
+  // to -69). They are the ones a second evaluation computes ahead of the update in
+  // the pin, and nothing on this list may ever drift.
   private static final Set<String> BRANCH_CHANGESETS = Set.of("1.0.0-53",
                                                               "1.0.0-54",
                                                               "1.0.0-55",
@@ -620,7 +721,10 @@ public class MasterChangelogTest {
                                                               "1.0.0-63",
                                                               "1.0.0-64",
                                                               "1.0.0-65",
-                                                              "1.0.0-66");
+                                                              "1.0.0-66",
+                                                              "1.0.0-67",
+                                                              "1.0.0-68",
+                                                              "1.0.0-69");
 
   // The changesets whose checksum already depends on where it is computed: every one
   // of them carries a modifySql. Three are covered by validCheckSum ANY (1.0.0-5, -46,
