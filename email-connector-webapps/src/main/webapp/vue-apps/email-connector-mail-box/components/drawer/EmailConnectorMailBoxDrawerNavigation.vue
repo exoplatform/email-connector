@@ -16,7 +16,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <!-- Full-screen folder column (EXO-90415): the 3-dots menu's FOLDERS/CATEGORIES, same
-       events and highlight. Rail: icons, tooltips, unread dot. No SFC style. -->
+       events and highlight; the pen opens the settings' folders drawer. Rail: icons,
+       tooltips, unread dot. No SFC style. -->
   <v-list
     :class="rail ? 'px-1 py-0' : 'px-2 py-2'"
     class="transparent"
@@ -42,14 +43,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-subheader
           v-show="!rail"
           class="text-uppercase caption px-2">
-          {{ section.title }}
+          <span class="flex-grow-1">{{ section.title }}</span>
+          <v-btn
+            v-if="section.key === 'folders'"
+            :title="$t('emailConnector.mailBox.list.drawer.navigation.manageFolders')"
+            :aria-label="$t('emailConnector.mailBox.list.drawer.navigation.manageFolders')"
+            icon
+            x-small
+            @click="$root.$emit('open-email-folders-drawer')">
+            <v-icon size="12" class="icon-default-color">fa-pen</v-icon>
+          </v-btn>
         </v-subheader>
         <v-tooltip
           v-for="entry in section.entries"
           :key="entry.value"
           :disabled="!rail"
           right>
-          <!-- Activator attributes only where there is a tooltip (the rail). -->
           <template #activator="{ on, attrs }">
             <v-list-item
               :value="entry.value"
@@ -94,24 +103,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 export default {
   props: {
-    // The folders as the server listed them, in its order: the 3-dots menu's list.
+    // The menu's folders and categories, the listed folder, the open view (or null);
+    // counts: by folder key {count, unread} (unread mail or a total), by category id.
     folders: { type: Array, default: () => [{ key: 'INBOX', type: 'BUILT_IN' }] },
     currentFolder: { type: String, default: 'INBOX' },
-    // The categories offered as views ({id, name, icon}), Important included.
     categories: { type: Array, default: () => [] },
-    // The category the list is switched to, or null outside any category view.
     categoryViewId: { type: [Number, String], default: null },
-    // By folder key, {count, unread}: how many, and whether they are unread mail (the
-    // inbox, the spam) rather than a total (the drafts). No entry, no count.
     folderCounts: { type: Object, default: () => ({}) },
-    // Each category's unread mail over the loaded window, by id.
     categoryUnreadCounts: { type: Object, default: () => ({}) },
     rail: { type: Boolean, default: false },
   },
   computed: {
     /**
-     * The entry lit: the category view when one is open, the listed folder otherwise
-     * -- the 3-dots menu's own rule.
+     * The entry lit: the category view when open, else the listed folder (the menu's rule).
      *
      * @returns {String} the value of the lit entry
      */
@@ -119,8 +123,7 @@ export default {
       return this.categoryViewId ? `category:${this.categoryViewId}` : `folder:${this.currentFolder}`;
     },
     /**
-     * The folders: the label and the icon the menu shows too (folderLabel, folderIcon)
-     * and the count the drawer worked out.
+     * The folders, labelled and drawn as the menu draws them, with their counts.
      *
      * @returns {Array} the entries
      */
@@ -133,11 +136,7 @@ export default {
           () => this.switchFolder(folder.key));
       });
     },
-    /**
-     * The categories, each with its unread mail.
-     *
-     * @returns {Array} the entries
-     */
+    /** @returns {Array} the categories, each with its unread mail */
     categoryEntries() {
       return this.categories.map(category => {
         const count = this.categoryUnreadCounts[category.id] > 0 ? this.categoryUnreadCounts[category.id] : 0;
@@ -160,8 +159,7 @@ export default {
   },
   methods: {
     /**
-     * One entry of the column, with what it says beyond its name -- to a screen reader
-     * and in the rail's tooltip: its count, as unread mail or as a total.
+     * One entry, with its count said to a screen reader and in its tooltip.
      *
      * @param {String} value its value in the group (folder:KEY or category:ID)
      * @param {String} icon its icon
@@ -177,8 +175,7 @@ export default {
       return { value, icon, label, count, unread, select, ariaLabel: described, tooltip: described };
     },
     /**
-     * Lists a folder with the 3-dots menu's event, the folder already listed included:
-     * inside a category view it is the way back.
+     * Lists a folder with the menu's event, the listed one too (the way out of a view).
      *
      * @param {String} folder the folder key
      * @returns {void}
@@ -187,7 +184,7 @@ export default {
       this.$root.$emit('switch-folder', folder);
     },
     /**
-     * Opens a category view, or leaves the open one, with the 3-dots menu's event.
+     * Opens a category view, or leaves the open one, with the menu's event.
      *
      * @param {Number} categoryId the category id
      * @returns {void}
@@ -195,6 +192,7 @@ export default {
     openCategoryView(categoryId) {
       this.$root.$emit('open-category-view', categoryId);
     },
+
   },
 };
 </script>
