@@ -27,8 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     v-model="emailDetailDrawer"
     right
     :allow-expand="false"
-    @expand-updated="updateExpand"
-    :loading="waitingForEmail || readerLoading || waitingForPartialEmail || (expanded && syncInProgress)"
+    :loading="waitingForEmail || readerLoading || waitingForPartialEmail"
     go-back-button
     :confirm-close="activeDownload"
     :confirm-close-labels="{
@@ -39,32 +38,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     }"
     @confirm-close="onAbortDownloadConfirmed"
     @opened="onDrawerOpened"
-    @closed="close"
-    @mousedown.native="onListNavigationPointerDown">
+    @closed="close">
     <template #title>
       <span></span>
-    </template>
-    <template v-if="expanded" #fullAppLeftTitle>
-      <v-btn
-        v-if="selectMode"
-        icon
-        @click="cancelSelectMode">
-        <v-icon size="20">
-          {{ $vuetify.rtl && 'fa fa-arrow-right' || 'fa fa-arrow-left' }}
-        </v-icon>
-      </v-btn>
-      <div class="d-flex align-center justify-space-between width-full">
-        <span :class="{ 'text-body': selectMode }">
-          {{ title }}
-        </span>
-        <email-connector-mail-box-drawer-actions
-          class="d-flex align-center"
-          :emails="filteredEmails"
-          :webmail-url="webmailUrl"
-          :selected-emails="selectedEmails"
-          :select-mode="selectMode" 
-          :sync-in-progress="syncInProgress" />
-      </div>
     </template>
     <!-- Unread, archive and delete all address a message by its IMAP UID, which a
          draft may not have — and none of them means anything for a message nobody has
@@ -73,7 +49,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          context menu already do. -->
     <template v-if="!waitingForEmail" #titleIcons>
       <email-connector-mail-box-drawer-list-item-detail-actions
-        v-if="email && !email.draftLocalId && (!expanded || !selectEmailPlaceHolder)"
+        v-if="email && !email.draftLocalId"
         :email="email"
         :thread="threadContext" />
       <v-btn
@@ -84,67 +60,34 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <v-icon size="20">fas fa-expand-alt</v-icon>
       </v-btn>
     </template>
-    <template v-if="expanded" #fullAppLeftContent>
-      <categories-filter
-        v-model="selectedCategoryId"
-        class="full-width border-box-sizing application-border application-border-radius py-3 pe-4 ps-7"
-        object-type="email"
-        hide-on-empty />
-      <email-connector-mail-box-drawer-content
-        ref="listContent"
-        :emails="filteredEmails"
-        :selected-emails="selectedEmails"
-        :select-mode="selectMode"
-        :email="email"
-        @update:selected-emails="selectedEmails = $event"
-        expanded />
-    </template>
     <template v-if="emailDetailDrawer && !waitingForEmail" #content>
-      <email-connector-mail-box-drawer-multi-select-email
-        v-if="selectMode"
-        :emails="filteredEmails"
-        :selected-emails="selectedEmails" />
+      <email-connector-mail-box-drawer-no-email v-if="emails.length === 0" />
       <template v-else>
-        <email-connector-mail-box-drawer-no-email v-if="filteredEmails.length === 0" />
-        <template v-else>
-          <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
-          <!-- The reader tells the header which conversation it is showing; this drawer
-               holds both and is the only place the value can pass between them. -->
-          <email-connector-mail-box-drawer-thread-content
-            v-else
-            :email="email"
-            :emails="filteredEmails"
-            :expanded-drawer="expanded"
-            :defer-thread-read="autoOpenReadPending"
-            @thread-context="threadContext = $event"
-            @loading="readerLoading = $event"
-            @opened-partial="readerPartial = $event" />
-        </template>
+        <email-connector-mail-box-drawer-select-email v-if="selectEmailPlaceHolder" />
+        <!-- The reader tells the header which conversation it is showing; this drawer
+             holds both and is the only place the value can pass between them. -->
+        <email-connector-mail-box-drawer-thread-content
+          v-else
+          :email="email"
+          :emails="emails"
+          @thread-context="threadContext = $event"
+          @loading="readerLoading = $event"
+          @opened-partial="readerPartial = $event" />
       </template>
     </template>
   </exo-drawer>
 </template>
 
 <script>
-import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import listNavigationMixin from '../../js/EmailConnectorMailBoxListNavigation.js';
-
 // The dimmed page behind a drawer that opened on its own; kept by id so a second
 // open can never leave two of them stacked.
 const BACKDROP_ID = 'emailDetailDrawerBackdrop';
 
-// The other actions that take messages out of the list, each carrying their ids first
-// (the move, handled apart, carries its target after them). Delete and archive
-// are followed in both layouts, as they always were; these and the move only in the expanded one,
-// where the list is beside the reader (EXO-90414). In the narrow layout the toolbar
-// closes the drawer after most of them -- but not after a move, and following one
-// there would leave the reader on the "select an email" placeholder with no list.
-const EXPANDED_LIST_REMOVAL_EVENTS = ['junk-email', 'not-junk-email', 'restore-email', 'purge-email'];
-
+// The mail drawer is the narrow reader only: its full screen is the mailbox drawer's,
+// which its expand button hands the mail over to (EXO-90415). The list, the selection,
+// the category filter and the arrow keys it carried for a full screen of its own are
+// the mailbox drawer's alone.
 export default {
-  // Expanded, this drawer shows the list beside the reader like the mailbox drawer
-  // does, and moves through it the same way (EXO-90414).
-  mixins: [listNavigationMixin],
   data() {
     return {
       emailDetailDrawer: false,
@@ -158,7 +101,6 @@ export default {
       // The reader shows the opened message as its list row only (no body yet).
       readerPartial: false,
       email: null,
-      expanded: false,
       activeDownload: null,
       emails: [],
       // The list on screen is a set of search results rather than the folder's
@@ -166,17 +108,13 @@ export default {
       // routinely outside the window and must not be reconciled against it.
       detachedFromList: false,
       standalone: false,
-      selectedEmails: [],
       syncInProgress: false,
       webmailUrl: null,
-      selectMode: false,
       selectEmailPlaceHolder: false,
       // The conversation the reader below is showing — {threadId, messages, subject} —
       // relayed to the toolbar in the title bar, which is a sibling of the reader and
       // would otherwise only ever see the single opened message.
       threadContext: null,
-      selectedCategoryId: null,
-      selectedCategoryIds: [],
     };
   },
   created() {
@@ -215,17 +153,7 @@ export default {
       this.standalone = !!standalone;
       this.open(mailRemoteId, emails, syncInProgress, webmailUrl, folder);
     };
-    this.onCloseEmailDetailDrawer = () => {
-      if (!this.expanded) {
-        this.close();
-      }
-    };
-    this.onOpenEmailDetailContent = (mailRemoteId, folder) => {
-      if (!this.emailDetailDrawer) {
-        return; 
-      }
-      this.openEmailDetailContent(mailRemoteId, { folder });
-    };
+    this.onCloseEmailDetailDrawer = () => this.close();
     this.onUpdateEmailReadStatus = (read, emails, folder) => {
       if (!this.emailDetailDrawer) {
         return; 
@@ -241,25 +169,21 @@ export default {
           this.$set(email, 'read', read);
         }
       });
-      this.selectEmailPlaceHolder = this.placeholderAfterReadStatus(read, emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
+      // Marking unread puts the message away -- the toolbar closes this drawer right
+      // after -- and brings no placeholder up; marking read is what opening a message
+      // does, and leaves the reader as it is.
+      if (!read) {
+        this.selectEmailPlaceHolder = false;
       }
     };
+    // The toolbar closes this drawer after a delete or an archive; its list loses the
+    // messages meanwhile, and the reader keeps no placeholder up.
     this.onDeleteOrArchiveEmail = (emails, folder) => {
       if (!this.emailDetailDrawer) {
         return; 
       }
-      const listedBefore = this.filteredEmails;
       this.refreshEmails(emails, folder);
-      this.selectEmailPlaceHolder = this.canDisplaySelectEmailPlaceHolder(emails);
-      if (this.selectMode) {
-        this.cancelSelectMode();
-      }
-      // Expanded, the reader moves on to the conversation that took the removed one's
-      // place rather than to the placeholder (listNavigationMixin) -- search results
-      // included, the list this drawer was handed for them.
-      this.openNextAfterRemoval(emails, listedBefore, folder);
+      this.selectEmailPlaceHolder = false;
     };
     // Mirror favorite changes (and their rollback after a refused push) onto this
     // drawer's own copies: the list it was opened with — a snapshot when it
@@ -276,70 +200,26 @@ export default {
         this.$set(this.email, 'starred', favorite);
       }
     };
-    // The same two openings, for a row the caller already holds in full — a draft,
-    // which the UID-addressed pair above cannot open because it may have no UID.
+    // The same opening, for a row the caller already holds in full — a draft, which
+    // the UID-addressed one above cannot open because it may have no UID.
     this.onOpenEmailThreadDrawer = (email, emails, syncInProgress, webmailUrl) => {
       this.detachedFromList = false;
       this.standalone = false;
       this.openThreadOn(email, emails, syncInProgress, webmailUrl);
     };
-    this.onOpenEmailThreadContent = (email) => {
-      if (!this.emailDetailDrawer) {
-        return;
-      }
-      // Nothing to fetch: whatever message request was still on its way is superseded.
-      this.supersedeEmailRequest();
-      this.email = email;
-      this.selectEmailPlaceHolder = false;
-    };
     this.$root.$on('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$on('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
-    this.$root.$on('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$on('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
-    this.$root.$on('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$on('update-email-read-status', this.onUpdateEmailReadStatus);
     this.$root.$on('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$on('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$on('archive-email', this.onDeleteOrArchiveEmail);
-    this.onExpandedListRemoval = (emails, folder) => {
-      if (this.expanded) {
-        this.onDeleteOrArchiveEmail(emails, folder);
-      }
-    };
-    // A move carries its target before the folder its ids are numbered in.
-    this.onExpandedListMove = (emails, target, folder) => this.onExpandedListRemoval(emails, folder);
-    EXPANDED_LIST_REMOVAL_EVENTS.forEach(event => this.$root.$on(event, this.onExpandedListRemoval));
-    this.$root.$on('move-email', this.onExpandedListMove);
     this.$root.$on('attachment-download-started', (payload) => {
       this.activeDownload = payload;
     });
     this.$root.$on('attachment-download-finished', () => {
       this.activeDownload = null;
-    });
-    // "Select several" from the ⋮ menu: when this drawer is the one on screen,
-    // enter its multi-select mode (the mailbox drawer ignores the event then).
-    this.$root.$on('enter-select-mode', () => {
-      if (this.emailDetailDrawer) {
-        this.selectMode = true;
-      }
-    });
-    this.$root.$on('select-email', ({ emailId, folder, selected }) => {
-      if (!this.emailDetailDrawer) {
-        return;
-      }
-      this.selectMode = true;
-      // Kept by folder and UID (EXO-90416): in a list of search results one number may
-      // be two messages, and ticking one must not tick the other.
-      const key = selectionKey({ mailRemoteId: emailId, folder });
-      if (selected) {
-        if (!this.selectedEmails.includes(key)) {
-          this.selectedEmails.push(key);
-        }
-      }
-      else {
-        this.selectedEmails = this.selectedEmails.filter(selected => selected !== key);
-      }
     });
     this.$root.$on('synchronize-in-progress', () => {
       this.syncInProgress = true;
@@ -360,15 +240,11 @@ export default {
   beforeDestroy() {
     this.hideStandaloneBackdrop();
     this.$root.$off('retry-email-read', this.onRetryEmailRead);
-    this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
-    this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
     this.$root.$off('open-email-thread-drawer', this.onOpenEmailThreadDrawer);
     this.$root.$off('close-email-detail-drawer', this.onCloseEmailDetailDrawer);
     this.$root.$off('delete-email', this.onDeleteOrArchiveEmail);
     this.$root.$off('archive-email', this.onDeleteOrArchiveEmail);
-    EXPANDED_LIST_REMOVAL_EVENTS.forEach(event => this.$root.$off(event, this.onExpandedListRemoval));
-    this.$root.$off('move-email', this.onExpandedListMove);
     this.$root.$off('update-email-favorite-status', this.onApplyEmailFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.onApplyEmailFavoriteStatus);
   },
@@ -387,47 +263,6 @@ export default {
     waitingForPartialEmail() {
       return this.loadingEmail && this.readerPartial;
     },
-    title() {
-      if (!this.selectMode) {
-        return this.$t('emailConnector.mailBox.list.drawer.title');
-      }
-      return `${this.selectedEmails.length} ${this.selectedEmails.length === 1 ? 
-        this.$t('emailConnector.mailBox.list.drawer.emailSelected') : 
-        this.$t('emailConnector.mailBox.list.drawer.emailsSelected')}`;
-    },
-    filteredEmails() {
-      let filteredEmails = this.emails || [];
-      if (this.selectedCategoryIds.length > 0) {
-        filteredEmails = filteredEmails.filter(e => this.selectedCategoryIds.some(id => e.categoryIds.includes(id)));
-      }
-      return filteredEmails;
-    },
-    /**
-     * The listed messages, for listNavigationMixin.
-     *
-     * @returns {Array} the list beside the reader
-     */
-    navigationEmails() {
-      return this.filteredEmails;
-    },
-    /**
-     * Whether Up and Down walk the list: only expanded, where there is a list beside
-     * the reader -- search results included -- and not during a multi-selection.
-     *
-     * @returns {Boolean} true when the arrow keys drive the list
-     */
-    canNavigateList() {
-      return this.emailDetailDrawer && this.expanded && !this.selectMode && this.filteredEmails.length > 0;
-    },
-    /**
-     * Whether the drawer is open, for listNavigationMixin: the arrow keys are listened
-     * to on the whole page only then.
-     *
-     * @returns {Boolean} true while the drawer is open
-     */
-    navigationDrawerOpen() {
-      return this.emailDetailDrawer;
-    },
     /**
      * Whether the expand button is offered: opened over the mailbox list, where the
      * mailbox drawer's full screen can take the mail over, and not on a phone, where
@@ -436,15 +271,11 @@ export default {
      * @returns {Boolean} true when the mail can be expanded into the mailbox
      */
     canExpandInMailBox() {
-      return !this.standalone && !this.expanded && !this.$vuetify?.breakpoint?.smAndDown;
+      return !this.standalone && !this.$vuetify?.breakpoint?.smAndDown;
     },
   },
   watch: {
-    async selectedCategoryId(val) {
-      this.cancelSelectMode();
-      this.selectedCategoryIds = val && await this.$emailConnectorMailBoxService.getSubcategoryIds(val) || [];
-    },
-    filteredEmails() {
+    emails() {
       // A message opened from outside this list -- a search hit, or one picked from
       // the global Favorites drawer -- comes from the whole mailbox, so its absence
       // here means nothing and must not send the reader back to the placeholder,
@@ -452,7 +283,7 @@ export default {
       if (this.detachedFromList) {
         return;
       }
-      if (this.email && !this.filteredEmails.some(e => e.mailRemoteId === this.email.mailRemoteId)) {
+      if (this.email && !(this.emails || []).some(e => e.mailRemoteId === this.email.mailRemoteId)) {
         this.selectEmailPlaceHolder = true;
       }
     },
@@ -461,14 +292,6 @@ export default {
         this.$root.$emit('set-opened', null);
       }
     },
-    selectMode() {
-      if (this.selectMode) {
-        this.$root.$emit('set-opened', null);
-      }
-      else if (!this.selectEmailPlaceHolder) {
-        this.$root.$emit('set-opened', this.email.mailRemoteId);
-      }
-    }
   },
   methods: {
     /**
@@ -507,19 +330,13 @@ export default {
      * A response to an earlier request is dropped: it would otherwise put the previous
      * message back on screen, or end the loading bar while the current one is pending.
      *
-     * An automatic opening (options.automatic, EXO-90414) reads the message without
-     * counting it as opened; listNavigationMixin counts it, and reads it, once the user
-     * stayed on it. Any opening ends the wait of the one before.
-     *
      * @param {number} mailRemoteId - the IMAP UID of the message to open
-     * @param {object} options - {automatic}: whether the user did not ask for this mail;
-     *          {folder}: the folder it is numbered in, when the caller knows it
-     *          (EXO-90416: a search list holds several folders)
+     * @param {object} options - {folder}: the folder it is numbered in, when the caller
+     *          knows it (EXO-90416: a search list holds several folders)
      * @returns {Promise<object|null>} the full message, or null when the request was
      *          superseded or failed
      */
     fetchEmail(mailRemoteId, options = {}) {
-      this.cancelAutoOpenDwell();
       const request = ++this.emailRequest;
       const ownFolder = this.folderOf(mailRemoteId, options.folder);
       const row = !this.detachedFromList && this.listedEmail(mailRemoteId, ownFolder) || null;
@@ -537,10 +354,7 @@ export default {
         this.selectEmailPlaceHolder = false;
       }
       this.loadingEmail = true;
-      const read = options.automatic
-        ? this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder, { broadcast: false })
-        : this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder);
-      return read
+      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder)
         .then(email => {
           if (request !== this.emailRequest) {
             return null;
@@ -571,8 +385,6 @@ export default {
     supersedeEmailRequest() {
       this.emailRequest++;
       this.loadingEmail = false;
-      // The previous mail's wait is over, whatever comes next (EXO-90414).
-      this.cancelAutoOpenDwell();
     },
     /**
      * The full copy of the opened message could not be read. When the reader was
@@ -643,59 +455,6 @@ export default {
       return email && email.folder || 'INBOX';
     },
     /**
-     * Switches the open reader to another message of the list, the wide layout's
-     * click on a row beside it.
-     *
-     * An automatic opening (options.automatic) does not mark it read: listNavigationMixin
-     * does, once the user stayed on it.
-     *
-     * @param {number} mailRemoteId - the IMAP UID of the message to open
-     * @param {object} options - {automatic, folder}: see fetchEmail
-     * @returns {Promise<void>} resolved once the message is on screen, or dropped
-     */
-    openEmailDetailContent(mailRemoteId, options = {}) {
-      this.selectEmailPlaceHolder = false;
-      const ownFolder = this.folderOf(mailRemoteId, options.folder);
-      return this.fetchEmail(mailRemoteId, { ...options, folder: ownFolder }).then(email => {
-        if (email && !options.automatic) {
-          this.$root.$emit('update-email-read-status', true, [mailRemoteId], ownFolder, email.read);
-          // After the emit, as it always was: the read-status handler recomputes the
-          // placeholder for the list it was handed, and in the wide layout that
-          // answer is "show the placeholder" for the very message just opened.
-          this.selectEmailPlaceHolder = false;
-        }
-      });
-    },
-    /**
-     * Opens a listed message in the reader and lights its row, as a click on the row
-     * does -- for listNavigationMixin, which passes {automatic} for an opening the user
-     * did not ask for.
-     *
-     * @param {Object} row the listed message
-     * @param {Object} options {automatic}: whether the user did not ask for this mail
-     * @returns {Promise} resolved once the message is on screen
-     */
-    openListedEmail(row, options = {}) {
-      this.$root.$emit('set-opened', row.mailRemoteId);
-      return this.openEmailDetailContent(row.mailRemoteId, { ...options, folder: row.folder || 'INBOX' }).catch(() => null);
-    },
-    /**
-     * The drawer, for listNavigationMixin to tell whether it is the one on top.
-     *
-     * @returns {Object} the exo-drawer
-     */
-    navigationDrawer() {
-      return this.$refs.emailDetailDrawer;
-    },
-    /**
-     * The list beside the reader, for listNavigationMixin.
-     *
-     * @returns {Object} the list content component, or null when not expanded
-     */
-    navigationList() {
-      return this.$refs.listContent || null;
-    },
-    /**
      * Takes messages out of this drawer's list -- only the given folder's when the
      * emitter says which: a search list holds several folders (EXO-90416).
      *
@@ -707,36 +466,6 @@ export default {
       this.emails = this.emails.filter(
         e => !emailIds.includes(e.mailRemoteId) || (folder && (e.folder || 'INBOX') !== folder)
       );
-    },
-    cancelSelectMode() {
-      this.selectMode = false;
-      this.selectedEmails = [];
-    },
-    /**
-     * Whether the wide layout shows the "select an email" placeholder after a read
-     * status was applied to some messages.
-     * <p>
-     * Marking UNREAD is the "mark unread and put it away" intent, and puts away the
-     * opened message when it is among them. Marking READ never does: it is what
-     * opening a message does to its conversation — this drawer marks the opened
-     * message read as it opens it, and the reader marks the rest read as soon as the
-     * conversation lands, possibly before the opened message's own request has
-     * answered. Sending the reader to the placeholder then dropped that request and
-     * left the user facing "Select an email". It only shows the placeholder when
-     * nothing is open.
-     *
-     * @param {boolean} read - the read status applied
-     * @param {Array<Number>} emails - the messages it was applied to
-     * @returns {boolean} whether to show the placeholder
-     */
-    placeholderAfterReadStatus(read, emails) {
-      if (read) {
-        return this.selectEmailPlaceHolder || (this.expanded && !this.email);
-      }
-      return this.canDisplaySelectEmailPlaceHolder(emails);
-    },
-    canDisplaySelectEmailPlaceHolder(emails) {
-      return this.expanded && (!this.email || emails.includes(this.email.mailRemoteId));
     },
     onAbortDownloadConfirmed() {
       this.$root.$emit('abort-download-attachment', this.activeDownload.mailRemoteId, this.activeDownload.attachmentRemoteId, this.activeDownload.abortController);
@@ -823,14 +552,11 @@ export default {
       this.standalone = false;
       this.hideStandaloneBackdrop();
       this.emailDetailDrawer = false;
-      this.cancelSelectMode();
       this.selectEmailPlaceHolder = false;
       this.email = null;
       this.threadContext = null;
       this.$root.isDetailDrawerActive = false;
       this.$root.$emit('email-detail-drawer-closed');
-      this.selectedCategoryId = null;
-      this.selectedCategoryIds = [];
     },
     /**
      * Expands the mail into the mailbox drawer's full screen, the one full-screen
@@ -853,12 +579,6 @@ export default {
       if (drawer?.closeEffectively) {
         drawer.closeEffectively();
       } else {
-        this.close();
-      }
-    },
-    updateExpand(expanded) {
-      window.setTimeout(() => this.expanded = expanded, 200);
-      if (!expanded && (this.selectEmailPlaceHolder || this.selectMode)) {
         this.close();
       }
     },
