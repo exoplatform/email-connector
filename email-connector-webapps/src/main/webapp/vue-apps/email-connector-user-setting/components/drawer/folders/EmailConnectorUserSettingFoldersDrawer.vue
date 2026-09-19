@@ -264,6 +264,9 @@ export default {
         .finally(() => {
           this.savingId = null;
           this.load(false);
+          // For whoever lists the folders beside this drawer -- the full-screen
+          // mailbox's folder column (EXO-90415).
+          this.$root.$emit('email-folders-saved');
         });
     },
     /**
@@ -322,6 +325,7 @@ export default {
           this.savingId = null;
           this.deleteTarget = null;
           this.load(false);
+          this.$root.$emit('email-folders-saved');
         });
     },
     /**

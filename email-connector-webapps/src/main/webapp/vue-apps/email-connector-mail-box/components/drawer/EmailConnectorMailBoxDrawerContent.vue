@@ -21,12 +21,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-if="selectMode"
       :indeterminate="indeterminate"
       color="#707070"
-      :background-color="backgroundColor"
+      :background-color="selectAllBackground"
       hide-details
       :label="$t('emailConnector.mailBox.list.drawer.selectAll')"
       v-model="selectedAll"
       @click.stop />
     <email-connector-mail-box-drawer-list
+      ref="list"
       :emails="emails"
       :current-email="email"
       :selected-emails="selectedEmails"
@@ -38,6 +39,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
+
 export default {
   props: {
     emails: {
@@ -82,16 +85,41 @@ export default {
         this.onSelectAllChange(value);
       }
     },
-    backgroundColor() {
-      return this.expanded && '#f2f2f2';
-    }
+    /**
+     * The select-all row's background: none in full screen, where the list sits on the
+     * drawer's grey pane and the platform paints every input slot of a drawer white
+     * (its drawer mixin's .v-input__slot) -- Vuetify's transparent class outranks that.
+     * The row scrolls with the list, so it needs no opaque background. The narrow
+     * layout keeps the drawer's own, as it always had (EXO-90415).
+     *
+     * @returns {String} the Vuetify background colour, or null for the default
+     */
+    selectAllBackground() {
+      return this.expanded ? 'transparent' : null;
+    },
   },
   methods: {
+    /**
+     * Brings one row of the list into view and focuses it (see the list's own
+     * revealThread).
+     *
+     * @param {String} threadKey the row's key
+     * @returns {Promise<void>} resolved once the row has the focus
+     */
+    revealThread(threadKey) {
+      return this.$refs.list?.revealThread(threadKey);
+    },
+    /**
+     * Selects every listed row, or none.
+     *
+     * @param {Boolean} value whether to select them all
+     * @returns {void}
+     */
     onSelectAllChange(value) {
       // A row the server has not listed yet (refreshPending: one an Undo put back, one
       // a move filed here) is not selectable: it carries a UID the server has
       // renumbered, or a placeholder, and any action on it would be counted a failure.
-      const newSelection = value ? this.emails.filter(e => !e.refreshPending).map(e => e.mailRemoteId) : [];
+      const newSelection = value ? this.emails.filter(e => !e.refreshPending).map(selectionKey) : [];
       this.$emit('update:selected-emails', newSelection);
     }
   }

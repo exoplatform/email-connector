@@ -675,11 +675,19 @@ public interface EmailBoxDAO extends JpaRepository<EmailBoxEntity, Long> {
    * Trash tab up when there is something in it and leave it out when there is not,
    * which is precisely the "browsable" half of the rule the exclusions enforce the
    * other half of.
+   * <p>
+   * The unread messages are counted in the same pass (EXO-90415): the full-screen
+   * folder column shows the inbox's and the spam's, and one grouped read per listing
+   * -- the drawer polls it every two seconds while a sync runs -- is cheaper than two.
+   * {@code IS_READ} is in no index, so the read now visits the rows rather than the
+   * (USER_ID, FOLDER, RECEIVED_DATE) index alone; the cached window bounds them. Unread
+   * is the badge's own predicate ({@link #countUnreadByUserIdAndFolder}): a row with no
+   * read flag counts as unread, so the two inbox figures agree by construction.
    *
    * @param userId the mailbox owner
-   * @return rows of {@code [folder, messageCount]}, one per non-empty folder
+   * @return rows of {@code [folder, messageCount, unreadCount]}, one per non-empty folder
    */
-  @Query("SELECT email.folder, COUNT(email.id) FROM EmailBoxEntity email WHERE email.userId = :userId GROUP BY email.folder")
+  @Query("SELECT email.folder, COUNT(email.id), SUM(CASE WHEN email.read IS NULL OR email.read = false THEN 1 ELSE 0 END) FROM EmailBoxEntity email WHERE email.userId = :userId GROUP BY email.folder")
   List<Object[]> countMessagesByFolder(@Param("userId")
   String userId);
 

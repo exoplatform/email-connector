@@ -52,11 +52,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       parent-element="div"
       element="div"
       class="my-auto" />
-    <!-- A thin progress bar while the archived tail is fetched in the background. -->
-    <v-progress-linear
-      v-if="loadingOlder"
-      indeterminate
-      height="2"
+    <!-- The messages of this conversation the folder list does not hold (a sent reply,
+         an archived message), counted from the list row's conversation total and held
+         by a skeleton strip each until the conversation lands. No progress bar here:
+         the drawer's own header bar says the reader is loading, and the archived tail
+         fetched after it is nothing the user is waiting on. -->
+    <v-skeleton-loader
+      v-for="index in pendingSkeletons"
+      :key="`pending-${index}`"
+      type="list-item-avatar"
       class="my-1" />
     <template v-for="(item, index) in renderItems">
       <!-- No separator against the count badge on either side: the badge sits on a
@@ -107,6 +111,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         :collapsible="!isLast(item.message)"
         :expanded-drawer="expandedDrawer"
         :in-thread="isThread"
+        :loading="isPartial(item.message)"
         @expand="expand(item.key)"
         @collapse="collapse(item.key)" />
     </template>
@@ -117,6 +122,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 // Messages kept visible at the tail of a long thread, in addition to the last one
 // (which is expanded): matches Gmail showing the message just before the latest.
 const TAIL_STRIPS = 1;
+// Skeleton strips shown at most for the messages of a conversation the folder list
+// does not hold, while the conversation is being read.
+const MAX_PENDING_SKELETONS = 3;
 
 export default {
   data() {
@@ -125,7 +133,13 @@ export default {
       expandedIds: [],
       revealedKeys: [],
       loadingThread: false,
-      loadingOlder: false,
+      // Whether `messages` is the conversation as the server returned it, rather than
+      // the list rows it was seeded with while that answer is on its way.
+      threadLanded: false,
+      // Whether the server had nothing for this conversation, so `messages` is the
+      // opened message alone — which then follows that message when the drawer swaps
+      // its list row for the full one.
+      fallback: false,
     };
   },
   props: {
@@ -140,6 +154,13 @@ export default {
       default: () => [],
     },
     expandedDrawer: {
+      type: Boolean,
+      default: false,
+    },
+    // The drawer opened this conversation on its own (the first mail in full screen, the
+    // next one after an action, the one the arrow keys stopped on) and reads it once the
+    // user stayed on it (EXO-90414): until then, opening it reads nothing.
+    deferThreadRead: {
       type: Boolean,
       default: false,
     },
@@ -191,7 +212,9 @@ export default {
     summaryExtensionParams() {
       return {
         threadId: this.email && this.resolveThreadId(),
-        messages: this.categorizableMessages,
+        // Nothing before the conversation has landed: the seeded rows carry no body,
+        // and a contributor describing the conversation must not describe those.
+        messages: this.threadLanded ? this.categorizableMessages : [],
         subject: this.subject,
       };
     },
@@ -213,6 +236,25 @@ export default {
     // header already carries everything the menu would.
     isThread() {
       return this.categorizableMessages.length > 1;
+    },
+    // Whether the opened message is still only its list row in the reader: the body
+    // the user opened is not on screen yet, whichever answer brings it.
+    openedPartial() {
+      const key = this.openedKey;
+      return !!key && this.messages.some(message => this.msgKey(message) === key && this.isPartial(message));
+    },
+    // How many skeleton strips stand for the messages the folder list does not hold:
+    // the conversation total the server stamped on the opened row, minus the rows
+    // already seeded. Capped, because it only has to say "more is coming" — the middle
+    // of a long conversation folds into a count badge once it lands anyway.
+    pendingSkeletons() {
+      if (this.threadLanded || !this.email) {
+        return 0;
+      }
+      const openedKey = this.msgKey(this.email);
+      const listRow = (this.emails || []).find(e => this.msgKey(e) === openedKey);
+      const total = listRow?.threadCount || this.email.threadCount || 0;
+      return Math.min(Math.max(total - this.categorizableMessages.length, 0), MAX_PENDING_SKELETONS);
     },
     // The reader's display list: each message shown on its own, except runs of
     // consecutive collapsed middle messages, which fold into one "bubble" item
@@ -256,6 +298,50 @@ export default {
         this.loadThread();
       },
     },
+    // The drawer opens the reader on the list row and swaps in the full message when
+    // its own request answers — same identity, so the watcher above does not reload.
+    // Until the conversation lands, the full message takes its seeded row's place, so
+    // the opened body shows as soon as either answer is here; after a fallback it
+    // replaces the partial row the fallback was built from.
+    email(newEmail, oldEmail) {
+      if (!newEmail || !oldEmail || newEmail === oldEmail || this.msgKey(newEmail) !== this.msgKey(oldEmail)) {
+        return;
+      }
+      if (!this.threadLanded) {
+        const key = this.msgKey(newEmail);
+        this.messages = this.messages.map(message => (this.msgKey(message) === key ? newEmail : message));
+      } else if (this.fallback) {
+        this.applyMessages(null);
+      }
+    },
+    // The drawer shows the platform's loading bar in its header; the reader only tells
+    // it when the conversation is being read, which is what the user is waiting on.
+    loadingThread: {
+      immediate: true,
+      handler(loading) {
+        this.$emit('loading', loading);
+      },
+    },
+    // Told apart from the loading above so the drawer can keep its bar on for the
+    // opened message's own request only while that body is really missing here — not
+    // when the conversation already brought it in full.
+    openedPartial: {
+      immediate: true,
+      handler(partial) {
+        this.$emit('opened-partial', partial);
+      },
+    },
+  },
+  beforeCreate() {
+    // Which load is current. A response to an earlier one — the user opened another
+    // conversation before it answered — is dropped rather than painted over the
+    // conversation now on screen. Not reactive: nothing renders from it.
+    //
+    // Set here and not in created(): the openedKey watcher is immediate, and Vue runs
+    // immediate watchers before created(), so the first load would read an undefined
+    // counter, get NaN as its id and drop its own answer.
+    this.loadSeq = 0;
+    this.seedExpandedKey = null;
   },
   created() {
     // The reader's messages are fetched apart from the folder list, so a favorite
@@ -273,6 +359,8 @@ export default {
     this.$root.$off('update-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('apply-email-favorite-status', this.applyFavoriteStatus);
     this.$root.$off('refresh-email-box', this.reloadFromCache);
+    this.$emit('loading', false);
+    this.$emit('opened-partial', false);
     // Nothing is being read any more — the drawer switched to its multi-select mode, to
     // the "pick a message" placeholder, or closed. Say so, or the header keeps offering
     // the conversation's actions on a conversation nobody has open.
@@ -284,18 +372,39 @@ export default {
      * can act on the exchange rather than on the message that happens to be selected.
      *
      * Emitted from the two places that actually know — a load starting and messages
-     * landing — rather than watched off the params: the messages of the PREVIOUS
-     * conversation deliberately stay on screen while the next one is fetched, and a
-     * watcher would hand the header the new mail's thread id with the old exchange's
-     * messages still attached, which is exactly how a lone mail is mistaken for a
-     * conversation. Clearing first and re-announcing on arrival means the header is
-     * briefly right-but-narrow instead of momentarily wrong.
+     * landing — rather than watched off the params: while the next conversation is
+     * fetched the reader shows it seeded from the folder list's rows, which are not
+     * the whole exchange, and a watcher would hand the header a conversation that is
+     * still missing its sent replies and archived messages — which is exactly how a
+     * lone mail is mistaken for a conversation, or a conversation for a lone mail. Clearing first and re-announcing on arrival means the header is
+     * briefly right-but-narrow instead of momentarily wrong. While the conversation
+     * is on its way, the seeded rows are announced as a PROVISIONAL context (see
+     * emitProvisionalThreadContext), so the header's actions reach what is on screen.
      *
      * @param {boolean} clear - true to announce that nothing is open
      * @returns {void}
      */
     emitThreadContext(clear) {
       this.$emit('thread-context', clear ? null : this.summaryExtensionParams);
+    },
+    /**
+     * Tells the header which conversation is on screen while it is only seeded: the
+     * rows of it the folder list holds. The header's actions scope a conversation to
+     * the acting folder, and those are exactly the rows the list holds, so a delete
+     * started now reaches the conversation on screen rather than the opened message
+     * alone. Marked provisional; the extension that describes the conversation
+     * (`email-thread-summary`) is never given it — its params stay the landed
+     * conversation only.
+     *
+     * @returns {void}
+     */
+    emitProvisionalThreadContext() {
+      this.$emit('thread-context', {
+        threadId: this.email && this.resolveThreadId(),
+        messages: this.categorizableMessages,
+        subject: this.subject,
+        provisional: true,
+      });
     },
     // Patch the favorite flag on this conversation's INBOX messages (favorite ids are
     // INBOX UIDs; the same number in another folder is a different message).
@@ -334,6 +443,59 @@ export default {
         return `DRAFT-${message.draftLocalId}`;
       }
       return `${message.folder || 'INBOX'}-${message.mailRemoteId}`;
+    },
+    /**
+     * Whether a message is only known by its list row so far: no body and no
+     * recipients, which is what the folder listing leaves out. Such a message renders
+     * as a skeleton when expanded, and as its ordinary strip when collapsed — the
+     * strip only needs the sender, the excerpt and the date the row does carry.
+     * <p>
+     * Judged on the recipients rather than on the body, because a full message may
+     * legitimately have an empty body, while every full read carries its recipients
+     * as a list, empty or not. A draft is always read whole.
+     *
+     * @param {object} message - a message of the reader
+     * @returns {boolean} true when only the list row of the message is known
+     */
+    isPartial(message) {
+      return this.$emailConnectorMailBoxService.isListingRow(message);
+    },
+    /**
+     * Shows the conversation at once from what the drawer already holds — the opened
+     * message and its siblings in the folder list — while the server is asked for the
+     * whole of it. Collapsed messages render as their usual strip (sender, excerpt,
+     * date); the expanded one renders as a skeleton until its body is here.
+     * <p>
+     * Announced to the drawer's header as a provisional context only (see
+     * emitProvisionalThreadContext): the list holds one folder, so this is not the
+     * exchange yet, only its visible part.
+     *
+     * @returns {void}
+     */
+    seedMessages() {
+      const threadKey = this.resolveThreadId() || this.threadKey(this.email);
+      const known = [this.email].concat((this.emails || []).filter(e => this.threadKey(e) === threadKey));
+      const seen = new Set();
+      const unique = known.filter(message => {
+        const key = this.msgKey(message);
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+      const sorted = unique.sort((first, second) => new Date(first.receivedDate) - new Date(second.receivedDate));
+      this.threadLanded = false;
+      this.fallback = false;
+      this.messages = this.positionDrafts(this.dedupeByHeader(sorted));
+      const readable = this.messages.filter(message => !this.isDraft(message));
+      const latest = readable[readable.length - 1];
+      // Remembered so that landing does not mistake this default for a message the
+      // user opened: the seeded latest is often not the conversation's latest (the
+      // list holds no sent reply), and keeping it open would open two messages.
+      this.seedExpandedKey = latest ? this.msgKey(latest) : null;
+      this.expandedIds = this.seedExpandedKey ? [this.seedExpandedKey] : [];
+      this.emitProvisionalThreadContext();
     },
     isLast(message) {
       const last = this.messages[this.messages.length - 1];
@@ -396,13 +558,16 @@ export default {
      * @returns {void}
      */
     loadThread() {
+      const load = ++this.loadSeq;
       if (!this.email) {
+        this.loadingThread = false;
         return;
       }
       // The header stops speaking for the previous conversation the moment another one
       // is asked for, and starts speaking for this one only once its messages are here.
       this.emitThreadContext(true);
       this.revealedKeys = [];
+      this.seedMessages();
       const threadId = this.resolveThreadId();
       this.loadingThread = true;
       const cached = threadId
@@ -410,12 +575,22 @@ export default {
         : Promise.resolve(null);
       cached
         .then(fetched => {
+          if (load !== this.loadSeq) {
+            return;
+          }
+          // The seeded strips are clickable: what the user opened while the
+          // conversation was on its way stays open when it lands.
+          const wasExpanded = this.expandedIds.filter(key => key !== this.seedExpandedKey);
           this.applyMessages(fetched);
+          this.keepExpanded(wasExpanded);
           this.markThreadRead();
         })
         .finally(() => {
+          if (load !== this.loadSeq) {
+            return;
+          }
           this.loadingThread = false;
-          this.completeInBackground(threadId);
+          this.completeInBackground(threadId, load);
         });
     },
     /**
@@ -443,8 +618,13 @@ export default {
       // What the user had opened is theirs, not ours to close: a draft being autosaved
       // must not collapse the message they are reading it against.
       const wasExpanded = this.expandedIds.slice();
+      const load = this.loadSeq;
       this.$emailConnectorMailBoxService.getThreadByThreadId(threadId, this.openedFrom)
         .then(fetched => {
+          // Another conversation was opened while this one was being re-read.
+          if (load !== this.loadSeq) {
+            return;
+          }
           if (!fetched?.length) {
             // An answer with nothing in it is not this conversation being emptied — the
             // messages on screen were read from the same table a moment ago. It is the
@@ -463,21 +643,46 @@ export default {
         })
         .catch(() => { /* best-effort: keep what is on screen */ });
     },
-    // Second pass: pull the archived tail from All Mail without blocking the open.
-    completeInBackground(threadId) {
+    /**
+     * Second pass: pulls the archived tail from All Mail without blocking the open.
+     * <p>
+     * Silent on purpose. It may cost an IMAP round-trip of several seconds and usually
+     * recovers nothing, so a loading indicator tied to it stayed on long after the
+     * conversation was on screen, telling the user to wait for something they were
+     * not waiting for. Recovered messages simply join the conversation, and what the
+     * user had expanded in the meantime stays expanded.
+     *
+     * @param {string} threadId - the conversation id
+     * @param {number} load - the load this pass belongs to, to drop it when stale
+     * @returns {void}
+     */
+    completeInBackground(threadId, load) {
       if (!threadId) {
         return;
       }
-      this.loadingOlder = true;
       this.$emailConnectorMailBoxService.completeThreadByThreadId(threadId, this.openedFrom)
         .then(completed => {
-          // Only re-render if completion actually recovered more messages.
-          if (completed && completed.length > this.messages.length) {
-            this.applyMessages(completed);
+          // Dropped when another conversation was opened meanwhile, and only
+          // re-rendered if completion actually recovered more messages.
+          if (load !== this.loadSeq || !completed || completed.length <= this.messages.length) {
+            return;
           }
+          const wasExpanded = this.expandedIds.slice();
+          this.applyMessages(completed);
+          this.keepExpanded(wasExpanded);
         })
-        .catch(() => { /* best-effort: keep the cached thread on failure */ })
-        .finally(() => this.loadingOlder = false);
+        .catch(() => { /* best-effort: keep the cached thread on failure */ });
+    },
+    /**
+     * Re-opens, after the messages were replaced, the ones that were open before and
+     * are still part of the conversation.
+     *
+     * @param {Array<string>} wasExpanded - the keys of the messages open before
+     * @returns {void}
+     */
+    keepExpanded(wasExpanded) {
+      const stillHere = wasExpanded.filter(key => this.messages.some(message => this.msgKey(message) === key));
+      this.expandedIds = Array.from(new Set(this.expandedIds.concat(stillHere)));
     },
     // Normalize a fetched thread into the reader's state: dedupe by Message-ID, sort
     // oldest first, keep the latest message expanded.
@@ -498,6 +703,8 @@ export default {
       // is the one its date earns, not the one the draft was holding.
       const messages = this.positionDrafts(this.dedupeByHeader(sorted));
       this.messages = messages;
+      this.threadLanded = true;
+      this.fallback = !(fetched && fetched.length);
       // The last real message stays open, not the draft: the draft renders as its own
       // strip with no expanded form, and expanding nothing would leave the reader with
       // every message collapsed.
@@ -579,14 +786,27 @@ export default {
       });
       return deduped;
     },
-    // Opening a conversation reads all of its messages, via the existing bulk endpoint.
+    // Opening a conversation reads all of its messages, via the existing bulk endpoint --
+    // unless the drawer opened it on its own, and reads it itself once the user stayed.
+    //
+    // The conversation's own rows, not every row whose number it holds -- and sent per
+    // folder, with the folder: the list may be a search's, whose rows come from several
+    // folders, and a bare UID is resolved in the listed folder, where the same number is
+    // another message that would be marked read on the mail server (EXO-90416).
     markThreadRead() {
-      const unread = (this.emails || [])
-        .filter(e => this.threadMailRemoteIds.includes(e.mailRemoteId) && !e.read)
-        .map(e => e.mailRemoteId);
-      if (unread.length) {
-        this.$root.$emit('update-email-read-status', true, unread);
+      if (this.deferThreadRead) {
+        return;
       }
+      const key = this.email && this.threadKey(this.email);
+      const conversation = (this.emails || []).filter(e => this.threadKey(e) === key);
+      const rows = conversation.length ? conversation : (this.emails || []).filter(e => this.email
+        && e.mailRemoteId === this.email.mailRemoteId && (e.folder || 'INBOX') === (this.email.folder || 'INBOX'));
+      const unreadByFolder = new Map();
+      rows.filter(e => !e.read).forEach(e => {
+        const folder = e.folder || 'INBOX';
+        unreadByFolder.set(folder, (unreadByFolder.get(folder) || []).concat(e.mailRemoteId));
+      });
+      unreadByFolder.forEach((unread, folder) => this.$root.$emit('update-email-read-status', true, unread, folder));
     },
     // Reveal a folded run: its messages render as individual strips from now on.
     revealBubble(bubble) {

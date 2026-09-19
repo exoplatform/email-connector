@@ -67,6 +67,12 @@ public class MailFolderView {
   // The mirror window, so the listing can say "showing the N most recent".
   private Integer windowSize;
 
+  // How many of the messages the mirror holds are unread (EXO-90415), for the
+  // full-screen folder column, which shows it beside the inbox and the spam. Filled on
+  // the folder list (the listing's, the settings screen's); a single folder answered on
+  // its own -- after a create, a rename or an opt-in -- carries 0.
+  private int     unreadCount;
+
   /**
    * Whether this is one of the user's own folders.
    *

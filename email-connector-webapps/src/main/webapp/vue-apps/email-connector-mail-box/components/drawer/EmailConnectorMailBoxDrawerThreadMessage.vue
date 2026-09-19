@@ -51,6 +51,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-icon>
       <span class="text-light-color ms-2 flex-shrink-0 text-caption">{{ receivedDate }}</span>
     </div>
+    <!-- Expanded, but only its list row is known yet: the conversation is still on its
+         way and the row carries no body and no recipients. A skeleton holds the place
+         the message will take, so the reader shows its shape at once instead of a
+         blank panel that fills in one jump. -->
+    <v-skeleton-loader
+      v-else-if="loading"
+      type="list-item-avatar-two-line, paragraph"
+      class="py-2" />
     <!-- Expanded: the full message. Reuses the single-message renderer without its
          subject (shown once at the thread top); its sender line toggles it closed. -->
     <email-connector-mail-box-drawer-list-item-detail-content
@@ -90,15 +98,27 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Only the list row of this message is known so far: enough for the collapsed
+    // strip (sender, excerpt, date), not for the full message, which renders as a
+    // skeleton until the conversation lands.
+    loading: {
+      type: Boolean,
+      default: false,
+    },
   },
   computed: {
     receivedDate() {
       return this.$emailConnectorMailBoxService.formatDateString(this.email.receivedDate, this.$t('emailConnector.mailBox.list.drawer.yesterday'));
     },
     // One-line preview of the message body for the collapsed row. Derived from the
-    // body (the full message carries no pre-computed excerpt), stripped of markup.
+    // body when there is one (the full message carries no pre-computed excerpt),
+    // stripped of markup; a list row carries no body but does carry the server's
+    // excerpt, which is what lets the strip render before the conversation lands.
     snippet() {
       const body = this.email.content?.body || '';
+      if (!body) {
+        return (this.email.content?.excerpt || '').replace(/\s+/g, ' ').trim();
+      }
       if (typeof DOMParser === 'undefined') {
         return '';
       }

@@ -223,6 +223,66 @@ export function folderLabel(folder, translate) {
   return translate(`emailConnector.mailBox.list.drawer.folder.${(folder.key || 'INBOX').toLowerCase()}`);
 }
 
+// The icon of each built-in folder; a folder of the user's own gets the plain folder.
+// Read by the 3-dots menu and the full-screen folder column alike (folderIcon), so the
+// two can never show one folder under two icons (EXO-90415).
+const BUILT_IN_FOLDER_ICONS = {
+  INBOX: 'fa-inbox',
+  SENT: 'fa-paper-plane',
+  ARCHIVE: 'fa-archive',
+  DRAFTS: 'fa-file-alt',
+  JUNK: 'fa-ban',
+  TRASH: 'fa-trash',
+};
+
+/**
+ * The ONE place a folder is given its icon, as folderLabel is the one place it is given
+ * its name: a built-in by its key, a folder of the user's own -- or a built-in this
+ * interface has no icon for -- the plain folder.
+ *
+ * @param {Object} folder the folder as the server lists it ({key, type, ...})
+ * @returns {String} the icon class
+ */
+export function folderIcon(folder) {
+  if (!folder || folder.type === 'CUSTOM') {
+    return 'fa-folder';
+  }
+  return BUILT_IN_FOLDER_ICONS[folder.key || 'INBOX'] || 'fa-folder';
+}
+
+// The height of the full-screen list's first row -- its quick chips -- and of the
+// folder column's first row beside it, so both are centred on one line whatever the
+// font size (EXO-90415): the chips row centres its chips in it, the FOLDERS header
+// centres its label in it, and as a rail the first entry (a Vuetify dense row, 40 px
+// whatever the font) is centred in it by the half of what is left.
+export const LIST_TOP_ROW_HEIGHT_PX = 48;
+
+export const DENSE_ROW_HEIGHT_PX = 40;
+
+/** The list's first row height, as CSS. */
+export const LIST_TOP_ROW_HEIGHT = `${LIST_TOP_ROW_HEIGHT_PX}px`;
+
+/** What centres a dense row in the list's first row, as CSS: the rail's top padding. */
+export const RAIL_TOP_PADDING = `${(LIST_TOP_ROW_HEIGHT_PX - DENSE_ROW_HEIGHT_PX) / 2}px`;
+
+// Above this a count shows as "99+", the platform's convention for a badge (social's
+// UserNotificationType writes it inline the same way; there is no shared formatter).
+const COUNT_DISPLAY_MAX = 99;
+
+/**
+ * A count as the folder column shows it: "99+" past 99, nothing for none. The exact
+ * number stays in the entry's accessible name and tooltip.
+ *
+ * @param {Number} count the count
+ * @returns {String} what to show, empty for none
+ */
+export function formatCount(count) {
+  if (!(count > 0)) {
+    return '';
+  }
+  return count > COUNT_DISPLAY_MAX ? `${COUNT_DISPLAY_MAX}+` : String(count);
+}
+
 /**
  * A custom folder's full path, readable: the server's hierarchy separator replaced by
  * a spaced slash ("Customers / Acme"), so a nested folder says where it lives.
@@ -617,8 +677,25 @@ export function unlinkEmailsFromCategory(mailRemoteIds, categoryId) {
   });
 }
 
-export function getEmailByRemoteId(mailRemoteId, folder) {
-  const query = folder && folder !== 'INBOX' ? `?folder=${encodeURIComponent(folder)}` : '';
+/**
+ * Reads one message in full.
+ *
+ * @param {Number} mailRemoteId the message's IMAP UID within its folder
+ * @param {String} folder the folder that UID is numbered in; INBOX when omitted
+ * @param {Object} options {broadcast}: false when the read must not count as the user
+ *   opening the message -- a message the reader opened on its own, whose opening is
+ *   signalled later by broadcastOpenEmail (EXO-90414). Counts when omitted.
+ * @returns {Promise<Object>} the message
+ */
+export function getEmailByRemoteId(mailRemoteId, folder, options = {}) {
+  const params = new URLSearchParams();
+  if (folder && folder !== 'INBOX') {
+    params.set('folder', folder);
+  }
+  if (options.broadcast === false) {
+    params.set('broadcast', 'false');
+  }
+  const query = params.toString() ? `?${params.toString()}` : '';
   return fetch(`/email-connector/rest/email-box/${mailRemoteId}${query}`, {
     headers: {
       'Content-Type': 'application/json'
@@ -632,6 +709,33 @@ export function getEmailByRemoteId(mailRemoteId, folder) {
       throw new Error('Error when getting email detail');
     }
   });
+}
+
+/**
+ * Whether a message is only its folder-list row: the listing leaves out the body and
+ * the recipients of every mail (a draft is always read whole), while every full read
+ * carries its recipients as a list, empty or not. Judged on the recipients rather
+ * than on the body because a full message may legitimately have an empty body.
+ *
+ * @param {object} email the message
+ * @returns {boolean} true when only the list row of the message is known
+ */
+export function isListingRow(email) {
+  return !!email && !email.draftLocalId && !Array.isArray(email.to);
+}
+
+/**
+ * The list row of a message whose full copy could not be read, made final: the
+ * reader then renders what it has (sender, date, excerpt) with a "could not be
+ * loaded" line and a retry, instead of a skeleton waiting for a copy that is not
+ * coming. Marked `unavailable`: its empty recipients and missing body are NOT the
+ * message's, so nothing may reply to it, forward it or quote it.
+ *
+ * @param {object} row the list row
+ * @returns {object} a copy of the row that no longer reads as a listing row
+ */
+export function settleListingRow(row) {
+  return { ...row, to: row.to || [], cc: row.cc || [], bcc: row.bcc || [], unavailable: true };
 }
 
 /**
@@ -1107,6 +1211,26 @@ export function deleteDraft(draftLocalId) {
   }).then((resp) => {
     if (!resp?.ok) {
       throw new Error('Error when deleting draft');
+    }
+  });
+}
+
+/**
+ * Counts one opening of a message by the user -- for a message the reader opened on
+ * its own, read with {broadcast: false}, once the user has stayed on it (EXO-90414).
+ *
+ * @returns {Promise<void>} resolved once the server took it
+ */
+export function broadcastOpenEmail() {
+  return fetch('/email-connector/rest/email-box/open/broadcast', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST'
+  }).then((resp) => {
+    if (!resp?.ok) {
+      throw new Error('Error when broadcasting an email opening');
     }
   });
 }
