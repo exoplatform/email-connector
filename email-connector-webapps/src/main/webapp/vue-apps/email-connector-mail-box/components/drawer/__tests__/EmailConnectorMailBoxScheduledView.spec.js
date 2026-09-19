@@ -26,6 +26,7 @@ import EmailConnectorMailBoxScheduledListItem from '../EmailConnectorMailBoxSche
 import EmailConnectorMailBoxDrawerNavigation from '../EmailConnectorMailBoxDrawerNavigation.vue';
 import EmailConnectorMailBoxDrawerActionMenuItems from '../EmailConnectorMailBoxDrawerActionMenuItems.vue';
 import EmailConnectorMailBoxDrawerThreadDraft from '../EmailConnectorMailBoxDrawerThreadDraft.vue';
+import EmailConnectorMailBoxDrawerListItemDetailContent from '../EmailConnectorMailBoxDrawerListItemDetailContent.vue';
 import EmailConnectorMailBoxDrawerThreadContent from '../EmailConnectorMailBoxDrawerThreadContent.vue';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
@@ -539,6 +540,7 @@ describe('the Scheduled view\'s list and its actions (EXO-90434)', () => {
 describe('a scheduled reply in its conversation is read-only (EXO-90434, PO decision (a))', () => {
   const DRAFT = {
     draftLocalId: 'd1',
+    sender: { name: 'Benjamin', address: 'ben@host' },
     to: [{ address: 'bob@host' }],
     content: { body: '<p>See you</p>' },
     scheduled: true,
@@ -548,43 +550,44 @@ describe('a scheduled reply in its conversation is read-only (EXO-90434, PO deci
   };
 
   /**
-   * Mounts the conversation's draft strip.
+   * Mounts the message renderer on a scheduled draft, as the conversation does.
    *
-   * @param {Object} draft the draft row
+   * @param {Object} email the draft row
    * @returns {Object} the wrapper
    */
-  function mountStrip(draft) {
-    return shallowMount(EmailConnectorMailBoxDrawerThreadDraft, {
-      propsData: { draft },
-      mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+  function mountMessage(email) {
+    return shallowMount(EmailConnectorMailBoxDrawerListItemDetailContent, {
+      propsData: { email, hideSubject: true },
+      mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService, $vuetify: { breakpoint: {} } },
       stubs: { 'v-btn': { template: '<button type="button" v-bind="$attrs" @click="$emit(\'click\', $event)"><slot /></button>' } },
     });
   }
 
-  it('says when it goes and offers Edit, never the composer in place nor a discard', async () => {
-    const strip = mountStrip(DRAFT);
-    expect(strip.find('.scheduled-draft-date').text())
-      .toBe(`emailConnector.mailBox.list.drawer.thread.draft.scheduledFor|${emailConnectorMailBoxService.formatScheduledDate(DRAFT.scheduledDate, 'Europe/Paris')}`);
-    await strip.trigger('click');
-    expect(strip.emitted('resume')).toBeFalsy();
-    expect(strip.text()).not.toContain('emailConnector.mailBox.list.drawer.thread.draft.discard');
-    await strip.find('.scheduled-draft-edit').trigger('click');
-    expect(strip.emitted('edit')).toHaveLength(1);
+  it('says when it goes in place of a date, offers Edit, and none of a message\'s own actions', async () => {
+    const message = mountMessage(DRAFT);
+    expect(message.find('.scheduled-mail-date').text().replace(/\s+/g, ' '))
+      .toBe(`far fa-clock emailConnector.mailBox.scheduled.at|${emailConnectorMailBoxService.formatScheduledDate(DRAFT.scheduledDate, 'Europe/Paris')}`);
+    expect(message.find('email-connector-mail-box-drawer-favorite-toggle').exists()).toBe(false);
+    expect(message.find('email-connector-mail-box-drawer-list-item-detail-action-menu').exists()).toBe(false);
+    await message.find('.scheduled-mail-edit').trigger('click');
+    expect(message.emitted('edit')).toHaveLength(1);
   });
 
   it('says a mail not sent or not confirmed from the status the conversation\'s row carries, never an invented reason', () => {
-    const failed = mountStrip({ ...DRAFT, scheduledStatus: 'FAILED' }).find('.scheduled-draft-state');
+    const failed = mountMessage({ ...DRAFT, scheduledStatus: 'FAILED' }).find('.scheduled-mail-state');
     expect(failed.text()).toBe('emailConnector.mailBox.list.drawer.thread.draft.notSent');
     expect(failed.classes()).toContain('error--text');
-    expect(mountStrip({ ...DRAFT, scheduledStatus: 'UNCERTAIN' }).find('.scheduled-draft-state').text())
+    expect(mountMessage({ ...DRAFT, scheduledStatus: 'UNCERTAIN' }).find('.scheduled-mail-state').text())
       .toBe('emailConnector.mailBox.scheduled.uncertain');
-    expect(mountStrip(DRAFT).find('.scheduled-draft-state').exists()).toBe(false);
-    expect(mountStrip({ ...DRAFT, scheduledStatus: 'SENDING' }).find('.scheduled-draft-edit').attributes('disabled')).toBe('disabled');
+    expect(mountMessage(DRAFT).find('.scheduled-mail-state').exists()).toBe(false);
+    expect(mountMessage({ ...DRAFT, scheduledStatus: 'SENDING' }).find('.scheduled-mail-edit').attributes('disabled')).toBe('disabled');
   });
 
-  it('keeps an unscheduled draft as it was: resumed on a click', async () => {
-    const strip = mountStrip({ ...DRAFT, scheduled: false });
-    expect(strip.find('.scheduled-draft-edit').exists()).toBe(false);
+  it('keeps an unscheduled draft as it was: its strip, resumed on a click', async () => {
+    const strip = shallowMount(EmailConnectorMailBoxDrawerThreadDraft, {
+      propsData: { draft: { ...DRAFT, scheduled: false } },
+      mocks: { $t: translate, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+    });
     await strip.trigger('click');
     expect(strip.emitted('resume')).toHaveLength(1);
   });
