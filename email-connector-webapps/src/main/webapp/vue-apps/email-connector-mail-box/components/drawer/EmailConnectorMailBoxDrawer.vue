@@ -37,7 +37,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     @go-back="cancelSelectMode"
     @confirm-close="onAbortDownloadConfirmed"
     @closed="close"
-    @keydown.native="onListNavigationKeydown"
     @mousedown.native="onListNavigationPointerDown"
     style="outline: none;"
     class="no-box-shadow">
@@ -100,7 +99,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <template v-if="hasFullAppLeft" #fullAppLeftContent>
       <email-connector-mail-box-drawer-search-results
         v-if="searchActive"
+        ref="expandedSearchResults"
         :results="mergedSearchResults"
+        :opened-key="openedSearchKey"
         :total-matches="searchTotalMatches"
         :server-searching="searchServerRunning"
         :server-error="searchServerError"
@@ -153,6 +154,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item>
       <email-connector-mail-box-drawer-search-results
         v-else-if="searchActive && !expanded"
+        ref="searchResults"
         :results="mergedSearchResults"
         :total-matches="searchTotalMatches"
         :server-searching="searchServerRunning"
@@ -185,6 +187,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               :email="email"
               :emails="emails"
               expanded-drawer
+              :defer-thread-read="autoOpenReadPending"
               @thread-context="threadContext = $event"
               @loading="readerLoading = $event"
               @opened-partial="readerPartial = $event" />
@@ -215,7 +218,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import { selectionKey } from '../../js/EmailConnectorMailBoxSelection.js';
-import listNavigationMixin, { firstOpenableThread, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
+import listNavigationMixin, { firstOpenableThread, searchRows, threadRows } from '../../js/EmailConnectorMailBoxListNavigation.js';
 
 // Categorization runs after the sync reports done, in batches, and a large mailbox takes
 // several minutes. Two numbers govern how long the drawer keeps watching for the results.
@@ -376,6 +379,9 @@ export default {
     this.isRefreshing = false;
     // Plain instance field: a pending timeout id needs no reactivity.
     this.searchDebounceTimer = null;
+    // Which hit openSearchResult is opening, so a repeat of it is ignored while another
+    // hit takes over. Plain: nothing renders it.
+    this.searchOpeningKey = null;
     // Favorites the user toggled here, each tagged with the search generation that was
     // current when the mail server acknowledged the \Flagged push, so a search answer
     // that left before that acknowledgement cannot roll the star back. A plain field,
@@ -746,6 +752,7 @@ export default {
         merged.set(key, { categoryIds: [], ...merged.get(key), ...result });
       });
       return Array.from(merged.values())
+        .filter(result => !this.isOptimisticallyRemoved(result))
         .filter(result => this.searchResultMatchesFilters(result))
         .sort((first, second) => new Date(second.receivedDate) - new Date(first.receivedDate));
     },
@@ -759,13 +766,31 @@ export default {
      * @returns {Array} the listed messages
      */
     navigationEmails() {
-      return this.emails;
+      return this.searchActive ? this.mergedSearchResults : this.emails;
+    },
+    /**
+     * Whether the drawer is open, for listNavigationMixin: the arrow keys are listened
+     * to on the whole page only then.
+     *
+     * @returns {Boolean} true while the mailbox is open
+     */
+    navigationDrawerOpen() {
+      return this.emailBoxDrawer;
+    },
+    /**
+     * The search hit the reader shows, as the search results key it (folder and UID),
+     * so its row is lit.
+     *
+     * @returns {String} the key, or null when the reader shows none
+     */
+    openedSearchKey() {
+      return this.email && !this.selectEmailPlaceHolder ? `${this.email.folder || 'INBOX'}:${this.email.mailRemoteId}` : null;
     },
     /**
      * Whether Up and Down walk the list right now: the drawer is the one on screen (the
-     * mail drawer opened over it takes the keys), and the list is the folder's -- not a
-     * multi-selection, whose checkboxes a key must not tick, nor the search results,
-     * which are a list of their own.
+     * mail drawer opened over it takes the keys), and not in a multi-selection, whose
+     * checkboxes a key must not tick. The search results are walked like the folder's
+     * list, one hit per row.
      * <p>
      * Not cached: the mail drawer's flag is a plain property of the root, which Vue does
      * not observe, so a cached value would keep answering from before that drawer
@@ -777,7 +802,7 @@ export default {
       cache: false,
       get() {
         return this.emailBoxDrawer && !this.$root.isDetailDrawerActive
-          && !this.selectMode && !this.searchActive && !this.syncBlocked && this.hasEmails;
+          && !this.selectMode && !this.syncBlocked && this.navigationEmails.length > 0;
       },
     },
     /**
@@ -958,11 +983,17 @@ export default {
      * OUTSIDE the list (a search hit, a favorite) already pass the folder — this is
      * the same lookup the narrow drawer does in its own folderOf.
      *
+     * An automatic opening (options.automatic: the first mail in full screen, the next
+     * one after an action, the one the arrow keys stopped on) neither marks the message
+     * read nor counts it as opened: listNavigationMixin does both once the user stayed
+     * on it (EXO-90414).
+     *
      * @param {Number} mailRemoteId the message's IMAP UID within the listed folder
      * @param {String} folder the folder it is numbered in, when the row says so
+     * @param {Object} options {automatic}: whether the user did not ask for this mail
      * @returns {Promise} resolved once the message is on screen (nothing for an inert row)
      */
-    openEmailDetailContent(mailRemoteId, folder = null) {
+    openEmailDetailContent(mailRemoteId, folder = null, options = {}) {
       // A row an Undo put back, or a move filed here, is a snapshot: it carries the UID
       // it had before the move (or a placeholder, see rememberMovedRows), which the
       // server's re-read replaces, so nothing can be opened by it yet. The row renders
@@ -1001,10 +1032,16 @@ export default {
       this.loadingEmail = true;
       // Read from the moment it is opened, as the detail drawer does: the reader marks
       // the conversation's unread rows read as soon as the conversation lands, which
-      // may be before this answer, and it must find this one already read. In the
-      // message's OWN folder (EXO-90416).
-      this.updateEmailsReadStatus(true, [mailRemoteId], ownFolder);
-      return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder).then((email) => {
+      // may be before this answer, and it must find this one already read -- in the
+      // message's OWN folder (EXO-90416). Not when the user did not ask for it: then
+      // it is read once they stayed on it (EXO-90414).
+      if (!options.automatic) {
+        this.updateEmailsReadStatus(true, [mailRemoteId], ownFolder);
+      }
+      const read = options.automatic
+        ? this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder, { broadcast: false })
+        : this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder);
+      return read.then((email) => {
         if (request !== this.emailRequest) {
           return;
         }
@@ -1039,6 +1076,9 @@ export default {
     supersedeEmailRequest() {
       this.emailRequest++;
       this.releaseEmailRequest();
+      // Whatever opens now is the user's choice or a new automatic opening, which
+      // starts its own wait: the previous mail's wait is over (EXO-90414).
+      this.cancelAutoOpenDwell();
     },
     /**
      * Ends the loading state the current message request put on.
@@ -1110,6 +1150,10 @@ export default {
       try {
         if (!hit.cached) {
           await this.fetchSearchedEmail(hit);
+          // Superseded while the message was being pulled in: nothing more to read.
+          if (request !== this.emailRequest) {
+            return;
+          }
         }
         if (this.expanded && this.emailBoxDrawer) {
           const opened = await this.$emailConnectorMailBoxService.getEmailByRemoteId(hit.mailRemoteId, hit.folder);
@@ -1123,6 +1167,10 @@ export default {
           this.$root.$emit('open-email-detail-drawer', hit.mailRemoteId, [hit], this.syncInProgress, this.webmailUrl, true, !this.emailBoxDrawer, hit.folder);
         }
       } catch (error) {
+        // An opening superseded meanwhile is not the user's any more: no toast for it.
+        if (request !== this.emailRequest) {
+          return;
+        }
         // A mailbox held by a running synchronization is a "one moment", not a
         // failure.
         const syncing = error?.status === 409;
@@ -1277,14 +1325,22 @@ export default {
      * Opens one search hit: a cached one goes straight to the existing reader; an
      * uncached one is first pulled into the cache through the fetch endpoint.
      *
+     * A second opening of the hit already on its way is ignored; another hit takes over
+     * -- the request counter orders them, so a click on one hit is never dropped behind
+     * an earlier one, the first hit opened automatically included. An automatic opening
+     * (options.automatic, EXO-90414) neither reads the hit nor counts it as opened.
+     *
      * @param {Object} result the hit ({mailRemoteId, folder, cached})
+     * @param {Object} options {automatic}: whether the user did not ask for this hit
      * @returns {Promise<void>} resolved once the hit is on screen or refused
      */
-    async openSearchResult(result) {
-      if (this.searchOpening) {
+    async openSearchResult(result, options = {}) {
+      const key = `${result.folder || 'INBOX'}:${result.mailRemoteId}`;
+      if (this.searchOpening && this.searchOpeningKey === key) {
         return;
       }
       this.searchOpening = true;
+      this.searchOpeningKey = key;
       // What the hit was before this opening stamps its row read (markResultOpened).
       const wasRead = result.read;
       this.autoSelectPending = false;
@@ -1296,10 +1352,16 @@ export default {
       try {
         if (!result.cached) {
           await this.fetchSearchedEmail(result);
+          // Superseded while the hit was being pulled in: nothing more to read.
+          if (request !== this.emailRequest) {
+            return;
+          }
         }
         if (this.expanded) {
-          this.markResultOpened(result);
-          const email = await this.$emailConnectorMailBoxService.getEmailByRemoteId(result.mailRemoteId, result.folder);
+          this.markResultOpened(result, !options.automatic);
+          const email = options.automatic
+            ? await this.$emailConnectorMailBoxService.getEmailByRemoteId(result.mailRemoteId, result.folder, { broadcast: false })
+            : await this.$emailConnectorMailBoxService.getEmailByRemoteId(result.mailRemoteId, result.folder);
           if (request !== this.emailRequest) {
             return;
           }
@@ -1307,7 +1369,10 @@ export default {
           this.selectEmailPlaceHolder = false;
           // Read in its own folder, as the narrow path's mail drawer reads it -- once:
           // not when it already was (EXO-90416).
-          this.updateEmailsReadStatus(true, [result.mailRemoteId], result.folder || 'INBOX', wasRead);
+          // Not an automatic opening: that one is read once the user stayed on it.
+          if (!options.automatic) {
+            this.updateEmailsReadStatus(true, [result.mailRemoteId], result.folder || 'INBOX', wasRead);
+          }
           this.$root.$emit('set-opened', result.mailRemoteId);
         } else {
           // Handed over as they were before this opening: the mail drawer reads the hit
@@ -1317,6 +1382,10 @@ export default {
           this.markResultOpened(result);
         }
       } catch (error) {
+        // An opening superseded meanwhile is not the user's any more: no toast for it.
+        if (request !== this.emailRequest) {
+          return;
+        }
         // A fetch refused because a synchronization is running (already retried
         // once) is a "one moment", not an error.
         const syncing = error?.status === 409;
@@ -1328,7 +1397,9 @@ export default {
         if (request === this.emailRequest) {
           this.releaseEmailRequest();
         }
-        this.searchOpening = false;
+        if (this.searchOpeningKey === key) {
+          this.searchOpening = false;
+        }
       }
     },
     // Pull an uncached hit into the local cache. A 409 means a synchronization
@@ -1344,14 +1415,61 @@ export default {
           throw error;
         });
     },
-    // Reflect an open on the hit's own row: it is now cached, and read.
-    markResultOpened(result) {
+    /**
+     * Reflects an open on the hit's own row: it is now cached, and read unless the
+     * reader opened it on its own (it is read once the user stayed on it).
+     *
+     * @param {Object} result the hit
+     * @param {Boolean} read whether the opening reads it
+     * @returns {void}
+     */
+    markResultOpened(result, read = true) {
       const serverRow = this.searchServerResults
         .find(row => row.mailRemoteId === result.mailRemoteId && row.folder === result.folder);
       if (serverRow) {
         this.$set(serverRow, 'cached', true);
-        this.$set(serverRow, 'read', true);
+        if (read) {
+          this.$set(serverRow, 'read', true);
+        }
       }
+    },
+    /**
+     * A search hit the reader opened on its own was stayed on: its row turns read, as a
+     * click would have turned it (listNavigationMixin).
+     *
+     * @param {Object} row the hit, or a listed message
+     * @returns {void}
+     */
+    onAutoOpenedEmailRead(row) {
+      if (this.searchActive) {
+        this.markResultOpened(row);
+      }
+    },
+    /**
+     * The rows the list shows, for listNavigationMixin: one per hit in a search, the
+     * folder's conversations otherwise.
+     *
+     * @param {Array} rows the listed messages
+     * @returns {Array} the rows
+     */
+    navigationEntriesOf(rows) {
+      return this.searchActive ? searchRows(rows) : threadRows(rows);
+    },
+    /**
+     * Whether an action here took a message out of the listing before the server says
+     * so: the same optimistic removals the folder's list applies, applied to the search
+     * results, so a hit acted on leaves them too. By UID, as those lists record it --
+     * a move is recorded with its folder.
+     *
+     * @param {Object} row a listed message or a search hit
+     * @returns {Boolean} true when an action took it out
+     */
+    isOptimisticallyRemoved(row) {
+      const id = row.mailRemoteId;
+      return this.deletedEmailIds.includes(id) || this.archivedEmailIds.includes(id)
+        || this.restoredEmailIds.includes(id) || this.purgedEmailIds.includes(id)
+        || this.junkedEmailIds.includes(id) || this.unjunkedEmailIds.includes(id)
+        || this.movedEmailIds.some(moved => moved.id === id && moved.folder === (row.folder || this.currentFolder));
     },
     /**
      * Closes the mailbox and forgets everything the next opening must not inherit:
@@ -2449,7 +2567,7 @@ export default {
       if (this.searchActive) {
         const firstResult = this.mergedSearchResults[0];
         if (firstResult) {
-          this.openSearchResult(firstResult);
+          this.openAutomatically(firstResult);
         } else {
           this.autoSelectPending = this.searchServerRunning;
         }
@@ -2457,30 +2575,27 @@ export default {
       }
       const firstThread = firstOpenableThread(threadRows(this.emails));
       if (firstThread) {
-        this.openListedEmail(firstThread.latest);
+        this.openAutomatically(firstThread.latest);
       } else {
         this.autoSelectPending = this.loading || !this.emailBox || this.syncInProgress;
       }
     },
     /**
-     * Opens a listed message in the full-screen reader and lights its row, as a click
-     * on the row does (see the list item's openDetail).
-     * <p>
-     * The row is lit again once the message is on screen: when the reader was showing
-     * the placeholder in between -- the opened mail had just left the list -- the
-     * placeholder's own watcher clears the highlight after this call, and the list
-     * would otherwise show no row as the one being read.
+     * Opens a listed message -- a search hit while a search runs -- in the full-screen
+     * reader and lights its row, as a click on the row does (see the list item's
+     * openDetail). An automatic opening (options.automatic) leaves its read to
+     * listNavigationMixin.
      *
-     * @param {Object} row the listed message
+     * @param {Object} row the listed message, or the search hit
+     * @param {Object} options {automatic}: whether the user did not ask for this mail
      * @returns {Promise} resolved once the message is on screen
      */
-    openListedEmail(row) {
+    openListedEmail(row, options = {}) {
+      if (this.searchActive) {
+        return this.openSearchResult(row, options);
+      }
       this.$root.$emit('set-opened', row.mailRemoteId);
-      return Promise.resolve(this.openEmailDetailContent(row.mailRemoteId)).then(() => {
-        if (this.email?.mailRemoteId === row.mailRemoteId) {
-          this.$root.$emit('set-opened', row.mailRemoteId);
-        }
-      }).catch(() => null);
+      return Promise.resolve(this.openEmailDetailContent(row.mailRemoteId, row.folder || 'INBOX', options)).catch(() => null);
     },
     /**
      * The list on screen, for the arrow keys to reveal and focus a row in.
@@ -2488,15 +2603,27 @@ export default {
      * @returns {Object} the list content component of the current layout, or null
      */
     navigationList() {
+      if (this.searchActive) {
+        return (this.expanded ? this.$refs.expandedSearchResults : this.$refs.searchResults) || null;
+      }
       return (this.expanded ? this.$refs.expandedListContent : this.$refs.listContent) || null;
+    },
+    /**
+     * The drawer, for listNavigationMixin to tell whether it is the one on top.
+     *
+     * @returns {Object} the exo-drawer
+     */
+    navigationDrawer() {
+      return this.$refs.emailBoxDrawer;
     },
     /**
      * What every action that takes messages out of the listing does here (delete,
      * archive, spam and not-spam, move, restore and purge from the Trash): the action
      * itself, then the reader stops showing what is no longer listed and a running
      * selection ends. In full screen the reader then moves on to the conversation that
-     * took the opened one's place (EXO-90414, openNextAfterRemoval) -- the placeholder
-     * is what is left only when the list has nothing else to open.
+     * took the opened one's place -- the search hit, while a search runs -- (EXO-90414,
+     * openNextAfterRemoval) -- the placeholder is what is left only when the list has
+     * nothing else to open. That opening is automatic: read once the user stays on it.
      * <p>
      * The listing is read before the action because the action is what changes it.
      * An Undo of a move changes nothing here: the rows it puts back are inert until the
@@ -2508,7 +2635,7 @@ export default {
      * @returns {void}
      */
     applyListAction(emails, action) {
-      const listedBefore = this.emails;
+      const listedBefore = this.navigationEmails;
       action();
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return;
@@ -2517,7 +2644,7 @@ export default {
       if (this.selectMode) {
         this.cancelSelectMode();
       }
-      if (!this.searchActive && !this.pinnedEmail) {
+      if (!this.pinnedEmail) {
         this.openNextAfterRemoval(emails, listedBefore);
       }
     },
