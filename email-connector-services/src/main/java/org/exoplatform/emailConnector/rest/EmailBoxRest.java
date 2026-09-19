@@ -60,9 +60,12 @@ import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.model.ScheduledEmail;
+import org.exoplatform.emailConnector.rest.model.ReadReceiptRequest;
 import org.exoplatform.emailConnector.rest.model.ScheduleRequest;
+import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.service.EmailBoxService;
 import org.exoplatform.emailConnector.service.EmailScheduledSendService;
+import org.exoplatform.emailConnector.service.ReadReceiptService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -84,6 +87,9 @@ public class EmailBoxRest {
 
   @Autowired
   private EmailScheduledSendService emailScheduledSendService;
+
+  @Autowired
+  private ReadReceiptService        readReceiptService;
 
   @GetMapping()
   @Secured("users")
@@ -416,6 +422,7 @@ public class EmailBoxRest {
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
+      readReceiptService.decorate(email, request.getRemoteUser());
       return ResponseEntity.ok().cacheControl(CacheControl.noCache().cachePrivate()).body(email);
     } catch (IllegalAccessException e) {
       // Somebody else's mail is reported as missing rather than forbidden: the
@@ -519,6 +526,7 @@ public class EmailBoxRest {
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
+      readReceiptService.decorate(email, request.getRemoteUser());
       return ResponseEntity.ok(email);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
@@ -588,6 +596,7 @@ public class EmailBoxRest {
       if (email == null) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND);
       }
+      readReceiptService.decorate(email, request.getRemoteUser());
       return ResponseEntity.ok().eTag(eTag).cacheControl(CacheControl.noCache().cachePrivate()).body(email);
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
@@ -609,7 +618,9 @@ public class EmailBoxRest {
                                @RequestParam(value = "folder", required = false)
                                String folder) {
     try {
-      return emailBoxService.getThread(threadId, request.getRemoteUser(), folder);
+      List<Email> thread = emailBoxService.getThread(threadId, request.getRemoteUser(), folder);
+      readReceiptService.decorate(thread, request.getRemoteUser());
+      return thread;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
@@ -628,7 +639,9 @@ public class EmailBoxRest {
                                     @RequestParam(value = "folder", required = false)
                                     String folder) {
     try {
-      return emailBoxService.completeThread(threadId, request.getRemoteUser(), folder);
+      List<Email> thread = emailBoxService.completeThread(threadId, request.getRemoteUser(), folder);
+      readReceiptService.decorate(thread, request.getRemoteUser());
+      return thread;
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
@@ -1107,9 +1120,51 @@ public class EmailBoxRest {
     }
   }
 
+  /**
+   * Answers a message's read-receipt request for the caller; see the operation's
+   * description for the contract.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param emailId the message's technical id
+   * @param answer the answer
+   * @return 204 once answered
+   */
+  @PostMapping("/{emailId}/read-receipt")
+  @Secured("users")
+  @Operation(summary = "Answers a message's read-receipt request", method = "POST",
+             description = "The reader's answer to a message that asks to be notified when it is read (RFC 8098): SEND transmits a read receipt ('displayed', never 'denied') to the requested address, as the caller, over their own mail connector, with no copy in Sent; IGNORE sends nothing. Either answer is final for the message: it is recorded on every cached copy of it and, where the mailbox stores keywords, as $MDNSent on the server so the caller's other clients do not ask again. Call it only when a person has the message on screen -- the banner's buttons, or, when the message's readReceiptPrompt is AUTO, its display. Everything is checked again here, whatever readReceiptPrompt said: a message of Sent, Drafts, Junk or Trash, the caller's own mail, or a request naming no address is refused, and SEND is refused under the NEVER policy. A message is addressed by its technical id, as the favorites read does.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Answered"),
+      @ApiResponse(responseCode = "400", description = "The message asks for no receipt (emailConnector.readReceipt.notRequested), cannot be answered (emailConnector.readReceipt.notAllowed), or no valid action was given (emailConnector.readReceipt.invalidAction)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation: the caller's mailbox connector is not usable"),
+      @ApiResponse(responseCode = "404", description = "No such message of the caller's"),
+      @ApiResponse(responseCode = "409", description = "Already answered, here or in another client (emailConnector.readReceipt.alreadyHandled)"),
+      @ApiResponse(responseCode = "500", description = "The receipt could not be sent and the request stays pending (emailConnector.readReceipt.sendFailed), or the mail server failed after it may have been accepted and it is not sent again (emailConnector.readReceipt.unconfirmed)"), })
+  public ResponseEntity<Void> respondToReadReceipt(HttpServletRequest request,
+                                                   @Parameter(description = "Technical id of the message", required = true)
+                                                   @PathVariable("emailId")
+                                                   long emailId,
+                                                   @Parameter(description = "The answer: SEND or IGNORE", required = true)
+                                                   @RequestBody
+                                                   ReadReceiptRequest answer) {
+    try {
+      readReceiptService.respond(emailId, request.getRemoteUser(), answer == null ? null : answer.getAction());
+      return ResponseEntity.noContent().build();
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    } catch (ReadReceiptConflictException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+    }
+  }
+
   @PostMapping("/send")
   @Secured("users")
-  @Operation(summary = "Sends email", method = "POST", description = "This will send email")
+  @Operation(summary = "Sends email", method = "POST", description = "This will send email. With readReceiptRequested set, the message asks for a read receipt (Disposition-Notification-To naming the caller's sending address).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
@@ -1134,7 +1189,7 @@ public class EmailBoxRest {
   @PostMapping("/drafts")
   @Secured("users")
   @Operation(summary = "Saves a draft", method = "POST",
-             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here.")
+             description = "Saves the composed draft locally, and — when 'push' is set and the account has a Drafts folder — appends it to the mail server's Drafts folder as well. A blank draftLocalId starts a new draft; the id in the answer is the handle to keep saving, resuming and discarding it by. The answer also carries the draft's state, which tells the composer whether the words made it to the server or live only here. readReceiptRequested is saved with the draft, so a resumed or scheduled draft keeps asking for a read receipt.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),

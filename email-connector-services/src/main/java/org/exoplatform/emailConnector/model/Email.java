@@ -20,6 +20,7 @@ import java.util.Date;
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -157,4 +158,34 @@ public class Email {
   private String               scheduledTimeZone;
 
   private ScheduledSendStatus  scheduledStatus;
+
+  // Read receipts (EXO-90435, RFC 8098). Appended after the scheduling fields, and
+  // set through their setters wherever a row is built: the positional constructor
+  // only grows trailing arguments that its two call sites leave at their defaults.
+
+  // Whether a read receipt is asked for: on a draft, the author's choice (sent with
+  // the draft, kept by scheduled sends and resumed drafts); on a sent message, "I
+  // asked"; on a received one, "they ask". In on send and draft save, out on reads.
+  private boolean              readReceiptRequested;
+
+  // Where a received message asks the receipt to go (its Disposition-Notification-To,
+  // as the sender wrote it). Set by the sync only -- never taken from a payload.
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private String               readReceiptTo;
+
+  // How a received request was answered; null while it is pending. Backend-only:
+  // what the reader needs from it is readReceiptPrompt.
+  @JsonIgnore
+  private ReadReceiptState     readReceiptState;
+
+  // Whether the Return-Path of a received request named the very address the receipt
+  // would go to -- the one proof the request comes from the sender's own mail system.
+  // Only then may a receipt ever go out without asking. Backend-only.
+  @JsonIgnore
+  private boolean              readReceiptReturnPathMatch;
+
+  // What the reader should do about the request, decided by ReadReceiptService for the
+  // user reading it. Computed on the reads that feed the reader, never stored.
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private ReadReceiptPrompt    readReceiptPrompt;
 }

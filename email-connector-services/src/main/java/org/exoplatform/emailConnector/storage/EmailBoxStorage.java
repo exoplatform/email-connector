@@ -64,6 +64,7 @@ import org.exoplatform.emailConnector.model.EmailContent;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.ThreadFingerprint;
 import org.exoplatform.emailConnector.model.ThreadSummary;
 import org.exoplatform.emailConnector.plugin.EmailCategoryPlugin;
@@ -209,6 +210,10 @@ public class EmailBoxStorage {
       // that (the UID moves whenever a draft is re-appended, and the storage layer's
       // draft writes deliberately go by local id).
       email.setDraftLocalId((String) row[8]);
+      // And the read-receipt request with its answer (EXO-90435), so the reconcile
+      // mirrors the server's $MDNSent onto the pending requests only.
+      email.setReadReceiptRequested(Boolean.TRUE.equals(row[9]));
+      email.setReadReceiptState((ReadReceiptState) row[10]);
       email.setUserId(userId);
       email.setFolder(folder);
       return email;
@@ -289,6 +294,10 @@ public class EmailBoxStorage {
     entity.setDraftState(draft.getDraftState());
     entity.setDraftRevision(incomingRevision);
     entity.setDraftUpdatedDate(draft.getDraftUpdatedDate());
+    // The author's read-receipt choice travels with every save of the text: this path
+    // mutates the row column by column, so a column left out here would only ever be
+    // written by the first save (EXO-90435).
+    entity.setReadReceiptRequested(draft.isReadReceiptRequested());
     return saveDraftRow(entity, draft.getUserId());
   }
 
@@ -942,6 +951,56 @@ public class EmailBoxStorage {
 
   public void updateEmailReadStatusByMailRemoteIds(List<Long> mailRemoteIds, String userId, boolean readStatus, String folder) {
     emailBoxDao.updateReadStatusByMailRemoteIds(mailRemoteIds, userId, readStatus, folder);
+  }
+
+  /**
+   * Claims the answer to a message's read-receipt request, on every cached copy of it:
+   * nothing is claimed when any copy was already answered. The at-most-once guard of
+   * the read receipt -- the caller sends only when this returned true.
+   *
+   * @param userId the mailbox owner
+   * @param email the message, by its Message-ID, or by its id when it has none
+   * @param state the answer
+   * @return true when this call claimed the answer
+   */
+  public boolean claimReadReceipt(String userId, Email email, ReadReceiptState state) {
+    if (StringUtils.isBlank(email.getMailHeaderId())) {
+      return emailBoxDao.claimReadReceiptById(userId, email.getId(), state) > 0;
+    }
+    if (emailBoxDao.countAnsweredReadReceiptsByMailHeaderId(userId, email.getMailHeaderId()) > 0) {
+      return false;
+    }
+    return emailBoxDao.claimReadReceiptByMailHeaderId(userId, email.getMailHeaderId(), state) > 0;
+  }
+
+  /**
+   * Gives back a claim taken by {@link #claimReadReceipt}, on the copies that still
+   * carry it, when the receipt it was taken for could not leave at all.
+   *
+   * @param userId the mailbox owner
+   * @param email the message
+   * @param state the claim to give back
+   */
+  public void releaseReadReceipt(String userId, Email email, ReadReceiptState state) {
+    if (StringUtils.isBlank(email.getMailHeaderId())) {
+      emailBoxDao.releaseReadReceiptById(userId, email.getId(), state);
+    } else {
+      emailBoxDao.releaseReadReceiptByMailHeaderId(userId, email.getMailHeaderId(), state);
+    }
+  }
+
+  /**
+   * Records as answered the pending read-receipt requests among the given messages of
+   * one folder, whose server copies carry {@code $MDNSent}: one statement, however many.
+   *
+   * @param userId the mailbox owner
+   * @param folder the folder discriminator scoping the UIDs
+   * @param mailRemoteIds the UIDs carrying the keyword
+   */
+  public void markReadReceiptsAnswered(String userId, String folder, List<Long> mailRemoteIds) {
+    if (mailRemoteIds != null && !mailRemoteIds.isEmpty()) {
+      emailBoxDao.markReadReceiptsAnswered(userId, folder, mailRemoteIds, ReadReceiptState.SENT);
+    }
   }
 
   /**
@@ -1978,7 +2037,16 @@ public class EmailBoxStorage {
                                                          // A draft comes through here too, and its body is what the rich
                                                          // editor produced — so this is the one place that records that a
                                                          // draft is HTML, and resuming it depends on the flag landing.
-                                                         email.getContent() != null ? email.getContent().isHtml() : null);
+                                                         email.getContent() != null ? email.getContent().isHtml() : null,
+                                                         // The read-receipt columns, set by name below.
+                                                         false,
+                                                         null,
+                                                         null,
+                                                         false);
+      emailBoxEntity.setReadReceiptRequested(email.isReadReceiptRequested());
+      emailBoxEntity.setReadReceiptTo(email.getReadReceiptTo());
+      emailBoxEntity.setReadReceiptState(email.getReadReceiptState());
+      emailBoxEntity.setReadReceiptReturnPathMatch(email.isReadReceiptReturnPathMatch());
       List<EmailAttachmentEntity> attachments = email.getContent() != null
           && email.getContent().getAttachments() != null ? email.getContent().getAttachments().stream().map(attachment -> {
             return toEmailAttachmentEntity(attachment, emailBoxEntity);
@@ -2132,7 +2200,13 @@ public class EmailBoxStorage {
                               // content.attachments like every other attachment of a
                               // row; this field exists only so the send path can hand
                               // the draft's own files to the message builder.
-                              null, false, null, null, null);
+                              null, false, null, null, null,
+                              // The read-receipt fields, set below by name.
+                              false, null, null, false, null);
+      email.setReadReceiptRequested(emailBoxEntity.isReadReceiptRequested());
+      email.setReadReceiptTo(emailBoxEntity.getReadReceiptTo());
+      email.setReadReceiptState(emailBoxEntity.getReadReceiptState());
+      email.setReadReceiptReturnPathMatch(emailBoxEntity.isReadReceiptReturnPathMatch());
 
       // A draft carries its recipients on EVERY read, whatever the caller asked for.
       //
