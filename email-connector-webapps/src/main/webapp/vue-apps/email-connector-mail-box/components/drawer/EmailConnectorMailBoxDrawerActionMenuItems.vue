@@ -22,67 +22,72 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
          than sliding further down every time one more folder is mirrored. Benjamin's
          call: contained scrolling (no search field -- overkill at the ten-folder cap;
          no recency reordering -- a navigation menu wants a stable, memorisable
-         position; no persistent folder rail -- a layout redesign this drawer was not
-         built for), triggered at more than 5 of the user's OWN folders, built-ins
-         never counted toward it since their number is fixed by the mailbox itself. -->
-    <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
-      {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
-    </div>
-    <div :class="{ 'overflow-y-auto': foldersScrollable }" :style="foldersScrollable ? { maxHeight: FOLDERS_MAX_HEIGHT } : null">
-      <v-list-item
-        v-for="folder in visibleFolders"
-        :key="folder.key"
-        class="height-auto"
-        @click="switchFolder(folder.key)">
-        <v-sheet
-          class="d-flex me-2"
-          width="28"
-          height="36">
-          <v-icon
-            class="mx-auto"
-            :class="folder.key === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
-            size="16">
-            {{ folder.icon }}
-          </v-icon>
-        </v-sheet>
-        <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
-          {{ folder.label }}
-        </span>
-      </v-list-item>
-    </div>
-    <!-- Categories: the complete list, Important included — its quick chip
-         above the list is a shortcut to the same view this entry opens, so the
-         two can never disagree. Each category is a VIEW like the folders above
-         it, shown with its own declared icon — picking one switches the list to
-         that category and closes the menu; picking it again, or any folder,
-         leaves the view. -->
-    <template v-if="categories.length">
-      <v-divider class="my-1" />
+         position), triggered at more than 5 of the user's OWN folders, built-ins
+         never counted toward it since their number is fixed by the mailbox itself.
+         "No persistent folder rail" was the other half of that call, and holds for the
+         narrow drawer only: in full screen FOLDERS and CATEGORIES live in a column
+         beside the list, Gmail/Outlook style, and this menu hides them (hideViews,
+         EXO-90415). -->
+    <template v-if="!hideViews">
       <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
-        {{ $t('emailConnector.mailBox.list.drawer.menu.categories') }}
+        {{ $t('emailConnector.mailBox.list.drawer.menu.folders') }}
       </div>
-      <v-list-item
-        v-for="category in categories"
-        :key="category.id"
-        class="height-auto"
-        @click="openCategoryView(category.id)">
-        <v-sheet
-          class="d-flex me-2"
-          width="28"
-          height="36">
-          <v-icon
-            class="mx-auto"
-            :class="category.id === categoryViewId ? 'primary--text' : 'icon-default-color'"
-            size="16">
-            {{ category.icon || 'fa-tag' }}
-          </v-icon>
-        </v-sheet>
-        <span :class="{ 'primary--text font-weight-bold': category.id === categoryViewId }">
-          {{ category.name }}
-        </span>
-      </v-list-item>
+      <div :class="{ 'overflow-y-auto': foldersScrollable }" :style="foldersScrollable ? { maxHeight: FOLDERS_MAX_HEIGHT } : null">
+        <v-list-item
+          v-for="folder in visibleFolders"
+          :key="folder.key"
+          class="height-auto"
+          @click="switchFolder(folder.key)">
+          <v-sheet
+            class="d-flex me-2"
+            width="28"
+            height="36">
+            <v-icon
+              class="mx-auto"
+              :class="folder.key === currentFolder && !categoryViewId ? 'primary--text' : 'icon-default-color'"
+              size="16">
+              {{ folder.icon }}
+            </v-icon>
+          </v-sheet>
+          <span :class="{ 'primary--text font-weight-bold': folder.key === currentFolder && !categoryViewId }">
+            {{ folder.label }}
+          </span>
+        </v-list-item>
+      </div>
+      <!-- Categories: the complete list, Important included — its quick chip
+           above the list is a shortcut to the same view this entry opens, so the
+           two can never disagree. Each category is a VIEW like the folders above
+           it, shown with its own declared icon — picking one switches the list to
+           that category and closes the menu; picking it again, or any folder,
+           leaves the view. -->
+      <template v-if="categories.length">
+        <v-divider class="my-1" />
+        <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
+          {{ $t('emailConnector.mailBox.list.drawer.menu.categories') }}
+        </div>
+        <v-list-item
+          v-for="category in categories"
+          :key="category.id"
+          class="height-auto"
+          @click="openCategoryView(category.id)">
+          <v-sheet
+            class="d-flex me-2"
+            width="28"
+            height="36">
+            <v-icon
+              class="mx-auto"
+              :class="category.id === categoryViewId ? 'primary--text' : 'icon-default-color'"
+              size="16">
+              {{ category.icon || 'fa-tag' }}
+            </v-icon>
+          </v-sheet>
+          <span :class="{ 'primary--text font-weight-bold': category.id === categoryViewId }">
+            {{ category.name }}
+          </span>
+        </v-list-item>
+      </template>
+      <v-divider class="my-1" />
     </template>
-    <v-divider class="my-1" />
     <!-- Actions on the mailbox itself. -->
     <div class="px-4 pt-2 pb-1 text-sub-title text-uppercase caption">
       {{ $t('emailConnector.mailBox.list.drawer.menu.actions') }}
@@ -209,21 +214,15 @@ export default {
       type: Boolean,
       default: false,
     },
+    // Whether FOLDERS and CATEGORIES are left out: in full screen they are the folder
+    // column's, beside the list (EXO-90415), and the menu keeps the actions only.
+    hideViews: {
+      type: Boolean,
+      default: false,
+    },
   },
   data() {
     return {
-      // The icon of each built-in; a folder of the user's own gets the plain folder.
-      // The ORDER of the list is the server's: inbox, Sent, Archive, Drafts, then the
-      // two hidden folders (Spam before Trash the way every mail client orders them),
-      // then the user's own -- see EmailBoxService#buildFolderViews.
-      icons: {
-        INBOX: 'fa-inbox',
-        SENT: 'fa-paper-plane',
-        ARCHIVE: 'fa-archive',
-        DRAFTS: 'fa-file-alt',
-        JUNK: 'fa-ban',
-        TRASH: 'fa-trash',
-      },
       FOLDERS_MAX_HEIGHT,
     };
   },
@@ -231,14 +230,18 @@ export default {
     /**
      * The folders to display, each with its icon and its label. The label comes from
      * the one labelling function: a built-in through the bundle, a custom folder as
-     * the user wrote it -- never through $t.
+     * the user wrote it -- never through $t; the icon from the one icon function the
+     * full-screen folder column reads too. The ORDER of the list is the server's: inbox,
+     * Sent, Archive, Drafts, then the two hidden folders (Spam before Trash the way
+     * every mail client orders them), then the user's own -- see
+     * EmailBoxService#buildFolderViews.
      *
      * @returns {Array} the folder descriptors to display
      */
     visibleFolders() {
       return this.availableFolders.map(folder => ({
         key: folder.key,
-        icon: folder.type === 'CUSTOM' ? 'fa-folder' : (this.icons[folder.key] || 'fa-folder'),
+        icon: this.$emailConnectorMailBoxService.folderIcon(folder),
         label: this.$emailConnectorMailBoxService.folderLabel(folder, this.$t.bind(this)),
       }));
     },

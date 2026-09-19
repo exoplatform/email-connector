@@ -223,6 +223,33 @@ export function folderLabel(folder, translate) {
   return translate(`emailConnector.mailBox.list.drawer.folder.${(folder.key || 'INBOX').toLowerCase()}`);
 }
 
+// The icon of each built-in folder; a folder of the user's own gets the plain folder.
+// Read by the 3-dots menu and the full-screen folder column alike (folderIcon), so the
+// two can never show one folder under two icons (EXO-90415).
+const BUILT_IN_FOLDER_ICONS = {
+  INBOX: 'fa-inbox',
+  SENT: 'fa-paper-plane',
+  ARCHIVE: 'fa-archive',
+  DRAFTS: 'fa-file-alt',
+  JUNK: 'fa-ban',
+  TRASH: 'fa-trash',
+};
+
+/**
+ * The ONE place a folder is given its icon, as folderLabel is the one place it is given
+ * its name: a built-in by its key, a folder of the user's own -- or a built-in this
+ * interface has no icon for -- the plain folder.
+ *
+ * @param {Object} folder the folder as the server lists it ({key, type, ...})
+ * @returns {String} the icon class
+ */
+export function folderIcon(folder) {
+  if (!folder || folder.type === 'CUSTOM') {
+    return 'fa-folder';
+  }
+  return BUILT_IN_FOLDER_ICONS[folder.key || 'INBOX'] || 'fa-folder';
+}
+
 /**
  * A custom folder's full path, readable: the server's hierarchy separator replaced by
  * a spaced slash ("Customers / Acme"), so a nested folder says where it lives.
