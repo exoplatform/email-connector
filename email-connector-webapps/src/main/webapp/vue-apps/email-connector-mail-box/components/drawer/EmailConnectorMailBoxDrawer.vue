@@ -345,6 +345,24 @@ export default {
     // openEmailDetailContent). Not reactive: nothing renders from it.
     this.emailRequest = 0;
     this.emailRequestHoldsLoading = false;
+    // Leaving the opened message for the "select an email" placeholder — a delete, an
+    // archive, a move, a spam report, a restore, the message dropping out of the list —
+    // drops the request still reading it, whichever handler did it: its answer would
+    // otherwise put the removed message straight back on screen. Synchronous, so no
+    // answer can land between the switch and the drop.
+    this.$watch('selectEmailPlaceHolder', placeholder => {
+      if (placeholder) {
+        this.supersedeEmailRequest();
+      }
+    }, { sync: true });
+    // "Retry" on a message whose full copy could not be read, in the wide reader.
+    this.onRetryEmailRead = (email) => {
+      if (this.emailBoxDrawer && !this.$root.isDetailDrawerActive && this.email?.unavailable
+          && email?.mailRemoteId === this.email.mailRemoteId) {
+        this.openEmailDetailContent(email.mailRemoteId);
+      }
+    };
+    this.$root.$on('retry-email-read', this.onRetryEmailRead);
     this.isRefreshing = false;
     // Plain instance field: a pending timeout id needs no reactivity.
     this.searchDebounceTimer = null;
@@ -597,6 +615,7 @@ export default {
     });
   },
   beforeDestroy() {
+    this.$root.$off('retry-email-read', this.onRetryEmailRead);
     document.removeEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
     document.removeEventListener('email-favorite-status-changed', this.onFavoriteStatusChangedOutside);
     this.$root.$off('refresh-email-box', this.onRefreshEmailBox);
@@ -944,7 +963,7 @@ export default {
       // parallel with this request (see the detail drawer's fetchEmail); only a
       // message the list does not hold hides the content until it answers. Clicking
       // the message already open keeps its full copy on screen meanwhile.
-      const alreadyOpen = listed && this.email && !this.$emailConnectorMailBoxService.isListingRow(this.email)
+      const alreadyOpen = listed && this.email && !this.email.unavailable && !this.$emailConnectorMailBoxService.isListingRow(this.email)
         && this.email.mailRemoteId === listed.mailRemoteId && (this.email.folder || 'INBOX') === (listed.folder || 'INBOX');
       if (listed) {
         if (!alreadyOpen) {

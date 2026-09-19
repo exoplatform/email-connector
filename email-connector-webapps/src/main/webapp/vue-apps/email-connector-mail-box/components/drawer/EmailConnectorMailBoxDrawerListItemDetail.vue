@@ -160,6 +160,24 @@ export default {
     // the previous one answered must neither paint the previous one over it nor turn
     // the loading bar off while the new one is still on its way. Not reactive.
     this.emailRequest = 0;
+    // Leaving the opened message for the "select an email" placeholder — a delete, an
+    // archive, a move, a spam report, the message dropping out of the list — drops the
+    // request still reading it, whichever handler did it: its answer would otherwise
+    // put the removed message straight back on screen. Synchronous, so no answer can
+    // land between the switch and the drop.
+    this.$watch('selectEmailPlaceHolder', placeholder => {
+      if (placeholder) {
+        this.supersedeEmailRequest();
+      }
+    }, { sync: true });
+    // "Retry" on a message whose full copy could not be read.
+    this.onRetryEmailRead = (email) => {
+      if (this.emailDetailDrawer && this.email?.unavailable && email?.mailRemoteId === this.email.mailRemoteId) {
+        // In the message's own folder: the list may hold another under its number.
+        this.fetchEmail(email.mailRemoteId, this.email.folder);
+      }
+    };
+    this.$root.$on('retry-email-read', this.onRetryEmailRead);
     // Each opening and each action below may say which folder its UIDs are numbered in,
     // as its last argument: this drawer's list may be a search's, holding several
     // folders where one number may be several messages, and a bare UID used to open --
@@ -241,8 +259,7 @@ export default {
         return;
       }
       // Nothing to fetch: whatever message request was still on its way is superseded.
-      this.emailRequest++;
-      this.loadingEmail = false;
+      this.supersedeEmailRequest();
       this.email = email;
       this.selectEmailPlaceHolder = false;
     };
@@ -304,6 +321,7 @@ export default {
   },
   beforeDestroy() {
     this.hideStandaloneBackdrop();
+    this.$root.$off('retry-email-read', this.onRetryEmailRead);
     this.$root.$off('open-email-detail-content', this.onOpenEmailDetailContent);
     this.$root.$off('open-email-detail-drawer', this.onOpenEmailDetailDrawer);
     this.$root.$off('open-email-thread-content', this.onOpenEmailThreadContent);
@@ -425,10 +443,16 @@ export default {
       const row = !this.detachedFromList && this.listedEmail(mailRemoteId, ownFolder) || null;
       // Clicking the message already open keeps its full copy on screen while it is
       // re-read, rather than stepping back to the bare list row.
-      const alreadyOpen = row && this.email && !this.$emailConnectorMailBoxService.isListingRow(this.email)
+      const alreadyOpen = row && this.email && !this.email.unavailable && !this.$emailConnectorMailBoxService.isListingRow(this.email)
         && this.email.mailRemoteId === row.mailRemoteId && (this.email.folder || 'INBOX') === (row.folder || 'INBOX');
       if (!alreadyOpen) {
         this.email = row;
+      }
+      if (row) {
+        // The reader is showing this message from now on, so the placeholder is down —
+        // and leaving the message again (a delete, a move) is a real switch the
+        // request drop above can see.
+        this.selectEmailPlaceHolder = false;
       }
       this.loadingEmail = true;
       return this.$emailConnectorMailBoxService.getEmailByRemoteId(mailRemoteId, ownFolder)
@@ -451,6 +475,17 @@ export default {
             this.loadingEmail = false;
           }
         });
+    },
+    /**
+     * Drops whatever request for the opened message is still on its way, so its answer
+     * can neither put a message the user has left back on screen nor end the loading
+     * state of a later one.
+     *
+     * @returns {void}
+     */
+    supersedeEmailRequest() {
+      this.emailRequest++;
+      this.loadingEmail = false;
     },
     /**
      * The full copy of the opened message could not be read. When the reader was
@@ -500,8 +535,7 @@ export default {
     openThreadOn(email, emails, syncInProgress, webmailUrl) {
       this.emailDetailDrawer = true;
       // Nothing to fetch: whatever message request was still on its way is superseded.
-      this.emailRequest++;
-      this.loadingEmail = false;
+      this.supersedeEmailRequest();
       this.emails = emails;
       this.webmailUrl = webmailUrl;
       this.syncInProgress = syncInProgress;
@@ -640,8 +674,7 @@ export default {
     },
     close() {
       // A message request still on its way belongs to a reader that is gone.
-      this.emailRequest++;
-      this.loadingEmail = false;
+      this.supersedeEmailRequest();
       this.readerLoading = false;
       this.readerPartial = false;
       this.detachedFromList = false;
