@@ -27,6 +27,7 @@ import EmailConnectorMailBoxDrawerNavigation from '../EmailConnectorMailBoxDrawe
 import EmailConnectorMailBoxDrawerActionMenuItems from '../EmailConnectorMailBoxDrawerActionMenuItems.vue';
 import EmailConnectorMailBoxApp from '../../EmailConnectorMailBoxApp.vue';
 import EmailConnectorMailBoxDrawerNoEmail from '../EmailConnectorMailBoxDrawerNoEmail.vue';
+import EmailConnectorMailBoxDrawerContent from '../EmailConnectorMailBoxDrawerContent.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 import { KEY_OPEN_DELAY_MS } from '../../../js/EmailConnectorMailBoxListNavigation.js';
 
@@ -422,6 +423,32 @@ describe('the folder column opens the settings\' folders drawer (EXO-90415)', ()
       || shallowMount(EmailConnectorMailBoxApp, { mocks: { $emailConnectorCommonService: {} } }).html();
     expect(template).toContain('email-connector-user-setting-folders-drawer');
     expect(template).toContain('email-connector-user-setting-folder-name-drawer');
+  });
+});
+
+describe('the select-all row sits on the list\'s grey pane in full screen (EXO-90415)', () => {
+  /**
+   * Mounts the list content in select mode.
+   *
+   * @param {Boolean} expanded whether in full screen
+   * @returns {Object} the select-all checkbox
+   */
+  function selectAll(expanded) {
+    return shallowMount(EmailConnectorMailBoxDrawerContent, {
+      propsData: { emails: [row(1)], selectMode: true, expanded },
+      mocks: { $t: key => key },
+    }).find('v-checkbox');
+  }
+
+  it('paints no background of its own in full screen, over the drawer\'s white input slot', () => {
+    // Vuetify's transparent class on the slot outranks the platform's drawer mixin,
+    // which paints every .v-input__slot of a drawer white. The row is not sticky: it
+    // scrolls with the list and needs nothing opaque.
+    expect(selectAll(true).attributes('background-color')).toBe('transparent');
+  });
+
+  it('keeps the narrow layout\'s default, as before this branch', () => {
+    expect(selectAll(false).attributes('background-color')).toBeUndefined();
   });
 });
 
