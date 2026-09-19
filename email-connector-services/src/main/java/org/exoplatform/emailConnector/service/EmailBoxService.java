@@ -144,6 +144,7 @@ import org.exoplatform.emailConnector.model.DiscoveredFolder;
 import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderClassification;
+import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.MailFolderList;
@@ -3324,12 +3325,12 @@ public class EmailBoxService {
     // The Drafts folder has no scheduled draft left; another folder's listing may still
     // carry a draft row (none today), and it would be shown read-only like everywhere else.
     markScheduledDrafts(username, emails);
-    Map<String, Integer> folderCounts = emailBoxStorage.getFolderMessageCounts(username);
+    FolderMessageCounts folderCounts = emailBoxStorage.getFolderCounts(username);
     return new EmailBox(emails,
                         userEmailSetting.getEmailSyncStatus(),
                         userEmailSetting.getEmailConnectorWebmailUrl(),
                         emailBoxStorage.getThreadSummaries(username, userEmailSetting.getEmailAddress()),
-                        folderCounts,
+                        folderCounts.getMessageCounts(),
                         buildFolderViews(username, loadMailboxSyncState(username), folderCounts));
   }
 
@@ -3377,8 +3378,7 @@ public class EmailBoxService {
         closeQuietly(null, store, username);
       }
     }
-    Map<String, Integer> folderCounts = emailBoxStorage.getFolderMessageCounts(username);
-    List<MailFolderView> views = buildFolderViews(username, syncState, folderCounts);
+    List<MailFolderView> views = buildFolderViews(username, syncState, emailBoxStorage.getFolderCounts(username));
     return new MailFolderList(views,
                               emailFolderService.getMaxCustomFolders(),
                               (int) views.stream().filter(view -> view.isCustom() && view.isSyncEnabled()).count(),
@@ -4502,13 +4502,18 @@ public class EmailBoxService {
    * it (an ARCHIVE fed by search on a mailbox with no {@code \Archive}, local drafts
    * with server drafts off); the inbox always. Then every registered custom folder,
    * opt-in and all, when the feature is on.
+   * <p>
+   * Every view carries the folder's unread messages too (EXO-90415): the full-screen
+   * folder column shows the inbox's and the spam's, riding this list rather than an
+   * endpoint of its own. Which folders show it is the interface's call.
    *
    * @param username the mailbox owner
    * @param syncState the mailbox's sync memory, for the remembered names
-   * @param folderCounts the cached row count per folder key
+   * @param counts the cached row count and unread count per folder key
    * @return the views, never null
    */
-  private List<MailFolderView> buildFolderViews(String username, MailboxSyncState syncState, Map<String, Integer> folderCounts) {
+  private List<MailFolderView> buildFolderViews(String username, MailboxSyncState syncState, FolderMessageCounts counts) {
+    Map<String, Integer> folderCounts = counts.getMessageCounts();
     List<MailFolderView> views = new ArrayList<>();
     views.add(builtInView(MailFolder.INBOX, folderCounts));
     if (StringUtils.isNotBlank(syncState.getSentFolderName()) || folderCounts.getOrDefault(MailFolder.SENT, 0) > 0) {
@@ -4538,6 +4543,7 @@ public class EmailBoxService {
         views.add(customFolderView(customFolder, folderCounts));
       }
     }
+    views.forEach(view -> view.setUnreadCount(counts.getUnreadCounts().getOrDefault(view.getKey(), 0)));
     return views;
   }
 
@@ -4601,7 +4607,8 @@ public class EmailBoxService {
                               folderCounts.getOrDefault(customFolder.getKey(), 0),
                               customFolder.getLastSyncDate(),
                               emailFolderService.getWindowSize(),
-                              false);
+                              false,
+                              0);
   }
 
   /**

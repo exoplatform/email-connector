@@ -518,3 +518,121 @@ describe('going somewhere in full screen opens its first mail (EXO-90415)', () =
     expect(fixture.service.getEmailByRemoteId.mock.calls[0][0]).toBe(2);
   });
 });
+
+describe('the folder column counts what Gmail and Outlook count (EXO-90415)', () => {
+  let fixture;
+
+  afterEach(() => {
+    jest.useRealTimers();
+    fixture?.teardown();
+  });
+
+  /**
+   * The folder list as the server sends it, with its counts.
+   *
+   * @returns {Array} the folder views
+   */
+  function countedFolders() {
+    return [
+      { key: 'INBOX', type: 'BUILT_IN', syncEnabled: true, count: 40, unreadCount: 5 },
+      { key: 'SENT', type: 'BUILT_IN', syncEnabled: true, count: 30, unreadCount: 2 },
+      { key: 'DRAFTS', type: 'BUILT_IN', syncEnabled: true, count: 3, unreadCount: 3 },
+      { key: 'JUNK', type: 'BUILT_IN', syncEnabled: true, count: 7, unreadCount: 4 },
+    ];
+  }
+
+  it('unread on the inbox and the spam, the total on the drafts, nothing elsewhere', async () => {
+    fixture = await mountDrawer({ INBOX: [row(1)] });
+    await fixture.wrapper.setData({ emailBox: { emails: [row(1)], folders: countedFolders(), emailSyncStatus: 'SUCCESS' } });
+
+    expect(fixture.wrapper.vm.folderCounts).toEqual({
+      INBOX: { count: 5, unread: true },
+      DRAFTS: { count: 3, unread: false },
+      JUNK: { count: 4, unread: true },
+    });
+  });
+
+  it('follows the reads made here until the next load brings the server\'s count', async () => {
+    fixture = await mountDrawer({ INBOX: [] });
+    const unread = [row(1, 'INBOX', { read: false }), row(2, 'INBOX', { read: false })];
+    await fixture.wrapper.setData({ emailBox: { emails: unread, folders: countedFolders(), emailSyncStatus: 'SUCCESS' } });
+
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [1, 2]);
+    expect(fixture.wrapper.vm.folderCounts.INBOX.count).toBe(3);
+    fixture.wrapper.vm.updateEmailsReadStatus(false, [2]);
+    expect(fixture.wrapper.vm.folderCounts.INBOX.count).toBe(4);
+    // Read again: already read, no change, no count.
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [1]);
+    expect(fixture.wrapper.vm.folderCounts.INBOX.count).toBe(4);
+
+    fixture.service.getEmailBox.mockImplementationOnce(() => Promise.resolve({
+      emails: unread, folders: countedFolders().map(folder => (folder.key === 'INBOX' ? { ...folder, unreadCount: 9 } : folder)),
+      emailSyncStatus: 'SUCCESS',
+    }));
+    await fixture.wrapper.vm.loadEmailBox();
+    expect(fixture.wrapper.vm.folderCounts.INBOX.count).toBe(9);
+  });
+
+  it('counts a hit outside the listed window read here only when it is known to have been unread', async () => {
+    fixture = await mountDrawer({ INBOX: [] });
+    await fixture.wrapper.setData({
+      emailBox: { emails: [], folders: countedFolders(), emailSyncStatus: 'SUCCESS' },
+      searchTerm: 'offer',
+      searchServerResults: [row(8, 'INBOX', { read: false }), row(9, 'JUNK', { read: false })],
+    });
+
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [8], 'INBOX');
+    expect(fixture.wrapper.vm.folderCounts.INBOX.count).toBe(4);
+    // Unknown to this drawer: pushed, but not counted.
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [99], 'INBOX');
+    expect(fixture.wrapper.vm.folderCounts.INBOX.count).toBe(4);
+    // The spam is read-only here: its read state is the server's alone, and so is its count.
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [9], 'JUNK');
+    expect(fixture.wrapper.vm.folderCounts.JUNK.count).toBe(4);
+  });
+
+  it('counts each category\'s unread mail over the loaded window, its subcategories included', async () => {
+    fixture = await mountDrawer({ INBOX: [] });
+    fixture.service.getSubcategoryIds.mockImplementation(id => Promise.resolve(id === 12 ? [12, 120] : [id]));
+    await fixture.wrapper.vm.readCategorySubtrees();
+    await fixture.wrapper.setData({ emailBox: { emails: [
+      row(1, 'INBOX', { read: false, categoryIds: [11] }),
+      row(2, 'INBOX', { read: true, categoryIds: [11] }),
+      row(3, 'INBOX', { read: false, categoryIds: [120] }),
+      row(4, 'INBOX', { read: false, categoryIds: [] }),
+    ], folders: FOLDERS, emailSyncStatus: 'SUCCESS' } });
+
+    expect(fixture.wrapper.vm.categoryUnreadCounts).toEqual({ 11: 1, 12: 1 });
+
+    // A message deleted here leaves the count at once, with the list.
+    fixture.wrapper.vm.deleteEmails([1], 'INBOX');
+    expect(fixture.wrapper.vm.categoryUnreadCounts[11]).toBe(0);
+  });
+
+  it('shows the counts in the column, bold when unread, as a dot on the rail', () => {
+    const mountColumn = rail => shallowMount(EmailConnectorMailBoxDrawerNavigation, {
+      propsData: {
+        folders: FOLDERS,
+        categories: CATEGORIES,
+        folderCounts: { INBOX: { count: 5, unread: true }, DRAFTS: { count: 3, unread: false }, JUNK: { count: 0, unread: true } },
+        categoryUnreadCounts: { 11: 2, 12: 0 },
+        rail,
+      },
+      mocks: {
+        $t: (key, params) => (params ? `${key}|${Object.values(params).join('|')}` : key),
+        $emailConnectorMailBoxService: emailConnectorMailBoxService,
+      },
+      stubs: { 'v-tooltip': { template: '<div><slot name="activator" :on="{}" :attrs="{}" /><span class="tooltip"><slot /></span></div>' } },
+    });
+    const open = mountColumn(false);
+    const counts = open.findAll('v-list-item-action-text').wrappers.map(count => [count.text(), count.classes('font-weight-bold')]);
+    expect(counts).toEqual([['5', true], ['3', false], ['2', true]]);
+    expect(open.findAll('v-list-item').at(0).attributes('aria-label'))
+      .toBe('emailConnector.mailBox.list.drawer.navigation.unread|emailConnector.mailBox.list.drawer.folder.inbox|5');
+
+    const rail = mountColumn(true);
+    const dots = rail.findAll('v-badge').wrappers.map(badge => badge.attributes('value') === 'true');
+    // Inbox and Important have unread mail; the drafts' total is no reason for a dot.
+    expect(dots).toEqual([true, false, false, false, false, true, false]);
+  });
+});
