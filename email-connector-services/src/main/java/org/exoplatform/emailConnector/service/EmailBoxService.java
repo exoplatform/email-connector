@@ -11188,6 +11188,27 @@ public class EmailBoxService {
     }
     // The store first, then the rows: a row reads as answered only once the store says
     // so, and the store's unique index is what an answer being given now collides with.
+    // Unlike a row being created (alignReadReceiptAnswer), these rows are mirrored as
+    // SENT from the keyword alone, which is sound for a message carrying a Message-ID,
+    // because an answer given there leaves no pending row behind: claimReadReceipt
+    // moves EVERY cached copy of it, in every folder, in one statement, and both
+    // UPDATEs below skip a row that already carries a state. A message carrying none is
+    // claimed by row id instead (claimReadReceipt's other branch), which moves the one
+    // row answered on, while respond keywords only the server copy it opened; and the
+    // sync dedupes new rows by per-folder UID, never by Message-ID, so one message in
+    // two synced folders (a mirrored Gmail label) is two rows. A second copy of such a
+    // message therefore stays pending and can be asked again, or mirrored SENT here
+    // where the store exposes the keyword on both views. That is the shape the PO's
+    // decision of 2026-09-19 bounds -- a message with no Message-ID has its answer on
+    // its rows only -- not something this path fixes. Three further states escape the
+    // exclusion: two storage failures -- alignReadReceiptAnswer's catch having left a
+    // new row pending, and a claim recorded in the store whose row update then failed
+    // -- and one interleaving, an answer whose row update runs between a concurrent
+    // sync reading the store and inserting its new copy of the same message. A row in
+    // one of them, on a mailbox that keeps keywords, is mirrored SENT here even where
+    // the store says IGNORED -- known gap of EXO-90435, whose fix is to read back the
+    // ids recordServerAnswers did not insert (one bulk statement per folder pass) and
+    // mirror each message with the state the store holds.
     readReceiptAnswerStorage.recordServerAnswers(username, messageIdsAnsweredElsewhere, new Date());
     emailBoxStorage.markReadReceiptsAnswered(username, folderKey, uidsAnsweredElsewhere, messageIdsAnsweredElsewhere);
     return uidsToMarkRead.size() + uidsToMarkUnread.size() + uidsToStar.size() + uidsToUnstar.size();
@@ -12347,12 +12368,22 @@ public class EmailBoxService {
 
   /**
    * Lines a newly cached message up with the durable answer store (EXO-90435), before
-   * its row is written. A request the server says was answered ({@code $MDNSent},
-   * captured just before) is recorded in the store, which is what a claim being made
-   * right now collides with; a request the server says nothing about takes the answer
-   * the store already holds, if any -- the case of a mailbox that stores no keywords,
-   * whose re-created rows would otherwise ask again. Only requests pay a statement,
-   * and they are few.
+   * its row is written. The store is what the user answered; the server's
+   * {@code $MDNSent} only says that they answered, never which answer -- an IGNORE
+   * sets it too. So the store decides, both ways:
+   * <ul>
+   * <li>a request the server says nothing about takes the answer the store already
+   * holds, if any -- the case of a mailbox that stores no keywords, whose re-created
+   * rows would otherwise ask again;</li>
+   * <li>a request the server says was answered ({@code $MDNSent}, captured just
+   * before) is recorded in the store, which is what a claim being made right now
+   * collides with. When that record was already there -- {@code recordServerAnswers}
+   * inserting nothing -- the answer it holds is read back onto the row, so an IGNORE
+   * given on a keyword-capable mailbox is not shown as a receipt sent once the row is
+   * re-created (sync-window eviction, a move, a reset).</li>
+   * </ul>
+   * Only requests pay a statement, and they are few: the second read costs one
+   * statement, and only for a request whose answer the store already held.
    *
    * @param cached the row about to be created, its read-receipt fields captured
    * @param username the mailbox owner
@@ -12362,19 +12393,40 @@ public class EmailBoxService {
       return;
     }
     try {
-      if (cached.getReadReceiptState() != null) {
-        readReceiptAnswerStorage.recordServerAnswers(username, List.of(cached.getMailHeaderId()), new Date());
-      } else {
-        String key = EmailReadReceiptAnswerStorage.messageIdHash(cached.getMailHeaderId());
-        ReadReceiptState stored = key == null ? null
-                                              : readReceiptAnswerStorage.findAnswers(username, List.of(cached.getMailHeaderId()))
-                                                                        .get(key);
-        cached.setReadReceiptState(stored);
+      if (cached.getReadReceiptState() == null) {
+        cached.setReadReceiptState(storedReadReceiptAnswer(cached.getMailHeaderId(), username));
+      } else if (readReceiptAnswerStorage.recordServerAnswers(username,
+                                                             List.of(cached.getMailHeaderId()),
+                                                             new Date()) == 0) {
+        // Nothing recorded: the store already answers for this message, and what it
+        // holds is the answer the user gave. A null here would be a record released
+        // meanwhile -- the keyword then stands, as before.
+        ReadReceiptState stored = storedReadReceiptAnswer(cached.getMailHeaderId(), username);
+        if (stored != null) {
+          cached.setReadReceiptState(stored);
+        }
       }
     } catch (RuntimeException e) {
-      // The row is still cached; the reader and the answer consult the store anyway.
+      // The row is still cached, with whatever the server's keyword said; the next
+      // answer to it is still refused by the store, which keeps the record.
       LOG.warn("The read-receipt answer of a message of user {} could not be aligned with the store", username, e);
     }
+  }
+
+  /**
+   * The answer the durable store holds for one message of one user. The unhashable
+   * Message-ID arm is a guard no current caller reaches -- {@link
+   * #alignReadReceiptAnswer} returns on the same blank test before calling -- and is
+   * kept so a future caller cannot read "no answer" out of an id the store cannot key.
+   *
+   * @param mailHeaderId the message's Message-ID
+   * @param username the mailbox owner
+   * @return the recorded answer, or null when the store holds none (or the Message-ID
+   *         is not one it can key)
+   */
+  private ReadReceiptState storedReadReceiptAnswer(String mailHeaderId, String username) {
+    String key = EmailReadReceiptAnswerStorage.messageIdHash(mailHeaderId);
+    return key == null ? null : readReceiptAnswerStorage.findAnswers(username, List.of(mailHeaderId)).get(key);
   }
 
   /**
