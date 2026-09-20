@@ -25,6 +25,9 @@
 
 import { shallowMount } from '@vue/test-utils';
 import EmailConnectorMailBoxDrawer from '../EmailConnectorMailBoxDrawer.vue';
+import EmailConnectorMailBoxDrawerActions from '../EmailConnectorMailBoxDrawerActions.vue';
+import EmailConnectorMailBoxDrawerListItemDetailActions from '../EmailConnectorMailBoxDrawerListItemDetailActions.vue';
+import EmailConnectorMailBoxDrawerListItemActionMenuItems from '../EmailConnectorMailBoxDrawerListItemActionMenuItems.vue';
 import * as emailConnectorMailBoxService from '../../../js/EmailConnectorMailBoxService.js';
 
 const FOLDERS = [{ key: 'INBOX', type: 'BUILT_IN', syncEnabled: true }];
@@ -129,5 +132,75 @@ describe('a read the user did not ask for says nothing when the mail server refu
 
     expect(fixture.alerts.pop().alertMessage)
       .toBe('emailConnector.mailBox.list.drawer.read.email.error|1');
+  });
+});
+
+// The drawer cannot tell an opening from a hand-made read on its own: the opt-in is
+// the emitter's word. So each of the three ways a user makes one is pinned where it
+// is emitted -- the reader toolbar and the row menu could otherwise have lost theirs
+// in silence, only the selection toolbar's payload being asserted anywhere.
+describe('every way the user asks for a read or unread opts into the failure count (EXO-90444)', () => {
+  const archived = { mailRemoteId: 5, folder: 'ARCHIVE', subject: 'A search result' };
+
+  /**
+   * Replaces a mounted component's root emit with a spy. $root is a Vue-reserved
+   * instance property, which the mocks option cannot shadow.
+   *
+   * @param {Object} vm the component
+   * @returns {Function} the spy
+   */
+  function spyRoot(vm) {
+    const emit = jest.fn();
+    vm.$root.$emit = emit;
+    return emit;
+  }
+
+  /**
+   * The options object a component emitted the read/unread with, or undefined.
+   *
+   * @param {jest.Mock} emit the $root.$emit spy
+   * @returns {Object} the fifth argument of the event
+   */
+  function emittedOptions(emit) {
+    return emit.mock.calls.find(call => call[0] === 'update-email-read-status')?.[5];
+  }
+
+  it('the selection toolbar', () => {
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerActions, {
+      propsData: { emails: [archived], selectedEmails: ['ARCHIVE:5'], selectMode: true },
+      mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+    });
+    const emit = spyRoot(wrapper.vm);
+
+    wrapper.vm.updateEmailsReadStatus(false);
+
+    expect(emittedOptions(emit)).toEqual({ userInitiated: true });
+    wrapper.destroy();
+  });
+
+  it('the reader toolbar', () => {
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemDetailActions, {
+      propsData: { email: archived, thread: null },
+      mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+    });
+    const emit = spyRoot(wrapper.vm);
+
+    wrapper.vm.updateEmailReadStatus();
+
+    expect(emittedOptions(emit)).toEqual({ userInitiated: true });
+    wrapper.destroy();
+  });
+
+  it('the row menu', () => {
+    const wrapper = shallowMount(EmailConnectorMailBoxDrawerListItemActionMenuItems, {
+      propsData: { email: archived, thread: null },
+      mocks: { $t: key => key, $emailConnectorMailBoxService: emailConnectorMailBoxService },
+    });
+    const emit = spyRoot(wrapper.vm);
+
+    wrapper.vm.updateEmailReadStatus();
+
+    expect(emittedOptions(emit)).toEqual({ userInitiated: true });
+    wrapper.destroy();
   });
 });
