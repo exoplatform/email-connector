@@ -623,8 +623,8 @@ export default {
       }
       this.openEmailDetailContent(mailRemoteId, folder);
     };
-    this.onUpdateEmailReadStatus = (read, emails, folder, knownRead) => {
-      this.updateEmailsReadStatus(read, emails, folder, knownRead);
+    this.onUpdateEmailReadStatus = (read, emails, folder, knownRead, options) => {
+      this.updateEmailsReadStatus(read, emails, folder, knownRead, options);
       if (!this.emailBoxDrawer || this.$root.isDetailDrawerActive) {
         return; 
       }
@@ -1971,13 +1971,23 @@ export default {
      * or the opened message of that folder does. Opening a message outside the listing
      * -- from outside the mailbox, from a search -- reads it, once, in its own folder.
      *
+     * The failure alert is asked for, never assumed (EXO-90444): only a caller that
+     * knows the user asked for this read or unread passes userInitiated, and the
+     * silence is what a caller gets by default. Opening a mail comes through here too
+     * -- the reader, the conversation, the two-second dwell all read what they show --
+     * and a mail deleted from another client before the next synchronization is
+     * counted as a refused push by the server, so an alert here told the user their
+     * click had failed when nothing of theirs had.
+     *
      * @param {Boolean} read the status to apply
      * @param {Array} emailIds the IMAP UIDs to apply it to
      * @param {String} folder the folder they are numbered in, when the caller knows it
      * @param {Boolean} knownRead the read status the caller knows those messages to have
+     * @param {Object} options {userInitiated}: whether the user asked for this read or
+     *        unread, which is what the failure alert is shown for
      * @returns {void}
      */
-    updateEmailsReadStatus(read, emailIds = [], folder = null, knownRead = null) {
+    updateEmailsReadStatus(read, emailIds = [], folder = null, knownRead = null, options = {}) {
       const unlisted = [];
       const emailIdsToUpdate = emailIds.filter(id => {
         const email = this.emails.find(e => e.mailRemoteId === id && (!folder || (e.folder || 'INBOX') === folder));
@@ -2003,13 +2013,18 @@ export default {
         }
         return false;
       });
-      // The answer's count is shown, like every other action's (EXO-90438). It used to
-      // be dropped on the floor: the row was flipped here optimistically, the server
-      // reverted its own copy of the ones it could not push, and the interface went on
-      // showing a state the next synchronization silently took back -- the same silence
-      // the Drafts Delete was reported for, on the one action that had not yet been
-      // wired to alertOnActionFailures. A rejected request is the whole batch failing,
-      // which is also what stops it from being an unhandled rejection in the console.
+      // The answer's count is shown to whoever asked for the change, like every other
+      // action's (EXO-90438). It used to be dropped on the floor: the row was flipped
+      // here optimistically, the server reverted its own copy of the ones it could not
+      // push, and the interface went on showing a state the next synchronization
+      // silently took back -- the same silence the Drafts Delete was reported for, on
+      // the one action that had not yet been wired to alertOnActionFailures. A rejected
+      // request is the whole batch failing, which is also what stops it from being an
+      // unhandled rejection in the console.
+      //
+      // Only to whoever asked for it (EXO-90444): the openings that read what they show
+      // pass no userInitiated, and a refusal there is the mailbox catching up with the
+      // mail server rather than anything the user did.
       //
       // Once per request, and a read status may take two: the listed rows go folder by
       // folder (byOwnFolder), and the search hits the listing does not hold go on their
@@ -2017,7 +2032,11 @@ export default {
       const pushReadStatus = (ids, ownFolder) =>
         this.$emailConnectorMailBoxService.updateEmailsReadStatus(ids, read, ownFolder)
           .then(result => result?.failedUpdates ?? 0, () => ids.length)
-          .then(failures => this.alertOnActionFailures(failures, read && 'read' || 'unread'));
+          .then(failures => {
+            if (options.userInitiated) {
+              this.alertOnActionFailures(failures, read && 'read' || 'unread');
+            }
+          });
       this.byOwnFolder(emailIdsToUpdate, folder).forEach(([ownFolder, ids]) => pushReadStatus(ids, ownFolder));
       if (unlisted.length) {
         this.searchServerResults

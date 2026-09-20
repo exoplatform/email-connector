@@ -233,11 +233,14 @@ export default {
     /**
      * Marks the opened conversation — every message of it listed in the acting
      * folder, or the opened message alone — read or unread, and closes the reader.
+     * <p>
+     * The user asked for it, so a push the mail server would not take is shown
+     * (EXO-90444).
      *
      * @returns {void}
      */
     updateEmailReadStatus() {
-      this.$root.$emit('update-email-read-status', false, this.threadIds, this.actingFolder);
+      this.$root.$emit('update-email-read-status', false, this.threadIds, this.actingFolder, null, { userInitiated: true });
       this.$root.$emit('close-email-detail-drawer');
     },
     /**

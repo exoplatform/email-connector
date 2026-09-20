@@ -542,12 +542,17 @@ export default {
     /**
      * Marks the whole selection read or unread. The push and its outcome belong to the
      * mailbox drawer, which holds the rows and shows the count the server answers.
+     * <p>
+     * The user asked for this one, so it opts into that count being shown
+     * (EXO-90444). Sent folder by folder as emitPerFolder does, written out here
+     * because the opt-in follows the folder, which emitPerFolder puts last.
      *
      * @param {Boolean} read the status to apply
      * @returns {void}
      */
     updateEmailsReadStatus(read) {
-      this.emitPerFolder('update-email-read-status', read);
+      this.selectionByFolder.forEach(([folder, ids]) =>
+        this.$root.$emit('update-email-read-status', read, ids, folder, null, { userInitiated: true }));
     },
     /**
      * Files the whole selection into the Archive. No confirmation — an archive is

@@ -376,9 +376,12 @@ describe('every emitter of an action or a read says which folder its ids are num
       wrapper.vm.deleteEmails();
       wrapper.vm.updateEmailsReadStatus(false);
 
+      // The read/unread of this toolbar carries the user's opt-in to the failure alert
+      // after the folder (EXO-90444); the folder it names is what this pins.
       expect(emit.mock.calls).toEqual([
         ['delete-email', [5], 'ARCHIVE'], ['delete-email', [6], 'INBOX'],
-        ['update-email-read-status', false, [5], 'ARCHIVE'], ['update-email-read-status', false, [6], 'INBOX'],
+        ['update-email-read-status', false, [5], 'ARCHIVE', null, { userInitiated: true }],
+        ['update-email-read-status', false, [6], 'INBOX', null, { userInitiated: true }],
       ]);
       wrapper.destroy();
     });
