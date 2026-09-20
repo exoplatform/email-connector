@@ -83,13 +83,18 @@ import io.meeds.social.util.JsonUtils;
  * <b>An answer is final, and outlives the cache.</b> It is recorded in the answer
  * store ({@code EMAIL_READ_RECEIPT_ANSWER}, keyed by user and Message-ID), then on the
  * cached rows of the message and, where the mailbox stores keywords, as
- * {@code $MDNSent} on the server. The store is what makes it final on a mailbox that
- * stores no keywords (Exchange): a row the sync deletes and re-creates -- a move, an
- * archive, a reset, a message leaving and re-entering the sync window -- comes back
- * answered, because the prompt and the answer both read the store. Its unique index is
- * the at-most-once decision. The one exception is a message that came with no
- * Message-ID, which has nothing to be recognised by once its row is gone: its answer
- * lives on its rows only, as it did before the store (PO decision of 2026-09-19, EXO-90435).
+ * {@code $MDNSent} on the server. The store is what makes it final, on every mailbox:
+ * the keyword says that the request was answered, never which answer -- an IGNORE sets
+ * it too -- so only the store says SENT or IGNORED. A row the sync deletes and
+ * re-creates -- a move, an archive, a reset, a message leaving and re-entering the sync
+ * window -- comes back with the answer the store holds on every mailbox alike, keyword
+ * or none, because the sync aligns it from the store before writing it
+ * ({@code alignReadReceiptAnswer}). The prompt reads the store too, as the second line
+ * for a row align could not fill: one cached before that alignment existed, or one it
+ * left pending because the store was unreachable. Its unique index is the at-most-once
+ * decision. The one exception is a message that came with no Message-ID, which has
+ * nothing to be recognised by once its row is gone: its answer lives on its rows only,
+ * as it did before the store (PO decision of 2026-09-19, EXO-90435).
  */
 @Service
 public class ReadReceiptService {
@@ -302,7 +307,11 @@ public class ReadReceiptService {
    * rows since an earlier answer ({@link #claim}). SEND then transmits the receipt as
    * the user; IGNORE transmits nothing. Either way {@code $MDNSent} is set on the
    * server copy when the mailbox accepts keywords, so the user's other clients do not
-   * ask again; the database answer stands on its own where it does not.
+   * ask again -- the keyword says that the request was answered, never which answer,
+   * so it is the database record that says SENT or IGNORED, on every mailbox alike
+   * (EXO-90435: a row re-created from a keyword alone read an IGNORE as a receipt
+   * sent). Where the mailbox keeps no keyword, that record is also what keeps the
+   * request from being asked again.
    * <p>
    * A receipt that cannot leave gives its claim back, so the user can try again. One
    * whose transmission failed after the mail server may have accepted it keeps its

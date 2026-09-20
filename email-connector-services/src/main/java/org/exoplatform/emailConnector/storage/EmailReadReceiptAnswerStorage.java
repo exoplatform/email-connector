@@ -39,8 +39,10 @@ import org.exoplatform.emailConnector.model.ReadReceiptState;
 
 /**
  * The durable read-receipt answers (EXO-90435), keyed by user and Message-ID: what
- * makes an answer outlive the cached rows of its message, on a mailbox that stores no
- * {@code $MDNSent} keyword (Exchange).
+ * makes an answer outlive the cached rows of its message, and the only place that says
+ * WHICH answer was given. The server's {@code $MDNSent} keyword says that the request
+ * was answered -- an IGNORE sets it too -- and a mailbox that keeps no keyword
+ * (Exchange) does not even say that.
  * <p>
  * Nothing here decides anything: an insert refused by the unique index comes back as
  * "not claimed", and the service draws the conclusion. A message is addressed by the
