@@ -683,6 +683,135 @@ class ReadReceiptServiceTest {
   }
 
   // ---------------------------------------------------------------------------------
+  // What the reader says was done
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A message whose copy carries the answer says which answer it was, and asks nothing
+   * more: the line the reader shows where the banner was, for a receipt sent and for one
+   * refused alike. Nothing is read for it -- the copy is the answer.
+   */
+  @Test
+  void anAnswerOnTheRowIsSaidAsItStands() {
+    Email sent = incoming();
+    sent.setReadReceiptState(ReadReceiptState.SENT);
+    Email ignored = incoming();
+    ignored.setReadReceiptState(ReadReceiptState.IGNORED);
+
+    readReceiptService.decorate(List.of(sent, ignored), USER);
+
+    assertEquals(ReadReceiptPrompt.NONE, sent.getReadReceiptPrompt());
+    assertEquals(ReadReceiptState.SENT, sent.getReadReceiptAnswer());
+    assertEquals(ReadReceiptPrompt.NONE, ignored.getReadReceiptPrompt());
+    assertEquals(ReadReceiptState.IGNORED, ignored.getReadReceiptAnswer());
+    verify(answerStorage, never()).findAnswers(anyString(), any());
+  }
+
+  /**
+   * The answer outlives the copy that carried it: a row the sync deleted and re-created
+   * -- a move, an archive, a reset -- comes back with nothing on it, and the answer store
+   * is what still says the request was answered, and how. That is the whole point of the
+   * store, and the one thing a mailbox storing no keyword (Exchange) has.
+   */
+  @Test
+  void anAnswerTheRowLostIsStillSaidByTheStore() {
+    Email reborn = incoming();
+    Email refused = incoming();
+    refused.setMailHeaderId("<refused@partner.example>");
+    Email pending = incoming();
+    pending.setMailHeaderId("<pending@partner.example>");
+    when(answerStorage.findAnswers(eq(USER), any())).thenReturn(Map.of(EmailReadReceiptAnswerStorage.messageIdHash(MESSAGE_ID),
+                                                                       ReadReceiptState.SENT,
+                                                                       EmailReadReceiptAnswerStorage.messageIdHash("<refused@partner.example>"),
+                                                                       ReadReceiptState.IGNORED));
+
+    readReceiptService.decorate(List.of(reborn, refused, pending), USER);
+
+    assertNull(reborn.getReadReceiptState(), "the row lost it");
+    assertEquals(ReadReceiptState.SENT, reborn.getReadReceiptAnswer());
+    assertEquals(ReadReceiptState.IGNORED, refused.getReadReceiptAnswer());
+    assertNull(pending.getReadReceiptAnswer(), "nothing was answered yet");
+    assertEquals(ReadReceiptPrompt.ASK, pending.getReadReceiptPrompt());
+  }
+
+  /**
+   * Nothing is said about a message that never carried a request, nor about this user's
+   * own outgoing copies -- Sent, Drafts, the Scheduled view, a draft being written --
+   * whose {@code readReceiptRequested} means "I asked", not "they ask". Not even when the
+   * store holds an answer under that Message-ID, which a user who mails themselves has.
+   */
+  @Test
+  void nothingIsSaidAboutAMessageThatAskedForNothingNorAboutOnesOwnMail() {
+    lenient().when(answerStorage.findAnswers(eq(USER), any()))
+             .thenReturn(Map.of(EmailReadReceiptAnswerStorage.messageIdHash(MESSAGE_ID), ReadReceiptState.SENT));
+    Email plain = incoming();
+    plain.setReadReceiptRequested(false);
+    plain.setReadReceiptState(ReadReceiptState.SENT);
+    List<Email> silent = new ArrayList<>(List.of(plain));
+    for (String folder : List.of(MailFolder.SENT, MailFolder.DRAFTS, MailFolder.SCHEDULED)) {
+      Email own = incoming();
+      own.setFolder(folder);
+      silent.add(own);
+      Email answeredCopy = incoming();
+      answeredCopy.setFolder(folder);
+      answeredCopy.setReadReceiptState(ReadReceiptState.SENT);
+      silent.add(answeredCopy);
+    }
+    Email draft = incoming();
+    draft.setDraftLocalId("draft-1");
+    silent.add(draft);
+
+    readReceiptService.decorate(silent, USER);
+
+    for (Email email : silent) {
+      assertNull(email.getReadReceiptAnswer(), "nothing to say about " + email.getFolder() + "/" + email.getDraftLocalId());
+      assertEquals(ReadReceiptPrompt.NONE, email.getReadReceiptPrompt());
+    }
+  }
+
+  /**
+   * A request answered before the message was moved to Junk or Trash still says what was
+   * done: it is never offered there, but the answer travels with the message.
+   */
+  @Test
+  void anAnswerFollowsAMessageIntoJunkAndTrash() {
+    List<Email> moved = new ArrayList<>();
+    for (String folder : List.of(MailFolder.JUNK, MailFolder.TRASH)) {
+      Email email = incoming();
+      email.setFolder(folder);
+      email.setReadReceiptState(ReadReceiptState.IGNORED);
+      moved.add(email);
+    }
+
+    readReceiptService.decorate(moved, USER);
+
+    for (Email email : moved) {
+      assertEquals(ReadReceiptState.IGNORED, email.getReadReceiptAnswer());
+      assertEquals(ReadReceiptPrompt.NONE, email.getReadReceiptPrompt());
+    }
+  }
+
+  /**
+   * Whatever a caller left on the message before the read, the decoration is what stands:
+   * an answer nobody gave is cleared, so a stale or forged value cannot survive a read.
+   */
+  @Test
+  void aDecoratedMessageNeverKeepsAnAnswerItWasHandedIn() {
+    Email plain = incoming();
+    plain.setReadReceiptRequested(false);
+    plain.setReadReceiptAnswer(ReadReceiptState.SENT);
+    Email pending = incoming();
+    pending.setReadReceiptAnswer(ReadReceiptState.IGNORED);
+    when(answerStorage.findAnswers(eq(USER), any())).thenReturn(Map.of());
+
+    readReceiptService.decorate(List.of(plain, pending), USER);
+
+    assertNull(plain.getReadReceiptAnswer());
+    assertNull(pending.getReadReceiptAnswer());
+    assertEquals(ReadReceiptPrompt.ASK, pending.getReadReceiptPrompt());
+  }
+
+  // ---------------------------------------------------------------------------------
   // Preferences
   // ---------------------------------------------------------------------------------
 
