@@ -279,12 +279,14 @@ describe('the composer\'s read receipt (EXO-90435)', () => {
   it('keeps a scheduled mail\'s choice when it is edited again, and schedules it with it', async () => {
     const { wrapper, service } = mountComposer(false, {
       cancelScheduledEmail: jest.fn(() => Promise.resolve()),
-      getEmailBox: jest.fn(() => Promise.resolve({ emails: [{
+      // EXO-90434 reworked how Edit loads the mail: the scheduled row's own draft when
+      // it carries one, else the DRAFTS thread it belongs to -- never getEmailBox.
+      getThreadByThreadId: jest.fn(() => Promise.resolve([{
         draftLocalId: 'draft-7', to: [{ address: 'bob@host' }], cc: [], bcc: [], subject: 'S', content: { body: 'b' },
         readReceiptRequested: true,
-      }] })),
+      }])),
     });
-    await wrapper.vm.editScheduledEmail({ draftLocalId: 'draft-7', scheduledDate: Date.now() + DAY_MS });
+    await wrapper.vm.editScheduledEmail({ draftLocalId: 'draft-7', threadId: 'thread-7', scheduledDate: Date.now() + DAY_MS });
     expect(wrapper.vm.readReceiptRequested).toBe(true);
     expect(wrapper.find('.read-receipt-chip').exists()).toBe(true);
 
