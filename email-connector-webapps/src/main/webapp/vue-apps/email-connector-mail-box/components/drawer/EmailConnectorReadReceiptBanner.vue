@@ -40,7 +40,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-btn>
       <v-btn
         :disabled="busy"
-        class="read-receipt-ignore"
+        class="read-receipt-ignore ms-2 text-sub-title"
         text
         small
         @click="answer('IGNORE')">
