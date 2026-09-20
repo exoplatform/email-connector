@@ -82,38 +82,45 @@ export function answerReadReceiptAutomatically(email) {
 }
 
 /**
- * What the reader does with a refused answer: {prompt, messageKey, alertType}.
+ * What the reader does with a refused answer: {prompt, answer, messageKey, alertType}.
  * <ul>
- * <li>409: the request was answered elsewhere; the banner goes, silently.</li>
+ * <li>409: the request was answered elsewhere; the banner goes, silently. Which answer
+ *   it was is not in the refusal, so nothing is said about it until the next read, which
+ *   carries it.</li>
  * <li>404: the message is gone (moved or deleted since it was shown); nothing is left
  *   to answer here, and the banner goes, silently.</li>
  * <li>400 askFirst: the server will not answer on its own; the banner shows.</li>
  * <li>400 notAllowed / notRequested: nothing to answer; the banner goes, with a word.</li>
- * <li>500 unconfirmed: the receipt may be out and is not sent again; the banner goes.</li>
+ * <li>500 unconfirmed: the receipt may be out and is not sent again; the banner goes, and
+ *   the request counts as answered by a receipt sent -- that is what the server kept, and
+ *   what the next read of the message will say.</li>
  * <li>Anything else (500 sendFailed, 401, the network): nothing left; the request stays
  *   pending and the banner stays, so the user can try again.</li>
  * </ul>
  *
  * @param {Error} error the refusal, {code, status}
  * @param {String} currentPrompt the prompt the message had
- * @returns {Object} {prompt, messageKey, alertType}: messageKey null when nothing is said
+ * @returns {Object} {prompt, answer, messageKey, alertType}: answer null unless the
+ *          refusal says what the request now counts as answered by, messageKey null when
+ *          nothing is said
  */
 export function readReceiptOutcome(error, currentPrompt) {
   const code = error?.code;
   if (error?.status === 409 || error?.status === 404) {
-    return { prompt: 'NONE', messageKey: null, alertType: null };
+    return { prompt: 'NONE', answer: null, messageKey: null, alertType: null };
   }
   if (code === ASK_FIRST) {
-    return { prompt: 'ASK', messageKey: null, alertType: null };
+    return { prompt: 'ASK', answer: null, messageKey: null, alertType: null };
   }
   if (code === 'emailConnector.readReceipt.notAllowed' || code === 'emailConnector.readReceipt.notRequested') {
-    return { prompt: 'NONE', messageKey: OUTCOME_MESSAGES[code], alertType: 'info' };
+    return { prompt: 'NONE', answer: null, messageKey: OUTCOME_MESSAGES[code], alertType: 'info' };
   }
   if (code === 'emailConnector.readReceipt.unconfirmed') {
-    return { prompt: 'NONE', messageKey: OUTCOME_MESSAGES[code], alertType: 'warning' };
+    return { prompt: 'NONE', answer: 'SENT', messageKey: OUTCOME_MESSAGES[code], alertType: 'warning' };
   }
   return {
     prompt: currentPrompt === 'AUTO' ? 'ASK' : currentPrompt,
+    answer: null,
     messageKey: OUTCOME_MESSAGES['emailConnector.readReceipt.sendFailed'],
     alertType: 'error',
   };
