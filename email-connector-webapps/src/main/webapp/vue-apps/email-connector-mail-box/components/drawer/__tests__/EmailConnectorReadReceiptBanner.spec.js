@@ -30,6 +30,7 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 
 const V_BTN = { template: '<button type="button" v-bind="$attrs" @click="$emit(\'click\', $event)"><slot /></button>' };
 const V_ALERT = { template: '<div class="v-alert-stub" v-bind="$attrs"><slot /></div>' };
+const V_ICON = { template: '<i class="v-icon-stub" v-bind="$attrs"><slot /></i>' };
 
 let nextId = 1000;
 
@@ -84,7 +85,7 @@ function mountBanner(email, autoAllowed, respond = jest.fn(() => Promise.resolve
       $t: (key, params) => (params ? `${key}|${Object.values(params).join('|')}` : key),
       $emailConnectorMailBoxService: service,
     },
-    stubs: { 'v-btn': V_BTN, 'v-alert': V_ALERT },
+    stubs: { 'v-btn': V_BTN, 'v-alert': V_ALERT, 'v-icon': V_ICON },
   });
   const emitted = [];
   wrapper.vm.$root.$emit = (...args) => emitted.push(args);
@@ -316,6 +317,145 @@ describe('when a conversation counts as displayed (EXO-90435, the EXO-90414 rule
     wrapper.vm.$root.$emit('email-read-on-display', { mailRemoteId: 7, folder: 'INBOX' });
     await wrapper.vm.$nextTick();
     expect(message().attributes('receipt-auto-allowed')).toBe('true');
+  });
+});
+
+// EXO-90435, PO decision of 2026-09-20: once the request is answered the mail says what
+// was done -- "Read receipt sent" or "Read receipt not sent", where the banner was, with
+// no date and no way back. The line comes from the server's readReceiptAnswer, and the
+// answer just given is written onto the message so it is there at once, without a reload.
+describe('what the mail says once the request is answered (EXO-90435)', () => {
+  const SENT = 'emailConnector.mailBox.readReceipt.answered.sent';
+  const NOT_SENT = 'emailConnector.mailBox.readReceipt.answered.notSent';
+
+  /**
+   * The answered line, if the banner component renders one.
+   *
+   * @param {Object} wrapper the mounted banner
+   * @returns {Object} the line's wrapper
+   */
+  const line = wrapper => wrapper.find('.read-receipt-answered');
+
+  /**
+   * The sentence the line says, without the icon beside it.
+   *
+   * @param {Object} wrapper the mounted banner
+   * @returns {String} the sentence
+   */
+  const label = wrapper => wrapper.find('.read-receipt-answered span').text();
+
+  it('says the receipt was sent, in place of the banner, as soon as Send receipt is answered', async () => {
+    const email = asking('ASK');
+    const { wrapper } = mountBanner(email, true);
+    expect(line(wrapper).exists()).toBe(false);
+
+    await wrapper.find('.read-receipt-send').trigger('click');
+    await flush();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('.read-receipt-banner').exists()).toBe(false);
+    expect(label(wrapper)).toBe(SENT);
+    expect(email.readReceiptAnswer).toBe('SENT');
+  });
+
+  it('says the receipt was not sent as soon as Ignore is answered', async () => {
+    const email = asking('ASK');
+    const { wrapper } = mountBanner(email, true);
+
+    await wrapper.find('.read-receipt-ignore').trigger('click');
+    await flush();
+    await wrapper.vm.$nextTick();
+
+    expect(label(wrapper)).toBe(NOT_SENT);
+    expect(email.readReceiptAnswer).toBe('IGNORED');
+  });
+
+  it('says it again when the mail is reopened later: the answer comes from the server', () => {
+    const reopened = { ...asking('NONE'), readReceiptAnswer: 'IGNORED' };
+    expect(label(mountBanner(reopened, true).wrapper)).toBe(NOT_SENT);
+    const sent = { ...asking('NONE'), readReceiptAnswer: 'SENT' };
+    expect(label(mountBanner(sent, true).wrapper)).toBe(SENT);
+  });
+
+  it('says nothing about a mail that never asked for a receipt', () => {
+    const { wrapper } = mountBanner(asking('NONE'), true);
+    expect(line(wrapper).exists()).toBe(false);
+    expect(wrapper.find('.read-receipt-banner').exists()).toBe(false);
+  });
+
+  it('says nothing while there is still something to decide: the banner has it', async () => {
+    const asked = { ...asking('ASK'), readReceiptAnswer: 'SENT' };
+    const { wrapper } = mountBanner(asked, false);
+    expect(line(wrapper).exists()).toBe(false);
+    expect(wrapper.find('.read-receipt-banner').exists()).toBe(true);
+
+    const auto = { ...asking('AUTO'), readReceiptAnswer: 'SENT' };
+    const pending = mountBanner(auto, false);
+    await flush();
+    expect(line(pending.wrapper).exists()).toBe(false);
+  });
+
+  it('says the receipt was sent after an automatic answer too', async () => {
+    const email = asking('AUTO');
+    const { wrapper } = mountBanner(email, true);
+    await flush();
+    await wrapper.vm.$nextTick();
+
+    expect(label(wrapper)).toBe(SENT);
+    expect(email.readReceiptAnswer).toBe('SENT');
+  });
+
+  it('says the receipt was sent when the server kept it answered though it could not confirm it', async () => {
+    const email = asking('ASK');
+    const { wrapper } = mountBanner(email, true, jest.fn(() => Promise.reject(refused(500, 'emailConnector.readReceipt.unconfirmed'))));
+
+    await wrapper.find('.read-receipt-send').trigger('click');
+    await flush();
+    await wrapper.vm.$nextTick();
+
+    expect(label(wrapper)).toBe(SENT);
+  });
+
+  /**
+   * Answers a request the server refuses, and gives back the message and its banner.
+   *
+   * @param {Number} status the HTTP status of the refusal
+   * @param {String} code its message code, if any
+   * @returns {Promise<Object>} {email, wrapper}, once the refusal is applied
+   */
+  async function refusedAnswer(status, code = null) {
+    const email = asking('ASK');
+    const { wrapper } = mountBanner(email, true, jest.fn(() => Promise.reject(refused(status, code))));
+    await wrapper.find('.read-receipt-send').trigger('click');
+    await flush();
+    await wrapper.vm.$nextTick();
+    return { email, wrapper };
+  }
+
+  it('says nothing when the refusal does not say what the answer was: answered elsewhere (409)', async () => {
+    const { email, wrapper } = await refusedAnswer(409);
+    expect(wrapper.find('.read-receipt-banner').exists()).toBe(false);
+    expect(line(wrapper).exists()).toBe(false);
+    expect(email.readReceiptAnswer).toBeUndefined();
+  });
+
+  it('says nothing when the message is gone since (404)', async () => {
+    const { email, wrapper } = await refusedAnswer(404);
+    expect(wrapper.find('.read-receipt-banner').exists()).toBe(false);
+    expect(line(wrapper).exists()).toBe(false);
+    expect(email.readReceiptAnswer).toBeUndefined();
+  });
+
+  it('says nothing when the send failed and the request is still pending', async () => {
+    const email = asking('ASK');
+    const { wrapper } = mountBanner(email, true, jest.fn(() => Promise.reject(refused(500, 'emailConnector.readReceipt.sendFailed'))));
+
+    await wrapper.find('.read-receipt-send').trigger('click');
+    await flush();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('.read-receipt-banner').exists()).toBe(true);
+    expect(line(wrapper).exists()).toBe(false);
   });
 });
 
