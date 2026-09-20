@@ -223,11 +223,18 @@ public class ReadReceiptService {
   }
 
   /**
-   * Tells the reader what to do about each message's read-receipt request, for the
-   * user reading them: sets {@code readReceiptPrompt} on every message given. The
-   * preferences are read once for the lot, and the answer store once for the pending
-   * requests among them: a request answered before its row was re-created (on a
-   * mailbox that stores no keywords) reads as answered, and is not offered again.
+   * Tells the reader what to do about each message's read-receipt request, and what was
+   * already done about it, for the user reading them: sets {@code readReceiptPrompt} and
+   * {@code readReceiptAnswer} on every message given. The preferences are read once for
+   * the lot, and the answer store once for the pending requests among them: a request
+   * answered before its row was re-created (on a mailbox that stores no keywords) reads
+   * as answered, is not offered again, and says how it was answered -- which is the whole
+   * point of the store.
+   * <p>
+   * Both fields are set on every message, the answer to null where there is none: a
+   * message that carried no request has nothing to say, and neither has an outgoing copy
+   * of a message this user sent, whose {@code readReceiptRequested} means "I asked", not
+   * "they ask" ({@link #carriesReceivedRequest}).
    *
    * @param emails the messages about to be shown, may be null or hold nulls
    * @param username the user reading them
@@ -241,9 +248,14 @@ public class ReadReceiptService {
       if (email == null) {
         continue;
       }
-      if (!email.isReadReceiptRequested() || email.getReadReceiptState() != null) {
+      email.setReadReceiptAnswer(null);
+      if (!carriesReceivedRequest(email)) {
         // The common case, decided without reading anything.
         email.setReadReceiptPrompt(ReadReceiptPrompt.NONE);
+      } else if (email.getReadReceiptState() != null) {
+        // This copy carries the answer itself: nothing to look up.
+        email.setReadReceiptPrompt(ReadReceiptPrompt.NONE);
+        email.setReadReceiptAnswer(email.getReadReceiptState());
       } else {
         pending.add(email);
       }
@@ -257,8 +269,14 @@ public class ReadReceiptService {
                                                                        pending.stream().map(Email::getMailHeaderId).toList());
     for (Email email : pending) {
       String key = EmailReadReceiptAnswerStorage.messageIdHash(email.getMailHeaderId());
-      email.setReadReceiptPrompt(key != null && answered.containsKey(key) ? ReadReceiptPrompt.NONE
-                                                                          : promptFor(email, ownAddress, settings));
+      ReadReceiptState stored = key == null ? null : answered.get(key);
+      if (stored == null) {
+        email.setReadReceiptPrompt(promptFor(email, ownAddress, settings));
+      } else {
+        // Answered before this copy existed: the store is what remembers it.
+        email.setReadReceiptPrompt(ReadReceiptPrompt.NONE);
+        email.setReadReceiptAnswer(stored);
+      }
     }
   }
 
@@ -505,9 +523,7 @@ public class ReadReceiptService {
    */
   private boolean isAnswerable(Email email, String ownAddress) {
     String folder = StringUtils.defaultIfBlank(email.getFolder(), MailFolder.INBOX);
-    if (MailFolder.SENT.equals(folder) || MailFolder.DRAFTS.equals(folder) || MailFolder.SCHEDULED.equals(folder)
-        || MailFolder.JUNK.equals(folder) || MailFolder.TRASH.equals(folder)
-        || StringUtils.isNotBlank(email.getDraftLocalId())) {
+    if (isOutgoing(email) || MailFolder.JUNK.equals(folder) || MailFolder.TRASH.equals(folder)) {
       return false;
     }
     if (email.getSender() != null && StringUtils.isNotBlank(ownAddress)
@@ -515,6 +531,37 @@ public class ReadReceiptService {
       return false;
     }
     return requestedAddresses(email.getReadReceiptTo()).length > 0;
+  }
+
+  /**
+   * Whether a message carries a request <i>addressed to this user</i>: one somebody else
+   * asked them to answer, as opposed to a copy of a message they sent asking for one
+   * themselves. What separates the two is the direction, not the flag: the very same
+   * {@code readReceiptRequested} reads "they ask" on a received message and "I asked" on
+   * the Sent, Drafts and Scheduled copies of an outgoing one.
+   * <p>
+   * Junk and Trash are <b>not</b> excluded here, unlike in {@link #isAnswerable}: a
+   * request is never offered there, but an answer given before the message was moved
+   * stays what the user did, and the message keeps saying so wherever it ends up.
+   *
+   * @param email the message
+   * @return true when the request is one this user was asked to answer
+   */
+  private boolean carriesReceivedRequest(Email email) {
+    return email.isReadReceiptRequested() && !isOutgoing(email);
+  }
+
+  /**
+   * Whether a message is this user's own outgoing copy: in Sent, in Drafts, in the
+   * Scheduled view, or a draft being written.
+   *
+   * @param email the message
+   * @return true when it is outgoing
+   */
+  private boolean isOutgoing(Email email) {
+    String folder = StringUtils.defaultIfBlank(email.getFolder(), MailFolder.INBOX);
+    return MailFolder.SENT.equals(folder) || MailFolder.DRAFTS.equals(folder) || MailFolder.SCHEDULED.equals(folder)
+           || StringUtils.isNotBlank(email.getDraftLocalId());
   }
 
   /**
