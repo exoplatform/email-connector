@@ -37,9 +37,10 @@ import lombok.NoArgsConstructor;
  * request carried by the message whose Message-ID hashes to {@code messageIdHash}. See
  * changeset 1.0.0-68 for the columns.
  * <p>
- * It is a RECORD, not a cache: nothing else remembers the answer once the cached rows
- * of the message are gone (a move, an archive, a reset, the sync window) on a mailbox
- * that stores no keywords (Exchange). That is why it has no foreign key to
+ * It is a RECORD, not a cache: nothing else remembers WHICH answer was given once the
+ * cached rows of the message are gone (a move, an archive, a reset, the sync window).
+ * The server's {@code $MDNSent} keyword, where the mailbox keeps one, says only that
+ * the request was answered -- an IGNORE sets it too. That is why it has no foreign key to
  * {@code EMAIL_BOX}, why nothing cascades into it, and why neither a cache reset nor a
  * disconnection deletes it. Its unique index on (USER_ID, MESSAGE_ID_HASH) is the
  * decision that makes an answer, and so a receipt, happen at most once per user and
