@@ -447,9 +447,15 @@ export default {
           selected: true,
         }));
     },
+    /**
+     * Marks the row's conversation read or unread from the row menu. The user asked
+     * for it, so a push the mail server would not take is shown (EXO-90444).
+     *
+     * @returns {void}
+     */
     updateEmailReadStatus() {
       this.$emit('close');
-      this.$root.$emit('update-email-read-status', !this.threadRead, this.threadIds, this.actingFolder);
+      this.$root.$emit('update-email-read-status', !this.threadRead, this.threadIds, this.actingFolder, null, { userInitiated: true });
     },
     updateEmailFavoriteStatus() {
       this.$emit('close');
