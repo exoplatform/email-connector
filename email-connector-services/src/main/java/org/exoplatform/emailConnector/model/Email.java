@@ -188,4 +188,13 @@ public class Email {
   // user reading it. Computed on the reads that feed the reader, never stored.
   @JsonProperty(access = JsonProperty.Access.READ_ONLY)
   private ReadReceiptPrompt    readReceiptPrompt;
+
+  // The answer this user gave to the request, SENT or IGNORED, so the message keeps
+  // saying what they did once the banner is gone -- today, and when it is reopened next
+  // year. Null while the request is pending, and on every message that never carried one.
+  // Computed on the same reads as readReceiptPrompt and from the same two places the
+  // prompt reads (the row, then the answer store that outlives it), never stored here:
+  // readReceiptState is one cached copy's mirror of the answer, this is the answer.
+  @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+  private ReadReceiptState     readReceiptAnswer;
 }

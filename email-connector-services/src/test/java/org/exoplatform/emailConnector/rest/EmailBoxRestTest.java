@@ -1226,10 +1226,11 @@ public class EmailBoxRestTest {
   }
 
   /**
-   * Every read that feeds the reader is decorated with the prompt for the caller; the
-   * JSON carries readReceiptRequested and readReceiptPrompt and never the stored
-   * answer; and a send's payload brings readReceiptRequested in while a
-   * readReceiptTo it may carry is ignored.
+   * Every read that feeds the reader is decorated with the prompt and the answer for the
+   * caller; the JSON carries readReceiptRequested, readReceiptPrompt and
+   * readReceiptAnswer, and never the one cached copy's readReceiptState; and a send's
+   * payload brings readReceiptRequested in while a readReceiptTo, a readReceiptPrompt or
+   * a readReceiptAnswer it may carry are ignored.
    *
    * @throws Exception when the request cannot be performed
    */
@@ -1242,12 +1243,14 @@ public class EmailBoxRestTest {
     when(emailBoxService.getOwnedEmailById(12L, SIMPLE_USER)).thenReturn(email);
     org.mockito.Mockito.doAnswer(invocation -> {
       ((Email) invocation.getArgument(0)).setReadReceiptPrompt(ReadReceiptPrompt.ASK);
+      ((Email) invocation.getArgument(0)).setReadReceiptAnswer(ReadReceiptState.IGNORED);
       return null;
     }).when(readReceiptService).decorate(any(Email.class), eq(SIMPLE_USER));
     mockMvc.perform(get(EMAIL_BOX_PATH + "/favorites/12").with(testSimpleUser()))
            .andExpect(status().isOk())
            .andExpect(jsonPath("$.readReceiptRequested").value(true))
            .andExpect(jsonPath("$.readReceiptPrompt").value("ASK"))
+           .andExpect(jsonPath("$.readReceiptAnswer").value("IGNORED"))
            .andExpect(jsonPath("$.readReceiptState").doesNotExist());
 
     when(emailBoxService.getEmailByMailRemoteIdAndUserId(34L, SIMPLE_USER, "INBOX", true, true, true, true)).thenReturn(email);
@@ -1263,7 +1266,8 @@ public class EmailBoxRestTest {
 
     mockMvc.perform(post(EMAIL_BOX_PATH + "/send").with(testSimpleUser())
                                                   .content("{\"to\":[{\"address\":\"bob@example.org\"}],\"readReceiptRequested\":true,"
-                                                      + "\"readReceiptTo\":\"eve@tracker.example\",\"readReceiptPrompt\":\"AUTO\"}")
+                                                      + "\"readReceiptTo\":\"eve@tracker.example\",\"readReceiptPrompt\":\"AUTO\","
+                                                      + "\"readReceiptAnswer\":\"SENT\"}")
                                                   .contentType(MediaType.APPLICATION_JSON))
            .andExpect(status().isOk());
     ArgumentCaptor<Email> sent = ArgumentCaptor.forClass(Email.class);
@@ -1271,6 +1275,8 @@ public class EmailBoxRestTest {
     org.junit.jupiter.api.Assertions.assertTrue(sent.getValue().isReadReceiptRequested());
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptTo(), "read-only: never from a payload");
     org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptPrompt());
+    org.junit.jupiter.api.Assertions.assertNull(sent.getValue().getReadReceiptAnswer(),
+                                                "read-only: an answer is never claimed by a payload");
   }
 
   /**
