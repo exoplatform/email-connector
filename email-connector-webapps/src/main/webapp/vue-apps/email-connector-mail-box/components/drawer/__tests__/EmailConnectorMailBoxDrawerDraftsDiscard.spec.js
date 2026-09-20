@@ -211,6 +211,11 @@ describe('the drawer discards the drafts it is handed and says what became of th
   });
 });
 
+// The count is shown to whoever asked for the change, which is what these three
+// pin: the opt-in below is what the toolbar, the reader's toolbar and the row menu
+// send, and what an opening does not (EXO-90444).
+const USER_ASKED = { userInitiated: true };
+
 describe('a read/unread the mail server refused is shown, not swallowed (EXO-90438)', () => {
   let fixture;
   afterEach(() => fixture?.teardown());
@@ -219,7 +224,7 @@ describe('a read/unread the mail server refused is shown, not swallowed (EXO-904
     fixture = await mountDrawer([{ mailRemoteId: 1, folder: 'INBOX', read: false }],
       { updateEmailsReadStatus: Promise.resolve({ failedUpdates: 1 }) }, 'INBOX');
 
-    fixture.wrapper.vm.updateEmailsReadStatus(true, [1]);
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [1], null, null, USER_ASKED);
     await flush();
 
     expect(fixture.alerts.pop().alertMessage)
@@ -230,7 +235,7 @@ describe('a read/unread the mail server refused is shown, not swallowed (EXO-904
     fixture = await mountDrawer([{ mailRemoteId: 1, folder: 'INBOX', read: true }, { mailRemoteId: 2, folder: 'INBOX', read: true }],
       { updateEmailsReadStatus: Promise.reject(new Error('offline')) }, 'INBOX');
 
-    fixture.wrapper.vm.updateEmailsReadStatus(false, [1, 2]);
+    fixture.wrapper.vm.updateEmailsReadStatus(false, [1, 2], null, null, USER_ASKED);
     await flush();
 
     expect(fixture.alerts.pop().alertMessage)
@@ -241,7 +246,7 @@ describe('a read/unread the mail server refused is shown, not swallowed (EXO-904
     fixture = await mountDrawer([{ mailRemoteId: 1, folder: 'INBOX', read: false }],
       { updateEmailsReadStatus: Promise.resolve({ failedUpdates: 0 }) }, 'INBOX');
 
-    fixture.wrapper.vm.updateEmailsReadStatus(true, [1]);
+    fixture.wrapper.vm.updateEmailsReadStatus(true, [1], null, null, USER_ASKED);
     await flush();
 
     expect(fixture.alerts).toEqual([]);
