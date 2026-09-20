@@ -12103,11 +12103,13 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * A request cached anew is lined up with the answer store (EXO-90435, phase 2): on a
-   * mailbox that stores no keywords, a message whose row was re-created (a move, an
-   * archive, a reset) takes the answer the user gave before, and is not offered again;
-   * one the server says was answered ($MDNSent) is recorded in the store. A message
-   * that asks nothing costs the store nothing.
+   * A request cached anew is lined up with the answer store (EXO-90435, phase 2),
+   * whatever the mailbox: a message whose row was re-created (a move, an archive, a
+   * reset, a sync-window eviction) and that the server says nothing about takes the
+   * answer the user gave before, and is not offered again; one the server says was
+   * answered ($MDNSent) is recorded in the store. A message that asks nothing costs
+   * the store nothing. The case where both the keyword and a stored answer are there
+   * is pinned by {@link #anAnsweredKeywordNeverOverwritesTheStoredAnswer()}.
    *
    * @throws Exception when the mocked mail plumbing misbehaves
    */
@@ -12139,6 +12141,58 @@ public class EmailBoxServiceTest {
     org.mockito.Mockito.clearInvocations(readReceiptAnswerStorage);
     invokeCreateEmails(uidFolder, plain);
     org.mockito.Mockito.verifyNoInteractions(readReceiptAnswerStorage);
+  }
+
+  /**
+   * The keyword says a request was answered, never which answer -- an IGNORE sets
+   * {@code $MDNSent} on the server copy too (EXO-90435). So a row re-created by the
+   * sync on a keyword-capable mailbox (Dovecot, Cyrus, Gmail, Stalwart) takes the
+   * store's answer rather than the keyword's SENT. A request the sync is the first to
+   * record keeps the keyword's SENT, and costs no second statement. What the reader
+   * is then told of that row is {@code ReadReceiptService.decorate}'s business, and is
+   * pinned there; this pins the row the sync writes.
+   *
+   * @throws Exception when the mocked mail plumbing misbehaves
+   */
+  @Test
+  void anAnsweredKeywordNeverOverwritesTheStoredAnswer() throws Exception {
+    MimeMessage ignored = new MimeMessage(Session.getInstance(new Properties()));
+    ignored.setHeader("Disposition-Notification-To", "bob@partner.example");
+    ignored.setText("hello");
+    ignored.saveChanges();
+    String ignoredId = ignored.getMessageID();
+    ignored.setFlags(new Flags("$MDNSent"), true);
+    UIDFolder uidFolder = mock(UIDFolder.class);
+    when(uidFolder.getUID(ignored)).thenReturn(7L);
+    // Nothing inserted: the store already holds the user's own answer for it.
+    when(readReceiptAnswerStorage.recordServerAnswers(eq(TEST_USER), eq(List.of(ignoredId)), any())).thenReturn(0);
+    when(readReceiptAnswerStorage.findAnswers(TEST_USER,
+                                              List.of(ignoredId))).thenReturn(Map.of(EmailReadReceiptAnswerStorage.messageIdHash(ignoredId),
+                                                                                     ReadReceiptState.IGNORED));
+
+    invokeCreateEmails(uidFolder, ignored);
+
+    ArgumentCaptor<Email> cached = ArgumentCaptor.forClass(Email.class);
+    verify(emailBoxStorage).createEmail(cached.capture());
+    assertEquals(ReadReceiptState.IGNORED,
+                 cached.getValue().getReadReceiptState(),
+                 "the keyword says answered, the store says which answer");
+
+    MimeMessage answeredElsewhere = new MimeMessage(Session.getInstance(new Properties()));
+    answeredElsewhere.setHeader("Disposition-Notification-To", "bob@partner.example");
+    answeredElsewhere.setText("hello");
+    answeredElsewhere.saveChanges();
+    String answeredId = answeredElsewhere.getMessageID();
+    answeredElsewhere.setFlags(new Flags("$MDNSent"), true);
+    when(uidFolder.getUID(answeredElsewhere)).thenReturn(8L);
+    // Recorded now: another client answered it, and only the keyword says so.
+    when(readReceiptAnswerStorage.recordServerAnswers(eq(TEST_USER), eq(List.of(answeredId)), any())).thenReturn(1);
+
+    invokeCreateEmails(uidFolder, answeredElsewhere);
+
+    verify(emailBoxStorage, times(2)).createEmail(cached.capture());
+    assertEquals(ReadReceiptState.SENT, cached.getValue().getReadReceiptState(), "answered by another client");
+    verify(readReceiptAnswerStorage, never()).findAnswers(TEST_USER, List.of(answeredId));
   }
 
   /**
