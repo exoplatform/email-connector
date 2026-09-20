@@ -5394,8 +5394,9 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int deleteEmail(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    int failures = applyMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE, null);
-    scheduleHiddenFolderRefresh(username, MailFolder.TRASH, FolderRefreshCause.DELETE, failures, mailRemoteIds);
+    AtomicInteger moved = new AtomicInteger();
+    int failures = applyMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE, null, moved);
+    scheduleHiddenFolderRefresh(username, MailFolder.TRASH, FolderRefreshCause.DELETE, moved.get());
     return failures;
   }
 
@@ -5422,8 +5423,9 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int deleteConversations(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    int failures = applyConversationMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE);
-    scheduleHiddenFolderRefresh(username, MailFolder.TRASH, FolderRefreshCause.DELETE, failures, mailRemoteIds);
+    AtomicInteger moved = new AtomicInteger();
+    int failures = applyConversationMoveAction(mailRemoteIds, username, folder, MoveAction.DELETE, moved);
+    scheduleHiddenFolderRefresh(username, MailFolder.TRASH, FolderRefreshCause.DELETE, moved.get());
     return failures;
   }
 
@@ -5459,8 +5461,9 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int markAsJunk(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    int failures = applyMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK, null);
-    scheduleHiddenFolderRefresh(username, MailFolder.JUNK, FolderRefreshCause.JUNK, failures, mailRemoteIds);
+    AtomicInteger moved = new AtomicInteger();
+    int failures = applyMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK, null, moved);
+    scheduleHiddenFolderRefresh(username, MailFolder.JUNK, FolderRefreshCause.JUNK, moved.get());
     return failures;
   }
 
@@ -5478,8 +5481,9 @@ public class EmailBoxService {
    * @throws IllegalAccessException if the user may not act on their mailbox
    */
   public int markConversationsAsJunk(List<Long> mailRemoteIds, String username, String folder) throws IllegalAccessException {
-    int failures = applyConversationMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK);
-    scheduleHiddenFolderRefresh(username, MailFolder.JUNK, FolderRefreshCause.JUNK, failures, mailRemoteIds);
+    AtomicInteger moved = new AtomicInteger();
+    int failures = applyConversationMoveAction(mailRemoteIds, username, folder, MoveAction.JUNK, moved);
+    scheduleHiddenFolderRefresh(username, MailFolder.JUNK, FolderRefreshCause.JUNK, moved.get());
     return failures;
   }
 
@@ -5514,7 +5518,8 @@ public class EmailBoxService {
   private int applyConversationMoveAction(List<Long> mailRemoteIds,
                                           String username,
                                           String folder,
-                                          MoveAction action) throws IllegalAccessException {
+                                          MoveAction action,
+                                          AtomicInteger moved) throws IllegalAccessException {
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
       return 0;
     }
@@ -5523,7 +5528,7 @@ public class EmailBoxService {
       // A folder the action has no meaning on, or one whose listing is not a
       // conversation's home (the Junk folder, ALL_MAIL): the single-folder path
       // answers exactly as it always has, refusal and count included.
-      return applyMoveAction(mailRemoteIds, username, sourceFolder, action, null);
+      return applyMoveAction(mailRemoteIds, username, sourceFolder, action, null, moved);
     }
     Map<String, Set<Long>> idsByFolder = new LinkedHashMap<>();
     idsByFolder.put(sourceFolder, new LinkedHashSet<>(mailRemoteIds));
@@ -5547,7 +5552,7 @@ public class EmailBoxService {
     }
     int failures = 0;
     for (Map.Entry<String, Set<Long>> entry : idsByFolder.entrySet()) {
-      failures += applyMoveAction(new ArrayList<>(entry.getValue()), username, entry.getKey(), action, null);
+      failures += applyMoveAction(new ArrayList<>(entry.getValue()), username, entry.getKey(), action, null, moved);
     }
     return failures;
   }
@@ -5620,15 +5625,10 @@ public class EmailBoxService {
    * @param username the mailbox owner
    * @param hiddenFolderKey {@link MailFolder#TRASH} or {@link MailFolder#JUNK}
    * @param cause {@link FolderRefreshCause#DELETE} or {@link FolderRefreshCause#JUNK}
-   * @param failures how many of the requested messages did not move
-   * @param mailRemoteIds the requested messages
+   * @param moved how many messages the folder actually received
    */
-  private void scheduleHiddenFolderRefresh(String username,
-                                           String hiddenFolderKey,
-                                           FolderRefreshCause cause,
-                                           int failures,
-                                           List<Long> mailRemoteIds) {
-    if (failures < CollectionUtils.size(mailRemoteIds)) {
+  private void scheduleHiddenFolderRefresh(String username, String hiddenFolderKey, FolderRefreshCause cause, int moved) {
+    if (moved > 0) {
       scheduleFolderRefresh(username, hiddenFolderKey, cause);
     }
   }
@@ -5729,6 +5729,31 @@ public class EmailBoxService {
                               String folder,
                               MoveAction action,
                               String targetFolder) throws IllegalAccessException {
+    return applyMoveAction(mailRemoteIds, username, folder, action, targetFolder, new AtomicInteger());
+  }
+
+  /**
+   * {@link #applyMoveAction(List, String, String, MoveAction, String)}, counting how
+   * many messages actually reached the destination: a caller re-reading that
+   * destination has nothing to re-read when none did (EXO-90437 -- a message the server
+   * no longer holds is no longer a failure, so the failure count alone stopped saying
+   * whether anything moved).
+   *
+   * @param mailRemoteIds the IMAP UIDs, numbered within {@code folder}
+   * @param username the mailbox owner
+   * @param folder the folder those UIDs come from; blank means INBOX
+   * @param action which destination the messages go to
+   * @param targetFolder for {@link MoveAction#MOVE}, the destination's key; null otherwise
+   * @param moved counts the messages the destination actually received
+   * @return how many could not be moved
+   * @throws IllegalAccessException if the user may not act on their mailbox
+   */
+  private int applyMoveAction(List<Long> mailRemoteIds,
+                              String username,
+                              String folder,
+                              MoveAction action,
+                              String targetFolder,
+                              AtomicInteger moved) throws IllegalAccessException {
     if (CollectionUtils.isEmpty(mailRemoteIds)) {
       return 0;
     }
@@ -5838,15 +5863,23 @@ public class EmailBoxService {
           }
           Message message = source.getMessageByUID(mailRemoteId);
           if (message == null) {
-            // THE bug of EXO-89367, now counted. The row was listed and the server has
-            // nothing at that number: either the mirror is stale or the UID belongs to
-            // another folder entirely. Either way the move did not happen.
-            LOG.warn("Email {} not found in folder {} on IMAP server for user {}; it was not moved",
+            // The row was listed and the server has nothing at that number: the message
+            // was removed or renumbered elsewhere (another client, a UIDVALIDITY change),
+            // so the mirror row points at nothing. It is NOT put back — EXO-89367 counted
+            // the failure but restored the row, and a row whose message is gone can never
+            // be acted on again: every delete, move and archive of it fails forever, which
+            // is what a user sees as "this mail cannot be deleted" (EXO-90437). The row
+            // goes; a message that does still exist under another number comes back
+            // with the next synchronization of the folder.
+            LOG.warn("Email {} is no longer in folder {} on the mail server of user {}; its row is dropped and the folder re-read",
                      mailRemoteId,
                      sourceFolder,
                      username);
-            recreateCachedRow(row);
-            failures++;
+            if (action != MoveAction.DELETE) {
+              // A delete of a message already gone is the outcome the user asked for; any
+              // other action did not happen, and is reported.
+              failures++;
+            }
             continue;
           }
           String expectedMessageId = row.getMailHeaderId();
@@ -5858,6 +5891,7 @@ public class EmailBoxService {
           if (destination != null) {
             source.copyMessages(new Message[] { message }, destination);
           }
+          moved.incrementAndGet();
           // On Gmail a COPY into [Gmail]/Trash MOVES the message (Trash is exclusive with
           // every label), so the server expunges the source right away and the handle is
           // already gone — the delete has in fact succeeded, and an already-expunged
