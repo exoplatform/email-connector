@@ -18,6 +18,8 @@ package org.exoplatform.emailConnector.model;
 
 import org.exoplatform.emailConnector.entity.UserEmailSettingEntity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
@@ -43,6 +45,16 @@ public class UserEmailSetting extends UserEmailSettingEntity {
 
   /** Whether the bound connector offers an address book at all, filled at read time. */
   private boolean carddavAvailable;
+
+  /**
+   * Set at read time when a stored password could not be decoded (a codec the instance
+   * cannot initialise, a ciphertext written under another key): the model carries no
+   * password although one is stored. What lets a write handed this model back keep the
+   * stored ciphertext, where a model built by a caller -- a deliberate passwordless
+   * connection -- clears it. Never serialised, never stored.
+   */
+  @JsonIgnore
+  private transient boolean passwordUnreadable;
 
   public UserEmailSetting(String emailConnectorId,
                           String emailAddress,
