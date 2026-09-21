@@ -230,6 +230,11 @@ const CATEGORY_WATCH_QUIET_POLLS = 30;
 // a row nothing can act on. The message surfaces at the folder's next scheduled check
 // either way (see undoMove and moveEmails).
 const REFRESH_WATCH_MAX_MS = 240000;
+// The remembered-rows watch also stands down after this many polls in which the listed
+// folder's row count did not move (the category watch's own escape): a watch armed for
+// the whole budget by a partly failed undo must not poll the listing for four minutes
+// over a folder that stopped changing.
+const REFRESH_WATCH_QUIET_POLLS = 30;
 
 // How long typing must pause before the whole-mailbox server search fires; the
 // instant local matches don't wait for it.
@@ -311,6 +316,10 @@ export default {
       // left the listing (which of them went back is not the drawer's to guess) while
       // some of them are on their way into the mirror.
       refreshWatchUntilDeadline: false,
+      // The listed folder's row count at the previous poll of the remembered-rows watch,
+      // and how many polls in a row it did not move.
+      refreshWatchListedCount: null,
+      refreshWatchQuietPolls: 0,
       currentFolder: 'INBOX',
       // The favorite view: list only the messages carrying the mail server's
       // \Flagged flag, in the listed folder. Toggled from the chip row.
@@ -570,6 +579,9 @@ export default {
     });
   },
   beforeDestroy() {
+    // The 2-second refresh interval has three owners (a running sync, the category watch,
+    // the remembered-rows watch); none of them may outlive the component.
+    this.stopAutoRefresh();
     document.removeEventListener('refresh-user-email-setting', this.onRefreshUserEmailSetting);
     document.removeEventListener('email-favorite-status-changed', this.onFavoriteStatusChangedOutside);
     this.$root.$off('refresh-email-box', this.onRefreshEmailBox);
@@ -1164,6 +1176,8 @@ export default {
       this.categoryWatchDeadline = null;
       this.refreshWatchDeadline = null;
       this.refreshWatchUntilDeadline = false;
+      this.refreshWatchListedCount = null;
+      this.refreshWatchQuietPolls = 0;
       this.stopAutoRefresh();
       this.clearSearch();
       // Nothing prunes an override until a server answer lands, so a user who toggles
@@ -1655,6 +1669,12 @@ export default {
           .then(failures => {
             if (failures > 0) {
               this.forgetRefreshPendingRows(filed[index]);
+              // The rows the server did not move never left their folder: hiding them
+              // there on the guess that they had would be this drawer showing a folder
+              // without a message it still holds. The whole group comes back into the
+              // listing; the ones that did move leave it again at the next re-read,
+              // which no longer lists them.
+              this.movedEmailIds = this.movedEmailIds.filter(moved => !(moved.folder === folder && ids.includes(moved.id)));
               partial = partial || failures < ids.length;
             }
             this.alertOnActionFailures(failures, 'move');
@@ -1885,7 +1905,11 @@ export default {
      */
     watchRefreshPendingRows(untilDeadline = false) {
       this.refreshWatchDeadline = Date.now() + REFRESH_WATCH_MAX_MS;
-      this.refreshWatchUntilDeadline = this.refreshWatchUntilDeadline || untilDeadline;
+      // Assigned, not OR-ed: a later watch armed for the remembered rows alone is not
+      // silently a whole-budget one because an earlier undo asked for the budget.
+      this.refreshWatchUntilDeadline = untilDeadline;
+      this.refreshWatchListedCount = null;
+      this.refreshWatchQuietPolls = 0;
       this.startAutoRefresh();
     },
     /**
@@ -1954,14 +1978,24 @@ export default {
       }
       // The watch ends when the listed folder holds no remembered row any more (the
       // server lists the message, or the user moved on to another folder) unless a
-      // partly failed undo asked for the whole budget, and in any case once the budget
-      // is spent. A row of another folder stays remembered until that folder is listed
-      // or its own expiry prunes it.
+      // partly failed undo asked for the whole budget; in any case once the budget is
+      // spent, or once the listed folder's row count stood still for
+      // REFRESH_WATCH_QUIET_POLLS polls -- a whole-budget watch over a folder that
+      // stopped changing has nothing left to wait for. A row of another folder stays
+      // remembered until that folder is listed or its own expiry prunes it.
+      if (this.refreshWatchDeadline) {
+        const listed = this.emailBox?.emails?.length ?? 0;
+        this.refreshWatchQuietPolls = listed === this.refreshWatchListedCount ? this.refreshWatchQuietPolls + 1 : 0;
+        this.refreshWatchListedCount = listed;
+      }
       if (this.refreshWatchDeadline
         && (Date.now() > this.refreshWatchDeadline
+          || this.refreshWatchQuietPolls >= REFRESH_WATCH_QUIET_POLLS
           || (!this.refreshWatchUntilDeadline && !this.refreshPendingRows.some(row => row.folder === this.currentFolder)))) {
         this.refreshWatchDeadline = null;
         this.refreshWatchUntilDeadline = false;
+        this.refreshWatchListedCount = null;
+        this.refreshWatchQuietPolls = 0;
         this.stopAutoRefreshWhenIdle();
       }
     },
