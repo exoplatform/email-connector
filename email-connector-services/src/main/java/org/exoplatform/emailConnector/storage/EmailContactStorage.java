@@ -69,6 +69,8 @@ public class EmailContactStorage {
 
   private static final Log  LOG          = ExoLogger.getLogger(EmailContactStorage.class);
 
+  private static final int SORT_NAME_RECOMPUTE_PAGE_SIZE = 200;
+
   // The list's one ordering, everywhere: bucket (collation-proof), then sort key,
   // then id as the stable tiebreaker the rail's offset arithmetic needs.
   private static final Sort CONTACT_SORT = Sort.by(Sort.Direction.ASC, "sortBucket", "sortName", "id");
@@ -702,6 +704,47 @@ public class EmailContactStorage {
       ids.add(entity.getId());
     }
     return ids;
+  }
+
+  /**
+   * Rewrites the stored sort key of the contacts that carry no structured
+   * names, whose key is derived from the display name: rows written before a
+   * change of that derivation keep the old key until recomputed. Walks the
+   * candidates by id with a keyset cursor and rewrites only the two derived
+   * columns of each row whose key changes, so nothing another writer changed
+   * meanwhile is carried back.
+   *
+   * @return the number of rows rewritten
+   */
+  public int recomputeSortNames() {
+    int rewritten = 0;
+    long lastId = 0;
+    List<EmailContactEntity> contacts;
+    do {
+      contacts = emailContactDAO.findWithoutStructuredNamesAfter(lastId, PageRequest.of(0, SORT_NAME_RECOMPUTE_PAGE_SIZE));
+      rewritten += recomputeSortNames(contacts);
+      if (!contacts.isEmpty()) {
+        lastId = contacts.get(contacts.size() - 1).getId();
+      }
+    } while (contacts.size() == SORT_NAME_RECOMPUTE_PAGE_SIZE);
+    return rewritten;
+  }
+
+  int recomputeSortNames(List<EmailContactEntity> contacts) {
+    int rewritten = 0;
+    for (EmailContactEntity contact : contacts) {
+      if (StringUtils.isNotBlank(contact.getGivenName())
+          || StringUtils.isNotBlank(contact.getFamilyName())
+          || StringUtils.isBlank(contact.getDisplayName())) {
+        continue;
+      }
+      String sortName = EmailContactUtils.computeSortName(null, null, contact.getDisplayName(), contact.getPrimaryEmail());
+      if (StringUtils.equals(sortName, contact.getSortName())) {
+        continue;
+      }
+      rewritten += emailContactDAO.updateSortKey(contact.getId(), sortName, EmailContactUtils.sortBucketOf(sortName));
+    }
+    return rewritten;
   }
 
   /**
