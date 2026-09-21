@@ -295,6 +295,13 @@ public class EmailBoxService {
    */
   private static final List<String>      MOVE_BUILT_IN_TARGETS   = List.of(MailFolder.INBOX, MailFolder.ARCHIVE);
 
+  /**
+   * The most Message-IDs one undo may name. Each costs a server-side SEARCH of its
+   * own, serial and on the request thread, so the list is bounded where the folder
+   * checks are; a move's Undo toast never names more than the rows one move filed.
+   */
+  public static final int                UNDO_MAX_MESSAGE_IDS    = 200;
+
   // Every header createEmails reads per message. They must be fetched in the one batched
   // FETCH: JavaMail otherwise goes back to the server for each header of each message.
   private static final List<String> PREFETCHED_HEADERS                                        =
@@ -3429,14 +3436,19 @@ public class EmailBoxService {
    * @throws IllegalArgumentException if custom folders are switched off
    *           ({@code emailConnector.folder.disabled}), either folder is not one the
    *           move admits ({@code emailConnector.folder.unknown}), a custom one is not
-   *           mirrored ({@code emailConnector.folder.notMirrored}), or the two are
-   *           the same ({@code emailConnector.folder.sameAsSource})
+   *           mirrored ({@code emailConnector.folder.notMirrored}), the two are
+   *           the same ({@code emailConnector.folder.sameAsSource}), or more than
+   *           {@link #UNDO_MAX_MESSAGE_IDS} Message-IDs are named
+   *           ({@code emailConnector.undo.tooMany})
    */
   public int undoMove(List<String> mailHeaderIds,
                       String username,
                       String folder,
                       String originFolder) throws IllegalAccessException {
     checkCanManageFolders(username);
+    if (mailHeaderIds != null && mailHeaderIds.size() > UNDO_MAX_MESSAGE_IDS) {
+      throw new IllegalArgumentException("emailConnector.undo.tooMany");
+    }
     checkCustomFoldersEnabled();
     String originKey = StringUtils.isBlank(originFolder) ? MailFolder.INBOX : originFolder;
     checkUndoOrigin(username, originKey);
@@ -3606,7 +3618,7 @@ public class EmailBoxService {
         closeFolderQuietly(current, expungeOnClose, currentKey, username);
       }
     } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
+      LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       saveMailboxSyncState(username, syncState, originalSyncStateJson);
@@ -4572,7 +4584,7 @@ public class EmailBoxService {
       emailAttachment.setMimeType(mimeType);
       return emailAttachment;
     } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
+      LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       try {
@@ -5067,7 +5079,7 @@ public class EmailBoxService {
         }
       } catch (Exception e) {
         emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, !readStatus, sourceFolder);
-        LOG.error("Error when connecting store for user {}", username, e);
+        LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
         throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
       } finally {
         try {
@@ -5571,7 +5583,7 @@ public class EmailBoxService {
         }
       }
     } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
+      LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
       rows.values().forEach(this::recreateCachedRow);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
@@ -5936,7 +5948,7 @@ public class EmailBoxService {
         }
       }
     } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
+      LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
       hiddenRows.values().forEach(this::recreateCachedRow);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
@@ -11768,7 +11780,7 @@ public class EmailBoxService {
         LOG.warn("No Sent folder found via SPECIAL-USE or fallback names for user {}", username);
       }
     } catch (Exception e) {
-      LOG.error("Error when connecting store for user {}", username, e);
+      LOG.error(STORE_CONNECT_ERROR_MESSAGE, username, e);
       throw new IllegalStateException(String.format(STORE_CONNECT_ERROR_FORMAT, username));
     } finally {
       try {

@@ -77,6 +77,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import javax.activation.DataHandler;
@@ -123,6 +124,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.quality.Strictness;
+import org.mockito.junit.jupiter.MockitoSettings;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -262,22 +265,16 @@ public class EmailBoxServiceTest {
    * happened once would start failing whenever the timer landed inside its window. The
    * tests that are ABOUT the refresh turn it back on explicitly, or drive
    * {@link EmailBoxService#refreshSentFolder} on this thread instead.
+   * <p>
+   * The post-undo and post-move folder refreshes are switched off here too, for the
+   * same reason: each is a real timer firing a second after any undo or move. The
+   * tests that are ABOUT those refreshes mock their scheduler
+   * ({@link #mockFolderRefreshScheduler}) or drive {@link EmailBoxService#refreshFolder}
+   * on this thread instead.
    */
   @BeforeEach
-  void disableThePostSendSentRefresh() {
+  void disableTheBackgroundRefreshes() {
     System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
-  }
-
-  /**
-   * Switches the post-undo and post-move folder refreshes off for every test in this
-   * class, for the reason the Sent one is switched off: each is a real timer firing a
-   * second after any undo or move, against the very mocks such a test counts
-   * interactions on. The tests that are ABOUT the refresh mock its scheduler
-   * ({@link #mockFolderRefreshScheduler}) or drive
-   * {@link EmailBoxService#refreshFolder} on this thread instead.
-   */
-  @BeforeEach
-  void disableTheFolderRefreshes() {
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "false");
     System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "false");
   }
@@ -303,13 +300,25 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Puts the property back the way the JVM had it, so a test class running after this
-   * one sees the shipped default.
+   * Puts the three refresh switches back the way the JVM had them, and the real
+   * folder-refresh scheduler back where {@link #mockFolderRefreshScheduler} swapped a
+   * mock in, so a test class running after this one -- Surefire reuses the JVM and
+   * Spring caches the context -- sees the shipped defaults, not whatever this class
+   * last set.
    */
   @AfterEach
-  void restoreThePostSendSentRefresh() {
+  void restoreTheBackgroundRefreshes() {
     System.clearProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY);
+    System.clearProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY);
+    System.clearProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY);
+    if (realFolderRefreshScheduler != null) {
+      ReflectionTestUtils.setField(emailBoxService, "folderRefreshScheduler", realFolderRefreshScheduler);
+      realFolderRefreshScheduler = null;
+    }
   }
+
+  /** The service's own folder-refresh scheduler while a test has a mock in its place. */
+  private Object realFolderRefreshScheduler;
 
   /**
    * The Trash/Junk/drafts kill switches and the sync period now live behind
@@ -9947,6 +9956,28 @@ public class EmailBoxServiceTest {
   }
 
   /**
+   * Each Message-ID an undo names costs a server-side SEARCH of its own, serial and on
+   * the request thread, so the list is bounded before the mailbox is opened: a crafted
+   * POST naming thousands of ids is refused with a message code and the store is never
+   * connected. Lenient because the refusal comes before the folder the fixture stubs is
+   * ever asked for -- that unused stub is the point of the test.
+   */
+  @Test
+  @SneakyThrows
+  @MockitoSettings(strictness = Strictness.LENIENT)
+  void anUndoNamingMoreMessageIdsThanTheCapIsRefusedBeforeTheMailboxIsOpened() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    List<String> ids = IntStream.rangeClosed(1, EmailBoxService.UNDO_MAX_MESSAGE_IDS + 1).mapToObj(i -> "<" + i + "@host>").toList();
+
+    assertEquals("emailConnector.undo.tooMany",
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX)).getMessage());
+    // the fixture itself connects the store to hand out its folders; what the cap must
+    // prevent is any work on them
+    verify(factures, never()).open(anyInt());
+    verify(emailBoxStorage, never()).getEmailIdsByMailHeaderId(anyString(), anyString(), anyString());
+  }
+
+  /**
    * A mailbox with one mirrored custom folder, "Factures" ({@code CUSTOM:1}), handed
    * out by the store under its remote name, beside the empty listed inbox
    * {@link #givenAMailboxListing} sets up.
@@ -10105,6 +10136,9 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mock(ScheduledExecutorService.class);
     lenient().when(scheduler.schedule(any(Runnable.class), anyLong(), any(TimeUnit.class)))
              .thenReturn(mock(ScheduledFuture.class));
+    if (realFolderRefreshScheduler == null) {
+      realFolderRefreshScheduler = ReflectionTestUtils.getField(emailBoxService, "folderRefreshScheduler");
+    }
     ReflectionTestUtils.setField(emailBoxService, "folderRefreshScheduler", scheduler);
     return scheduler;
   }
