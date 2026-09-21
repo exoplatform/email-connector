@@ -300,11 +300,12 @@ public class EmailBoxServiceTest {
   }
 
   /**
-   * Puts the three refresh switches back the way the JVM had them, and the real
-   * folder-refresh scheduler back where {@link #mockFolderRefreshScheduler} swapped a
-   * mock in, so a test class running after this one -- Surefire reuses the JVM and
-   * Spring caches the context -- sees the shipped defaults, not whatever this class
-   * last set.
+   * Puts back what this class swaps on the shared service -- the three refresh
+   * switches, the two refresh schedulers a test may have replaced by a mock
+   * ({@link #mockFolderRefreshScheduler}, {@link #mockSentRefreshScheduler}), the event
+   * publisher a test may have pinned, and the two coalescing maps' leftover entries --
+   * so a test class running after this one (Surefire reuses the JVM and Spring caches
+   * the context) sees the shipped defaults, not whatever this class last set.
    */
   @AfterEach
   void restoreTheBackgroundRefreshes() {
@@ -315,10 +316,26 @@ public class EmailBoxServiceTest {
       ReflectionTestUtils.setField(emailBoxService, "folderRefreshScheduler", realFolderRefreshScheduler);
       realFolderRefreshScheduler = null;
     }
+    if (realSentRefreshScheduler != null) {
+      ReflectionTestUtils.setField(emailBoxService, "sentRefreshScheduler", realSentRefreshScheduler);
+      realSentRefreshScheduler = null;
+    }
+    if (realEventPublisher != null) {
+      ReflectionTestUtils.setField(emailBoxService, "eventPublisher", realEventPublisher);
+      realEventPublisher = null;
+    }
+    pendingFolderRefreshes().clear();
+    pendingSentRefreshes().clear();
   }
 
   /** The service's own folder-refresh scheduler while a test has a mock in its place. */
   private Object realFolderRefreshScheduler;
+
+  /** The service's own Sent-refresh scheduler while a test has a mock in its place. */
+  private Object realSentRefreshScheduler;
+
+  /** The service's own event publisher while a test has the mock pinned in its place. */
+  private Object realEventPublisher;
 
   /**
    * The Trash/Junk/drafts kill switches and the sync period now live behind
@@ -1637,6 +1654,9 @@ public class EmailBoxServiceTest {
     // The mock is pinned into the service by hand: for ApplicationEventPublisher the
     // context registers ITSELF as a resolvable dependency, and that candidate can win
     // the @Autowired resolution over the @MockitoBean, leaving the mock unobserved.
+    if (realEventPublisher == null) {
+      realEventPublisher = ReflectionTestUtils.getField(emailBoxService, "eventPublisher");
+    }
     ReflectionTestUtils.setField(emailBoxService, "eventPublisher", eventPublisher);
     UserEmailSetting userEmailSetting = userEmailSetting();
     when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting);
@@ -1924,6 +1944,9 @@ public class EmailBoxServiceTest {
     ScheduledExecutorService scheduler = mock(ScheduledExecutorService.class);
     lenient().when(scheduler.schedule(any(Runnable.class), anyLong(), any(TimeUnit.class)))
              .thenReturn(mock(ScheduledFuture.class));
+    if (realSentRefreshScheduler == null) {
+      realSentRefreshScheduler = ReflectionTestUtils.getField(emailBoxService, "sentRefreshScheduler");
+    }
     ReflectionTestUtils.setField(emailBoxService, "sentRefreshScheduler", scheduler);
     return scheduler;
   }
@@ -9971,10 +9994,31 @@ public class EmailBoxServiceTest {
 
     assertEquals("emailConnector.undo.tooMany",
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX)).getMessage());
-    // the fixture itself connects the store to hand out its folders; what the cap must
-    // prevent is any work on them
+    // never().connect cannot be asserted here: the fixture's trashStore() helper INVOKES
+    // connect on the mock (not a stubbing call) to fetch the stubbed store, so the
+    // invocation is on record before undoMove runs. What the cap must prevent is any
+    // work on the folders.
     verify(factures, never()).open(anyInt());
     verify(emailBoxStorage, never()).getEmailIdsByMailHeaderId(anyString(), anyString(), anyString());
+  }
+
+  /**
+   * The cap follows the mailbox cache size, the most rows one move can file from the
+   * listing: with a cache of 1000 a select-all of 500 is not refused (each id is then
+   * looked up and, unfound here, counted as a failure -- the refusal is the only thing
+   * this pins).
+   */
+  @Test
+  @SneakyThrows
+  void anUndoWithinTheMailboxCacheSizeIsNotRefused() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(1000);
+    List<String> ids = IntStream.rangeClosed(1, 500).mapToObj(i -> "<" + i + "@host>").toList();
+
+    int failed = emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX);
+
+    assertEquals(500, failed);
+    verify(factures).open(Folder.READ_WRITE);
   }
 
   /**
