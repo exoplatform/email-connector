@@ -166,11 +166,12 @@ public class UserEmailSettingServiceTest {
   }
 
   /**
-   * A settings write handed a model with no password keeps the stored ciphertext.
-   * Every read-modify-write writer hands back the model getUserEmailSetting built,
-   * whose password is null whenever the decode failed -- a codec the instance
-   * cannot initialise, a ciphertext written under another key -- and writing that
-   * null would turn a transient or repairable failure into a deleted credential.
+   * A settings write handed back a model whose read could not decode the password
+   * keeps the stored ciphertext. Every read-modify-write writer hands back the model
+   * getUserEmailSetting built, whose password is null whenever the decode failed -- a
+   * codec the instance cannot initialise, a ciphertext written under another key --
+   * and writing that null would turn a transient or repairable failure into a deleted
+   * credential.
    */
   @Test
   @SneakyThrows
@@ -181,6 +182,7 @@ public class UserEmailSettingServiceTest {
     when(storedSetting.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"emailPassword\":\"storedCipher\"}");
     UserEmailSetting model = userEmailSetting();
     model.setEmailPassword(null);
+    model.setPasswordUnreadable(true);
 
     userEmailSettingService.setUserEmailSetting(model, TEST_USER, false);
 
@@ -188,6 +190,50 @@ public class UserEmailSettingServiceTest {
     verify(settingService).set(any(Context.class), any(Scope.class), anyString(), written.capture());
     UserEmailSettingEntity persisted = JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
     assertEquals("storedCipher", persisted.getEmailPassword());
+  }
+
+  /**
+   * A model built by a caller with no password -- a deliberate passwordless
+   * connection, not a read whose decode failed -- clears the stored password: the
+   * intent is carried by the read's mark, never inferred from a null field.
+   */
+  @Test
+  @SneakyThrows
+  void aDeliberatePasswordlessWriteClearsTheStoredCiphertext() {
+    UserEmailSetting model = userEmailSetting();
+    model.setEmailPassword(null);
+
+    userEmailSettingService.setUserEmailSetting(model, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> written = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), written.capture());
+    UserEmailSettingEntity persisted = JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
+    assertNull(persisted.getEmailPassword());
+    verify(settingService, never()).get(any(Context.class), any(Scope.class), anyString());
+  }
+
+  /**
+   * The stored ciphertext is kept for the same account only: a marked model naming
+   * another connector or address than the stored document does not carry that
+   * document's password over.
+   */
+  @Test
+  @SneakyThrows
+  void anotherAccountsCiphertextIsNeverCarriedOver() {
+    SettingValue storedSetting = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+                       .thenReturn(storedSetting);
+    when(storedSetting.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\"other@host\",\"emailPassword\":\"storedCipher\"}");
+    UserEmailSetting model = userEmailSetting();
+    model.setEmailPassword(null);
+    model.setPasswordUnreadable(true);
+
+    userEmailSettingService.setUserEmailSetting(model, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> written = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), written.capture());
+    UserEmailSettingEntity persisted = JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
+    assertNull(persisted.getEmailPassword());
   }
 
   /**
@@ -274,6 +320,28 @@ public class UserEmailSettingServiceTest {
     assertNotNull(read);
     assertEquals("testEmail", read.getEmailAddress());
     assertNull(read.getEmailPassword());
+    assertTrue("the read marks the model, so a write handed it back keeps the stored ciphertext", read.isPasswordUnreadable());
+  }
+
+  /**
+   * A read that decodes its password -- or finds none stored -- marks nothing: only a
+   * decode failure does.
+   */
+  @Test
+  @SneakyThrows
+  void aReadThatDecodesItsPasswordMarksNothing() {
+    SettingValue storedSetting = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), anyString())).thenReturn(storedSetting);
+    when(storedSetting.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"emailPassword\":\"cipher\"}");
+    when(emailConnectorService.getEmailConnector(1L)).thenReturn(emailConnector());
+    AbstractCodec codec = mock(AbstractCodec.class);
+    when(codec.decode("cipher")).thenReturn("clear");
+    when(codecInitializer.getCodec()).thenReturn(codec);
+
+    UserEmailSetting read = userEmailSettingService.getUserEmailSetting(TEST_USER);
+
+    assertEquals("clear", read.getEmailPassword());
+    assertFalse(read.isPasswordUnreadable());
   }
 
   /**

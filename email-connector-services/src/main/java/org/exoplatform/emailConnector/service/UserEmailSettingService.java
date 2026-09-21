@@ -177,16 +177,15 @@ public class UserEmailSettingService {
    */
   public void setUserEmailSetting(UserEmailSetting userEmailSetting, String username, boolean broadcast) {
     String encodedPassword = encodePassword(userEmailSetting.getEmailPassword());
-    if (encodedPassword == null) {
-      // A model with no password is a settings write, not a disconnection. Every
-      // read-modify-write writer -- the sync's status update first of all -- hands
-      // back the model getUserEmailSetting built, whose password is null whenever the
-      // decode failed: a codec the instance cannot initialise, or a ciphertext
-      // written under another key. Writing that null would turn a transient or
-      // repairable failure into a deleted credential that no restored codeckey.txt
-      // brings back; the stored ciphertext stays as it is, and a password is only
-      // ever replaced by a password.
-      encodedPassword = storedEncodedPassword(username);
+    if (encodedPassword == null && userEmailSetting.isPasswordUnreadable()) {
+      // The model came from a read whose decode failed (a codec the instance cannot
+      // initialise, a ciphertext written under another key) and is handed back by a
+      // read-modify-write writer -- the sync's status update first of all. Writing
+      // the null it carries would turn a transient or repairable failure into a
+      // deleted credential that no restored codeckey.txt brings back, so the stored
+      // ciphertext stays -- for the same account only. A model built by a caller
+      // carries no such mark: a deliberate passwordless write clears the password.
+      encodedPassword = storedEncodedPassword(username, userEmailSetting);
     }
     userEmailSetting.setEmailPassword(encodedPassword);
     UserEmailSettingEntity userEmailSettingEntity = new UserEmailSettingEntity(userEmailSetting.getEmailConnectorId(),
@@ -358,7 +357,9 @@ public class UserEmailSettingService {
                                                                          UserEmailSetting.class);
       if (storedUserEmailSetting.getEmailConnectorId() != null) {
         userEmailSetting = storedUserEmailSetting;
-        userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword(), username));
+        String storedPassword = userEmailSetting.getEmailPassword();
+        userEmailSetting.setEmailPassword(decodePassword(storedPassword, username));
+        userEmailSetting.setPasswordUnreadable(StringUtils.isNotBlank(storedPassword) && userEmailSetting.getEmailPassword() == null);
         EmailConnector emailConnector =
                                       emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
         if (emailConnector != null) {
@@ -702,19 +703,25 @@ public class UserEmailSettingService {
   }
 
   /**
-   * The password as it is stored, still encoded, or null when there is none -- what
-   * {@link #setUserEmailSetting} keeps when the model it is handed carries no
-   * password.
+   * The password as it is stored, still encoded -- what {@link #setUserEmailSetting}
+   * keeps when the model it is handed could not decode it -- provided the stored
+   * document names the same account (connector and address) as the model: another
+   * account's ciphertext is never carried over.
    *
    * @param username the mailbox owner
-   * @return the stored encoded password, or null
+   * @param model the settings being written
+   * @return the stored encoded password of that account, or null
    */
-  private String storedEncodedPassword(String username) {
+  private String storedEncodedPassword(String username, UserEmailSetting model) {
     SettingValue<?> stored = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
     if (stored == null || stored.getValue() == null) {
       return null;
     }
     UserEmailSettingEntity entity = JsonUtils.fromJsonString(stored.getValue().toString(), UserEmailSettingEntity.class);
-    return entity == null ? null : entity.getEmailPassword();
+    if (entity == null || !StringUtils.equals(entity.getEmailConnectorId(), model.getEmailConnectorId())
+        || !StringUtils.equalsIgnoreCase(entity.getEmailAddress(), model.getEmailAddress())) {
+      return null;
+    }
+    return entity.getEmailPassword();
   }
 }
