@@ -176,7 +176,19 @@ public class UserEmailSettingService {
    * @param username user setting the user email setting
    */
   public void setUserEmailSetting(UserEmailSetting userEmailSetting, String username, boolean broadcast) {
-    userEmailSetting.setEmailPassword(encodePassword(userEmailSetting.getEmailPassword()));
+    String encodedPassword = encodePassword(userEmailSetting.getEmailPassword());
+    if (encodedPassword == null) {
+      // A model with no password is a settings write, not a disconnection. Every
+      // read-modify-write writer -- the sync's status update first of all -- hands
+      // back the model getUserEmailSetting built, whose password is null whenever the
+      // decode failed: a codec the instance cannot initialise, or a ciphertext
+      // written under another key. Writing that null would turn a transient or
+      // repairable failure into a deleted credential that no restored codeckey.txt
+      // brings back; the stored ciphertext stays as it is, and a password is only
+      // ever replaced by a password.
+      encodedPassword = storedEncodedPassword(username);
+    }
+    userEmailSetting.setEmailPassword(encodedPassword);
     UserEmailSettingEntity userEmailSettingEntity = new UserEmailSettingEntity(userEmailSetting.getEmailConnectorId(),
                                                                                userEmailSetting.getEmailAddress(),
                                                                                userEmailSetting.getEmailPassword(),
@@ -346,7 +358,7 @@ public class UserEmailSettingService {
                                                                          UserEmailSetting.class);
       if (storedUserEmailSetting.getEmailConnectorId() != null) {
         userEmailSetting = storedUserEmailSetting;
-        userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword()));
+        userEmailSetting.setEmailPassword(decodePassword(userEmailSetting.getEmailPassword(), username));
         EmailConnector emailConnector =
                                       emailConnectorService.getEmailConnector(Long.parseLong(userEmailSetting.getEmailConnectorId()));
         if (emailConnector != null) {
@@ -635,10 +647,11 @@ public class UserEmailSettingService {
    * takes the whole account down instead of one field.
    *
    * @param password the stored, encoded password -- may be blank
+   * @param username the mailbox owner, named in the log line when the decode fails
    * @return the decoded password, or null if there was none or it could not be
    *         decoded
    */
-  private String decodePassword(String password) {
+  private String decodePassword(String password, String username) {
     // Nothing to decode is not an error. The mail password always exists, so this
     // never came up until a second, optional password arrived: every user who has
     // never bound an address book stores a null one, and handing that to the codec
@@ -661,8 +674,9 @@ public class UserEmailSettingService {
       // and let the account present as needing reconnection; propagating instead
       // makes the settings read fail, and the settings read is what serves the very
       // form the user would reconnect from.
-      LOG.warn("The stored password of a mail account cannot be decrypted with the current codec key ({}); "
+      LOG.warn("The stored password of the mail account of user {} cannot be decrypted with the current codec key ({}); "
           + "the account is reported as disconnected and the user has to reconnect it",
+               username,
                e.getCause() == null ? e.toString() : e.getCause().toString());
       return null;
     }
@@ -685,5 +699,22 @@ public class UserEmailSettingService {
       LOG.warn("Error when encoding password", e);
       return null;
     }
+  }
+
+  /**
+   * The password as it is stored, still encoded, or null when there is none -- what
+   * {@link #setUserEmailSetting} keeps when the model it is handed carries no
+   * password.
+   *
+   * @param username the mailbox owner
+   * @return the stored encoded password, or null
+   */
+  private String storedEncodedPassword(String username) {
+    SettingValue<?> stored = settingService.get(Context.USER.id(username), EMAIL_CONNECTOR_SCOPE, USER_EMAIL_SETTING_KEY);
+    if (stored == null || stored.getValue() == null) {
+      return null;
+    }
+    UserEmailSettingEntity entity = JsonUtils.fromJsonString(stored.getValue().toString(), UserEmailSettingEntity.class);
+    return entity == null ? null : entity.getEmailPassword();
   }
 }

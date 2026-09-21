@@ -165,6 +165,54 @@ public class UserEmailSettingServiceTest {
                "a client-supplied sync period must never reach persistence — it would undercut the admin-set floor");
   }
 
+  /**
+   * A settings write handed a model with no password keeps the stored ciphertext.
+   * Every read-modify-write writer hands back the model getUserEmailSetting built,
+   * whose password is null whenever the decode failed -- a codec the instance
+   * cannot initialise, a ciphertext written under another key -- and writing that
+   * null would turn a transient or repairable failure into a deleted credential.
+   */
+  @Test
+  @SneakyThrows
+  void aWriteWithoutAPasswordKeepsTheStoredCiphertext() {
+    SettingValue storedSetting = mock(SettingValue.class);
+    when(settingService.get(any(Context.class), any(Scope.class), eq(UserEmailSettingService.USER_EMAIL_SETTING_KEY)))
+                       .thenReturn(storedSetting);
+    when(storedSetting.getValue()).thenReturn("{\"emailConnectorId\":\"1\",\"emailAddress\":\"testEmail\",\"emailPassword\":\"storedCipher\"}");
+    UserEmailSetting model = userEmailSetting();
+    model.setEmailPassword(null);
+
+    userEmailSettingService.setUserEmailSetting(model, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> written = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), written.capture());
+    UserEmailSettingEntity persisted = JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
+    assertEquals("storedCipher", persisted.getEmailPassword());
+  }
+
+  /**
+   * The guard above must not get in the way of the one write that carries a
+   * password: a new password replaces the stored one, and the stored one is not
+   * even read.
+   */
+  @Test
+  @SneakyThrows
+  void aWriteWithAPasswordReplacesTheStoredOne() {
+    AbstractCodec codec = mock(AbstractCodec.class);
+    when(codec.encode("newSecret")).thenReturn("newCipher");
+    when(codecInitializer.getCodec()).thenReturn(codec);
+    UserEmailSetting model = userEmailSetting();
+    model.setEmailPassword("newSecret");
+
+    userEmailSettingService.setUserEmailSetting(model, TEST_USER, false);
+
+    ArgumentCaptor<SettingValue> written = ArgumentCaptor.forClass(SettingValue.class);
+    verify(settingService).set(any(Context.class), any(Scope.class), anyString(), written.capture());
+    UserEmailSettingEntity persisted = JsonUtils.fromJsonString(written.getValue().getValue().toString(), UserEmailSettingEntity.class);
+    assertEquals("newCipher", persisted.getEmailPassword());
+    verify(settingService, never()).get(any(Context.class), any(Scope.class), anyString());
+  }
+
   @Test
   void getUserEmailSetting() throws TokenServiceInitializationException {
     SettingValue userEmailSettingValue = mock(SettingValue.class);
