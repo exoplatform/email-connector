@@ -266,8 +266,7 @@ public class ImapAclEngine implements MailboxAclEngine {
         namespaces = namespaceRootsFromList(store);
       }
       for (Folder namespace : namespaces) {
-        Folder[] owners = namespace.list("%");
-        for (Folder owner : owners == null ? new Folder[0] : owners) {
+        for (Folder owner : ownersOf(store, namespace)) {
           shared.add(describe(owner));
         }
       }
@@ -323,6 +322,42 @@ public class ImapAclEngine implements MailboxAclEngine {
    */
   private MailboxRights expand(DelegationPreset preset) {
     return preset == null ? MailboxRights.NONE : preset.rights();
+  }
+
+  /**
+   * The owner folders inside one shared-mailbox namespace, listed <b>by pattern from
+   * the default folder</b> rather than with {@code namespace.list("%")}.
+   * <p>
+   * The distinction is not cosmetic, and it cost a live debugging session. A namespace
+   * {@code Folder} carries {@code isNamespace}, and the mail library appends the
+   * separator to the name when it probes whether such a folder exists -- it asks
+   * {@code LIST "" "Shared Folders/"}. Stalwart 0.11.8 answers <b>nothing</b> to that
+   * form while answering {@code LIST "" "Shared Folders"} and
+   * {@code LIST "" "Shared Folders/%"} perfectly well, so the probe concluded the
+   * namespace did not exist and {@code list} threw {@code FolderNotFoundException}
+   * ("Shared Folders not found") before any real listing was attempted. Every command
+   * the walk needs worked; only the library's existence check did not.
+   * <p>
+   * Listing {@code <namespace><separator>%} from the default folder asks the one
+   * question we want, in the one form both servers answer, and skips the probe
+   * entirely.
+   *
+   * @param store the connected store
+   * @param namespace the namespace root
+   * @return the owner folders, possibly empty, never null
+   * @throws MessagingException when the store cannot list
+   */
+  private Folder[] ownersOf(Store store, Folder namespace) throws MessagingException {
+    String root = namespace.getFullName();
+    if (StringUtils.isBlank(root)) {
+      return new Folder[0];
+    }
+    char separator = namespace.getSeparator();
+    String prefix = separator == 0 || separator == Character.MAX_VALUE ? root
+                                                                       : StringUtils.removeEnd(root, String.valueOf(separator))
+                                                                         + separator;
+    Folder[] owners = store.getDefaultFolder().list(prefix + "%");
+    return owners == null ? new Folder[0] : owners;
   }
 
   /**
