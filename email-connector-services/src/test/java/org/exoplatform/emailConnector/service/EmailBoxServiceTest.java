@@ -172,6 +172,7 @@ import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
 import org.exoplatform.emailConnector.provider.EmailCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.emailConnector.storage.EmailBoxStorage;
 import org.exoplatform.emailConnector.storage.EmailFolderStorage;
 import org.exoplatform.emailConnector.storage.EmailSyncStateStorage;
@@ -1723,6 +1724,95 @@ public class EmailBoxServiceTest {
       assertEquals(SENDER_THE_PROVIDER_NAMES,
                    ((InternetAddress) sent.getValue().getFrom()[0]).getAddress(),
                    "the From must be the address the provider named, not the stored one");
+    }
+  }
+
+  /**
+   * With no credentials contract wired, a send is refused outright rather than
+   * authenticated with the stored password behind the administrator's back -- the
+   * failure mode the migration exists to remove. Mutation-verified: with the null
+   * check in {@code credentialsResolver()} removed the send ends in a
+   * NullPointerException, not this refusal.
+   */
+  @Test
+  @SneakyThrows
+  void aSendRefusesToRunWithoutTheCredentialsContract() {
+    givenASendableMailbox();
+    Object wired = ReflectionTestUtils.getField(emailBoxService, "emailCredentialsResolver");
+    ReflectionTestUtils.setField(emailBoxService, "emailCredentialsResolver", null);
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                   () -> emailBoxService.sendEmail(email(TEST_USER), TEST_USER));
+      assertTrue(refusal.getMessage().contains("credentials contract is not available"), "the refusal says what is missing");
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
+    } finally {
+      ReflectionTestUtils.setField(emailBoxService, "emailCredentialsResolver", wired);
+    }
+  }
+
+  /**
+   * A provider that cannot authenticate the send fails it, and nothing goes out on
+   * the wire authenticated as anything else. Mutation-verified: a fallback
+   * authenticator in {@code smtpSession} lets the message reach {@code Transport.send}.
+   */
+  @Test
+  @SneakyThrows
+  void aProviderThatCannotAuthenticateTheSendFailsItAndSendsNothing() {
+    givenASendableMailbox();
+    when(emailCredentialsResolver.authenticator(any(), any(), any(), any()))
+        .thenThrow(new ConnectorCredentialsException("no material for this account"));
+    assertASendFailsWithoutReachingTheWire();
+  }
+
+  /**
+   * A provider that cannot name the sender fails the send the same way: the From is
+   * the provider's to decide, and a send that fell back on the stored address would
+   * go out as the wrong identity. Mutation-verified: a {@code senderAddress} that
+   * swallows the exception into null lets the message reach {@code Transport.send}.
+   */
+  @Test
+  @SneakyThrows
+  void aProviderThatCannotNameTheSenderFailsTheSend() {
+    givenASendableMailbox();
+    when(emailCredentialsResolver.senderAddress(any(), any(), any()))
+        .thenThrow(new ConnectorCredentialsException("no account for this user"));
+    assertASendFailsWithoutReachingTheWire();
+  }
+
+  /**
+   * A provider that cannot authenticate the mailbox read marks the sync FAILURE like
+   * any other connection failure -- never SUCCESS over an empty run. Mutation-verified:
+   * a {@code synchronize} that catches the contract's exception and records SUCCESS
+   * fails this.
+   */
+  @Test
+  @SneakyThrows
+  void aProviderThatCannotAuthenticateTheMailboxFailsTheSync() {
+    UserEmailSetting userEmailSetting = givenAUsableMailbox();
+    when(userEmailSettingService.connect(anyString(), anyString()))
+        .thenThrow(new ConnectorCredentialsException("no material for this account"));
+
+    emailBoxService.synchronize(TEST_USER);
+
+    assertEquals(SyncStatus.FAILURE, userEmailSetting.getEmailSyncStatus());
+  }
+
+  /** A bound, connectable mailbox on a connector row: everything a send needs before it asks the contract. */
+  private void givenASendableMailbox() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+    when(emailConnectorService.getEmailConnector(anyLong())).thenReturn(emailConnector());
+  }
+
+  /** The send fails as a send failure, and {@code Transport.send} is never reached. */
+  private void assertASendFailsWithoutReachingTheWire() {
+    // The contract is asked before any session is built, so no Session stub is needed:
+    // a send that got as far as Session.getInstance would already be the defect.
+    try (MockedStatic<Transport> transportMock = mockStatic(Transport.class)) {
+      IllegalStateException failure = assertThrows(IllegalStateException.class,
+                                                   () -> emailBoxService.sendEmail(email(TEST_USER), TEST_USER));
+      assertTrue(failure.getMessage().contains("Error when sending email"), "the send fails as a send failure");
+      transportMock.verify(() -> Transport.send(any(Message.class)), never());
     }
   }
 
