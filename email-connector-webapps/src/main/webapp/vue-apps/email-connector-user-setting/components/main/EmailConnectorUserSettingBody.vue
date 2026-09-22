@@ -240,6 +240,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
              mail the user sends. Its own component, as the folders row is. -->
         <email-connector-user-setting-read-receipts />
         <v-divider class="mx-4" />
+        <!-- Mailbox delegation (EXO-90503), last before the reset: the two sides of
+             it, each a row over its own drawer. After the preferences about your own
+             mail, because it is the only block on this screen that is about somebody
+             else's - and both directions of it are reached from here rather than from
+             two different places. -->
+        <email-connector-user-setting-sharing />
+        <v-divider class="mx-4" />
         <v-list-item>
           <v-list-item-content>
             <v-list-item-title class="text-color">
