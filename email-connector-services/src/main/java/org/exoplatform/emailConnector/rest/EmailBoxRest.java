@@ -46,6 +46,8 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.util.CollectionUtils;
 
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.EmailAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
@@ -108,6 +110,16 @@ public class EmailBoxRest {
                               boolean starred) {
     try {
       return emailBoxService.getEmailBox(request.getRemoteUser(), folder, starred);
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -164,6 +176,16 @@ public class EmailBoxRest {
                                       boolean sync) {
     try {
       return emailBoxService.setCustomFolderSync(request.getRemoteUser(), id, sync);
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -222,6 +244,16 @@ public class EmailBoxRest {
                                      String name) {
     try {
       return emailBoxService.renameCustomFolder(request.getRemoteUser(), id, name);
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -251,6 +283,16 @@ public class EmailBoxRest {
     try {
       emailBoxService.deleteCustomFolder(request.getRemoteUser(), id);
       return ResponseEntity.ok().build();
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -279,6 +321,16 @@ public class EmailBoxRest {
     try {
       emailBoxService.synchronizeCustomFolder(request.getRemoteUser(), id);
       return ResponseEntity.ok().build();
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -319,6 +371,16 @@ public class EmailBoxRest {
     try {
       int failedMoves = emailBoxService.moveToFolder(mailRemoteIds, request.getRemoteUser(), folder, target);
       return Map.of("failedMoves", failedMoves);
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -362,6 +424,16 @@ public class EmailBoxRest {
     try {
       int failedUndos = emailBoxService.undoMove(mailHeaderIds, request.getRemoteUser(), folder, target);
       return Map.of("failedUndos", failedUndos);
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalArgumentException e) {
@@ -765,6 +837,16 @@ public class EmailBoxRest {
       Map<String, Integer> response = new HashMap<>();
       response.put("failedUpdates", failedUpdates);
       return response;
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -839,6 +921,16 @@ public class EmailBoxRest {
       Map<String, Integer> response = new HashMap<>();
       response.put("failedDeletions", failedEmailDeletions);
       return response;
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -877,6 +969,16 @@ public class EmailBoxRest {
       Map<String, Integer> response = new HashMap<>();
       response.put("failedArchives", failedEmailArchives);
       return response;
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -917,6 +1019,16 @@ public class EmailBoxRest {
       response.put("failedRestores", outcome.failures());
       response.put("restoredToSent", outcome.restoredToSent());
       return response;
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -953,6 +1065,16 @@ public class EmailBoxRest {
       Map<String, Integer> response = new HashMap<>();
       response.put("failedPurges", failedPurges);
       return response;
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -1005,6 +1127,16 @@ public class EmailBoxRest {
       Map<String, Integer> response = new HashMap<>();
       response.put("failedJunkMoves", failedJunkMoves);
       return response;
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {
@@ -1045,6 +1177,16 @@ public class EmailBoxRest {
       response.put("failedJunkRestores", outcome.failures());
       response.put("restoredToSent", outcome.restoredToSent());
       return response;
+    } catch (MailboxRightMissingException e) {
+      // The caller asked for something the mail server does not let them do in a mailbox
+      // somebody shared with them. The add-on's convention for a refusal is 401 (see the
+      // domain doc); what is added here is the MESSAGE, which names the missing right so
+      // the interface can say which one and correct a chrome that went stale.
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      // The share itself is gone, which is not the same answer: 410, and the drawer goes
+      // back to the caller's own mailbox rather than re-offering the action.
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     } catch (IllegalStateException e) {

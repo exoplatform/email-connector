@@ -137,6 +137,8 @@ import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.emailConnector.event.EmailSentEvent;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendFailure;
 import org.exoplatform.emailConnector.event.MailboxResetEvent;
@@ -148,6 +150,7 @@ import org.exoplatform.emailConnector.model.FolderClassification;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.MailFolderList;
 import org.exoplatform.emailConnector.model.MailFolderView;
@@ -158,6 +161,7 @@ import org.exoplatform.emailConnector.model.EmailOutgoingAttachment;
 import org.exoplatform.emailConnector.model.EmailBox;
 import org.exoplatform.emailConnector.model.EmailConnector;
 import org.exoplatform.emailConnector.model.EmailContent;
+import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailFolder;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.EmailSearchResult;
@@ -629,6 +633,15 @@ public class EmailBoxService {
                                                                              "User %s is not allowed to manage mail folders";
 
   /**
+   * A move whose source and destination are in two different mailboxes -- one of them a
+   * mailbox somebody else shared with the caller. A message code rather than a sentence:
+   * unlike the refusals above (which are log-and-401 wording), the interface translates
+   * this one, and it is a 400 because the request is malformed rather than forbidden.
+   */
+  static final String             CROSS_MAILBOX_MESSAGE                                       =
+                                                                             "emailConnector.folder.crossMailbox";
+
+  /**
    * The administrator's kill switch for the server-side half of drafts, in the
    * style of {@code email.connector.contacts.publish.enabled}: a JVM property read
    * on every call, so flipping it needs no restart. Default ON. Turning it off
@@ -808,6 +821,14 @@ public class EmailBoxService {
 
   @Autowired
   private EmailFolderService      emailFolderService;
+
+  // The shared mailboxes this user reads, their folders and the rights the server grants
+  // them there. Two uses here and they are different in kind: the delegated branch of the
+  // sync asks it WHICH folders to pull, and every write path asks it WHETHER the caller
+  // may -- see checkDelegatedRight. No cycle: the delegation service knows the folder
+  // storage and the ACL engines, and nothing about this one.
+  @Autowired
+  private EmailDelegationService  emailDelegationService;
 
   // One classified walk per connection. A Store is one sync, one move, one read; the
   // folder list does not change within it, and the five built-in resolvers ask for it
@@ -1279,6 +1300,16 @@ public class EmailBoxService {
           }
         } catch (Exception e) {
           LOG.warn("Could not sync the custom folders of user {}", username, e);
+        }
+        // And, last of all, the mailboxes somebody else shared with this user -- pulled
+        // through THIS user's session, which is the whole design: the server shows them
+        // what their own ACL allows and nothing else, so there is no rights-filtered read
+        // in eXo to get wrong. Best-effort like every folder step above: a shared mailbox
+        // that cannot be reached must not cost the user their own mail.
+        try {
+          syncDelegatedFolders(store, username, userEmailSetting);
+        } catch (Exception e) {
+          LOG.warn("Could not sync the delegated folders of user {}", username, e);
         }
       }
       updateEmailSyncStatus(username, SyncStatus.SUCCESS);
@@ -1788,6 +1819,121 @@ public class EmailBoxService {
       return;
     }
     emailFolderService.recordSync(username, customFolder.getId(), captured[0]);
+  }
+
+  /**
+   * The folders of the mailboxes somebody else shared with this user, for the shares
+   * they are currently in -- the delegated branch of their sync.
+   * <p>
+   * <b>Whose connection pays.</b> This runs inside the delegate's own pass, on the
+   * delegate's own {@code Store}: one more SELECT per mirrored delegated folder, and
+   * nothing at all on the owner's side. The owner's mailbox is never opened by this,
+   * their sync period is untouched, and a share whose owner has never connected eXo
+   * works exactly as well as one whose owner has -- the mirror comes from the delegate.
+   * <p>
+   * <b>What bounds it.</b> Four rules, and each of them is elsewhere so that this loop
+   * is only their composition: the share must be <i>active</i> (the delegate opened that
+   * mailbox recently -- {@link EmailDelegationService#getActiveDelegations}, which is why
+   * an accepted-and-forgotten share costs zero round-trips); the folder must be
+   * <i>opted in</i> ({@link EmailDelegationService#getSyncableFolders}, which at accept
+   * time is the delegated INBOX alone); the window is the <i>delegated</i> one, three
+   * hundred against the thousand of the user's own mailbox
+   * ({@link #getDelegatedWindowSize}); and the folder is skipped outright when the
+   * server says it did not change, by the same STATUS check every other folder goes
+   * through.
+   *
+   * @param store the delegate's connected store -- theirs, never the owner's
+   * @param username the delegate
+   * @param userEmailSetting the delegate's connector binding
+   */
+  private void syncDelegatedFolders(Store store, String username, UserEmailSetting userEmailSetting) {
+    Date activeSince = new Date(System.currentTimeMillis()
+        - emailConnectorService.getEmailBoxActivityThresholdDays() * 86_400_000L);
+    for (EmailDelegation delegation : emailDelegationService.getActiveDelegations(username, activeSince)) {
+      for (EmailFolder delegatedFolder : emailDelegationService.getSyncableFolders(username, delegation.getId())) {
+        try {
+          syncDelegatedFolder(store, delegatedFolder, username, userEmailSetting);
+        } catch (Exception e) {
+          // Stamped even on failure, exactly as a custom folder's is: a failed check is
+          // a check, and the stamp is what keeps one unreachable shared folder from
+          // taking the head of the queue every cycle.
+          LOG.warn("Could not sync delegated folder '{}' of user {} on mailbox {}",
+                   delegatedFolder.getRemoteName(),
+                   username,
+                   delegation.getOwnerMailbox(),
+                   e);
+          emailFolderService.recordSync(username, delegatedFolder.getId(), null);
+        }
+      }
+    }
+  }
+
+  /**
+   * Checks, and when changed syncs, one folder of a shared mailbox.
+   * <p>
+   * Two things differ from {@link #syncCustomFolder} and both are deliberate.
+   * <ul>
+   * <li><b>The window is the delegated one</b> ({@link #getDelegatedWindowSize}).</li>
+   * <li><b>{@code notify} is false, and it is load-bearing.</b> The new-mail broadcast
+   * is what the notification plugins, the App Center badge's announce and the
+   * enterprise auto-categoriser all hang off; passing false is what keeps every one of
+   * them off somebody else's mail in this phase, for free and by construction rather
+   * than by a list of consumers each remembering to check. A delegate who wants to be
+   * told about the owner's new mail is a later, opted-in feature -- and the day it
+   * lands, this flag is the one line that decides it, which is the point of it being a
+   * flag.</li>
+   * </ul>
+   * Presence is probed with {@code exists()} rather than through the connection's
+   * remembered walk: that walk lists the user's OWN namespace, and a shared mailbox
+   * lives under the Other Users prefix, which it may not cover.
+   *
+   * @param store the delegate's connected store
+   * @param delegatedFolder the registered folder of the shared mailbox
+   * @param username the delegate
+   * @param userEmailSetting the delegate's connector binding
+   * @throws MessagingException if the folder cannot be read
+   * @throws IllegalAccessException if the user is not allowed to cache messages
+   */
+  private void syncDelegatedFolder(Store store,
+                                   EmailFolder delegatedFolder,
+                                   String username,
+                                   UserEmailSetting userEmailSetting) throws MessagingException, IllegalAccessException {
+    Folder remote = store.getFolder(delegatedFolder.getRemoteName());
+    if (!(remote instanceof IMAPFolder) || !remote.exists()) {
+      // The share went away, or the owner renamed the folder. Marked missing rather
+      // than thrown at, so the next accept or rights refresh decides what it means --
+      // this loop is not where a revocation is diagnosed.
+      LOG.info("Delegated folder '{}' of user {} is no longer listed by the server; marking it missing",
+               delegatedFolder.getRemoteName(),
+               username);
+      emailFolderService.markMissing(username, delegatedFolder.getId());
+      return;
+    }
+    FolderSyncSnapshot[] captured = new FolderSyncSnapshot[1];
+    syncFolderIfChanged(store,
+                        remote,
+                        delegatedFolder.getKey(),
+                        username,
+                        userEmailSetting,
+                        getDelegatedWindowSize(),
+                        false,
+                        delegatedFolder.getSnapshot(),
+                        snapshot -> captured[0] = snapshot);
+    emailFolderService.recordSync(username, delegatedFolder.getId(), captured[0]);
+  }
+
+  /**
+   * The mirror window of a folder of a shared mailbox: the delegated default, never
+   * more than the mailbox cache size an administrator set.
+   * <p>
+   * Clamped by the administered size for the reason Trash and Junk are: an administrator
+   * who lowered the cache to two hundred meant two hundred, and a delegated folder has
+   * no business being the one place that ignores them.
+   *
+   * @return the number of most recent messages to keep per delegated folder
+   */
+  private int getDelegatedWindowSize() {
+    return Math.min(emailConnectorService.getEmailBoxCacheSize(), EmailConnectorUtils.DEFAULT_DELEGATED_EMAIL_BOX_CACHE_SIZE);
   }
 
   /**
@@ -3345,6 +3491,12 @@ public class EmailBoxService {
     // signal the sync tiers are decided on. Never before the ACL check, which is
     // what keeps a refused request from promoting somebody else's mailbox.
     touchActivity(username);
+    // And, when the folder belongs to a mailbox somebody shared with them, the SAME
+    // signal per share: this listing is the whole of "the delegate is in that mailbox
+    // right now", and without it the delegated branch of their sync would never run.
+    // Unconditional because it costs nothing for an own folder (no query at all) and
+    // because forgetting it at one call site is how a share silently stops updating.
+    emailDelegationService.touchActivity(username, folder);
     if (MailFolder.isCustom(folder)) {
       // A custom key is browsable by shape; whether THIS user has that folder is the
       // registry's answer, and a key it does not know is a 400 -- never a listing of
@@ -3352,7 +3504,12 @@ public class EmailBoxService {
       // period is refreshed on this thread first, for this user only (see
       // refreshCustomFolderIfStale): the complement of the per-cycle budget that keeps
       // the routine sync from checking every folder every period.
-      refreshCustomFolderIfStale(username, userEmailSetting, emailFolderService.getFolderByKey(username, folder));
+      EmailFolder opened = emailFolderService.getFolderByKey(username, folder);
+      if (opened.getDelegationId() == null) {
+        refreshCustomFolderIfStale(username, userEmailSetting, opened);
+      } else {
+        refreshDelegatedFolderIfStale(username, userEmailSetting, opened);
+      }
     }
     List<Email> emails;
     if (starredOnly) {
@@ -3469,6 +3626,11 @@ public class EmailBoxService {
   public MailFolderView setCustomFolderSync(String username, long id, boolean enabled) throws IllegalAccessException {
     checkCanManageFolders(username);
     checkCustomFoldersEnabled();
+    // Own folders only. The opt-in of a shared mailbox's folders is the delegation's,
+    // not this screen's -- which does not even list them -- and letting an id through
+    // here would let a delegate opt their delegated INBOX OUT from a screen that would
+    // then give them no way to put it back, leaving the shared mailbox silently empty.
+    emailDelegationService.checkOwnFolder(username, id);
     EmailFolder customFolder = emailFolderService.setSyncEnabled(username, id, enabled);
     if (!enabled) {
       deleteUserEmails(username, customFolder.getKey());
@@ -3490,6 +3652,10 @@ public class EmailBoxService {
   public void synchronizeCustomFolder(String username, long id) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = checkCanManageFolders(username);
     checkCustomFoldersEnabled();
+    // Own folders only, like the opt-in beside it: an on-demand refresh of a shared
+    // mailbox's folder is the switcher's to ask for, on the delegated branch's own
+    // window, not this path's on the custom-folder one.
+    emailDelegationService.checkOwnFolder(username, id);
     EmailFolder customFolder = emailFolderService.getFolder(username, id);
     if (!customFolder.isSyncEnabled() || customFolder.isMissing()) {
       throw new IllegalArgumentException("emailConnector.folder.notMirrored");
@@ -3621,6 +3787,11 @@ public class EmailBoxService {
     String originKey = StringUtils.isBlank(originFolder) ? MailFolder.INBOX : originFolder;
     checkUndoOrigin(username, originKey);
     String currentKey = resolveMoveTarget(username, originKey, folder);
+    // The move's own guard, read backwards: the messages leave the folder the move
+    // filed them into (t there) and go back where they came from (i there), and the two
+    // are still one mailbox. An undo that could cross a mailbox boundary the move could
+    // not would be a way in through the back door.
+    checkDelegatedMove(username, currentKey, originKey);
     return applyUndoMove(mailHeaderIds, username, currentKey, originKey);
   }
 
@@ -4365,6 +4536,10 @@ public class EmailBoxService {
   public MailFolderView renameCustomFolder(String username, long id, String newName) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = checkCanManageFolders(username);
     checkCustomFoldersEnabled();
+    // Renaming a folder is RFC 4314's x on the mailbox that holds it -- a right eXo
+    // never grants from its own presets, and one no delegate is ever offered here: the
+    // folder belongs to the person who owns the mailbox.
+    emailDelegationService.checkOwnFolder(username, id);
     EmailFolder customFolder = emailFolderService.getFolder(username, id);
     String trimmedName = emailFolderService.validateFolderName(newName);
     emailFolderService.checkNotNested(trimmedName, customFolder.getDelimiter());
@@ -4428,6 +4603,9 @@ public class EmailBoxService {
   public void deleteCustomFolder(String username, long id) throws IllegalAccessException {
     UserEmailSetting userEmailSetting = checkCanManageFolders(username);
     checkCustomFoldersEnabled();
+    // As for the rename, and with more at stake: this issues a DELETE on the server.
+    // A folder of somebody else's mailbox is never destroyed from here.
+    emailDelegationService.checkOwnFolder(username, id);
     EmailFolder customFolder = emailFolderService.getFolder(username, id);
     Store store = null;
     try {
@@ -4523,6 +4701,29 @@ public class EmailBoxService {
    * @param userEmailSetting the user's connector binding
    * @param customFolder the registered folder to refresh
    */
+  /**
+   * The on-open refresh of a folder of a shared mailbox -- {@link #refreshCustomFolderIfStale}
+   * with two differences, both deliberate.
+   * <p>
+   * It is <b>not</b> gated on the custom-folders switch: that switch exists so an
+   * administrator can stop mirroring the folders users made in their own mailboxes, and
+   * turning it off must not take away the shared mailboxes people were given access to
+   * -- those are governed by the delegation cap and by the share itself. And it checks
+   * the opt-in and the missing flag here rather than relying on the caller, because
+   * unlike a custom folder a delegated one can be listed while its share is being
+   * withdrawn underneath.
+   *
+   * @param username the delegate
+   * @param userEmailSetting the delegate's connector binding
+   * @param delegatedFolder the folder of the shared mailbox being opened
+   */
+  private void refreshDelegatedFolderIfStale(String username, UserEmailSetting userEmailSetting, EmailFolder delegatedFolder) {
+    if (delegatedFolder.isSyncEnabled() && !delegatedFolder.isMissing()
+        && emailFolderService.isStale(delegatedFolder, emailConnectorService.getEmailBoxSyncPeriod(), System.currentTimeMillis())) {
+      refreshCustomFolder(username, userEmailSetting, delegatedFolder);
+    }
+  }
+
   private void refreshCustomFolder(String username, UserEmailSetting userEmailSetting, EmailFolder customFolder) {
     if (!syncingUsers.add(username)) {
       LOG.debug("A synchronization is running for user {}; folder '{}' is answered from the cache",
@@ -4533,7 +4734,15 @@ public class EmailBoxService {
     Store store = null;
     try {
       store = userEmailSettingService.connect(userEmailSetting.getEmailConnectorId(), username);
-      syncCustomFolder(store, customFolder, username, userEmailSetting);
+      // One entry point, two branches, and the folder's own row is what picks: a folder
+      // of a shared mailbox takes the delegated window and never notifies, exactly as
+      // the periodic pass gives it, so opening a folder and waiting for the period
+      // cannot mirror it two different ways.
+      if (customFolder.getDelegationId() == null) {
+        syncCustomFolder(store, customFolder, username, userEmailSetting);
+      } else {
+        syncDelegatedFolder(store, customFolder, username, userEmailSetting);
+      }
     } catch (Exception e) {
       // Stamped as a check even though it failed: the listing asks for a refresh on
       // every poll of the drawer, two seconds apart for as long as the category watch
@@ -5377,6 +5586,16 @@ public class EmailBoxService {
         throw new IllegalAccessException(String.format(USER_NOT_ALLOWED_FOR_UPDATE_EMAIL_MESSAGE, username));
       }
       String sourceFolder = StringUtils.isBlank(folder) ? MailFolder.INBOX : folder;
+      // On a folder of a shared mailbox, marking read is a WRITE right -- RFC 4314's s,
+      // "\Seen changes are kept" -- and it is checked before the local row is touched,
+      // not just before the push. Read state on a shared mailbox is ONE flag: the
+      // server keeps a single \Seen per message for the owner and every delegate
+      // (observed on both servers in phase 0), so a delegate holding s who marks a mail
+      // read marks it read for the owner too, and a delegate WITHOUT s changes nothing
+      // anywhere. Writing the local row for the second case would show them a read
+      // state the server does not hold, until the next flag refresh silently took it
+      // back -- a lie with a delay, which is worse than a refusal.
+      checkDelegatedRight(username, sourceFolder, MailboxRights.KEEP_SEEN);
       emailBoxStorage.updateEmailReadStatusByMailRemoteIds(mailRemoteIds, username, readStatus, sourceFolder);
       Store store = null;
       Folder remoteFolder = null;
@@ -5790,7 +6009,16 @@ public class EmailBoxService {
     }
     for (String threadId : threadIds) {
       emailBoxStorage.getConversationMessageIdsByFolder(username, threadId).forEach((rowFolder, ids) -> {
-        if (isConversationFolder(rowFolder) && canMoveOutOf(action, rowFolder)) {
+        // The widening never leaves the mailbox the caller acted in, and never reaches a
+        // folder they may not take mail out of. Both halves matter and neither is
+        // hypothetical: a conversation the caller has in their own inbox can perfectly
+        // well have rows in a shared mailbox they read (the same correspondents, the
+        // same thread id), and without the first test "delete this conversation" in the
+        // user's own mailbox would quietly delete the owner's copy in theirs. Skipped
+        // rather than refused, because the caller asked about THEIR conversation and
+        // getting it is not conditional on somebody else's folder.
+        if (isConversationFolder(rowFolder) && canMoveOutOf(action, rowFolder) && isSameMailbox(username, sourceFolder, rowFolder)
+            && mayActOn(username, rowFolder, MailboxRights.DELETE_MESSAGES)) {
           idsByFolder.computeIfAbsent(rowFolder, key -> new LinkedHashSet<>()).addAll(ids);
         }
       });
@@ -5886,6 +6114,118 @@ public class EmailBoxService {
    * the one whose destination is named by the caller (one of the user's own folders)
    * rather than by the action.
    */
+  /**
+   * Refuses a write on a folder of a mailbox somebody else shared with the caller when
+   * the RFC 4314 right it needs is not among the letters the server grants them there.
+   * A folder of the caller's own mailbox passes through untouched, which is what lets
+   * this sit in front of a write path without changing anything it does today.
+   * <p>
+   * One line of indirection over {@link EmailDelegationService#checkRight} on purpose:
+   * the guard reads the same at every call site in this class, and there is exactly one
+   * place to look for "which of these paths is guarded".
+   *
+   * @param username the caller
+   * @param folderKey the folder the operation acts on
+   * @param right the letter it needs
+   * @throws MailboxRightMissingException when the folder is delegated and the letter is
+   *           not held
+   * @throws DelegationRevokedException when the share is no longer accepted
+   */
+  private void checkDelegatedRight(String username, String folderKey, char right) throws MailboxRightMissingException {
+    emailDelegationService.checkRight(username, folderKey, right);
+  }
+
+  /**
+   * The same check, answered rather than thrown -- for the one caller that must SKIP a
+   * folder it may not act on instead of failing the whole operation (the conversation
+   * widening).
+   *
+   * @param username the caller
+   * @param folderKey the folder
+   * @param right the letter
+   * @return true when the operation is allowed there
+   */
+  private boolean mayActOn(String username, String folderKey, char right) {
+    try {
+      checkDelegatedRight(username, folderKey, right);
+      return true;
+    } catch (IllegalAccessException | DelegationRevokedException refused) {
+      LOG.debug("Folder {} of user {} is left out: right '{}' is not held there", folderKey, username, right, refused);
+      return false;
+    }
+  }
+
+  /**
+   * Whether two folder keys belong to the same mailbox -- both the caller's own, or
+   * both the same shared one.
+   *
+   * @param username the caller
+   * @param oneKey a folder key
+   * @param otherKey another folder key
+   * @return true when the two are in one mailbox
+   */
+  private boolean isSameMailbox(String username, String oneKey, String otherKey) {
+    EmailDelegation one = emailDelegationService.delegationOf(username, oneKey);
+    EmailDelegation other = emailDelegationService.delegationOf(username, otherKey);
+    return Objects.equals(one == null ? null : one.getId(), other == null ? null : other.getId());
+  }
+
+  /**
+   * The guard every move goes through: the source's {@code t} (setting {@code \Deleted}
+   * is what takes a message out of a folder), the destination's {@code i} (APPEND or
+   * COPY into it), and then the rule that decides the phase-1 answer for most of them --
+   * <b>a move never crosses from one mailbox to another</b>.
+   * <p>
+   * The cross-mailbox refusal is not timidity, it is what a move IS. Every move here is
+   * a COPY into the destination followed by {@code \Deleted} on the source; with the
+   * destination in a different mailbox that is not filing a message, it is <i>taking a
+   * copy of somebody else's mail into your own store and removing theirs</i> -- which
+   * is not what "delete" or "archive" means to the person who clicked it, and is not
+   * recoverable from the mailbox they were looking at.
+   * <p>
+   * The consequence, stated plainly because it is a phase-1 limitation and not a
+   * design: <b>delete, archive and "mark as spam" are refused on a delegated folder in
+   * this phase</b>, because their destinations are the caller's OWN Trash, Archive and
+   * Junk, and the shared mailbox's own equivalents are not registered yet (accept
+   * enables its INBOX and nothing else). The delegation plan's affordance table reads
+   * "Delete (into Trash, needs {@code i} on Trash)", which presumes a delegated Trash
+   * folder; registering the shared mailbox's other folders is the later task, and the
+   * day it lands this method already says what it will then allow. The rights check
+   * runs FIRST so that a delegate who holds no {@code t} at all is told the true reason
+   * -- their rights -- rather than a limitation that would not apply to them anyway.
+   *
+   * @param username the caller
+   * @param sourceKey the folder the messages leave
+   * @param destinationKey the folder they go to
+   * @throws MailboxRightMissingException when a right the move needs is not held
+   * @throws IllegalArgumentException {@code emailConnector.folder.crossMailbox} when the
+   *           two folders are in different mailboxes
+   */
+  private void checkDelegatedMove(String username, String sourceKey, String destinationKey) throws MailboxRightMissingException {
+    checkDelegatedRight(username, sourceKey, MailboxRights.DELETE_MESSAGES);
+    checkDelegatedRight(username, destinationKey, MailboxRights.INSERT);
+    if (!isSameMailbox(username, sourceKey, destinationKey)) {
+      throw new IllegalArgumentException(CROSS_MAILBOX_MESSAGE);
+    }
+  }
+
+  /**
+   * Where a move action files its messages, as a folder key -- what
+   * {@link #checkDelegatedMove} needs the destination to be named by.
+   *
+   * @param action the action
+   * @param targetFolder the destination of a {@link MoveAction#MOVE}, null otherwise
+   * @return the destination's key
+   */
+  private String destinationKeyOf(MoveAction action, String targetFolder) {
+    return switch (action) {
+      case DELETE -> MailFolder.TRASH;
+      case ARCHIVE -> MailFolder.ARCHIVE;
+      case JUNK -> MailFolder.JUNK;
+      case MOVE -> targetFolder;
+    };
+  }
+
   private enum MoveAction {
     /** Into the Trash folder. */
     DELETE,
@@ -6016,6 +6356,10 @@ public class EmailBoxService {
                username);
       return mailRemoteIds.size();
     }
+    // In the shared body rather than at each of the five entry points, because this is
+    // the one place that is guaranteed to be on the path of all of them -- including
+    // the per-folder calls the conversation widening makes.
+    checkDelegatedMove(username, sourceFolder, destinationKeyOf(action, targetFolder));
     Map<Long, Email> rows = new LinkedHashMap<>();
     for (Long mailRemoteId : mailRemoteIds) {
       try {
@@ -6491,6 +6835,22 @@ public class EmailBoxService {
     if (userEmailSetting.getEmailConnectorId() == null
         || !userEmailSettingService.canConnect(Long.parseLong(userEmailSetting.getEmailConnectorId()), username)) {
       throw new IllegalAccessException(String.format(notAllowedMessage(folderKey, action), username));
+    }
+    // Restore and purge are the Trash's and the Junk folder's own operations, and both
+    // of those are the CALLER's folders: a shared mailbox's Trash is not registered in
+    // this phase, so a delegated key here could only mean "restore somebody else's mail
+    // into my inbox", which is not a restore. t is checked first so that a delegate who
+    // holds none is told their rights rather than a limitation; the cross-mailbox rule
+    // then answers the rest. Reached today only from this class -- the REST layer sends
+    // TRASH or JUNK -- which is exactly why it is checked here and not left to trust.
+    if (action == HiddenFolderAction.PURGE) {
+      // Destroying mail for good is t (flag \Deleted) AND e (EXPUNGE). eXo never grants
+      // e from its own presets, so a delegate is refused here by their own letters, not
+      // by a special case.
+      checkDelegatedRight(username, folderKey, MailboxRights.DELETE_MESSAGES);
+      checkDelegatedRight(username, folderKey, MailboxRights.EXPUNGE);
+    } else {
+      checkDelegatedMove(username, folderKey, MailFolder.INBOX);
     }
     String folderLabel = hiddenFolderLabel(folderKey);
     Map<Long, Email> hiddenRows = new LinkedHashMap<>();

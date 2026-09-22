@@ -166,6 +166,10 @@ import org.exoplatform.emailConnector.model.DraftState;
 import org.exoplatform.emailConnector.model.Email;
 import org.exoplatform.emailConnector.model.FolderSyncSnapshot;
 import org.exoplatform.emailConnector.model.FolderMessageCounts;
+import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
+import org.exoplatform.emailConnector.model.MailboxRights;
+import org.exoplatform.emailConnector.model.EmailDelegation;
+import org.exoplatform.emailConnector.model.DelegationStatus;
 import org.exoplatform.emailConnector.model.MailFolder;
 import org.exoplatform.emailConnector.model.ReadReceiptState;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
@@ -293,6 +297,14 @@ public class EmailBoxServiceTest {
   // server's $MDNSent to and a newly cached request reads its answer from.
   @MockitoBean
   private EmailReadReceiptAnswerStorage readReceiptAnswerStorage;
+
+  // Delegation (EXO-90499): the guard every write path asks before acting on a folder
+  // key, and where the delegated branch of the sync gets its shared mailboxes from.
+  // Mocked and left at its defaults for the whole class, which answers "no delegation"
+  // for every key -- the mailbox these tests are about is the user's own, and the
+  // guard's own tests live in EmailBoxDelegatedSyncTest.
+  @MockitoBean
+  private EmailDelegationService  emailDelegationService;
 
   @Autowired
   private EmailBoxService         emailBoxService;
@@ -9445,6 +9457,7 @@ public class EmailBoxServiceTest {
     Email row = email(TEST_USER);
     row.setId(7L);
     row.setFolder("CUSTOM:6");
+    row.setThreadId(STORED_THREAD_ID);
     row.setMailHeaderId("<one@example.org>");
     when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L), eq(TEST_USER), any(), eq("CUSTOM:6"), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(row);
     Message message = mock(Message.class);
@@ -11195,6 +11208,367 @@ public class EmailBoxServiceTest {
    * @param enabled the opt-in
    * @return the DTO
    */
+  // ---------------------------------------------------------------------------------
+  // Mailboxes somebody else shared with this user (EXO-90499): pulled on THIS user's
+  // connection, only while they are in that mailbox, in a smaller window, out of the
+  // new-mail broadcast -- and every write on them gated on the letters the server
+  // grants them there.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The delegated branch runs on the delegate's own store, opens the shared folder by
+   * the Other Users path the accept recorded, lists it with the DELEGATED window rather
+   * than the mailbox's own, and records the check on the folder's row.
+   * <p>
+   * The window is the assertion that matters: the cache size here is a thousand, and an
+   * own folder of a thousand messages would be listed from 1. Three hundred lists from
+   * 701.
+   */
+  @Test
+  @SneakyThrows
+  void aDelegatedFolderIsPulledOnTheDelegatesOwnConnectionInTheDelegatedWindow() {
+    givenAMailboxListing();
+    when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(1000);
+    IMAPFolder shared = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Other Users/alice/INBOX");
+    when(shared.getMessageCount()).thenReturn(1000);
+    Store store = userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
+    when(store.getFolder("Other Users/alice/INBOX")).thenReturn(shared);
+    givenAnActiveShare(delegatedInbox(8L));
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(shared).open(Folder.READ_ONLY);
+    verify(shared).getMessages(701, 1000);
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, "CUSTOM:8");
+    verify(emailFolderStorage).updateSyncMemory(eq(TEST_USER), eq(8L), any(), any(Date.class));
+  }
+
+  /**
+   * <b>The exclusion that carries the rest of the phase.</b> A delegated folder is
+   * synced with {@code notify} false, so nothing that hangs off the new-mail broadcast
+   * -- the notification plugins, the badge's announce, the enterprise auto-categoriser,
+   * the filters engine when it lands -- ever runs on somebody else's mail. Free and by
+   * construction, rather than by every consumer remembering to check.
+   */
+  @Test
+  @SneakyThrows
+  void aDelegatedFolderNeverBroadcastsNewMail() {
+    givenAMailboxListing();
+    IMAPFolder shared = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Other Users/alice/INBOX");
+    when(shared.getMessageCount()).thenReturn(1);
+    MimeMessage arrived = mock(MimeMessage.class);
+    lenient().when(arrived.getMessageID()).thenReturn("<shared@host>");
+    lenient().when(arrived.getSubject()).thenReturn("the owner's mail");
+    lenient().when(arrived.getFlags()).thenReturn(new Flags());
+    when(shared.getMessages(1, 1)).thenReturn(new Message[] { arrived });
+    when(((UIDFolder) shared).getUID(arrived)).thenReturn(4242L);
+    Store store = userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
+    when(store.getFolder("Other Users/alice/INBOX")).thenReturn(shared);
+    givenAnActiveShare(delegatedInbox(8L));
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(emailBoxStorage).getSyncEmails(TEST_USER, "CUSTOM:8");
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNCED), any(), any());
+    verify(listenerService, never()).broadcast(eq(EmailConnectorUtils.NEW_EMAILS_SYNC_COMPLETED), any(), any());
+  }
+
+  /**
+   * A share the delegate is not currently in contributes nothing: no folder is opened,
+   * no mail is fetched, no round-trip is paid. This is what makes one mirror per
+   * delegate affordable -- an accepted-and-forgotten share has no slow tier, it has no
+   * tier at all.
+   */
+  @Test
+  @SneakyThrows
+  void aShareTheDelegateIsNotInCostsNothing() {
+    givenAMailboxListing();
+    Store store = userEmailSettingService.connect(userEmailSetting().getEmailConnectorId(), TEST_USER);
+    when(emailDelegationService.getActiveDelegations(eq(TEST_USER), any())).thenReturn(List.of());
+
+    emailBoxService.synchronize(TEST_USER);
+
+    verify(store, never()).getFolder("Other Users/alice/INBOX");
+    verify(emailBoxStorage, never()).getSyncEmails(TEST_USER, "CUSTOM:8");
+  }
+
+  /**
+   * <b>The shared-Seen pin.</b> Marking a delegated mail read is refused when the share
+   * does not carry {@code s}, and refused BEFORE anything happens: no local row is
+   * written and no connection to the server is made. Read state on a shared mailbox is
+   * one flag for everyone, so a delegate without {@code s} changes nothing anywhere --
+   * writing the local row would show them a read state the server does not hold, until
+   * the next flag refresh silently took it back.
+   */
+  @Test
+  @SneakyThrows
+  void aDelegatedMailIsNeverMarkedReadWithoutTheKeepSeenRight() {
+    givenAConnectedMailbox();
+    doThrow(new MailboxRightMissingException(MailboxRights.KEEP_SEEN)).when(emailDelegationService)
+                                                                     .checkRight(TEST_USER,
+                                                                                 "CUSTOM:8",
+                                                                                 MailboxRights.KEEP_SEEN);
+
+    MailboxRightMissingException refused =
+                                         assertThrows(MailboxRightMissingException.class,
+                                                      () -> emailBoxService.updateEmailReadStatus(List.of(1212L),
+                                                                                                  TEST_USER,
+                                                                                                  "CUSTOM:8",
+                                                                                                  true,
+                                                                                                  true));
+
+    assertEquals(MailboxRights.KEEP_SEEN, refused.getRight());
+    assertEquals(MailboxRightMissingException.CODE_PREFIX + "s", refused.getMessage());
+    verify(emailBoxStorage, never()).updateEmailReadStatusByMailRemoteIds(anyList(), anyString(), anyBoolean(), anyString());
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
+  }
+
+  /**
+   * The same call on the caller's own INBOX is untouched by the guard: it writes the
+   * row and pushes the flag, exactly as before.
+   */
+  @Test
+  @SneakyThrows
+  void markingAnOwnMailReadIsUnchangedByTheGuard() {
+    givenAConnectedMailbox();
+
+    emailBoxService.updateEmailReadStatus(List.of(1212L), TEST_USER, MailFolder.INBOX, true, false);
+
+    verify(emailBoxStorage).updateEmailReadStatusByMailRemoteIds(List.of(1212L), TEST_USER, true, MailFolder.INBOX);
+  }
+
+  /**
+   * Delete, archive and "mark as spam" out of a delegated folder go through the move
+   * guard: {@code t} on the source first, so a delegate who holds none is told their
+   * rights rather than a limitation that would not apply to them anyway.
+   */
+  @Test
+  @SneakyThrows
+  void deleteArchiveAndJunkAreRefusedOnADelegatedFolderWithoutTheDeleteRight() {
+    givenAConnectedMailbox();
+    doThrow(new MailboxRightMissingException(MailboxRights.DELETE_MESSAGES)).when(emailDelegationService)
+                                                                           .checkRight(TEST_USER,
+                                                                                       "CUSTOM:8",
+                                                                                       MailboxRights.DELETE_MESSAGES);
+
+    assertEquals(MailboxRightMissingException.CODE_PREFIX + "t",
+                 assertThrows(MailboxRightMissingException.class,
+                              () -> emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage());
+    assertThrows(MailboxRightMissingException.class,
+                 () -> emailBoxService.archiveEmail(List.of(1212L), TEST_USER, "CUSTOM:8"));
+    assertThrows(MailboxRightMissingException.class,
+                 () -> emailBoxService.markAsJunk(List.of(1212L), TEST_USER, "CUSTOM:8"));
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * A delegate who DOES hold {@code t} still cannot delete or archive out of the shared
+   * mailbox in this phase, and for a different reason: the destination would be the
+   * caller's OWN Trash or Archive, which is a different mailbox. A move is a copy into
+   * the destination and a removal from the source -- across mailboxes that is taking a
+   * copy of somebody else's mail into your own store and removing theirs, which is not
+   * what the person who clicked "delete" meant. Registering the shared mailbox's own
+   * Trash is the later task; the message code says which of the two refusals it is.
+   */
+  @Test
+  @SneakyThrows
+  void aMoveOutOfASharedMailboxNeverLandsInTheCallersOwn() {
+    givenAConnectedMailbox();
+    // The rights guard passes (an Editor holds t); what refuses is the boundary: the
+    // source is in alice's mailbox and the Trash the delete would file into is the
+    // caller's own.
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+
+    assertEquals(EmailBoxService.CROSS_MAILBOX_MESSAGE,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> emailBoxService.deleteEmail(List.of(1212L), TEST_USER, "CUSTOM:8")).getMessage(),
+                 "the rights pass, the mailbox boundary does not");
+    verify(emailBoxStorage, never()).deleteEmailsByIds(anyList());
+  }
+
+  /**
+   * Moving INTO a folder of a shared mailbox needs {@code i} on the destination -- the
+   * other half of the move guard, and the one a later phase will actually exercise.
+   */
+  @Test
+  @SneakyThrows
+  void movingIntoADelegatedFolderNeedsTheInsertRight() {
+    givenAConnectedMailbox();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    EmailFolder target = delegatedInbox(8L);
+    when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(target);
+    doThrow(new MailboxRightMissingException(MailboxRights.INSERT)).when(emailDelegationService)
+                                                                  .checkRight(TEST_USER, "CUSTOM:8", MailboxRights.INSERT);
+
+    // Asserted as the interaction first and the exception second, deliberately: without
+    // the guard this call fails on the connection it then goes on to make, and a test
+    // that only asserted "something was thrown" would be killed by the wrong failure.
+    // What this test is about is that the INSERT right is asked for at all.
+    Exception refused = assertThrows(Exception.class,
+                                     () -> emailBoxService.moveToFolder(List.of(1212L),
+                                                                        TEST_USER,
+                                                                        MailFolder.INBOX,
+                                                                        "CUSTOM:8"));
+    verify(emailDelegationService).checkRight(TEST_USER, "CUSTOM:8", MailboxRights.INSERT);
+    assertEquals(MailboxRightMissingException.CODE_PREFIX + "i", refused.getMessage());
+  }
+
+  /**
+   * Creating, renaming, deleting a folder and toggling its opt-in are the mailbox
+   * owner's: a delegated registry id is refused before anything reaches the server.
+   */
+  @Test
+  @SneakyThrows
+  void folderManagementIsRefusedOnADelegatedRow() {
+    givenAConnectedMailbox();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    doThrow(new MailboxRightMissingException(MailboxRights.DELETE_MAILBOX)).when(emailDelegationService)
+                                                                          .checkOwnFolder(TEST_USER, 8L);
+
+    // Each of the four asks first and refuses on the answer. Verified as the interaction
+    // as well as the exception, for the reason the move-in pin gives: without the guard
+    // these fail on the registry lookup that follows, which would kill the mutant on the
+    // wrong assertion.
+    assertEquals(MailboxRightMissingException.CODE_PREFIX + "x",
+                 assertThrows(Exception.class, () -> emailBoxService.setCustomFolderSync(TEST_USER, 8L, false)).getMessage());
+    assertThrows(Exception.class, () -> emailBoxService.renameCustomFolder(TEST_USER, 8L, "Mine"));
+    assertThrows(Exception.class, () -> emailBoxService.deleteCustomFolder(TEST_USER, 8L));
+    assertThrows(Exception.class, () -> emailBoxService.synchronizeCustomFolder(TEST_USER, 8L));
+    verify(emailDelegationService, times(4)).checkOwnFolder(TEST_USER, 8L);
+    verify(emailFolderStorage, never()).updateSyncEnabled(anyString(), anyLong(), anyBoolean(), any());
+    verify(emailFolderStorage, never()).deleteFolder(anyString(), anyLong());
+  }
+
+  /**
+   * Listing a folder of a shared mailbox stamps that share -- the one signal the
+   * delegated branch of the sync selects on. Without it a delegate would open a shared
+   * mailbox and watch it never update.
+   */
+  @Test
+  @SneakyThrows
+  void listingADelegatedFolderStampsTheShare() {
+    givenAConnectedMailbox();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    EmailFolder delegated = delegatedInbox(8L);
+    delegated.setLastSyncDate(new Date());
+    when(emailFolderStorage.getFolder(TEST_USER, 8L)).thenReturn(delegated);
+    when(emailBoxStorage.getEmails(TEST_USER, "CUSTOM:8")).thenReturn(new ArrayList<>());
+
+    emailBoxService.getEmailBox(TEST_USER, "CUSTOM:8");
+
+    verify(emailDelegationService).touchActivity(TEST_USER, "CUSTOM:8");
+  }
+
+  /**
+   * <b>The widening never leaves the mailbox the caller acted in.</b> "Delete this
+   * conversation" widens to every folder the conversation is cached in -- and a
+   * conversation the caller has in their own mailbox can perfectly well have rows in a
+   * shared mailbox they read: same correspondents, same thread id, two mirrors. Without
+   * the boundary test, deleting it in their own mailbox would quietly file the owner's
+   * copy into the Trash too, out of a mailbox the caller was not even looking at.
+   */
+  @Test
+  @SneakyThrows
+  void deletingAConversationNeverReachesIntoASharedMailbox() {
+    givenAConnectedMailbox();
+    when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(true);
+    when(emailFolderStorage.getFolder(TEST_USER, 6L)).thenReturn(registeredFolder(6L, "Projets", true));
+    IMAPStore store = mock(IMAPStore.class);
+    when(userEmailSettingService.connect(anyString(), anyString())).thenReturn(store);
+    lenient().when(store.isConnected()).thenReturn(true);
+    IMAPFolder source = aHiddenFolder(ArrayUtils.EMPTY_STRING_ARRAY, "Projets");
+    when(store.getFolder("Projets")).thenReturn(source);
+    Folder defaultFolder = mock(Folder.class);
+    IMAPFolder trash = aHiddenFolder(new String[] { "\\Trash" }, "Trash");
+    when(store.getDefaultFolder()).thenReturn(defaultFolder);
+    when(defaultFolder.listSubscribed("*")).thenReturn(new Folder[] { trash });
+    lenient().when(defaultFolder.list("*")).thenReturn(new Folder[0]);
+    lenient().when(store.getFolder("Trash")).thenReturn(trash);
+    Email row = email(TEST_USER);
+    row.setId(7L);
+    row.setFolder("CUSTOM:6");
+    row.setThreadId(STORED_THREAD_ID);
+    when(emailBoxStorage.getEmailByMailRemoteIdAndUserId(eq(1212L),
+                                                         eq(TEST_USER),
+                                                         any(),
+                                                         eq("CUSTOM:6"),
+                                                         anyBoolean(),
+                                                         anyBoolean(),
+                                                         anyBoolean())).thenReturn(row);
+    when(emailBoxStorage.getConversationMessageIdsByFolder(TEST_USER, STORED_THREAD_ID))
+                                                                                       .thenReturn(Map.of("CUSTOM:8", List.of(5555L)));
+    when(emailDelegationService.delegationOf(TEST_USER, "CUSTOM:8")).thenReturn(aSharedMailboxRow());
+
+    // Two claims, and the first is the one the mutant of the widening filter breaks: the
+    // caller's own conversation is DELETED, not refused. Left to the move guard alone
+    // the widened delegated folder would reach it and turn the whole action into a 400,
+    // so the caller would lose their own delete over somebody else's mailbox.
+    assertDoesNotThrow(() -> emailBoxService.deleteConversations(List.of(1212L), TEST_USER, "CUSTOM:6"),
+                       "the caller's own conversation is deleted, not refused over a folder they did not name");
+
+    verify(emailBoxStorage, never()).getEmailByMailRemoteIdAndUserId(eq(5555L),
+                                                                     eq(TEST_USER),
+                                                                     any(),
+                                                                     eq("CUSTOM:8"),
+                                                                     anyBoolean(),
+                                                                     anyBoolean(),
+                                                                     anyBoolean());
+  }
+
+  /**
+   * A connected mailbox and nothing else -- the guard tests never reach the server, so
+   * stubbing a folder listing for them would be dead stubbing under strict Mockito.
+   */
+  private void givenAConnectedMailbox() {
+    when(userEmailSettingService.getUserEmailSetting(TEST_USER)).thenReturn(userEmailSetting());
+    when(userEmailSettingService.canConnect(anyLong(), anyString())).thenReturn(true);
+  }
+
+  /**
+   * The delegation row a delegated folder key resolves to.
+   *
+   * @return an accepted Editor share of alice's mailbox
+   */
+  private EmailDelegation aSharedMailboxRow() {
+    EmailDelegation delegation = new EmailDelegation();
+    delegation.setId(100L);
+    delegation.setGranteeId(TEST_USER);
+    delegation.setOwnerMailbox("alice@acme.com");
+    delegation.setStatus(DelegationStatus.ACCEPTED);
+    delegation.setRights("lrswit");
+    return delegation;
+  }
+
+  /**
+   * One accepted share the delegate is in, holding one folder.
+   *
+   * @param folder the shared mailbox's folder
+   */
+  private void givenAnActiveShare(EmailFolder folder) {
+    when(emailDelegationService.getActiveDelegations(eq(TEST_USER), any())).thenReturn(List.of(aSharedMailboxRow()));
+    when(emailDelegationService.getSyncableFolders(TEST_USER, 100L)).thenReturn(List.of(folder));
+  }
+
+  /**
+   * The INBOX of a mailbox alice shared with this user, opted in.
+   *
+   * @param id the registry id
+   * @return the row
+   */
+  private EmailFolder delegatedInbox(long id) {
+    EmailFolder folder = new EmailFolder();
+    folder.setId(id);
+    folder.setUserId(TEST_USER);
+    folder.setRemoteName("Other Users/alice/INBOX");
+    folder.setDisplayName(MailFolder.INBOX);
+    folder.setDelimiter("/");
+    folder.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    folder.setSyncEnabled(true);
+    folder.setEnabledDate(new Date(id * 1_000L));
+    folder.setDelegationId(100L);
+    return folder;
+  }
+
   private EmailFolder registeredFolder(long id, String remoteName, boolean enabled) {
     EmailFolder folder = new EmailFolder();
     folder.setId(id);

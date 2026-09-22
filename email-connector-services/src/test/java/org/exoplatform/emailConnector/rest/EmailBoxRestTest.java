@@ -75,6 +75,8 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.exception.ReadReceiptConflictException;
 import org.exoplatform.emailConnector.exception.ScheduledSendConflictException;
 import org.exoplatform.emailConnector.model.ReadReceiptAction;
@@ -92,6 +94,7 @@ import org.exoplatform.emailConnector.model.EmailSender;
 import org.exoplatform.emailConnector.model.EmailRecipient;
 import org.exoplatform.emailConnector.model.ForwardedAttachments;
 import org.exoplatform.emailConnector.model.MailFolder;
+import org.exoplatform.emailConnector.model.MailboxRights;
 import org.exoplatform.emailConnector.model.RestoreOutcome;
 import org.exoplatform.emailConnector.model.ThreadAiSummary;
 import org.exoplatform.emailConnector.rest.model.ScheduleRequest;
@@ -157,6 +160,62 @@ public class EmailBoxRestTest {
   void getEmailBox() throws Exception {
     ResultActions response = mockMvc.perform(get(EMAIL_BOX_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
+  }
+
+  /**
+   * The listing takes a folder key of a mailbox somebody shared with the caller exactly
+   * as it takes one of their own: the key is a folder-registry id, and whose mailbox
+   * that folder belongs to is the service's to answer -- the transport neither knows
+   * nor checks (EXO-90499).
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void theListingTakesADelegatedFolderKey() throws Exception {
+    mockMvc.perform(get(EMAIL_BOX_PATH).param("folder", "CUSTOM:8").with(testSimpleUser())).andExpect(status().isOk());
+
+    verify(emailBoxService).getEmailBox(SIMPLE_USER, "CUSTOM:8", false);
+  }
+
+  /**
+   * A write the mail server does not let the caller make in a shared mailbox answers
+   * <b>401 with the missing right's code</b>, not a bare refusal: this add-on maps
+   * {@code IllegalAccessException} to 401 by its own convention, and what the delegated
+   * subclass adds is the message the interface needs to say WHICH right is missing and
+   * to correct chrome that went stale (EXO-90499).
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void aWriteTheShareDoesNotAllowAnswersTheMissingRightsCode() throws Exception {
+    when(emailBoxService.updateEmailReadStatus(anyList(), anyString(), anyString(), anyBoolean(), anyBoolean()))
+                                                                                                               .thenThrow(new MailboxRightMissingException(MailboxRights.KEEP_SEEN));
+
+    mockMvc.perform(patch(EMAIL_BOX_PATH).param("readStatus", "true")
+                                         .param("folder", "CUSTOM:8")
+                                         .contentType(MediaType.APPLICATION_JSON)
+                                         .content("[1212]")
+                                         .with(testSimpleUser()))
+           .andExpect(status().isUnauthorized())
+           .andExpect(status().reason(MailboxRightMissingException.CODE_PREFIX + "s"));
+  }
+
+  /**
+   * A share that has been withdrawn while the drawer was open is <b>410 Gone</b> with
+   * its own code -- a different answer from "you may not do that", because the client's
+   * next move is different: go back to the caller's own mailbox rather than re-offer
+   * the action (EXO-90499).
+   *
+   * @throws Exception when the request cannot be performed
+   */
+  @Test
+  void aWithdrawnShareAnswersGone() throws Exception {
+    when(emailBoxService.getEmailBox(anyString(), anyString(), anyBoolean()))
+                                                                            .thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+
+    mockMvc.perform(get(EMAIL_BOX_PATH).param("folder", "CUSTOM:8").with(testSimpleUser()))
+           .andExpect(status().isGone())
+           .andExpect(status().reason(DelegationRevokedException.REVOKED));
   }
 
   @Test
