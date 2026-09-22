@@ -342,6 +342,26 @@ public class EmailBoxServiceTest {
   private static final String SENDER_THE_PROVIDER_NAMES = "technical@dav.example";
 
   private void disableTheBackgroundRefreshes() {
+    // The new-mail notification backstop is a live single-thread timer too: a task one
+    // test arms fires during a later one, against the shared mocks that test is stubbing
+    // at that instant, and a when(...) then binds to the timer thread's
+    // getUserEmailSetting() (Mockito's WrongTypeOfReturnValue, or a ClassCastException on
+    // the answer). No test asserts through the timer -- the guard it runs is
+    // takePendingNotificationIfCurrent, called directly -- so a mock stands in for it.
+    ScheduledExecutorService notificationScheduler = mock(ScheduledExecutorService.class);
+    lenient().when(notificationScheduler.schedule(any(Runnable.class), anyLong(), any(TimeUnit.class)))
+             .thenAnswer(invocation -> {
+               // The handle reports the delay it was armed with, which is what the
+               // hold-versus-backstop tests read off the pending window.
+               long delay = invocation.getArgument(1);
+               TimeUnit unit = invocation.getArgument(2);
+               ScheduledFuture<?> handle = mock(ScheduledFuture.class);
+               lenient().when(handle.getDelay(any(TimeUnit.class)))
+                        .thenAnswer(read -> read.getArgument(0, TimeUnit.class).convert(delay, unit));
+               return handle;
+             });
+    realNotificationScheduler = ReflectionTestUtils.getField(emailBoxService, "notificationScheduler");
+    ReflectionTestUtils.setField(emailBoxService, "notificationScheduler", notificationScheduler);
     System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "false");
     System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "false");
@@ -425,6 +445,11 @@ public class EmailBoxServiceTest {
       ReflectionTestUtils.setField(emailBoxService, "eventPublisher", realEventPublisher);
       realEventPublisher = null;
     }
+    if (realNotificationScheduler != null) {
+      ReflectionTestUtils.setField(emailBoxService, "notificationScheduler", realNotificationScheduler);
+      realNotificationScheduler = null;
+    }
+    ((Map<?, ?>) ReflectionTestUtils.getField(emailBoxService, "pendingNotifications")).clear();
     pendingFolderRefreshes().clear();
     pendingSentRefreshes().clear();
   }
@@ -434,6 +459,9 @@ public class EmailBoxServiceTest {
 
   /** The service's own Sent-refresh scheduler while a test has a mock in its place. */
   private Object realSentRefreshScheduler;
+
+  /** The service's own new-mail notification scheduler while the mock stands in for it. */
+  private Object realNotificationScheduler;
 
   /** The service's own event publisher while a test has the mock pinned in its place. */
   private Object realEventPublisher;
