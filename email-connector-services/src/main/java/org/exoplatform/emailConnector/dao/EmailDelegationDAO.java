@@ -111,6 +111,60 @@ public interface EmailDelegationDAO extends JpaRepository<EmailDelegationEntity,
   String status);
 
   /**
+   * The shared mailboxes a grantee is BOTH subscribed to and currently looking at: the
+   * rows the delegated branch of the sync walks, and the only ones it costs anything
+   * for.
+   * <p>
+   * This is the whole of the tiering. A delegate who accepted a mailbox six months ago
+   * and never opened it since is not in this answer, so their delegated folders are
+   * never opened, never fetched and never mirrored -- the cost of an idle delegation is
+   * exactly zero IMAP round-trips, which is what makes one mirror per delegate
+   * affordable at all. There is deliberately no slow tier for delegated folders, unlike
+   * a user's own mailbox, which keeps syncing at the inactive period: nobody is waiting
+   * for mail in a shared mailbox they are not in.
+   *
+   * @param granteeId the grantee's username
+   * @param status ACCEPTED, spelled by the caller so the enum stays out of the query
+   * @param activeSince an activity stamp at or after this instant makes the delegation
+   *          active; a row that was never opened (null stamp) is never active
+   * @return the active accepted rows, oldest id first, never null
+   */
+  @Query("SELECT d FROM EmailDelegationEntity d WHERE d.granteeId = :granteeId AND d.status = :status"
+      + " AND d.lastActivityDate IS NOT NULL AND d.lastActivityDate >= :activeSince ORDER BY d.id ASC")
+  List<EmailDelegationEntity> findActiveByGranteeId(@Param("granteeId")
+  String granteeId, @Param("status")
+  String status, @Param("activeSince")
+  Date activeSince);
+
+  /**
+   * Stamps that the grantee is looking at one shared mailbox right now -- the signal
+   * {@link #findActiveByGranteeId} selects on.
+   * <p>
+   * Throttled in the WHERE clause rather than in a map, exactly as the mailbox's own
+   * activity stamp is: a drawer left open on a shared mailbox costs one no-op UPDATE
+   * per listing instead of a write, and the throttle then holds across nodes rather
+   * than per JVM. Scoped to the grantee as every write here is, so an id from a client
+   * cannot stamp somebody else's subscription. The row's {@code UPDATED_DATE} is
+   * deliberately NOT moved: this is not a change to the delegation, it is a reading of
+   * its viewer, and the received-delegations listing orders on that column.
+   *
+   * @param id the delegation id
+   * @param granteeId the grantee's username
+   * @param now the stamp
+   * @param throttleBefore only a stamp older than this (or none) is rewritten
+   * @return the rows updated: one, or zero when throttled or not the caller's row
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE EmailDelegationEntity d SET d.lastActivityDate = :now WHERE d.id = :id AND d.granteeId = :granteeId"
+      + " AND (d.lastActivityDate IS NULL OR d.lastActivityDate < :throttleBefore)")
+  int touchActivity(@Param("id")
+  long id, @Param("granteeId")
+  String granteeId, @Param("now")
+  Date now, @Param("throttleBefore")
+  Date throttleBefore);
+
+  /**
    * The grantee's two toggles, and nothing else of the row (#432-2).
    *
    * @param id the row id

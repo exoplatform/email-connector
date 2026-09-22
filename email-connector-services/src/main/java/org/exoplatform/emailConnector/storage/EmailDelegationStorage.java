@@ -114,6 +114,35 @@ public class EmailDelegationStorage {
   }
 
   /**
+   * The accepted delegations a grantee is currently looking at -- the sync's tier
+   * signal, and the only rows whose folders are ever fetched.
+   *
+   * @param granteeId the grantee's username
+   * @param activeSince an activity stamp at or after this instant makes a row active
+   * @return the active accepted delegations, oldest first, never null
+   */
+  public List<EmailDelegation> getActive(String granteeId, Date activeSince) {
+    return emailDelegationDAO.findActiveByGranteeId(granteeId, DelegationStatus.ACCEPTED.name(), activeSince)
+                             .stream()
+                             .map(this::fromEntity)
+                             .toList();
+  }
+
+  /**
+   * Stamps that the grantee is looking at one shared mailbox, subject to the throttle
+   * the query itself applies.
+   *
+   * @param granteeId the grantee's username
+   * @param id the delegation id
+   * @param now the stamp
+   * @param throttleBefore only a stamp older than this (or none) is rewritten
+   * @return true when a row was actually stamped
+   */
+  public boolean touchActivity(String granteeId, long id, Date now, Date throttleBefore) {
+    return emailDelegationDAO.touchActivity(id, granteeId, now, throttleBefore) > 0;
+  }
+
+  /**
    * Inserts a row. The dates are stamped here; the id the DTO carries is ignored.
    *
    * @param delegation the row to create
