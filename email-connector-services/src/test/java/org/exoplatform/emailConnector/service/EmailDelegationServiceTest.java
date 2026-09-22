@@ -16,6 +16,7 @@
  */
 package org.exoplatform.emailConnector.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -33,6 +34,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -56,6 +58,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.emailConnector.event.EmailDelegationEvent;
 import org.exoplatform.emailConnector.exception.DelegationRevokedException;
 import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.exception.MailboxRightMissingException;
 import org.exoplatform.emailConnector.model.DelegationGrantee;
 import org.exoplatform.emailConnector.model.DelegationOrigin;
 import org.exoplatform.emailConnector.model.DelegationPreset;
@@ -558,6 +561,11 @@ class EmailDelegationServiceTest {
     when(engine.findSharedMailbox(any(), eq(OWNER_MAILBOX))).thenReturn(shared);
     when(engine.myRights(any(), eq("Other Users/alice/INBOX"))).thenReturn(MailboxRights.of("lrswit"));
     when(emailFolderStorage.getFolderByRemoteName(GRANTEE, "Other Users/alice/INBOX")).thenReturn(null);
+    when(emailFolderStorage.createFolder(any())).thenAnswer(invocation -> {
+      EmailFolder created = invocation.getArgument(0);
+      created.setId(77L);
+      return created;
+    });
 
     EmailDelegation delegation = service.accept(GRANTEE, 100L);
 
@@ -577,7 +585,11 @@ class EmailDelegationServiceTest {
     assertEquals("Other Users/alice/INBOX", folder.getValue().getRemoteName());
     assertEquals(MailFolderView.TYPE_DELEGATED_INBOX, folder.getValue().getType());
     assertEquals(100L, folder.getValue().getDelegationId());
-    assertFalse(folder.getValue().isSyncEnabled(), "the delegated sync branch is not in this delivery");
+    // And opted IN, which is what makes accepting a share actually mirror anything: the
+    // storage writes every new folder opted out (right for a folder DISCOVERED in your
+    // own mailbox, wrong for one you just asked for), so the opt-in is a write of its
+    // own. The INBOX alone -- every other folder of the shared mailbox stays out.
+    verify(emailFolderStorage).updateSyncEnabled(eq(GRANTEE), eq(77L), eq(true), any());
   }
 
   /**
@@ -649,6 +661,7 @@ class EmailDelegationServiceTest {
     EmailDelegation delegation = service.accept(GRANTEE, 100L);
 
     verify(emailFolderStorage).adoptAsDelegated(GRANTEE, 99L, 100L, MailFolderView.TYPE_DELEGATED_INBOX);
+    verify(emailFolderStorage).updateSyncEnabled(eq(GRANTEE), eq(99L), eq(true), any());
     verify(emailFolderStorage, never()).createFolder(any());
     assertEquals(DelegationPreset.READER, delegation.getPreset(), "a server share's preset is what its letters say");
   }
@@ -972,6 +985,231 @@ class EmailDelegationServiceTest {
     verify(emailDelegationStorage, never()).update(any());
     when(emailDelegationStorage.getAsGrantee(OWNER, 100L)).thenReturn(null);
     assertThrows(ObjectNotFoundException.class, () -> service.updatePreferences(OWNER, 100L, true, true));
+  }
+
+  // ---------------------------------------------------------------------------------
+  // The sync tier, and the rights guard the write paths ask (EXO-90499)
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * A folder key of the caller's OWN mailbox passes every guard untouched, and costs
+   * not one query: the guard is "is this key delegated, and if so may I", never "is
+   * this key mine", which is what lets it sit in front of every write path without
+   * changing a thing for the mailbox the user owns.
+   */
+  @Test
+  void anOwnFolderPassesEveryGuardWithoutAQuery() throws Exception {
+    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "INBOX", MailboxRights.DELETE_MESSAGES));
+    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "SENT", MailboxRights.KEEP_SEEN));
+    assertNull(service.delegationOf(GRANTEE, "INBOX"));
+    assertNull(service.rightsOn(GRANTEE, "TRASH"));
+    verify(emailDelegationStorage, never()).getAsGrantee(anyString(), org.mockito.ArgumentMatchers.anyLong());
+  }
+
+  /**
+   * A custom key naming a folder of the caller's own mailbox (no delegation on the row)
+   * is an own folder: one registry read, no delegation read, and nothing refused.
+   */
+  @Test
+  void aCustomFolderOfTheOwnMailboxIsNotDelegated() throws Exception {
+    when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(ownFolder(5L));
+
+    assertNull(service.delegationOf(GRANTEE, "CUSTOM:5"));
+    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "CUSTOM:5", MailboxRights.DELETE_MESSAGES));
+    verify(emailDelegationStorage, never()).getAsGrantee(anyString(), org.mockito.ArgumentMatchers.anyLong());
+  }
+
+  /**
+   * <b>The guard.</b> A delegated folder whose rights lack the letter refuses, with the
+   * letter in the message code so the interface can say which right is missing rather
+   * than denying blankly. One case per letter the write paths ask for: {@code s} for
+   * mark read/unread, {@code w} for the star, {@code t} for delete and move-out,
+   * {@code i} for move-in.
+   */
+  @Test
+  void aDelegatedFolderRefusesEveryLetterItsRightsLack() {
+    when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(delegatedFolder(5L));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted("lr"));
+
+    for (char letter : new char[] { MailboxRights.KEEP_SEEN, MailboxRights.WRITE, MailboxRights.DELETE_MESSAGES,
+        MailboxRights.INSERT }) {
+      MailboxRightMissingException refused =
+                                           assertThrows(MailboxRightMissingException.class,
+                                                        () -> service.checkRight(GRANTEE, "CUSTOM:5", letter),
+                                                        "a reader holding lr may not " + letter);
+      assertEquals(letter, refused.getRight());
+      assertEquals(MailboxRightMissingException.CODE_PREFIX + letter, refused.getMessage());
+    }
+  }
+
+  /**
+   * The same folder, once the server grants the letters, allows them -- so the refusal
+   * above is the rights talking and not the delegation itself.
+   */
+  @Test
+  void aDelegatedFolderAllowsTheLettersItsRightsCarry() {
+    when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(delegatedFolder(5L));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted("lrswit"));
+
+    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "CUSTOM:5", MailboxRights.KEEP_SEEN));
+    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "CUSTOM:5", MailboxRights.WRITE));
+    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "CUSTOM:5", MailboxRights.DELETE_MESSAGES));
+    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "CUSTOM:5", MailboxRights.INSERT));
+    assertEquals("lrswit", service.rightsOn(GRANTEE, "CUSTOM:5").letters());
+  }
+
+  /**
+   * An editor's letters on a share that is no longer ACCEPTED answer the OTHER
+   * exception, and the difference matters to the interface: "this mailbox is gone,
+   * leave it" is not "you may not do that here".
+   */
+  @Test
+  void aShareThatIsNoLongerAcceptedIsGoneRatherThanRefused() {
+    when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(delegatedFolder(5L));
+    EmailDelegation revoked = accepted("lrswit");
+    revoked.setStatus(DelegationStatus.REVOKED);
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(revoked);
+
+    DelegationRevokedException gone = assertThrows(DelegationRevokedException.class,
+                                                   () -> service.checkRight(GRANTEE, "CUSTOM:5", MailboxRights.DELETE_MESSAGES));
+    assertEquals(DelegationRevokedException.REVOKED, gone.getMessage());
+  }
+
+  /**
+   * A folder row that is not the caller's, or a delegation row that is not theirs,
+   * resolves to nothing -- ids enumerate nothing here either.
+   */
+  @Test
+  void aKeyThatIsNotTheCallersResolvesToNothing() throws Exception {
+    when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(null);
+    assertNull(service.delegationOf(GRANTEE, "CUSTOM:5"));
+
+    when(emailFolderStorage.getFolder(GRANTEE, 6L)).thenReturn(delegatedFolder(6L));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(null);
+    assertNull(service.delegationOf(GRANTEE, "CUSTOM:6"));
+    assertDoesNotThrow(() -> service.checkRight(GRANTEE, "CUSTOM:6", MailboxRights.DELETE_MESSAGES));
+  }
+
+  /**
+   * Creating, renaming, deleting a folder and toggling its opt-in are the mailbox
+   * owner's, addressed by registry id: a delegated row is refused outright rather than
+   * by a letter, because a server-made share that happened to carry {@code x} would
+   * otherwise let a delegate rename or destroy somebody else's folder from the screen
+   * that manages their own.
+   */
+  @Test
+  void folderManagementRefusesADelegatedRowWhateverItsLetters() {
+    when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(delegatedFolder(5L));
+
+    MailboxRightMissingException refused = assertThrows(MailboxRightMissingException.class,
+                                                        () -> service.checkOwnFolder(GRANTEE, 5L));
+    assertEquals(MailboxRights.DELETE_MAILBOX, refused.getRight());
+
+    when(emailFolderStorage.getFolder(GRANTEE, 6L)).thenReturn(ownFolder(6L));
+    assertDoesNotThrow(() -> service.checkOwnFolder(GRANTEE, 6L));
+  }
+
+  /**
+   * The sync tier: only the accepted shares the delegate has opened recently are handed
+   * to the sync, and only the folders they opted in and the server still lists. A share
+   * accepted and never opened costs nothing at all -- no slow tier, nothing.
+   */
+  @Test
+  void onlyTheSharesTheDelegateIsInAndTheFoldersTheyOptedInAreSynced() {
+    Date activeSince = new Date(1_000L);
+    when(emailDelegationStorage.getActive(GRANTEE, activeSince)).thenReturn(List.of(accepted("lrswit")));
+    EmailFolder optedIn = delegatedFolder(5L);
+    optedIn.setSyncEnabled(true);
+    EmailFolder optedOut = delegatedFolder(6L);
+    EmailFolder gone = delegatedFolder(7L);
+    gone.setSyncEnabled(true);
+    gone.setMissing(true);
+    when(emailFolderStorage.getDelegatedFolders(GRANTEE, 100L)).thenReturn(List.of(optedIn, optedOut, gone));
+
+    assertEquals(1, service.getActiveDelegations(GRANTEE, activeSince).size());
+    List<EmailFolder> syncable = service.getSyncableFolders(GRANTEE, 100L);
+    assertEquals(1, syncable.size(), "the opted-in, present folder and nothing else");
+    assertEquals(5L, syncable.get(0).getId());
+
+    assertTrue(service.getActiveDelegations(GRANTEE, null).isEmpty());
+    assertTrue(service.getActiveDelegations(null, activeSince).isEmpty());
+  }
+
+  /**
+   * Listing a delegated folder stamps that share and nothing else; listing an own
+   * folder writes nothing at all. The stamp carries the same throttle threshold the
+   * mailbox's own activity stamp uses, applied in SQL so it holds across nodes.
+   */
+  @Test
+  void listingADelegatedFolderStampsThatShareAndAnOwnFolderStampsNothing() {
+    when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenReturn(delegatedFolder(5L));
+    when(emailDelegationStorage.getAsGrantee(GRANTEE, 100L)).thenReturn(accepted("lrswit"));
+
+    service.touchActivity(GRANTEE, "CUSTOM:5");
+    ArgumentCaptor<Date> now = ArgumentCaptor.forClass(Date.class);
+    ArgumentCaptor<Date> throttle = ArgumentCaptor.forClass(Date.class);
+    verify(emailDelegationStorage).touchActivity(eq(GRANTEE), eq(100L), now.capture(), throttle.capture());
+    assertTrue(throttle.getValue().before(now.getValue()), "the throttle threshold is in the past");
+
+    service.touchActivity(GRANTEE, "INBOX");
+    verify(emailDelegationStorage, org.mockito.Mockito.times(1)).touchActivity(anyString(),
+                                                                              org.mockito.ArgumentMatchers.anyLong(),
+                                                                              any(),
+                                                                              any());
+  }
+
+  /**
+   * A stamp that fails is swallowed: a listing must never fail because a stamp did, and
+   * the cost of a lost one is a sync period of a shared mailbox, not the mail.
+   */
+  @Test
+  void aFailedStampNeverFailsTheListing() {
+    when(emailFolderStorage.getFolder(GRANTEE, 5L)).thenThrow(new IllegalStateException("the database is away"));
+
+    assertDoesNotThrow(() -> service.touchActivity(GRANTEE, "CUSTOM:5"));
+  }
+
+  /**
+   * A folder row of the caller's own mailbox.
+   *
+   * @param id the registry id
+   * @return the row
+   */
+  private EmailFolder ownFolder(long id) {
+    EmailFolder folder = new EmailFolder();
+    folder.setId(id);
+    folder.setUserId(GRANTEE);
+    folder.setType(MailFolderView.TYPE_CUSTOM);
+    folder.setRemoteName("Customers");
+    return folder;
+  }
+
+  /**
+   * A folder row of the shared mailbox of delegation 100.
+   *
+   * @param id the registry id
+   * @return the row
+   */
+  private EmailFolder delegatedFolder(long id) {
+    EmailFolder folder = new EmailFolder();
+    folder.setId(id);
+    folder.setUserId(GRANTEE);
+    folder.setType(MailFolderView.TYPE_DELEGATED_INBOX);
+    folder.setRemoteName("Other Users/alice/INBOX");
+    folder.setDelegationId(100L);
+    return folder;
+  }
+
+  /**
+   * An accepted share of Alice's mailbox with the given letters.
+   *
+   * @param letters what the server grants Bob there
+   * @return the row
+   */
+  private EmailDelegation accepted(String letters) {
+    EmailDelegation delegation = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    delegation.setRights(letters);
+    return delegation;
   }
 
   /**
