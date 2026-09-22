@@ -425,10 +425,12 @@ export default {
         this.$root.$emit('refresh-connectors-list');
         this.close();
       } catch (e) {
-        // A refused configuration comes back as a message code the provider's
-        // own bundle translates. Showing the generic "error" instead would tell
-        // the administrator nothing about a form they can correct.
-        if (e?.messageCode?.startsWith('connector.credentials.')) {
+        // A refusal comes back as a message code some bundle translates - the
+        // provider's (a configuration field), or this add-on's (the managed
+        // connector may not move to a provider that asks the user). Whatever the
+        // bundle, a translatable code beats the generic "error" that tells the
+        // administrator nothing about a form they can correct.
+        if (e?.messageCode && this.$te(e.messageCode)) {
           this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
         }
         else if (isNew) {
