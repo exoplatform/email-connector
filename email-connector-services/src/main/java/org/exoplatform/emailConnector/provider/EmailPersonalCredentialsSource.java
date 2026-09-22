@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2025 eXo Platform SAS.
+ * Copyright (C) 2026 eXo Platform SAS.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License
@@ -40,18 +40,23 @@ import org.exoplatform.services.connector.credentials.RawCredentials;
  * empty, silently, since a missing source produces no credentials rather than an
  * error.
  * <p>
- * Two guards, for two different absences. {@code @ConditionalOnClass} keeps this
- * bean undefined when the credentials module is not on the classpath at all -
- * evaluated from bytecode metadata, so the class is never loaded and no
- * {@code NoClassDefFoundError} is risked. {@code @Autowired(required = false)}
- * plus the null check below cover the case where the class is there but the bean
- * is not, which is exactly this addon's own Spring test context.
+ * Two guards, both for this addon's own Spring test contexts rather than for a
+ * platform without the credentials module: that module is a {@code provided}
+ * prerequisite of this WAR, and {@link EmailCredentialsResolver} requires its
+ * {@code ConnectorCredentialsService} bean outright, so the WAR does not start
+ * without it. {@code @ConditionalOnClass} keeps this bean undefined when the SPI
+ * class is off a test classpath - evaluated from bytecode metadata, so the class
+ * is never loaded and no {@code NoClassDefFoundError} is risked.
+ * {@code @Autowired(required = false)} plus the null check below cover the case
+ * where the class is there but the provider bean is not, which is exactly what a
+ * context built from this addon's beans alone looks like.
  */
 @Component
 @ConditionalOnClass(PersonalCredentialsSource.class)
 public class EmailPersonalCredentialsSource implements PersonalCredentialsSource {
 
-  public static final String CONNECTOR_KIND = "email";
+  /** Declared once, on the resolver: the Personal provider matches this source to it by that kind. */
+  public static final String CONNECTOR_KIND = EmailCredentialsResolver.CONNECTOR_KIND;
 
   @Autowired(required = false)
   private PersonalCredentialsProvider personalCredentialsProvider;

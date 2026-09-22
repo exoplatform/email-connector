@@ -81,8 +81,9 @@ public class EmailPersonalCredentialsSourceTest {
 
   /**
    * The case {@code @Autowired(required = false)} exists for: no provider bean in
-   * the context - this addon's own Spring test context, or a platform without the
-   * credentials module. Registering must then be a no-op, not a failure.
+   * the context - this addon's own Spring test context (a platform without the
+   * credentials module does not start at all, since the resolver requires its
+   * service bean). Registering must then be a no-op, not a failure.
    */
   @Test
   public void testRegisteringWithoutAProviderIsHarmless() {

@@ -26,7 +26,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 
 @Data
 @NoArgsConstructor
@@ -88,5 +87,5 @@ public class EmailConnectorEntity {
    * migration's column default.
    */
   @Column(name = "AUTH_PROVIDER_NAME")
-  private String  authProviderName = PersonalCredentialsProvider.NAME;
+  private String  authProviderName;
 }
