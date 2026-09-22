@@ -618,6 +618,42 @@ public class EmailDelegationService {
     }
   }
 
+  /**
+   * Whether the mail server behind a delegation tells the mailbox owner about a rights
+   * change by itself -- the one question an owner-facing notification must ask before
+   * it is sent. BlueMind e-mails the owner on every grant and revoke, so anything eXo
+   * added on top would reach that owner twice for one act; a plain IMAP server says
+   * nothing and eXo is the only voice there (plan, sections 5.1 and 13.F).
+   * <p>
+   * Answered from the engine of the delegation's connector preset, with <b>no
+   * connection opened</b>: it is a trait of the server product rather than of a
+   * session, and the act that raises an owner-facing notification is usually the
+   * grantee's, on the grantee's thread, where the owner's mailbox is nobody's to open.
+   * An unknown or unresolvable connector answers false -- eXo notifying once is the
+   * recoverable error, eXo staying silent about somebody else reaching into a mailbox
+   * is not.
+   *
+   * @param delegation the delegation, possibly null
+   * @return true when the server already told the owner
+   */
+  public boolean serverNotifiesOwner(EmailDelegation delegation) {
+    if (delegation == null || delegation.getConnectorId() == null) {
+      return false;
+    }
+    try {
+      EmailConnector connector = emailConnectorService.getEmailConnector(delegation.getConnectorId());
+      if (connector == null) {
+        return false;
+      }
+      return aclEngineRegistry.engineFor(connector).serverNotifiesOwner();
+    } catch (RuntimeException e) {
+      LOG.debug("The ACL engine of connector {} could not be resolved; assuming the server notifies nobody",
+                delegation.getConnectorId(),
+                e);
+      return false;
+    }
+  }
+
   // ---------------------------------------------------------------------------------
   // The delegated branch of the sync, and the rights it is gated on
   // ---------------------------------------------------------------------------------
