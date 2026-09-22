@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
@@ -100,6 +101,9 @@ public class EmailConnectorServiceTest {
 
   @MockitoBean
   private EmailCredentialsResolver emailCredentialsResolver;
+
+  @MockitoBean
+  private EmailManagedModeService  emailManagedModeService;
 
   @Autowired
   private EmailConnectorService    emailConnectorService;
@@ -182,6 +186,126 @@ public class EmailConnectorServiceTest {
     emailConnectorService.deleteEmailConnector(1L, TEST_USER);
     verify(emailConnectorStorage).deleteEmailConnector(1L);
     verify(applicationCenterService).getApplications(0, 0, null);
+  }
+
+  /**
+   * EXO-89652. Editing the managed connector asks the managed-mode guard about the
+   * provider it would end up with - the effective one, a blank provider in the payload
+   * keeping the stored one - and a refusal leaves the connector unwritten.
+   */
+  @Test
+  @SneakyThrows
+  void updatingTheManagedConnectorToAnIneligibleProviderIsRefused() {
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    doThrow(new IllegalArgumentException("emailConnector.managed.providerNotEligible")).when(emailManagedModeService)
+                                                                                     .checkProviderChangeAllowed(7L, "personal");
+
+    EmailConnector toPersonal = emailConnector();
+    toPersonal.setId(7L);
+    toPersonal.setAuthProviderName("personal");
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailConnectorService.updateEmailConnector(toPersonal, TEST_USER));
+    assertEquals("emailConnector.managed.providerNotEligible", refusal.getMessage());
+    verify(emailConnectorStorage, never()).updateEmailConnector(any());
+
+    EmailConnector renamedOnly = emailConnector();
+    renamedOnly.setId(7L);
+    renamedOnly.setAuthProviderName(null);
+    emailConnectorService.updateEmailConnector(renamedOnly, TEST_USER);
+    verify(emailManagedModeService).checkProviderChangeAllowed(7L, "bluemind-sudo");
+    verify(emailConnectorStorage).updateEmailConnector(renamedOnly);
+  }
+
+  /**
+   * EXO-89652 (review round 2). Editing the managed connector with {@code active=false}
+   * is refused like the status toggle refuses it - the payload carries the flag and the
+   * storage writes it, so the edit must not be the way around the guard. An edit that
+   * keeps the connector active asks nothing of that guard.
+   */
+  @Test
+  @SneakyThrows
+  void updatingTheManagedConnectorToInactiveIsRefused() {
+    EmailConnector stored = emailConnector();
+    stored.setId(7L);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(stored);
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    doThrow(new IllegalArgumentException("emailConnector.managed.connectorInUse")).when(emailManagedModeService)
+                                                                                 .checkConnectorNotManaged(7L);
+
+    EmailConnector deactivated = emailConnector();
+    deactivated.setId(7L);
+    deactivated.setAuthProviderName("bluemind-sudo");
+    deactivated.setActive(false);
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailConnectorService.updateEmailConnector(deactivated, TEST_USER));
+    assertEquals("emailConnector.managed.connectorInUse", refusal.getMessage());
+    verify(emailConnectorStorage, never()).updateEmailConnector(any());
+
+    clearInvocations(emailManagedModeService);
+    EmailConnector stillActive = emailConnector();
+    stillActive.setId(7L);
+    stillActive.setAuthProviderName("bluemind-sudo");
+    emailConnectorService.updateEmailConnector(stillActive, TEST_USER);
+    verify(emailManagedModeService, never()).checkConnectorNotManaged(anyLong());
+    verify(emailConnectorStorage).updateEmailConnector(stillActive);
+  }
+
+  /**
+   * EXO-89652. Deactivating the connector managed mode points at is refused
+   * with the managed-mode code, before the storage is touched; activating it
+   * is not guarded, and neither is any other connector.
+   */
+  @Test
+  @SneakyThrows
+  void deactivatingTheManagedConnectorIsRefused() {
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(emailConnector());
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    doThrow(new IllegalArgumentException("emailConnector.managed.connectorInUse")).when(emailManagedModeService)
+                                                                                 .checkConnectorNotManaged(7L);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailConnectorService.activateEmailConnector(7L, false, TEST_USER));
+
+    assertEquals("emailConnector.managed.connectorInUse", refusal.getMessage());
+    verify(emailConnectorStorage, never()).activateEmailConnector(anyLong(), eq(false));
+
+    ApplicationList applicationList = mock(ApplicationList.class);
+    when(applicationCenterService.getApplications(0, 0, null)).thenReturn(applicationList);
+    emailConnectorService.activateEmailConnector(7L, true, TEST_USER);
+    verify(emailConnectorStorage).activateEmailConnector(7L, true);
+    verify(emailManagedModeService).checkConnectorNotManaged(7L);
+  }
+
+  /** Deleting it is refused too, before the provider configuration or the row go. */
+  @Test
+  @SneakyThrows
+  void deletingTheManagedConnectorIsRefused() {
+    EmailConnector managed = emailConnector();
+    managed.setAuthProviderName("bluemind-sudo");
+    when(emailConnectorStorage.getEmailConnector(7L)).thenReturn(managed);
+    Identity identity = mock(Identity.class);
+    when(userAcl.getUserIdentity(TEST_USER)).thenReturn(identity);
+    when(userAcl.isAdministrator(identity)).thenReturn(true);
+    doThrow(new IllegalArgumentException("emailConnector.managed.connectorInUse")).when(emailManagedModeService)
+                                                                                 .checkConnectorNotManaged(7L);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> emailConnectorService.deleteEmailConnector(7L, TEST_USER));
+
+    assertEquals("emailConnector.managed.connectorInUse", refusal.getMessage());
+    verify(emailConnectorStorage, never()).deleteEmailConnector(anyLong());
+    verify(providerConfigStorage, never()).delete(any());
   }
 
   @Test

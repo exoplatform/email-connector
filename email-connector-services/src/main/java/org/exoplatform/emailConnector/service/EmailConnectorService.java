@@ -215,6 +215,9 @@ public class EmailConnectorService {
   private EmailConnectorStorage     emailConnectorStorage;
 
   @Autowired
+  private EmailManagedModeService   emailManagedModeService;
+
+  @Autowired
   private FileService               fileService;
 
   @Autowired
@@ -689,6 +692,21 @@ public class EmailConnectorService {
     // it is - so the previous state is only read when there is an id to read it by.
     EmailConnector previousEmailConnector = emailConnector.getId() == null ? null
                                                                           : emailConnectorStorage.getEmailConnector(emailConnector.getId());
+    if (previousEmailConnector != null) {
+      // The managed connector may not move to a provider that asks each user for
+      // something: designating it refused exactly that, and an edit must not be the way
+      // around the refusal. Judged on the effective provider - a blank one in the
+      // payload keeps the stored provider, as the storage does.
+      emailManagedModeService.checkProviderChangeAllowed(previousEmailConnector.getId(),
+                                                         StringUtils.defaultIfBlank(emailConnector.getAuthProviderName(),
+                                                                                    previousEmailConnector.getAuthProviderName()));
+      // Nor may it be deactivated through the edit: the payload carries `active` and
+      // the storage writes it, so a PUT with active=false would do what the status
+      // toggle refuses. Same rule, same code.
+      if (!emailConnector.isActive()) {
+        emailManagedModeService.checkConnectorNotManaged(previousEmailConnector.getId());
+      }
+    }
     emailConnectorStorage.updateEmailConnector(emailConnector);
     discardConfigOfProviderBeingLeft(previousEmailConnector, emailConnector);
     storeProviderConfig(emailConnector, emailConnector.getProviderConfig());
@@ -773,6 +791,12 @@ public class EmailConnectorService {
                                                      username,
                                                      storedEmailConnector.getName()));
     }
+    if (!isEmailConnectorActive) {
+      // Deactivating the managed connector would leave the users attached to it
+      // by managed mode on a connector that no longer answers. The mode goes off
+      // first, one click above in the same screen.
+      emailManagedModeService.checkConnectorNotManaged(emailConnectorId);
+    }
     emailConnectorStorage.activateEmailConnector(emailConnectorId, isEmailConnectorActive);
     activateEmailApp();
   }
@@ -800,6 +824,11 @@ public class EmailConnectorService {
                                                      username,
                                                      storedEmailConnector.getName()));
     }
+    // Before anything is removed: managed mode points at this connector for the
+    // WHOLE instance, including the users who have not logged in yet and are
+    // therefore attached to nothing. Deleting it would leave the designation
+    // naming a connector that no longer exists.
+    emailManagedModeService.checkConnectorNotManaged(emailConnectorId);
     // The configuration first, the connector second. The two writes do not share a
     // transaction - the connector goes under Spring's @Transactional, the settings under
     // the kernel's own RequestLifeCycle - so the order is the guarantee: a failure here
