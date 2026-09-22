@@ -10115,7 +10115,7 @@ public class EmailBoxServiceTest {
 
     assertEquals("emailConnector.undo.tooMany",
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX)).getMessage());
-    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
+    verify(userEmailSettingService, never()).connect(anyString(), anyString());
     verify(factures, never()).open(anyInt());
     verify(emailBoxStorage, never()).getEmailIdsByMailHeaderId(anyString(), anyString(), anyString());
   }
