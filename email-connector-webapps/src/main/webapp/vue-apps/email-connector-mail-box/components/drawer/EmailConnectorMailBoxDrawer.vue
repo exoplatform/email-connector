@@ -235,15 +235,18 @@ const REFRESH_WATCH_MAX_MS = 240000;
 // this many polls in which the listed folder's row count did not move: with no
 // remembered row to wait for, a folder that stopped changing has nothing left to show
 // it. The count is sized on the budget above, not on the category watch's 30: the
-// listed count legitimately stands still for the 181 s a running sync may hold the
-// mailbox, so the escape sits past that wait (100 polls, 200 s) and only trims the last
-// 40 s. The ordinary watch keeps its own end -- its remembered rows listed, or the
-// budget -- which is the window those rows are kept for.
-const REFRESH_WATCH_QUIET_POLLS = 100;
-// The server's cap on the Message-IDs one undo request may name
-// (EmailBoxService.UNDO_MAX_MESSAGE_IDS): each costs it a serial IMAP SEARCH on the
-// request thread. A move that filed more rows than this from one folder gets no Undo
-// offered rather than an Undo the server refuses.
+// listed count legitimately stands still through the whole worst case that budget
+// enumerates -- 1 s of coalescing, the 181 s a running sync may hold the mailbox, then
+// the re-read window itself, 42 s at the administrator's 5000 rows: 223 s -- so the
+// escape sits past it (115 polls, 230 s) and only trims the last 10 s. The ordinary
+// watch keeps its own end -- its remembered rows listed, or the budget -- which is the
+// window those rows are kept for.
+const REFRESH_WATCH_QUIET_POLLS = 115;
+// The server's cap on the Message-IDs one undo request may name -- the same number as
+// EmailBoxService.UNDO_MAX_MESSAGE_IDS, and nothing but this comment binds the two:
+// change one, change the other (the server's Javadoc says the same). Each id costs the
+// server a serial IMAP SEARCH on the request thread. A move that filed more rows than
+// this from one folder gets no Undo offered rather than an Undo the server refuses.
 const UNDO_MAX_MESSAGE_IDS = 200;
 
 // How long typing must pause before the whole-mailbox server search fires; the

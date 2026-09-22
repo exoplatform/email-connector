@@ -300,8 +300,14 @@ public class EmailBoxService {
    * its own, one single-message copy and two mirror statements, serial and on the
    * request thread, so the list is bounded at what one synchronous request can serve
    * -- not at the mailbox cache size, which an administrator can set to thousands. A
-   * move that filed more rows than this gets no Undo offered (the drawer reads the same
-   * number); the messages are found again in the target folder and moved back by hand.
+   * move that filed more rows than this gets no Undo offered; the messages are found
+   * again in the target folder and moved back by hand. The drawer keeps its own copy of
+   * this number -- {@code UNDO_MAX_MESSAGE_IDS} in
+   * {@code EmailConnectorMailBoxDrawer.vue}, which gates the offer -- and nothing but
+   * these two comments binds them: changing this constant means changing that one, or
+   * the drawer offers an Undo this refuses (lower) or withholds one it would serve
+   * (higher). Batching the lookup, which is what would let this rise, belongs with a
+   * server-carried cap in the mailbox payload.
    */
   public static final int                UNDO_MAX_MESSAGE_IDS    = 200;
 
