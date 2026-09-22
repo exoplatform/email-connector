@@ -42,7 +42,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           :labels="suggesterLabels"
           :search-options="searchOptions"
           include-users
-          ignore-cache
           class="mb-4" />
         <div class="text-subtitle-2 text-color mb-2">
           {{ $t('UserSettings.emailConnector.sharing.invite.rights') }}
