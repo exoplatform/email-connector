@@ -259,6 +259,18 @@ public class EmailBoxServiceTest {
   private EmailBoxService         emailBoxService;
 
   /**
+   * The one per-test setup Sonar's S8745 allows: the four fixtures below, in this order,
+   * each kept as its own method so its Javadoc says what it switches and why.
+   */
+  @BeforeEach
+  void setUp() {
+    disableTheBackgroundRefreshes();
+    disableCustomFolders();
+    grantTheSyncClaim();
+    defaultTheAdministrationWideSyncSettingsOn();
+  }
+
+  /**
    * Switches the post-send Sent-folder refresh off for every test in this class.
    * <p>
    * It is a real background timer that fires a second after any send, against the very
@@ -273,8 +285,7 @@ public class EmailBoxServiceTest {
    * ({@link #mockFolderRefreshScheduler}) or drive {@link EmailBoxService#refreshFolder}
    * on this thread instead.
    */
-  @BeforeEach
-  void disableTheBackgroundRefreshes() {
+  private void disableTheBackgroundRefreshes() {
     System.setProperty(EmailBoxService.SENT_REFRESH_ENABLED_PROPERTY, "false");
     System.setProperty(EmailBoxService.UNDO_REFRESH_ENABLED_PROPERTY, "false");
     System.setProperty(EmailBoxService.MOVE_REFRESH_ENABLED_PROPERTY, "false");
@@ -295,8 +306,7 @@ public class EmailBoxServiceTest {
    * the mocked {@code EmailConnectorService} rather than reading the JVM property
    * itself.
    */
-  @BeforeEach
-  void disableCustomFolders() {
+  private void disableCustomFolders() {
     lenient().when(emailConnectorService.isCustomFoldersEnabled()).thenReturn(false);
   }
 
@@ -354,13 +364,11 @@ public class EmailBoxServiceTest {
    * of the "already running" branch. {@code lenient()} because most tests never
    * synchronize.
    */
-  @BeforeEach
-  void grantTheSyncClaim() {
+  private void grantTheSyncClaim() {
     lenient().when(emailSyncStateStorage.claim(anyString(), any(Date.class), anyString(), any(Date.class))).thenReturn(true);
   }
 
-  @BeforeEach
-  void defaultTheAdministrationWideSyncSettingsOn() {
+  private void defaultTheAdministrationWideSyncSettingsOn() {
     lenient().when(emailConnectorService.isTrashSyncEnabled()).thenReturn(true);
     lenient().when(emailConnectorService.isJunkSyncEnabled()).thenReturn(true);
     lenient().when(emailConnectorService.isServerDraftsEnabled()).thenReturn(true);
