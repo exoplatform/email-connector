@@ -24,6 +24,8 @@ import static org.mockito.Mockito.mock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -37,6 +39,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.io.InputStream;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -66,8 +69,10 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
+import org.exoplatform.emailConnector.service.EmailManagedModeService;
 import org.exoplatform.emailConnector.service.EmailSyncService;
 
 import io.meeds.spring.web.security.PortalAuthenticationManager;
@@ -108,6 +113,9 @@ public class EmailConnectorRestTest {
 
   @MockitoBean
   private EmailSyncService      emailSyncService;
+
+  @MockitoBean
+  private EmailManagedModeService emailManagedModeService;
 
   @Autowired
   private SecurityFilterChain   filterChain;
@@ -157,6 +165,119 @@ public class EmailConnectorRestTest {
   void deleteEmailConnector() throws Exception {
     ResultActions response = mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/1").with(testAdminUser()));
     response.andExpect(status().isOk());
+  }
+
+  /** EXO-89652. The managed read is the administration's: exclusions and names are its facts. */
+  @Test
+  void getManagedModeIsAnsweredToAnAdministratorOnly() throws Exception {
+    when(emailManagedModeService.getManagedMode(ADMIN_USER)).thenReturn(new EmailManagedMode(7L, "BlueMind", List.of("/externals"), true));
+
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/managed").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.connectorId").value(7))
+           .andExpect(jsonPath("$.connectorName").value("BlueMind"))
+           .andExpect(jsonPath("$.excludedGroups[0]").value("/externals"))
+           .andExpect(jsonPath("$.managedForMe").value(true));
+    mockMvc.perform(get(EMAIL_CONNECTOR_PATH + "/managed").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+  }
+
+  /** A caller the service refuses is a 403 on both writes, like every sibling write here. */
+  @Test
+  void managedWritesRefusedByTheServiceAreForbidden() throws Exception {
+    doThrow(new IllegalAccessException("managedConnector.administrator.required")).when(emailManagedModeService)
+                                                                                 .saveManagedConnector(7L, List.of(), ADMIN_USER);
+    doThrow(new IllegalAccessException("managedConnector.administrator.required")).when(emailManagedModeService)
+                                                                                 .clearManagedConnector(ADMIN_USER);
+
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/managed").with(testAdminUser())
+                                                          .content("{\"connectorId\":7}")
+                                                          .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden());
+    mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/managed").with(testAdminUser()))
+           .andExpect(status().isForbidden());
+  }
+
+  /** One body, two facts, handed to the service as they came - and the answer is what now stands. */
+  @Test
+  void saveManagedModeHandsTheServiceTheConnectorAndTheExclusions() throws Exception {
+    when(emailManagedModeService.getManagedMode(ADMIN_USER)).thenReturn(new EmailManagedMode(7L, "BlueMind", List.of("/externals"), true));
+
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/managed").with(testAdminUser())
+                                                          .content("{\"connectorId\":7,\"excludedGroups\":[\"/externals\"]}")
+                                                          .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.connectorId").value(7));
+
+    verify(emailManagedModeService).saveManagedConnector(7L, List.of("/externals"), ADMIN_USER);
+  }
+
+  /** Exclusions left out of the body reach the service as none, not null. */
+  @Test
+  void saveManagedModeWithoutExclusionsExcludesNobody() throws Exception {
+    when(emailManagedModeService.getManagedMode(ADMIN_USER)).thenReturn(new EmailManagedMode(7L, "BlueMind", List.of(), true));
+
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/managed").with(testAdminUser())
+                                                          .content("{\"connectorId\":7}")
+                                                          .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+
+    verify(emailManagedModeService).saveManagedConnector(7L, List.of(), ADMIN_USER);
+  }
+
+  /**
+   * A body naming no connector is a 400 with its own code, before the service is asked
+   * anything - and the code is in the BODY, where the browser reads it (EXO-89652):
+   * Boot's default error body drops the reason on this platform.
+   */
+  @Test
+  void saveManagedModeWithoutAConnectorIsFourHundred() throws Exception {
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/managed").with(testAdminUser())
+                                                          .content("{\"excludedGroups\":[]}")
+                                                          .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.status").value(400))
+           .andExpect(jsonPath("$.message").value("emailConnector.managed.connectorRequired"));
+
+    verify(emailManagedModeService, never()).saveManagedConnector(anyLong(), any(), any());
+  }
+
+  /** The service's refusal travels as a 400 carrying its code. */
+  @Test
+  void saveManagedModeRelaysTheRefusalCode() throws Exception {
+    doThrow(new IllegalArgumentException("managedConnector.provider.asksTheUser")).when(emailManagedModeService)
+                                                                                .saveManagedConnector(9L, List.of(), ADMIN_USER);
+
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/managed").with(testAdminUser())
+                                                          .content("{\"connectorId\":9}")
+                                                          .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.message").value("managedConnector.provider.asksTheUser"));
+  }
+
+  /** Writing the mode is administration-only. */
+  @Test
+  void saveAndClearManagedModeAreRefusedToASimpleUser() throws Exception {
+    mockMvc.perform(put(EMAIL_CONNECTOR_PATH + "/managed").with(testSimpleUser())
+                                                          .content("{\"connectorId\":7}")
+                                                          .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isForbidden());
+    mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/managed").with(testSimpleUser()))
+           .andExpect(status().isForbidden());
+
+    verify(emailManagedModeService, never()).saveManagedConnector(anyLong(), any(), any());
+    verify(emailManagedModeService, never()).clearManagedConnector(any());
+  }
+
+  @Test
+  void clearManagedModeClearsAndAnswersWhatNowStands() throws Exception {
+    when(emailManagedModeService.getManagedMode(ADMIN_USER)).thenReturn(new EmailManagedMode(null, null, List.of(), false));
+
+    mockMvc.perform(delete(EMAIL_CONNECTOR_PATH + "/managed").with(testAdminUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.managedForMe").value(false));
+
+    verify(emailManagedModeService).clearManagedConnector(ADMIN_USER);
   }
 
   @Test
