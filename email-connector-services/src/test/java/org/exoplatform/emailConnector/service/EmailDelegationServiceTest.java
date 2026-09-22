@@ -253,18 +253,46 @@ class EmailDelegationServiceTest {
   }
 
   /**
-   * An owner whose MYRIGHTS carries no {@code a} cannot SETACL: reported with its code,
-   * nothing written. Read per session, never assumed -- BlueMind's owner does hold it.
+   * An owner whose MYRIGHTS carries no {@code a} is <b>not</b> refused: the grant is
+   * attempted and the server decides. This replaces a precondition that was wrong on
+   * the first real server it met -- Stalwart 0.11.8 answers {@code rliteswkxp} to the
+   * owner of that very mailbox, with no {@code a} anywhere, and then accepts her
+   * SETACL. The refusal told the owner of a mailbox that she could not share her own
+   * mailbox, on a server that was perfectly willing.
+   * <p>
+   * It is the capability probe's lesson in a second place: an advertisement is a
+   * positive signal, never a precondition, and the command is the test. A server that
+   * genuinely refuses answers the SETACL, and that refusal is what the user reads.
    */
   @Test
-  void inviteRefusesWhenTheOwnerCannotAdministerTheirInbox() throws Exception {
+  void inviteAttemptsTheGrantEvenWhenTheOwnerHoldsNoAdministerRight() throws Exception {
     when(engine.probe(any())).thenReturn(SUPPORTED);
-    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("lrswit"));
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("rliteswkxp"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any()))
+                                                                                                 .thenReturn(MailboxAce.ofLetters(GRANTEE_MAILBOX,
+                                                                                                                                  MailboxRights.of("lrs")));
+
+    EmailDelegation delegation = service.invite(OWNER, GRANTEE, DelegationPreset.READER);
+
+    verify(engine).grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), eq(DelegationPreset.READER), any());
+    assertEquals("lrs", delegation.getRights(), "what the server wrote, on a server that never claimed the owner could");
+  }
+
+  /**
+   * And when the server does refuse the SETACL, that refusal is what surfaces -- with
+   * the server's own code, not a guess made before asking.
+   */
+  @Test
+  void inviteReportsTheServersOwnRefusalOfTheGrant() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.myRights(any(), eq(INBOX))).thenReturn(MailboxRights.of("rliteswkxp"));
+    when(engine.grant(any(), eq(INBOX), eq(GRANTEE_MAILBOX), any(), any()))
+                                                                          .thenThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED,
+                                                                                                             "SETACL refused"));
 
     MailboxAclException thrown = assertThrows(MailboxAclException.class, () -> service.invite(OWNER, GRANTEE, DelegationPreset.READER));
 
-    assertEquals(MailboxAclException.OWNER_CANNOT_ADMINISTER, thrown.getCode());
-    verify(engine, never()).grant(any(), any(), any(), any(), any());
+    assertEquals(MailboxAclException.SERVER_REFUSED, thrown.getCode());
     verify(emailDelegationStorage, never()).create(any());
   }
 
@@ -875,7 +903,8 @@ class EmailDelegationServiceTest {
    * skipped; an entry with a row is that row (rights and native form refreshed); an
    * entry naming a connected user without a row gets an AVAILABLE/SERVER row carrying
    * the engine's preset and native form; an identifier nobody holds is listed raw; and
-   * a row the ACL no longer carries is REVOKED.
+   * a row the ACL no longer carries is REVOKED in the database and <b>left out of the
+   * list</b> -- see {@link #getGrantedDropsAGranteeTheServerNoLongerCarries}.
    */
   @Test
   void getGrantedMergesTheServersAclWithTheRows() throws Exception {
@@ -907,7 +936,7 @@ class EmailDelegationServiceTest {
     assertTrue(granted.capabilities().supported());
     assertEquals(OWNER_MAILBOX, granted.ownerMailbox());
     List<DelegationGrantee> grantees = granted.grantees();
-    assertEquals(4, grantees.size(), "bob, carol, dave, then erin -- never the owner nor anyone");
+    assertEquals(3, grantees.size(), "bob, carol, dave -- never the owner, anyone, nor revoked erin");
 
     DelegationGrantee bob = grantees.get(0);
     assertEquals(GRANTEE, bob.granteeId());
@@ -932,9 +961,35 @@ class EmailDelegationServiceTest {
     assertNull(dave.delegation());
     assertEquals("dave@other.org", dave.identifier());
 
-    DelegationGrantee erin = grantees.get(3);
-    assertEquals(DelegationStatus.REVOKED, erin.delegation().getStatus(), "the server no longer carries her entry");
+    assertTrue(grantees.stream().noneMatch(g -> "erin".equals(g.granteeId())),
+               "erin's entry is gone from the server, so she is not a grantee any more");
     verify(emailFolderStorage).deleteDelegatedFolders("erin", 101L);
+  }
+
+  /**
+   * The pin for the defect this behaviour replaced (found on the Stalwart rig): a
+   * revoke wrote DELETEACL, the row went REVOKED in the database -- and the merge put
+   * it straight back into the list the owner had just removed it from, with no way to
+   * remove it again. A successful revoke looked like a failed one.
+   * <p>
+   * The list answers "who holds access to my mailbox". Somebody the server no longer
+   * carries holds none, whether the entry was removed from eXo, from the server's own
+   * interface, or by an administrator.
+   */
+  @Test
+  void getGrantedDropsAGranteeTheServerNoLongerCarries() throws Exception {
+    when(engine.probe(any())).thenReturn(SUPPORTED);
+    when(engine.listAcl(any(), eq(INBOX))).thenReturn(List.of(MailboxAce.ofLetters(OWNER_MAILBOX,
+                                                                                   MailboxRights.of("lrswipkxtea"))));
+    EmailDelegation revokedRow = row(DelegationStatus.ACCEPTED, DelegationOrigin.EXO);
+    when(emailDelegationStorage.getGranted(OWNER)).thenReturn(List.of(revokedRow));
+    when(userEmailSettingService.getUserEmailSettingsByEmailConnectorId(CONNECTOR_ID)).thenReturn(List.of(OWNER, GRANTEE));
+
+    GrantedDelegations granted = service.getGrantedDelegations(OWNER);
+
+    assertTrue(granted.grantees().isEmpty(),
+               "the only entry left on the server is the owner's own, so nobody holds access");
+    assertEquals(DelegationStatus.REVOKED, revokedRow.getStatus(), "and the row is closed rather than forgotten");
   }
 
   /**

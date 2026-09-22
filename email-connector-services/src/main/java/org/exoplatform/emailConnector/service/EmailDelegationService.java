@@ -268,9 +268,18 @@ public class EmailDelegationService {
       requireSupported(engine.probe(session));
       MailboxRights ownerRights = engine.myRights(session, OWNER_INBOX);
       if (!ownerRights.canAdminister()) {
-        // Verified on BlueMind (the owner holds lrswipkxtea) and consistent with
-        // Stalwart accepting the owner's SETACL; still read per session, never assumed.
-        throw new MailboxAclException(MailboxAclException.OWNER_CANNOT_ADMINISTER, "MYRIGHTS INBOX = " + ownerRights.letters());
+        // NOT a refusal: 'a' is a positive signal, never a precondition -- the same
+        // lesson the capability probe learned, met a second time on the same rig.
+        // BlueMind answers lrswipkxtea, so the owner holds 'a' there; Stalwart 0.11.8
+        // answers rliteswkxp for the owner OF THAT VERY MAILBOX -- no 'a' at all --
+        // and then accepts her SETACL perfectly well (verified: the phase-0 grant to
+        // bob was made exactly that way). Refusing here told the owner of a mailbox
+        // she could not share her own mailbox, on a server that was willing.
+        // So: try the command. A server that really does refuse answers the SETACL,
+        // and engine.grant turns that into the refusal the user reads.
+        LOG.debug("{} holds no administer right on their own INBOX ({}); granting anyway, the server decides",
+                  ownerUsername,
+                  ownerRights.letters());
       }
       written = engine.grant(session, OWNER_INBOX, granteeIdentifier, preset, ownerRights);
     }
@@ -993,17 +1002,15 @@ public class EmailDelegationService {
       }
       if (row.getStatus() == DelegationStatus.PENDING || row.getStatus() == DelegationStatus.ACCEPTED
           || row.getStatus() == DelegationStatus.DECLINED || row.getStatus() == DelegationStatus.AVAILABLE) {
-        // The server no longer carries the entry: an administrator, or the server's
-        // own interface, removed it. The server is the truth.
-        row = markRevoked(row, DelegationStatus.REVOKED);
+        // The server no longer carries the entry: an administrator, the server's own
+        // interface, or the revoke the owner just asked for removed it. The server is
+        // the truth.
+        markRevoked(row, DelegationStatus.REVOKED);
       }
-      grantees.add(new DelegationGrantee(row.getGranteeMailbox(),
-                                         row.getGranteeId(),
-                                         row,
-                                         row.getPreset(),
-                                         row.getRights(),
-                                         row.getNativeRights(),
-                                         row.getMailboxRights().affordances()));
+      // And it is NOT a grantee any more, so it does not belong in a list of who holds
+      // access. Adding it here made a successful revoke look like a failed one: the row
+      // went REVOKED on the server and in the database, and came straight back to the
+      // screen the owner had just removed it from, with no way to remove it again.
     }
     return grantees;
   }
