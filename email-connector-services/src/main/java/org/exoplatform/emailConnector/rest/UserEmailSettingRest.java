@@ -31,6 +31,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -39,11 +40,19 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.MailboxAclException;
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.GrantedDelegations;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
+import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.service.EmailSignatureService;
 import org.exoplatform.emailConnector.service.ReadReceiptService;
 import org.exoplatform.emailConnector.service.UserEmailSettingService;
@@ -75,6 +84,9 @@ public class UserEmailSettingRest {
 
   @Autowired
   private ReadReceiptService      readReceiptService;
+
+  @Autowired
+  private EmailDelegationService  emailDelegationService;
 
   /**
    * Connects the caller to a connector whose provider asks them for nothing - the
@@ -321,6 +333,248 @@ public class UserEmailSettingRest {
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"), })
   public void deleteSignatureImage(HttpServletRequest request) {
     emailSignatureService.deleteSignatureLogo(request.getRemoteUser());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Mailbox delegation. The mailbox acted on is always the caller's own; a delegation
+  // id resolves only with the caller as its grantee or its owner. Status mapping, this
+  // add-on's convention: IllegalAccessException 401, ObjectNotFoundException 404,
+  // IllegalArgumentException 400 with the code, MailboxAclException 502 with the code
+  // (the mail server would not or could not), DelegationRevokedException 410 with the
+  // code (the share is gone -- a business state, not an authentication failure).
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Who has access to the caller's mailbox, read live from the mail server.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the server's capabilities and the grantees
+   */
+  @GetMapping("/delegations/granted")
+  @Secured("users")
+  @Operation(summary = "Lists who has access to the caller's own mailbox",
+             method = "GET",
+             description = "Reads the ACL of the caller's INBOX on the caller's own session and maps each entry to the eXo user connected on the same connector with that identifier, with the delegation row when one exists (status PENDING, ACCEPTED, DECLINED, REVOKED, AVAILABLE). Entries granted outside eXo appear too; an identifier no eXo user holds is listed raw. When the server does not support sharing, capabilities.supported is false with the reason code and only eXo's own rows are listed.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server could not be reached or refused (emailConnector.delegation.*)") })
+  public GrantedDelegations getGrantedDelegations(HttpServletRequest request) {
+    try {
+      return emailDelegationService.getGrantedDelegations(request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * The mailboxes shared with the caller.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param discover whether to also walk the caller's Other Users namespace on the
+   *          server, so shares granted outside eXo are offered
+   * @return the caller's delegation rows
+   */
+  @GetMapping("/delegations/received")
+  @Secured("users")
+  @Operation(summary = "Lists the mailboxes shared with the caller",
+             method = "GET",
+             description = "The caller's delegation rows in every state: PENDING invitations, ACCEPTED subscriptions, DECLINED and REVOKED history, AVAILABLE shares seen on the server that nobody invited from eXo. With discover=true the caller's own session lists the Other Users namespace first, so a share granted in the mail server's own interface is offered (proposed, never auto-subscribed); an unreachable server leaves the rows as they are. Each row carries the affordances its last observed rights unlock.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation") })
+  public List<EmailDelegation> getReceivedDelegations(HttpServletRequest request,
+                                                      @Parameter(description = "Whether to discover shares on the mail server as well")
+                                                      @RequestParam(name = "discover", defaultValue = "true")
+                                                      boolean discover) {
+    return emailDelegationService.getReceivedDelegations(request.getRemoteUser(), discover);
+  }
+
+  /**
+   * Shares the caller's mailbox with an eXo user.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param invite who, and which preset
+   * @return the delegation as created
+   */
+  @PostMapping("/delegations")
+  @Secured("users")
+  @Operation(summary = "Shares the caller's own mailbox with another eXo user",
+             method = "POST",
+             description = "Writes an ACL on the caller's INBOX, on the caller's own session, for the identifier the grantee connects to the same connector with (the grantee must be connected there; a mail login is never accepted). The preset is READER (lrs) or EDITOR (lrswit), intersected with the caller's own rights; a, x, e, p and k are never granted. The grant is written now: declining later does not remove it, only the owner does. The grantee is then invited (PENDING).")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Self, unknown or unconnected grantee, invalid preset, or already shared (emailConnector.delegation.*)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server does not support ACLs, the caller cannot administer their INBOX, or SETACL was refused (emailConnector.delegation.*)") })
+  public EmailDelegation inviteDelegation(HttpServletRequest request,
+                                          @RequestBody
+                                          DelegationInviteRequest invite) {
+    try {
+      return emailDelegationService.invite(request.getRemoteUser(), invite.getGranteeUsername(), invite.getPreset());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * Removes a grantee's access to the caller's mailbox.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as owner
+   */
+  @DeleteMapping("/delegations/{id}")
+  @Secured("users")
+  @Operation(summary = "Removes a grantee's access to the caller's own mailbox",
+             method = "DELETE",
+             description = "DELETEACL on the caller's INBOX, on the caller's own session, for the identifier the grant was written to; the delegation goes REVOKED and the grantee's registered folders of the mailbox are dropped. Works on a declined invitation too, which is how an owner answers a decline.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's mailbox"),
+      @ApiResponse(responseCode = "502", description = "The mail server refused DELETEACL (emailConnector.delegation.*)") })
+  public void revokeDelegation(HttpServletRequest request,
+                               @Parameter(description = "The delegation id", required = true)
+                               @PathVariable("id")
+                               long id) {
+    try {
+      emailDelegationService.revoke(request.getRemoteUser(), id);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * Accepts a share.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as grantee
+   * @return the delegation as it now stands
+   */
+  @PutMapping("/delegations/{id}/accept")
+  @Secured("users")
+  @Operation(summary = "Accepts a mailbox shared with the caller",
+             method = "PUT",
+             description = "On the caller's own session, finds the owner's mailbox under the Other Users namespace and reads MYRIGHTS on its INBOX. Access confirmed: ACCEPTED, with the path and the letters, and the shared INBOX registered as a folder of the caller (sync opt-in to follow). Access gone: the row goes REVOKED and 410 is answered. A DECLINED or AVAILABLE row is accepted the same way.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Not in an acceptable state, or the cap of shared mailboxes is reached (emailConnector.delegation.*)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation, or no connected mailbox on the share's connector"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's"),
+      @ApiResponse(responseCode = "410", description = "The share is no longer on the server (emailConnector.delegation.revoked)"),
+      @ApiResponse(responseCode = "502", description = "The mail server could not be asked (emailConnector.delegation.*)") })
+  public EmailDelegation acceptDelegation(HttpServletRequest request,
+                                          @Parameter(description = "The delegation id", required = true)
+                                          @PathVariable("id")
+                                          long id) {
+    try {
+      return emailDelegationService.accept(request.getRemoteUser(), id);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    } catch (DelegationRevokedException e) {
+      throw new ResponseStatusException(HttpStatus.GONE, e.getMessage());
+    } catch (MailboxAclException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getCode());
+    }
+  }
+
+  /**
+   * Declines an invitation. The ACL on the server is left in place.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as grantee
+   * @return the delegation as it now stands
+   */
+  @PutMapping("/delegations/{id}/decline")
+  @Secured("users")
+  @Operation(summary = "Declines a mailbox shared with the caller",
+             method = "PUT",
+             description = "Records the answer (DECLINED). The ACL on the server is NOT removed: only the owner removes it, and eXo never acts as the owner on the grantee's behalf. The caller can accept later; the server decides then.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "The invitation is not pending (emailConnector.delegation.notPending)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's") })
+  public EmailDelegation declineDelegation(HttpServletRequest request,
+                                           @Parameter(description = "The delegation id", required = true)
+                                           @PathVariable("id")
+                                           long id) {
+    try {
+      return emailDelegationService.decline(request.getRemoteUser(), id);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Leaves an accepted share. The ACL on the server is left in place.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as grantee
+   * @return the delegation as it now stands
+   */
+  @PutMapping("/delegations/{id}/leave")
+  @Secured("users")
+  @Operation(summary = "Unsubscribes the caller from a mailbox shared with them",
+             method = "PUT",
+             description = "An eXo-granted share goes back to DECLINED, a server-discovered one to AVAILABLE; the caller's registered folders of the mailbox are dropped. The ACL on the server is NOT removed.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "The share is not accepted (emailConnector.delegation.notAccepted)"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's") })
+  public EmailDelegation leaveDelegation(HttpServletRequest request,
+                                         @Parameter(description = "The delegation id", required = true)
+                                         @PathVariable("id")
+                                         long id) {
+    try {
+      return emailDelegationService.leave(request.getRemoteUser(), id);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * The caller's toggles on one share.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param id the delegation id, resolved with the caller as grantee
+   * @param preferences the toggles; a null leaves one as it is
+   * @return the delegation as it now stands
+   */
+  @PutMapping("/delegations/{id}/preferences")
+  @Secured("users")
+  @Operation(summary = "Stores the caller's toggles on a mailbox shared with them",
+             method = "PUT",
+             description = "badgeIncluded: whether the shared INBOX counts in the caller's unread badge (off by default). notifyNewMail: whether new mail there notifies the caller (off by default; the notification itself is a later phase). A missing field leaves the toggle as it is.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "404", description = "No such delegation of the caller's") })
+  public EmailDelegation updateDelegationPreferences(HttpServletRequest request,
+                                                     @Parameter(description = "The delegation id", required = true)
+                                                     @PathVariable("id")
+                                                     long id,
+                                                     @RequestBody
+                                                     DelegationPreferencesRequest preferences) {
+    try {
+      return emailDelegationService.updatePreferences(request.getRemoteUser(),
+                                                      id,
+                                                      preferences.getBadgeIncluded(),
+                                                      preferences.getNotifyNewMail());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    }
   }
 
   @GetMapping("/connectors")

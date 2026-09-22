@@ -1483,4 +1483,165 @@
     <sql>ALTER TABLE EMAIL_READ_RECEIPT_ANSWER ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
     <rollback/>
   </changeSet>
+
+  <changeSet author="email-connector" id="1.0.0-76" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The mailbox-delegation table's sequence (EXO-90457), on the vendors that have
+      sequences, created before its table for the reason 1.0.0-43 records. Ids 70 to 75
+      are reserved by the mail-filters work on its own branch, so this starts at 76;
+      never renumbered once any database ran it.
+    </comment>
+    <createSequence sequenceName="SEQ_EMAIL_DELEGATION_ID" startValue="1"/>
+    <rollback>
+      <dropSequence sequenceName="SEQ_EMAIL_DELEGATION_ID"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-77">
+    <comment>
+      Mailbox delegation (EXO-90457): one row per (grantee, connector preset, owner
+      mailbox) -- the grantee's subscription to another user's mailbox and its state,
+      whoever created the share on the mail server. The ACL itself is NOT here: the
+      server is its only source of truth, read live; RIGHTS is the letters last observed
+      (a cache for the interface's chrome), STATUS the lifecycle (PENDING, ACCEPTED,
+      DECLINED, REVOKED, GONE, AVAILABLE), ORIGIN whether eXo (EXO) or the server
+      (SERVER) wrote the grant. No credential is here either: the owner grants with
+      their own session, the grantee reads with theirs.
+
+      GRANTEE_ID is the row's viewer (every read is by id AND grantee, or id AND owner).
+      OWNER_ID is nullable: a share discovered on the server may belong to someone eXo
+      cannot map. OWNER_MAILBOX is the server-side identifier of the owner's mailbox as
+      the ACL and the Other Users namespace name it; GRANTEE_MAILBOX the identifier the
+      grant was written for, kept so the owner can revoke after the grantee disconnected
+      their mailbox from eXo. CONNECTOR_ID keeps a delegation on one server.
+
+      The unique index UQ_EMAIL_DELEGATION is the key; the two status indexes serve the
+      owner's and the grantee's listings. Table and indexes share a changeset because
+      nothing here carries a modifySql (1.0.0-50 tells why that pairing was ever
+      unsafe); the MySQL options live in 1.0.0-78 as literal SQL, for the checksum
+      reason 1.0.0-53 gives. Rolled back explicitly, indexes then table.
+    </comment>
+    <createTable tableName="EMAIL_DELEGATION">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_EMAIL_DELEGATION"/>
+      </column>
+      <column name="GRANTEE_ID" type="VARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="OWNER_ID" type="VARCHAR(250)"/>
+      <column name="OWNER_MAILBOX" type="VARCHAR(320)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="GRANTEE_MAILBOX" type="VARCHAR(320)"/>
+      <column name="CONNECTOR_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="REMOTE_ROOT" type="VARCHAR(500)"/>
+      <column name="PRESET" type="VARCHAR(10)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="RIGHTS" type="VARCHAR(16)"/>
+      <column name="STATUS" type="VARCHAR(10)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ORIGIN" type="VARCHAR(10)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="BADGE_INCLUDED" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="NOTIFY_NEW_MAIL" type="BOOLEAN" defaultValueBoolean="false">
+        <constraints nullable="false"/>
+      </column>
+      <column name="LAST_ACTIVITY_DATE" type="TIMESTAMP"/>
+      <column name="LAST_RIGHTS_CHECK_DATE" type="TIMESTAMP"/>
+      <column name="INVITED_DATE" type="TIMESTAMP"/>
+      <column name="RESPONDED_DATE" type="TIMESTAMP"/>
+      <column name="REVOKED_DATE" type="TIMESTAMP"/>
+      <column name="CREATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+      <column name="UPDATED_DATE" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <createIndex tableName="EMAIL_DELEGATION" indexName="UQ_EMAIL_DELEGATION" unique="true">
+      <column name="GRANTEE_ID"/>
+      <column name="CONNECTOR_ID"/>
+      <column name="OWNER_MAILBOX"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_DELEGATION" indexName="IDX_EMAIL_DELEGATION_OWNER">
+      <column name="OWNER_ID"/>
+      <column name="STATUS"/>
+    </createIndex>
+    <createIndex tableName="EMAIL_DELEGATION" indexName="IDX_EMAIL_DELEGATION_GRANTEE">
+      <column name="GRANTEE_ID"/>
+      <column name="STATUS"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_DELEGATION" indexName="IDX_EMAIL_DELEGATION_GRANTEE"/>
+      <dropIndex tableName="EMAIL_DELEGATION" indexName="IDX_EMAIL_DELEGATION_OWNER"/>
+      <dropIndex tableName="EMAIL_DELEGATION" indexName="UQ_EMAIL_DELEGATION"/>
+      <dropTable tableName="EMAIL_DELEGATION"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-78" dbms="mysql">
+    <comment>
+      The table options every table of this file gets on MySQL (InnoDB, utf8mb4, the
+      accent-insensitive 0900 collation), applied to EMAIL_DELEGATION as literal SQL for
+      the checksum reason 1.0.0-53 gives, then a binary collation on the two mailbox
+      identifiers, as 1.0.0-56 does for REMOTE_NAME: an IMAP ACL identifier is
+      case-sensitive on the server, and two identifiers that differ by case must not
+      collate onto one row of the unique key. The rollback is explicit and empty on
+      purpose, as 1.0.0-59's is: sql has no automatic rollback, and the table goes with
+      1.0.0-77's.
+    </comment>
+    <sql>ALTER TABLE EMAIL_DELEGATION ENGINE=INNODB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci</sql>
+    <sql>ALTER TABLE EMAIL_DELEGATION MODIFY OWNER_MAILBOX VARCHAR(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL</sql>
+    <sql>ALTER TABLE EMAIL_DELEGATION MODIFY GRANTEE_MAILBOX VARCHAR(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL</sql>
+    <rollback/>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-79">
+    <comment>
+      The link from a registered folder to the delegation it belongs to (EXO-90457).
+      Null for every row written before this and for every folder of the user's own
+      mailbox -- "my own folder" needs no migration and keeps its meaning; set on the
+      folders of a mailbox shared with the user, whose TYPE is then DELEGATED_INBOX or
+      DELEGATED and whose REMOTE_NAME is the Other Users path on the user's own session.
+      USER_ID stays the viewer. The index serves the per-delegation listing and the
+      revoke/leave purge, both by (USER_ID, DELEGATION_ID). Rolled back explicitly,
+      index then column: an addColumn rolls back on its own, a createIndex does not on
+      every vendor.
+    </comment>
+    <addColumn tableName="EMAIL_FOLDER">
+      <column name="DELEGATION_ID" type="BIGINT"/>
+    </addColumn>
+    <createIndex tableName="EMAIL_FOLDER" indexName="IDX_EMAIL_FOLDER_DELEGATION">
+      <column name="USER_ID"/>
+      <column name="DELEGATION_ID"/>
+    </createIndex>
+    <rollback>
+      <dropIndex tableName="EMAIL_FOLDER" indexName="IDX_EMAIL_FOLDER_DELEGATION"/>
+      <dropColumn tableName="EMAIL_FOLDER" columnName="DELEGATION_ID"/>
+    </rollback>
+  </changeSet>
+  <changeSet author="email-connector" id="1.0.0-80">
+    <comment>
+      The server's own rights vocabulary on a delegation row (EXO-90457). This id was
+      reserved for a RIGHTS widening should a server answer more than sixteen letters;
+      phase 0 showed no letter beyond the eleven, but it showed a vocabulary that is
+      not letters at all: BlueMind's mailbox ACL travels as verbs (Read, Write, SendAs,
+      Freebusy, Invitation, Manage...) on its REST side, and the translation to RFC
+      4314 letters is lossy both ways. RIGHTS keeps the letters, which drive the
+      logic and the chrome; NATIVE_RIGHTS keeps what the server said, for display, so a
+      share made in the server's own interface with verbs no letter expresses is shown
+      as it is. Letters on an IMAP server, nullable for every row written before this.
+      Rolled back explicitly, as the other columns of this feature are.
+    </comment>
+    <addColumn tableName="EMAIL_DELEGATION">
+      <column name="NATIVE_RIGHTS" type="VARCHAR(200)"/>
+    </addColumn>
+    <rollback>
+      <dropColumn tableName="EMAIL_DELEGATION" columnName="NATIVE_RIGHTS"/>
+    </rollback>
+  </changeSet>
 </databaseChangeLog>

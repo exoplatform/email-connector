@@ -26,9 +26,12 @@ import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -56,8 +59,19 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.emailConnector.exception.DelegationRevokedException;
+import org.exoplatform.emailConnector.exception.MailboxAclException;
+import org.exoplatform.emailConnector.model.DelegationPreset;
+import org.exoplatform.emailConnector.model.DelegationStatus;
+import org.exoplatform.emailConnector.model.EmailDelegation;
 import org.exoplatform.emailConnector.model.EmailSignature;
 import org.exoplatform.emailConnector.model.EmailSignatureLogo;
+import org.exoplatform.emailConnector.model.GrantedDelegations;
+import org.exoplatform.emailConnector.model.MailboxAclCapabilities;
+import org.exoplatform.emailConnector.rest.model.DelegationInviteRequest;
+import org.exoplatform.emailConnector.rest.model.DelegationPreferencesRequest;
+import org.exoplatform.emailConnector.service.EmailDelegationService;
 import org.exoplatform.emailConnector.model.ReadReceiptPolicy;
 import org.exoplatform.emailConnector.model.ReadReceiptSettings;
 import org.exoplatform.emailConnector.model.UserEmailSetting;
@@ -108,6 +122,9 @@ public class UserEmailSettingRestTest {
   @MockitoBean
   private ReadReceiptService      readReceiptService;
 
+  @MockitoBean
+  private EmailDelegationService  emailDelegationService;
+
   @Autowired
   private SecurityFilterChain     filterChain;
 
@@ -147,6 +164,143 @@ public class UserEmailSettingRestTest {
   void getUserEmailConnectors() throws Exception {
     ResultActions response = mockMvc.perform(get(USER_EMAIL_SETTING_PATH).with(testSimpleUser()));
     response.andExpect(status().isOk());
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Mailbox delegation: the caller's name goes to the service, the service's refusals
+  // come back as the statuses the contract promises, code as message.
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * Both listings answer the service's models under the caller's own name; the
+   * received listing forwards its discover flag.
+   */
+  @Test
+  void delegationListings() throws Exception {
+    when(emailDelegationService.getGrantedDelegations(SIMPLE_USER)).thenReturn(new GrantedDelegations(MailboxAclCapabilities.imap(true, true),
+                                                                                                    "simple@acme.com",
+                                                                                                    List.of()));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/granted").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.capabilities.supported").value(true))
+           .andExpect(jsonPath("$.ownerMailbox").value("simple@acme.com"));
+
+    EmailDelegation delegation = new EmailDelegation();
+    delegation.setId(5L);
+    delegation.setStatus(DelegationStatus.ACCEPTED);
+    delegation.setRights("lrs");
+    when(emailDelegationService.getReceivedDelegations(SIMPLE_USER, false)).thenReturn(List.of(delegation));
+    mockMvc.perform(get(USER_EMAIL_SETTING_PATH + "/delegations/received?discover=false").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$[0].id").value(5))
+           .andExpect(jsonPath("$[0].affordances.markRead").value(true))
+           .andExpect(jsonPath("$[0].affordances.delete").value(false));
+    verify(emailDelegationService).getReceivedDelegations(SIMPLE_USER, false);
+  }
+
+  /**
+   * Inviting hands the grantee and the preset to the service under the caller's name;
+   * the service's refusals map to 400 (a message code), 401, and 502 (the mail server
+   * would not).
+   */
+  @Test
+  void inviteDelegationAndItsRefusals() throws Exception {
+    EmailDelegation delegation = new EmailDelegation();
+    delegation.setId(9L);
+    delegation.setStatus(DelegationStatus.PENDING);
+    when(emailDelegationService.invite(SIMPLE_USER, "bob", DelegationPreset.EDITOR)).thenReturn(delegation);
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
+                                                                  .content(asJsonString(new DelegationInviteRequest("bob", DelegationPreset.EDITOR)))
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.id").value(9))
+           .andExpect(jsonPath("$.status").value("PENDING"));
+
+    when(emailDelegationService.invite(SIMPLE_USER, "nobody", DelegationPreset.READER))
+                                                                                       .thenThrow(new IllegalArgumentException(EmailDelegationService.GRANTEE_NOT_CONNECTED_MESSAGE));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
+                                                                  .content(asJsonString(new DelegationInviteRequest("nobody", DelegationPreset.READER)))
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailDelegationService.GRANTEE_NOT_CONNECTED_MESSAGE));
+
+    when(emailDelegationService.invite(SIMPLE_USER, "carol", DelegationPreset.READER))
+                                                                                      .thenThrow(new MailboxAclException(MailboxAclException.OWNER_CANNOT_ADMINISTER,
+                                                                                                                         "MYRIGHTS INBOX = lrswit"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
+                                                                  .content(asJsonString(new DelegationInviteRequest("carol", DelegationPreset.READER)))
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(MailboxAclException.OWNER_CANNOT_ADMINISTER));
+
+    when(emailDelegationService.invite(SIMPLE_USER, "dave", DelegationPreset.READER)).thenThrow(new IllegalAccessException("not connected"));
+    mockMvc.perform(post(USER_EMAIL_SETTING_PATH + "/delegations").with(testSimpleUser())
+                                                                  .content(asJsonString(new DelegationInviteRequest("dave", DelegationPreset.READER)))
+                                                                  .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isUnauthorized());
+  }
+
+  /**
+   * The grantee's verbs: accept answers 410 with the code when the share is gone and
+   * 404 for a row that is not the caller's; decline, leave and preferences go through
+   * under the caller's name.
+   */
+  @Test
+  void acceptDeclineLeaveAndPreferences() throws Exception {
+    EmailDelegation delegation = new EmailDelegation();
+    delegation.setId(5L);
+    delegation.setStatus(DelegationStatus.ACCEPTED);
+    when(emailDelegationService.accept(SIMPLE_USER, 5L)).thenReturn(delegation);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/accept").with(testSimpleUser()))
+           .andExpect(status().isOk())
+           .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+    when(emailDelegationService.accept(SIMPLE_USER, 6L)).thenThrow(new DelegationRevokedException(DelegationRevokedException.REVOKED));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/6/accept").with(testSimpleUser()))
+           .andExpect(status().isGone())
+           .andExpect(status().reason(DelegationRevokedException.REVOKED));
+
+    when(emailDelegationService.accept(SIMPLE_USER, 7L)).thenThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/7/accept").with(testSimpleUser()))
+           .andExpect(status().isNotFound());
+
+    when(emailDelegationService.accept(SIMPLE_USER, 8L)).thenThrow(new IllegalArgumentException(EmailDelegationService.TOO_MANY_MESSAGE));
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/8/accept").with(testSimpleUser()))
+           .andExpect(status().isBadRequest())
+           .andExpect(status().reason(EmailDelegationService.TOO_MANY_MESSAGE));
+
+    when(emailDelegationService.decline(SIMPLE_USER, 5L)).thenReturn(delegation);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/decline").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailDelegationService).decline(SIMPLE_USER, 5L);
+
+    when(emailDelegationService.leave(SIMPLE_USER, 5L)).thenReturn(delegation);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/leave").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailDelegationService).leave(SIMPLE_USER, 5L);
+
+    when(emailDelegationService.updatePreferences(SIMPLE_USER, 5L, true, null)).thenReturn(delegation);
+    mockMvc.perform(put(USER_EMAIL_SETTING_PATH + "/delegations/5/preferences").with(testSimpleUser())
+                                                                               .content(asJsonString(new DelegationPreferencesRequest(true, null)))
+                                                                               .contentType(MediaType.APPLICATION_JSON))
+           .andExpect(status().isOk());
+    verify(emailDelegationService).updatePreferences(SIMPLE_USER, 5L, true, null);
+  }
+
+  /**
+   * Revoke: the owner's verb, 200, 404 for a row that is not the caller's as owner,
+   * 502 when the server refuses DELETEACL.
+   */
+  @Test
+  void revokeDelegationAndItsRefusals() throws Exception {
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/5").with(testSimpleUser())).andExpect(status().isOk());
+    verify(emailDelegationService).revoke(SIMPLE_USER, 5L);
+
+    doThrow(new ObjectNotFoundException(EmailDelegationService.NOT_FOUND_MESSAGE)).when(emailDelegationService).revoke(SIMPLE_USER, 6L);
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/6").with(testSimpleUser())).andExpect(status().isNotFound());
+
+    doThrow(new MailboxAclException(MailboxAclException.SERVER_REFUSED, "NO [NOPERM]")).when(emailDelegationService).revoke(SIMPLE_USER, 7L);
+    mockMvc.perform(delete(USER_EMAIL_SETTING_PATH + "/delegations/7").with(testSimpleUser()))
+           .andExpect(status().isBadGateway())
+           .andExpect(status().reason(MailboxAclException.SERVER_REFUSED));
   }
 
   /**

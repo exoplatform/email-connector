@@ -278,6 +278,27 @@ class EmailMcpToolTest {
   }
 
   /**
+   * The own-folders guard (EXO-90457): a CUSTOM:<id> key names one of the user's
+   * registered folders, which from now on include the INBOX of a mailbox somebody else
+   * shared with them; the tool's description promises INBOX, SENT or ARCHIVE, so a
+   * registry key is refused before the service is asked, in the words a model can act on.
+   */
+  @Test
+  void searchEmailsRefusesARegistryFolderKey() throws Exception {
+    // Were the key let through, the service would answer normally: the refusal below is
+    // the guard's, not a downstream failure's.
+    when(emailBoxService.searchEmails(eq(USERNAME), any(), any(), anyBoolean(), any(), eq("CUSTOM:42"), anyInt()))
+                                                                                                                 .thenReturn(new EmailSearchResultPage(List.of(),
+                                                                                                                                                       0));
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                   () -> emailMcpTool.searchEmails("invoice", null, null, null, "CUSTOM:42", null));
+
+    assertTrue(thrown.getMessage().contains("INBOX, SENT or ARCHIVE"), thrown.getMessage());
+    verify(emailBoxService, never()).searchEmails(any(), any(), any(), anyBoolean(), any(), any(), anyInt());
+  }
+
+  /**
    * A blank folder must fall back to the INBOX, which the uppercase test above
    * never exercises despite its name.
    */

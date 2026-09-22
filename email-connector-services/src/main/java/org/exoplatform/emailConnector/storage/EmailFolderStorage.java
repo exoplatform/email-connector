@@ -120,6 +120,7 @@ public class EmailFolderStorage {
     entity.setDisplayName(folder.getDisplayName());
     entity.setDelimiter(folder.getDelimiter());
     entity.setType(folder.getType());
+    entity.setDelegationId(folder.getDelegationId());
     entity.setSyncEnabled(false);
     entity.setMissing(false);
     entity.setDiscoveredDate(folder.getDiscoveredDate());
@@ -235,6 +236,45 @@ public class EmailFolderStorage {
   }
 
   /**
+   * The folders of one shared mailbox, as registered for its grantee.
+   *
+   * @param userId the grantee -- the rows' viewer
+   * @param delegationId the delegation the folders belong to
+   * @return the folders, by display name, never null
+   */
+  public List<EmailFolder> getDelegatedFolders(String userId, long delegationId) {
+    return emailFolderDAO.findByUserIdAndDelegationId(userId, delegationId).stream().map(this::fromEntity).toList();
+  }
+
+  /**
+   * Re-types a row the user's own discovery walk registered as a custom folder into a
+   * folder of a shared mailbox. A server that lists the Other Users namespace to a
+   * plain {@code LIST "*"} has the walk register {@code Other Users/anne/INBOX} as one
+   * of the user's own folders before any delegation exists; on accept, that row is
+   * adopted rather than duplicated (the unique key on the remote name would refuse a
+   * second one). Names only its two columns, for the reason every writer here does.
+   *
+   * @param userId the grantee
+   * @param id the registry id
+   * @param delegationId the delegation the row now belongs to
+   * @param type {@code DELEGATED_INBOX} or {@code DELEGATED}
+   */
+  public void adoptAsDelegated(String userId, long id, long delegationId, String type) {
+    emailFolderDAO.adoptAsDelegated(id, userId, delegationId, type);
+  }
+
+  /**
+   * Drops every registered folder of one shared mailbox. The mirrored rows those
+   * folders keyed are the caller's to delete, as for {@link #deleteFolder}.
+   *
+   * @param userId the grantee
+   * @param delegationId the delegation
+   */
+  public void deleteDelegatedFolders(String userId, long delegationId) {
+    emailFolderDAO.deleteByUserIdAndDelegationId(userId, delegationId);
+  }
+
+  /**
    * Entity to DTO. The snapshot is rebuilt only when every one of its signals is
    * present: a half-written one is no snapshot, and the sync's skip check must not be
    * handed something it would refuse anyway.
@@ -264,6 +304,7 @@ public class EmailFolderStorage {
                            entity.getDiscoveredDate(),
                            entity.getLastSeenDate(),
                            entity.getLastSyncDate(),
-                           snapshot);
+                           snapshot,
+                           entity.getDelegationId());
   }
 }

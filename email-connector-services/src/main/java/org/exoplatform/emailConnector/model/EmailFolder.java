@@ -60,6 +60,11 @@ public class EmailFolder {
   // Null when the folder was never fully synced: the next sync takes the full path.
   private FolderSyncSnapshot snapshot;
 
+  // Null for a folder of the user's own mailbox; the EMAIL_DELEGATION id for a folder of
+  // a mailbox shared with them. Declared LAST: the class is @AllArgsConstructor and
+  // built positionally in the storage.
+  private Long               delegationId;
+
   /**
    * The {@code EMAIL_BOX.FOLDER} discriminator of this folder's mirrored messages.
    *

@@ -325,6 +325,95 @@ public class EmailFolderDAOTest {
     assertEquals(1, setClause.split(",").length, "exactly one column: " + update);
   }
 
+  // ---------------------------------------------------------------------------------
+  // Delegated folders (EXO-90457): own-folder reads never see them
+  // ---------------------------------------------------------------------------------
+
+  /**
+   * The own-mailbox listing, the enabled candidates and the cap's count exclude every
+   * row that carries a delegation id -- the folders of a mailbox shared with the user
+   * are the user's rows (same USER_ID) but not the user's own folders. Pinned on the
+   * real engine because the reconcile of the discovery walk marks missing, then
+   * deletes, whatever the own listing returns that the walk did not see: a delegated
+   * row in that listing is a delegated row deleted at the next walk.
+   */
+  @Test
+  void ownFolderReadsExcludeDelegatedRows() {
+    Long own = persist(USERNAME, "Factures", "Factures", true, false, new Date(1_000L));
+    Long delegated = persistDelegated(USERNAME, "Other Users/anne/INBOX", 42L, true);
+    entityManager.clear();
+
+    List<EmailFolderEntity> listing = emailFolderDAO.findByUserId(USERNAME);
+    assertEquals(1, listing.size(), "the own listing");
+    assertEquals(own, listing.get(0).getId());
+    List<EmailFolderEntity> enabled = emailFolderDAO.findEnabledByUserId(USERNAME);
+    assertEquals(1, enabled.size(), "the custom-folder rotation's candidates");
+    assertEquals(own, enabled.get(0).getId());
+    assertEquals(1, emailFolderDAO.countEnabledByUserId(USERNAME), "the custom-folder cap");
+
+    List<EmailFolderEntity> byDelegation = emailFolderDAO.findByUserIdAndDelegationId(USERNAME, 42L);
+    assertEquals(1, byDelegation.size(), "the per-delegation listing");
+    assertEquals(delegated, byDelegation.get(0).getId());
+    assertTrue(emailFolderDAO.findByUserIdAndDelegationId(OTHER, 42L).isEmpty(), "scoped to the grantee");
+    assertEquals(1, emailFolderDAO.findByIdAndUserId(delegated, USERNAME).size(),
+                 "the by-id read stays total: a CUSTOM:<id> key of a delegated folder is still the user's row");
+    assertEquals(1, emailFolderDAO.findByUserIdAndRemoteName(USERNAME, "Other Users/anne/INBOX").size(),
+                 "and so does the upsert lookup, or the unique key would refuse the walk");
+  }
+
+  /**
+   * Adopting a row the walk registered: the delegation id and the type move, the
+   * opt-in and the snapshot do not; only the owner's row.
+   */
+  @Test
+  void adoptingARowSetsItsDelegationAndTypeOnly() {
+    Long id = persist(USERNAME, "Other Users/anne/INBOX", "INBOX", true, false, new Date(1_000L));
+    entityManager.clear();
+
+    assertEquals(0, emailFolderDAO.adoptAsDelegated(id, OTHER, 42L, "DELEGATED_INBOX"), "someone else's row");
+    assertEquals(1, emailFolderDAO.adoptAsDelegated(id, USERNAME, 42L, "DELEGATED_INBOX"));
+
+    EmailFolderEntity adopted = emailFolderDAO.findById(id).orElseThrow();
+    assertEquals(42L, adopted.getDelegationId());
+    assertEquals("DELEGATED_INBOX", adopted.getType());
+    assertTrue(adopted.isSyncEnabled(), "the opt-in the user had is kept");
+    assertEquals(new Date(1_000L), adopted.getEnabledDate());
+    assertTrue(emailFolderDAO.findByUserId(USERNAME).isEmpty(), "and it left the own listing");
+  }
+
+  /**
+   * The purge of one shared mailbox's folders, by grantee and delegation.
+   */
+  @Test
+  void theDelegatedPurgeIsByGranteeAndDelegation() {
+    persistDelegated(USERNAME, "Other Users/anne/INBOX", 42L, false);
+    persistDelegated(USERNAME, "Other Users/anne/Sent", 42L, false);
+    persistDelegated(USERNAME, "Other Users/carol/INBOX", 43L, false);
+    persistDelegated(OTHER, "Other Users/anne/INBOX", 42L, false);
+    entityManager.clear();
+
+    assertEquals(2, emailFolderDAO.deleteByUserIdAndDelegationId(USERNAME, 42L));
+
+    assertEquals(1, emailFolderDAO.findByUserIdAndDelegationId(USERNAME, 43L).size());
+    assertEquals(1, emailFolderDAO.findByUserIdAndDelegationId(OTHER, 42L).size());
+  }
+
+  /**
+   * Persists one delegated folder row.
+   *
+   * @param userId the grantee
+   * @param remoteName the Other Users path
+   * @param delegationId the delegation
+   * @param enabled the opt-in
+   * @return the row id
+   */
+  private Long persistDelegated(String userId, String remoteName, long delegationId, boolean enabled) {
+    EmailFolderEntity entity = folder(userId, remoteName, "INBOX", enabled, false, enabled ? new Date(2_000L) : null);
+    entity.setType("DELEGATED_INBOX");
+    entity.setDelegationId(delegationId);
+    return entityManager.persistAndFlush(entity).getId();
+  }
+
   /**
    * Persists one registry row.
    *
