@@ -27,6 +27,11 @@ import EmailConnectorUserSettingDrawer from './components/drawer/user-setting/Em
 import EmailConnectorUserSettingDisconnectDrawer from './components/drawer/disconnect/EmailConnectorUserSettingDisconnectDrawer.vue';
 import EmailConnectorUserSettingSignatureDrawer from './components/drawer/signature/EmailConnectorUserSettingSignatureDrawer.vue';
 import EmailConnectorContactsChoiceStep from './components/drawer/common/EmailConnectorContactsChoiceStep.vue';
+import EmailConnectorUserSettingSharing from './components/main/EmailConnectorUserSettingSharing.vue';
+import EmailConnectorDelegationRights from './components/sharing/EmailConnectorDelegationRights.vue';
+import EmailConnectorUserSettingSharingDrawer from './components/sharing/EmailConnectorUserSettingSharingDrawer.vue';
+import EmailConnectorUserSettingSharingInviteDrawer from './components/sharing/EmailConnectorUserSettingSharingInviteDrawer.vue';
+import EmailConnectorUserSettingSharedWithMeDrawer from './components/sharing/EmailConnectorUserSettingSharedWithMeDrawer.vue';
 
 const components = {
   'email-connector-user-setting-app': EmailConnectorUserSettingApp,
@@ -42,6 +47,11 @@ const components = {
   'email-connector-user-setting-disconnect-drawer': EmailConnectorUserSettingDisconnectDrawer,
   'email-connector-user-setting-signature-drawer': EmailConnectorUserSettingSignatureDrawer,
   'email-connector-contacts-choice-step': EmailConnectorContactsChoiceStep,
+  'email-connector-user-setting-sharing': EmailConnectorUserSettingSharing,
+  'email-connector-delegation-rights': EmailConnectorDelegationRights,
+  'email-connector-user-setting-sharing-drawer': EmailConnectorUserSettingSharingDrawer,
+  'email-connector-user-setting-sharing-invite-drawer': EmailConnectorUserSettingSharingInviteDrawer,
+  'email-connector-user-setting-shared-with-me-drawer': EmailConnectorUserSettingSharedWithMeDrawer,
 };
 
 for (const key in components) {
