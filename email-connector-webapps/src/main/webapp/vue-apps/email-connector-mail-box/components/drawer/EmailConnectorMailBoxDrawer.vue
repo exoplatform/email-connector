@@ -224,9 +224,10 @@ const CATEGORY_WATCH_QUIET_POLLS = 30;
 // How long the drawer keeps a row the server has not listed yet -- one an Undo put back,
 // one a "Move to..." filed into its destination -- and polls for the server's own: the
 // budget the service gives the background re-read, restated -- one second's coalescing
-// delay, then up to 36 retries five seconds apart while a running sync holds the
-// mailbox (181 s), then the window itself (near 8.5 s at the shipped 1000 cached inbox
-// rows, 42 s at the administrator's 5000). A row still unbacked past this is dropped:
+// delay, then 35 retries five seconds apart while a running sync holds the mailbox
+// (176 s, the last of 36 attempts at 1 + 5x35 s), then the window itself (near 8.5 s at
+// the shipped 1000 cached inbox rows, 42 s at the administrator's 5000). A row still
+// unbacked past this is dropped:
 // the re-read failed, or the administrator withdrew it, and an honest empty list beats
 // a row nothing can act on. The message surfaces at the folder's next scheduled check
 // either way (see undoMove and moveEmails).
@@ -236,11 +237,12 @@ const REFRESH_WATCH_MAX_MS = 240000;
 // remembered row to wait for, a folder that stopped changing has nothing left to show
 // it. The count is sized on the budget above, not on the category watch's 30: the
 // listed count legitimately stands still through the whole worst case that budget
-// enumerates -- 1 s of coalescing, the 181 s a running sync may hold the mailbox, then
-// the re-read window itself, 42 s at the administrator's 5000 rows: 223 s -- so the
-// escape sits past it (115 polls, 230 s) and only trims the last 10 s. The ordinary
-// watch keeps its own end -- its remembered rows listed, or the budget -- which is the
-// window those rows are kept for.
+// enumerates -- 1 s of coalescing, the 176 s a running sync may hold the mailbox, then
+// the re-read window itself, 42 s at the administrator's 5000 rows: 218 s -- so the
+// escape sits past it (the counter starts at the arming poll, which only records the
+// baseline, so it reaches 115 on the 116th poll, 232 s) and only trims the last 8 s.
+// The ordinary watch keeps its own end -- its remembered rows listed, or the budget --
+// which is the window those rows are kept for.
 const REFRESH_WATCH_QUIET_POLLS = 115;
 // The server's cap on the Message-IDs one undo request may name -- the same number as
 // EmailBoxService.UNDO_MAX_MESSAGE_IDS, and nothing but this comment binds the two:

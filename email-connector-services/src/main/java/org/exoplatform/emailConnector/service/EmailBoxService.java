@@ -3365,6 +3365,15 @@ public class EmailBoxService {
    * {@link #applyMoveAction}), the refresh fetches the message as the sync would.
    * Queued only for a move that moved something: a batch refused whole (nowhere to
    * file, a source the mailbox has not got, every UID stale) has nothing to show.
+   * <p>
+   * The folder the messages leave gets no withdraw and no reconciling re-read, unlike
+   * {@link #undoMove}: a re-read already running may have fetched a message before
+   * this move expunged it and write its row back after {@link #dropMirrorRows} ran,
+   * leaving a row in a folder the message has left until that folder's next scheduled
+   * check. This is the window delete, archive and junk have always had through the
+   * same {@link #applyMoveAction}, and it is left open here on purpose; extending the
+   * undo's withdraw/reconcile pattern to the move belongs on the feature branch, not in
+   * a backport.
    *
    * @param mailRemoteIds the IMAP UIDs, within {@code folder}, to move
    * @param username the mailbox owner
