@@ -34,4 +34,27 @@ public class NotificationConstants {
 
   /** Why it was not sent: a {@code ScheduledSendError} name, never the server's text. */
   public static final String REASON                         = "REASON";
+
+  /** Somebody shared their mailbox with the receiver, and waits for an answer (EXO-90503). */
+  public static final String EMAIL_DELEGATION_INVITATION_NOTIFICATION_PLUGIN = "EmailDelegationInvitationPlugin";
+
+  /**
+   * The answer to a share came back, or the access was taken away (EXO-90503). One
+   * plugin for both directions because it is one kind of news -- "where that share now
+   * stands" -- told to whichever party did not act; {@link #DELEGATION_RESPONSE} says
+   * which transition it was.
+   */
+  public static final String EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN = "EmailDelegationResponseNotificationPlugin";
+
+  /** The other party's eXo username: the owner on an invitation, the actor on an answer. */
+  public static final String DELEGATION_ACTOR               = "DELEGATION_ACTOR";
+
+  /** The preset the share carries, a {@code DelegationPreset} name. */
+  public static final String DELEGATION_PRESET              = "DELEGATION_PRESET";
+
+  /** The transition being told about: an {@code EmailDelegationEvent.Type} name. */
+  public static final String DELEGATION_RESPONSE            = "DELEGATION_RESPONSE";
+
+  /** The delegation row's id, so the interface can open the share it is about. */
+  public static final String DELEGATION_ID                  = "DELEGATION_ID";
 }
