@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.utils;
 
 import java.text.Normalizer;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -214,9 +215,10 @@ public final class EmailContactUtils {
 
   /**
    * Derives the sort key a contact files under: "FAMILY GIVEN" when structured
-   * names exist, else the display name, else the address local-part — uppercased
-   * and diacritic-stripped so "Müller" sorts (and buckets) under M on every
-   * database collation.
+   * names exist, else the display name read the way the contact form reads it
+   * (first word given, the rest family, or "Family, Given" when a comma says so),
+   * else the address local-part — uppercased and diacritic-stripped so "Müller"
+   * sorts (and buckets) under M on every database collation.
    *
    * @param givenName the structured given name, may be null
    * @param familyName the structured family name, may be null
@@ -229,12 +231,37 @@ public final class EmailContactUtils {
     if (StringUtils.isNotBlank(familyName) || StringUtils.isNotBlank(givenName)) {
       base = (StringUtils.trimToEmpty(familyName) + " " + StringUtils.trimToEmpty(givenName)).trim();
     } else if (StringUtils.isNotBlank(displayName)) {
-      base = displayName.trim();
+      base = sortBaseOfDisplayName(displayName.trim());
     } else {
       base = StringUtils.trimToEmpty(localPart(primaryEmail));
     }
     String stripped = COMBINING_MARKS.matcher(Normalizer.normalize(base, Normalizer.Form.NFD)).replaceAll("");
     return StringUtils.abbreviate(stripped.toUpperCase(Locale.ROOT), 255);
+  }
+
+  /**
+   * Reads a free-form display name the way the contact form splits it when no
+   * structured names exist, so a synced or collected contact files where an
+   * edited one does: the first word is the given name and the rest the family
+   * name, "Family, Given" keeps the order the comma states, and a single word or
+   * an address is left as it is.
+   *
+   * @param displayName the trimmed, non-blank display name
+   * @return "FAMILY GIVEN" in display-name casing, or the name itself
+   */
+  static String sortBaseOfDisplayName(String displayName) {
+    if (displayName.contains("@")) {
+      return displayName;
+    }
+    int comma = displayName.indexOf(',');
+    if (comma > 0) {
+      return (displayName.substring(0, comma).trim() + " " + displayName.substring(comma + 1).trim()).trim();
+    }
+    String[] words = displayName.split("\\s+");
+    if (words.length < 2) {
+      return displayName;
+    }
+    return String.join(" ", Arrays.copyOfRange(words, 1, words.length)) + " " + words[0];
   }
 
   /**
