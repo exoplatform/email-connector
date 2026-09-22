@@ -231,11 +231,20 @@ const CATEGORY_WATCH_QUIET_POLLS = 30;
 // a row nothing can act on. The message surfaces at the folder's next scheduled check
 // either way (see undoMove and moveEmails).
 const REFRESH_WATCH_MAX_MS = 240000;
-// The remembered-rows watch also stands down after this many polls in which the listed
-// folder's row count did not move (the category watch's own escape): a watch armed for
-// the whole budget by a partly failed undo must not poll the listing for four minutes
-// over a folder that stopped changing.
-const REFRESH_WATCH_QUIET_POLLS = 30;
+// A watch armed for the WHOLE budget by a partly failed undo also stands down after
+// this many polls in which the listed folder's row count did not move: with no
+// remembered row to wait for, a folder that stopped changing has nothing left to show
+// it. The count is sized on the budget above, not on the category watch's 30: the
+// listed count legitimately stands still for the 181 s a running sync may hold the
+// mailbox, so the escape sits past that wait (100 polls, 200 s) and only trims the last
+// 40 s. The ordinary watch keeps its own end -- its remembered rows listed, or the
+// budget -- which is the window those rows are kept for.
+const REFRESH_WATCH_QUIET_POLLS = 100;
+// The server's cap on the Message-IDs one undo request may name
+// (EmailBoxService.UNDO_MAX_MESSAGE_IDS): each costs it a serial IMAP SEARCH on the
+// request thread. A move that filed more rows than this from one folder gets no Undo
+// offered rather than an Undo the server refuses.
+const UNDO_MAX_MESSAGE_IDS = 200;
 
 // How long typing must pause before the whole-mailbox server search fires; the
 // instant local matches don't wait for it.
@@ -1747,7 +1756,8 @@ export default {
      * What earns the interruption is the Undo: a misfiled message is otherwise found
      * again in the target folder and moved back by hand. Which is why the toast is not
      * shown when the Undo could not work -- a row with no Message-ID cannot be found
-     * again by identity, and a toast whose Undo fails is worse than none.
+     * again by identity, and a toast whose Undo fails is worse than none -- nor when a
+     * group names more Message-IDs than the server accepts in one undo request.
      *
      * @param {Array} undoGroups [{folder, mailHeaderIds}] per folder the rows came from
      * @param {String} target the folder the messages went to
@@ -1755,7 +1765,9 @@ export default {
      * @returns {void}
      */
     offerUndoMove(undoGroups, target, count) {
-      if (!count || undoGroups.some(group => group.mailHeaderIds.some(id => !id))) {
+      if (!count
+        || undoGroups.some(group => group.mailHeaderIds.some(id => !id))
+        || undoGroups.some(group => group.mailHeaderIds.length > UNDO_MAX_MESSAGE_IDS)) {
         return;
       }
       const folderName = this.folderLabelOf(target);
@@ -1905,10 +1917,15 @@ export default {
      * @returns {void}
      */
     watchRefreshPendingRows(untilDeadline = false) {
+      // Set for a new watch or when the budget is asked for, never OR-ed and never
+      // lowered: a later watch armed for the remembered rows alone is not silently a
+      // whole-budget one because an earlier undo asked for the budget, and an ordinary
+      // move landing inside a running whole-budget watch does not downgrade the watch
+      // the undo's returned messages are still waiting on.
+      if (untilDeadline || !this.refreshWatchDeadline) {
+        this.refreshWatchUntilDeadline = untilDeadline;
+      }
       this.refreshWatchDeadline = Date.now() + REFRESH_WATCH_MAX_MS;
-      // Assigned, not OR-ed: a later watch armed for the remembered rows alone is not
-      // silently a whole-budget one because an earlier undo asked for the budget.
-      this.refreshWatchUntilDeadline = untilDeadline;
       this.refreshWatchListedCount = null;
       this.refreshWatchQuietPolls = 0;
       this.startAutoRefresh();
@@ -1980,10 +1997,13 @@ export default {
       // The watch ends when the listed folder holds no remembered row any more (the
       // server lists the message, or the user moved on to another folder) unless a
       // partly failed undo asked for the whole budget; in any case once the budget is
-      // spent, or once the listed folder's row count stood still for
-      // REFRESH_WATCH_QUIET_POLLS polls -- a whole-budget watch over a folder that
-      // stopped changing has nothing left to wait for. A row of another folder stays
-      // remembered until that folder is listed or its own expiry prunes it.
+      // spent; and a whole-budget watch alone also once the listed folder's row count
+      // stood still for REFRESH_WATCH_QUIET_POLLS polls -- with no remembered row to
+      // wait for, a folder that stopped changing has nothing left to show it. The
+      // ordinary watch is not cut short that way: its remembered rows are kept for the
+      // whole budget, and a watch that gave up before them would leave them on screen
+      // with nothing polling. A row of another folder stays remembered until that
+      // folder is listed or its own expiry prunes it.
       if (this.refreshWatchDeadline) {
         const listed = this.emailBox?.emails?.length ?? 0;
         this.refreshWatchQuietPolls = listed === this.refreshWatchListedCount ? this.refreshWatchQuietPolls + 1 : 0;
@@ -1991,7 +2011,7 @@ export default {
       }
       if (this.refreshWatchDeadline
         && (Date.now() > this.refreshWatchDeadline
-          || this.refreshWatchQuietPolls >= REFRESH_WATCH_QUIET_POLLS
+          || (this.refreshWatchUntilDeadline && this.refreshWatchQuietPolls >= REFRESH_WATCH_QUIET_POLLS)
           || (!this.refreshWatchUntilDeadline && !this.refreshPendingRows.some(row => row.folder === this.currentFolder)))) {
         this.refreshWatchDeadline = null;
         this.refreshWatchUntilDeadline = false;

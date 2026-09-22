@@ -35,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -9992,32 +9993,51 @@ public class EmailBoxServiceTest {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     List<String> ids = IntStream.rangeClosed(1, EmailBoxService.UNDO_MAX_MESSAGE_IDS + 1).mapToObj(i -> "<" + i + "@host>").toList();
 
+    // The fixture's trashStore() helper INVOKES connect on the mock to fetch the stubbed
+    // store, so that one invocation is on record before undoMove runs; cleared here so
+    // the never() below asserts what the Javadoc claims -- the refusal comes before the
+    // store is connected.
+    clearInvocations(userEmailSettingService);
+
     assertEquals("emailConnector.undo.tooMany",
                  assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX)).getMessage());
-    // never().connect cannot be asserted here: the fixture's trashStore() helper INVOKES
-    // connect on the mock (not a stubbing call) to fetch the stubbed store, so the
-    // invocation is on record before undoMove runs. What the cap must prevent is any
-    // work on the folders.
+    verify(userEmailSettingService, never()).connect(any(UserEmailSetting.class));
     verify(factures, never()).open(anyInt());
     verify(emailBoxStorage, never()).getEmailIdsByMailHeaderId(anyString(), anyString(), anyString());
   }
 
   /**
-   * The cap follows the mailbox cache size, the most rows one move can file from the
-   * listing: with a cache of 1000 a select-all of 500 is not refused (each id is then
-   * looked up and, unfound here, counted as a failure -- the refusal is the only thing
-   * this pins).
+   * The cap is what one request thread can serve, not what the mailbox caches: a
+   * cache of 1000 rows does not lift it, so a select-all of 201 is refused however
+   * large the cache -- the drawer offers no Undo for such a move instead. Lenient for
+   * the same reason as the pin above.
    */
   @Test
   @SneakyThrows
-  void anUndoWithinTheMailboxCacheSizeIsNotRefused() {
+  @MockitoSettings(strictness = Strictness.LENIENT)
+  void theMailboxCacheSizeDoesNotLiftTheUndoCap() {
     IMAPFolder factures = givenAMirroredFacturesFolder();
     when(emailConnectorService.getEmailBoxCacheSize()).thenReturn(1000);
-    List<String> ids = IntStream.rangeClosed(1, 500).mapToObj(i -> "<" + i + "@host>").toList();
+    List<String> ids = IntStream.rangeClosed(1, EmailBoxService.UNDO_MAX_MESSAGE_IDS + 1).mapToObj(i -> "<" + i + "@host>").toList();
+
+    assertEquals("emailConnector.undo.tooMany",
+                 assertThrows(IllegalArgumentException.class, () -> emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX)).getMessage());
+    verify(factures, never()).open(anyInt());
+  }
+
+  /**
+   * An undo naming exactly the cap is served: each id is looked up and, unfound here,
+   * counted as a failure -- the refusal boundary is the only thing this pins.
+   */
+  @Test
+  @SneakyThrows
+  void anUndoNamingExactlyTheCapIsNotRefused() {
+    IMAPFolder factures = givenAMirroredFacturesFolder();
+    List<String> ids = IntStream.rangeClosed(1, EmailBoxService.UNDO_MAX_MESSAGE_IDS).mapToObj(i -> "<" + i + "@host>").toList();
 
     int failed = emailBoxService.undoMove(ids, TEST_USER, "CUSTOM:1", MailFolder.INBOX);
 
-    assertEquals(500, failed);
+    assertEquals(EmailBoxService.UNDO_MAX_MESSAGE_IDS, failed);
     verify(factures).open(Folder.READ_WRITE);
   }
 

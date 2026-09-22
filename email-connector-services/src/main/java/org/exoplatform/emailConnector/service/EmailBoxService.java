@@ -296,11 +296,12 @@ public class EmailBoxService {
   private static final List<String>      MOVE_BUILT_IN_TARGETS   = List.of(MailFolder.INBOX, MailFolder.ARCHIVE);
 
   /**
-   * The floor of the cap on the Message-IDs one undo may name. Each costs a server-side
-   * SEARCH of its own, serial and on the request thread, so the list is bounded where
-   * the folder checks are -- at the mailbox cache size ({@link #undoMaxMessageIds}),
-   * the most rows one move can file from the listing (its select-all takes the whole
-   * cached folder), and never below this.
+   * The cap on the Message-IDs one undo may name. Each costs a server-side SEARCH of
+   * its own, one single-message copy and two mirror statements, serial and on the
+   * request thread, so the list is bounded at what one synchronous request can serve
+   * -- not at the mailbox cache size, which an administrator can set to thousands. A
+   * move that filed more rows than this gets no Undo offered (the drawer reads the same
+   * number); the messages are found again in the target folder and moved back by hand.
    */
   public static final int                UNDO_MAX_MESSAGE_IDS    = 200;
 
@@ -3440,7 +3441,7 @@ public class EmailBoxService {
    *           move admits ({@code emailConnector.folder.unknown}), a custom one is not
    *           mirrored ({@code emailConnector.folder.notMirrored}), the two are
    *           the same ({@code emailConnector.folder.sameAsSource}), or more than
-   *           {@link #undoMaxMessageIds()} Message-IDs are named
+   *           {@link #UNDO_MAX_MESSAGE_IDS} Message-IDs are named
    *           ({@code emailConnector.undo.tooMany})
    */
   public int undoMove(List<String> mailHeaderIds,
@@ -3448,7 +3449,7 @@ public class EmailBoxService {
                       String folder,
                       String originFolder) throws IllegalAccessException {
     checkCanManageFolders(username);
-    if (mailHeaderIds != null && mailHeaderIds.size() > undoMaxMessageIds()) {
+    if (mailHeaderIds != null && mailHeaderIds.size() > UNDO_MAX_MESSAGE_IDS) {
       throw new IllegalArgumentException("emailConnector.undo.tooMany");
     }
     checkCustomFoldersEnabled();
@@ -3456,16 +3457,6 @@ public class EmailBoxService {
     checkUndoOrigin(username, originKey);
     String currentKey = resolveMoveTarget(username, originKey, folder);
     return applyUndoMove(mailHeaderIds, username, currentKey, originKey);
-  }
-
-  /**
-   * The cap on the Message-IDs one undo may name: the mailbox cache size, the most
-   * rows one move can file from the listing, floored at {@link #UNDO_MAX_MESSAGE_IDS}.
-   *
-   * @return the cap
-   */
-  public int undoMaxMessageIds() {
-    return Math.max(UNDO_MAX_MESSAGE_IDS, emailConnectorService.getEmailBoxCacheSize());
   }
 
   /**
