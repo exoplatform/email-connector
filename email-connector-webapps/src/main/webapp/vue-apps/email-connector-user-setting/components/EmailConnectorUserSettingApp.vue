@@ -27,6 +27,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <email-connector-user-setting-folder-name-drawer />
       <email-connector-user-setting-disconnect-drawer />
       <email-connector-user-setting-signature-drawer />
+      <email-connector-user-setting-sharing-drawer />
+      <email-connector-user-setting-sharing-invite-drawer />
+      <email-connector-user-setting-shared-with-me-drawer />
     </template>
   </v-app>
 </template>

@@ -17,10 +17,14 @@
  
 import NewEmailsNotificationPlugin from './components/NewEmailsNotificationPlugin.vue';
 import ScheduledEmailFailedNotificationPlugin from './components/ScheduledEmailFailedNotificationPlugin.vue';
+import EmailDelegationInvitationPlugin from './components/EmailDelegationInvitationPlugin.vue';
+import EmailDelegationResponseNotificationPlugin from './components/EmailDelegationResponseNotificationPlugin.vue';
 
 const components = {
   'user-notification-new-emails': NewEmailsNotificationPlugin,
   'user-notification-scheduled-email-failed': ScheduledEmailFailedNotificationPlugin,
+  'user-notification-email-delegation-invitation': EmailDelegationInvitationPlugin,
+  'user-notification-email-delegation-response': EmailDelegationResponseNotificationPlugin,
 };
 
 for (const key in components) {

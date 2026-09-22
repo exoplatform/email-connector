@@ -209,4 +209,28 @@ public interface MailboxAclEngine {
   default void unsubscribe(MailboxAclSession session, String ownerIdentifier) {
     // No server-side subscription on this engine.
   }
+
+  /**
+   * Whether this server tells the mailbox owner about a rights change of its own
+   * accord, so that eXo must not tell them again. BlueMind e-mails the owner on every
+   * grant and every revoke -- four such mails were observed over two phase-0 rounds,
+   * "MEYER a modifie vos droits d'acces" -- while a plain IMAP server says nothing
+   * (plan, sections 5.1 and 13.F).
+   * <p>
+   * Read <b>without a session</b>, on purpose: it is a trait of the server product,
+   * not of one connection, and the party eXo would notify is the owner while the
+   * action that triggers it is often the grantee's. Opening the owner's mailbox from
+   * the grantee's request thread to answer a notification question would be both
+   * expensive and an identity switch this code makes nowhere.
+   * <p>
+   * It must agree with the {@link MailboxAclCapabilities#serverNotifiesOwner()} bit
+   * this engine's {@link #probe} reports -- they are the same fact reached two ways,
+   * one for the lifecycle and one for the interface. An engine that overrides this to
+   * true builds its capabilities with the same value.
+   *
+   * @return true when the server notifies the owner itself
+   */
+  default boolean serverNotifiesOwner() {
+    return false;
+  }
 }
