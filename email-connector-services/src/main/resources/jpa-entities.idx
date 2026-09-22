@@ -10,3 +10,4 @@ org.exoplatform.emailConnector.entity.EmailFolderEntity
 org.exoplatform.emailConnector.entity.EmailSyncStateEntity
 org.exoplatform.emailConnector.entity.EmailScheduledSendEntity
 org.exoplatform.emailConnector.entity.EmailReadReceiptAnswerEntity
+org.exoplatform.emailConnector.entity.EmailDelegationEntity

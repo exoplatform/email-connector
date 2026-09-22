@@ -38,6 +38,16 @@ public class MailFolderView {
 
   public static final String TYPE_CUSTOM   = "CUSTOM";
 
+  /**
+   * The INBOX of a mailbox another user shared with this one -- an {@code EMAIL_FOLDER}
+   * row carrying a {@code DELEGATION_ID}, whose remote name is the Other Users path on
+   * this user's own session. The one delegated folder enabled by default at accept.
+   */
+  public static final String TYPE_DELEGATED_INBOX = "DELEGATED_INBOX";
+
+  /** Any other folder of a shared mailbox: discovered, opt-in, like a custom folder. */
+  public static final String TYPE_DELEGATED = "DELEGATED";
+
   // The EMAIL_BOX.FOLDER discriminator: a MailFolder constant, or CUSTOM:<id>.
   private String  key;
 
