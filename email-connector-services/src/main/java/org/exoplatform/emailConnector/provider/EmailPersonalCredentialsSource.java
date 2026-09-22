@@ -44,10 +44,12 @@ import org.exoplatform.services.connector.credentials.RawCredentials;
  * platform without the credentials module: that module is a {@code provided}
  * prerequisite of this WAR, and {@link EmailCredentialsResolver} requires its
  * {@code ConnectorCredentialsService} bean outright, so the WAR does not start
- * without it. {@code @ConditionalOnClass} keeps this bean undefined when the SPI
- * class is off a test classpath - evaluated from bytecode metadata, so the class
- * is never loaded and no {@code NoClassDefFoundError} is risked.
- * {@code @Autowired(required = false)} plus the null check below cover the case
+ * without it. {@code @ConditionalOnClass} is kept as a belt-and-braces guard: no
+ * classpath this module builds or tests on lacks the class today (a {@code provided}
+ * artifact is on the module's own test classpath), and it costs nothing - evaluated
+ * from bytecode metadata, so the class is never loaded and no
+ * {@code NoClassDefFoundError} is risked. {@code @Autowired(required = false)} plus
+ * the null check below cover the case
  * where the class is there but the provider bean is not, which is exactly what a
  * context built from this addon's beans alone looks like.
  */

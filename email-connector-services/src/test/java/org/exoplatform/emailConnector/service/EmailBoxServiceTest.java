@@ -1781,9 +1781,12 @@ public class EmailBoxServiceTest {
 
   /**
    * A provider that cannot authenticate the mailbox read marks the sync FAILURE like
-   * any other connection failure -- never SUCCESS over an empty run. Mutation-verified:
+   * any other connection failure -- never SUCCESS over an empty run -- and the sync
+   * does not reach for the stored password it holds in hand. Mutation-verified twice:
    * a {@code synchronize} that catches the contract's exception and records SUCCESS
-   * fails this.
+   * fails the status assertion; one that catches it and retries through
+   * {@code connectWithTypedCredentials} (or a bare {@code connect(EmailConnector,
+   * Authenticator)}) still ends in FAILURE here, so only the two {@code never()} see it.
    */
   @Test
   @SneakyThrows
@@ -1795,6 +1798,8 @@ public class EmailBoxServiceTest {
     emailBoxService.synchronize(TEST_USER);
 
     assertEquals(SyncStatus.FAILURE, userEmailSetting.getEmailSyncStatus());
+    verify(userEmailSettingService, never()).connectWithTypedCredentials(any(), any());
+    verify(userEmailSettingService, never()).connect(any(EmailConnector.class), any(Authenticator.class));
   }
 
   /** A bound, connectable mailbox on a connector row: everything a send needs before it asks the contract. */
