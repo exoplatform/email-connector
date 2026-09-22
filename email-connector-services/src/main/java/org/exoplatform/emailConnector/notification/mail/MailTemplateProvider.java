@@ -26,13 +26,19 @@ import org.exoplatform.services.resources.ResourceBundleService;
 
 @TemplateConfigs(templates = {
     @TemplateConfig(pluginId = NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/NewEmailsNotificationPlugin.gtmpl"),
-    @TemplateConfig(pluginId = NotificationConstants.SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/ScheduledEmailFailedNotificationPlugin.gtmpl") })
+    @TemplateConfig(pluginId = NotificationConstants.SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/ScheduledEmailFailedNotificationPlugin.gtmpl"),
+    @TemplateConfig(pluginId = NotificationConstants.EMAIL_DELEGATION_INVITATION_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/EmailDelegationInvitationPlugin.gtmpl"),
+    @TemplateConfig(pluginId = NotificationConstants.EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN, template = "war:/conf/email-connector/templates/notification/mail/EmailDelegationResponseNotificationPlugin.gtmpl") })
 public class MailTemplateProvider extends TemplateProvider {
 
   public MailTemplateProvider(InitParams initParams, ResourceBundleService resourceBundleService) {
     super(initParams);
     this.templateBuilders.put(PluginKey.key(NotificationConstants.NEW_EMAILS_NOTIFICATION_PLUGIN), new MailTemplateBuilder(this));
     this.templateBuilders.put(PluginKey.key(NotificationConstants.SCHEDULED_EMAIL_FAILED_NOTIFICATION_PLUGIN),
+                              new MailTemplateBuilder(this));
+    this.templateBuilders.put(PluginKey.key(NotificationConstants.EMAIL_DELEGATION_INVITATION_NOTIFICATION_PLUGIN),
+                              new MailTemplateBuilder(this));
+    this.templateBuilders.put(PluginKey.key(NotificationConstants.EMAIL_DELEGATION_RESPONSE_NOTIFICATION_PLUGIN),
                               new MailTemplateBuilder(this));
   }
 }
