@@ -18,6 +18,7 @@ import EmailConnectorAdminApp from './components/EmailConnectorAdminApp.vue';
 import EmailConnectorAdminHeader from './components/header/EmailConnectorAdminHeader.vue';
 import EmailConnectorAdminList from './components/main/EmailConnectorAdminList.vue';
 import EmailConnectorAdminSyncSettings from './components/main/EmailConnectorAdminSyncSettings.vue';
+import EmailConnectorAdminManagedMode from './components/main/EmailConnectorAdminManagedMode.vue';
 import EmailConnectorAdminDrawer from './components/drawer/EmailConnectorAdminDrawer.vue';
 import EmailConnectorAdminSyncSettingsDrawer from './components/drawer/EmailConnectorAdminSyncSettingsDrawer.vue';
 import EmailConnectorAdminSyncTieringRows from './components/drawer/EmailConnectorAdminSyncTieringRows.vue';
@@ -30,6 +31,7 @@ const components = {
   'email-connector-admin-footer': EmailConnectorAdminFooter,
   'email-connector-admin-list': EmailConnectorAdminList,
   'email-connector-admin-sync-settings': EmailConnectorAdminSyncSettings,
+  'email-connector-admin-managed-mode': EmailConnectorAdminManagedMode,
   'email-connector-admin-drawer': EmailConnectorAdminDrawer,
   'email-connector-admin-sync-settings-drawer': EmailConnectorAdminSyncSettingsDrawer,
   'email-connector-admin-sync-tiering-rows': EmailConnectorAdminSyncTieringRows,

@@ -18,12 +18,18 @@
 /**
  * Turns a refused response into an Error carrying what the server said.
  *
- * The provider configuration is validated server-side and refused with a message
- * code - a missing required field, a value outside a field's options. Thrown as a
+ * A refused write carries a message code - a missing required field, a value
+ * outside a field's options, the connector managed mode points at. Thrown as a
  * bare sentence that code never reaches the screen, and the administrator is told
+<<<<<<< HEAD
  * "error" about a form they can in fact correct. The platform answers a refusal with
  * a JSON body whose `message` is the code; a body that is not JSON is read as the
  * code itself.
+=======
+ * "error" about something they can in fact correct. Depending on the error
+ * handling in front of the servlet the code reaches the browser as a JSON body
+ * whose `message` is the code, or as the bare code: both are read.
+>>>>>>> 7b391517 (feat: designate the mail connector through the shared managed mode - EXO-89652)
  *
  * @param {Response} resp the refused response
  * @param {string} fallback message to use when the body carries nothing
@@ -101,7 +107,7 @@ export function activateEmailConnector(emailConnectorId, emailConnectorActive) {
     method: 'PATCH'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when activating email connector');
+      return refusal(resp, 'Error when activating email connector');
     }
   });
 }
@@ -462,7 +468,7 @@ export function deleteEmailConnector(emailConnectorId) {
     method: 'DELETE'
   }).then((resp) => {
     if (!resp?.ok) {
-      throw new Error('Error when deleting email connector');
+      return refusal(resp, 'Error when deleting email connector');
     }
   });
 }
@@ -485,5 +491,88 @@ export function getProviderConfig(emailConnectorId) {
       throw new Error('Error when retrieving the provider configuration');
     }
     return resp.json();
+  });
+}
+
+/**
+ * Whether each declared provider asks its user for anything, keyed by provider
+ * name. What decides which connectors managed mode may designate: only one whose
+ * provider answers false can be attached to everybody.
+ *
+ * @returns {Promise<Object>} provider name to boolean
+ */
+export function getConnectionRequirements() {
+  return fetch('/email-connector/rest/connectors/connection-requirements', {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting connection requirements');
+    }
+  });
+}
+
+/**
+ * Whether this instance attaches everybody to one mail connector, and — for the
+ * caller — whether that applies to them.
+ *
+ * @returns {Promise<Object>} {connectorId, connectorName, excludedGroups, managedForMe}
+ */
+export function getManagedMode() {
+  return fetch('/email-connector/rest/connectors/managed', {
+    credentials: 'include',
+    method: 'GET'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when getting the mail managed mode');
+    }
+  });
+}
+
+/**
+ * Points the whole instance at one connector, minus the excluded groups.
+ * Administrators only. One body for the two facts: they are applied by one
+ * click, and two requests would leave a moment where the designation stands
+ * without its exclusions. A refusal rejects with the message code as `message`.
+ *
+ * @param {Number} connectorId technical identifier of the connector
+ * @param {Array<String>} excludedGroups eXo group ids the choice must not reach
+ * @returns {Promise<Object>} the mode now in force
+ */
+export function saveManagedMode(connectorId, excludedGroups = []) {
+  return fetch('/email-connector/rest/connectors/managed', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({connectorId, excludedGroups}),
+    method: 'PUT'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    }
+    return refusal(resp, 'emailConnector.admin.managed.saveFailed');
+  });
+}
+
+/**
+ * Gives every user back the choice of their own mail connector. Administrators only.
+ *
+ * @returns {Promise<Object>} the mode now in force, which names no connector
+ */
+export function clearManagedMode() {
+  return fetch('/email-connector/rest/connectors/managed', {
+    credentials: 'include',
+    method: 'DELETE'
+  }).then((resp) => {
+    if (resp?.ok) {
+      return resp.json();
+    } else {
+      throw new Error('Error when switching the mail managed mode off');
+    }
   });
 }
