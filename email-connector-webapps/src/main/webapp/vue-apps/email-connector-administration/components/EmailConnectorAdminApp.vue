@@ -27,6 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="text-title mt-8 mb-3">
         {{ $t('emailConnector.admin.connectors.title') }}
       </div>
+      <email-connector-admin-managed-mode :connectors="connectors" />
       <div class="mb-4">
         <v-btn
           :aria-label="$t('emailConnector.admin.connectors.add')"

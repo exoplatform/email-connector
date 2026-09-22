@@ -95,27 +95,47 @@ export default {
       this.$root.$emit('open-email-connector-drawer', item);
     },
     activateItem(item) {
-      this.$emailConnectorAdministrationService.activateEmailConnector(item.id, item.active)
+      return this.$emailConnectorAdministrationService.activateEmailConnector(item.id, item.active)
         .then(() =>
         {
           this.$root.$emit('refresh-connectors-list');
           const successAlertMessage = item.active && 'emailConnector.admin.connectors.activate.success' || 'emailConnector.admin.connectors.deactivate.success';
           this.$root.$emit('alert-message', this.$t(`${successAlertMessage}`), 'success');
         })
-        .catch(() => {
-          const errorAlertMessage = item.active && 'emailConnector.admin.connectors.activate.error' || 'emailConnector.admin.connectors.deactivate.error';
+        .catch(error => {
+          // The switch moved before the platform answered; a refusal puts it
+          // back - and the message is about what was ATTEMPTED, read before the
+          // switch goes back, or a refused deactivation would be reported as a
+          // failed activation.
+          const attempted = item.active;
+          item.active = !attempted;
+          // A refusal that names a rule says it, rather than "could not be
+          // deactivated": deactivating the connector managed mode points the
+          // whole instance at is refused with a code that tells the
+          // administrator exactly which switch to flip first.
+          const code = error && error.messageCode || '';
+          if (code && this.$te(code)) {
+            this.$root.$emit('alert-message', this.$t(code), 'error');
+            return;
+          }
+          const errorAlertMessage = attempted && 'emailConnector.admin.connectors.activate.error' || 'emailConnector.admin.connectors.deactivate.error';
           this.$root.$emit('alert-message', this.$t(`${errorAlertMessage}`), 'error');
         });
     },
     deleteEmailConnector() {
-      this.$emailConnectorAdministrationService.deleteEmailConnector(this.emailConnectorToDelete.id)
+      return this.$emailConnectorAdministrationService.deleteEmailConnector(this.emailConnectorToDelete.id)
         .then(() =>
         {
           this.$root.$emit('refresh-connectors-list');
           this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.delete.success'), 'success');
           this.emailConnectorToDelete = null;
         })
-        .catch(() => this.$root.$emit('alert-message', this.$t('emailConnector.admin.connectors.delete.error'), 'error'));
+        .catch(error => {
+          // The managed-mode refusal names the rule; anything else is the generic failure.
+          const code = error && error.messageCode || '';
+          const message = code && this.$te(code) ? this.$t(code) : this.$t('emailConnector.admin.connectors.delete.error');
+          this.$root.$emit('alert-message', message, 'error');
+        });
     },
     openDeleteConfirmDialog(item) {
       this.emailConnectorToDelete = item;

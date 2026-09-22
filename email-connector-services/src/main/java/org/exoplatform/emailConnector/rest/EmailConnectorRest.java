@@ -17,6 +17,7 @@
 package org.exoplatform.emailConnector.rest;
 
 import java.io.InputStream;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +30,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.ResponseEntity.BodyBuilder;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -41,8 +43,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.emailConnector.model.EmailConnector;
+import org.exoplatform.emailConnector.model.EmailManagedMode;
 import org.exoplatform.emailConnector.model.EmailSyncExecutorStatus;
+import org.exoplatform.emailConnector.rest.model.EmailManagedModeRequest;
 import org.exoplatform.emailConnector.service.EmailConnectorService;
+import org.exoplatform.emailConnector.service.EmailManagedModeService;
 import org.exoplatform.emailConnector.service.EmailSyncService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -57,11 +62,17 @@ import jakarta.servlet.http.HttpServletRequest;
 @Tag(name = "/email-connector/rest/connectors", description = "Manages Email Connector")
 public class EmailConnectorRest {
 
+  /** What a managed-mode save naming no connector is refused with. */
+  private static final String CONNECTOR_REQUIRED = "emailConnector.managed.connectorRequired";
+
   @Autowired
   private EmailConnectorService emailConnectorService;
 
   @Autowired
   private EmailSyncService      emailSyncService;
+
+  @Autowired
+  private EmailManagedModeService emailManagedModeService;
 
   @PatchMapping("/feature/activation")
   @Secured("administrators")
@@ -493,6 +504,87 @@ public class EmailConnectorRest {
   }
 
   /**
+   * Whether this deployment chooses the mail connector on its users' behalf, which one,
+   * and which groups it does not reach.
+   * <p>
+   * Administrators only: the exclusions and the connector's name are the administration
+   * screen's facts. The per-viewer {@code managedForMe} is kept in the payload for the
+   * login-time attachment (EXO-89653); no user page reads this today.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the mode as it stands for the caller
+   */
+  @GetMapping("/managed")
+  @Secured("administrators")
+  @Operation(summary = "Reads the mail managed mode", method = "GET",
+      description = "Says which connector the instance attaches everybody to, which groups it excludes, and whether "
+          + "the calling user is governed by that choice. Nothing is named when managed mode is off.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled") })
+  public EmailManagedMode getManagedMode(HttpServletRequest request) {
+    return emailManagedModeService.getManagedMode(request.getRemoteUser());
+  }
+
+  /**
+   * Records the connector the instance attaches everybody to, and the groups
+   * that choice does not reach.
+   * <p>
+   * The connector has to be one users could actually be attached to: an unknown
+   * or deactivated connector, or one whose provider asks the user for something,
+   * is refused with the message code the drawer renders.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param body the connector to manage with and the excluded groups
+   * @return the mode now in force, as it stands for the calling administrator
+   */
+  @PutMapping("/managed")
+  @Secured("administrators")
+  @Operation(summary = "Records the mail managed mode", method = "PUT",
+      description = "Points the whole instance at one connector, minus the excluded groups. The connector must exist, "
+          + "be active and be configured with a provider that asks the user for nothing: managed mode attaches every "
+          + "other user to it as they log in.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public EmailManagedMode saveManagedMode(HttpServletRequest request,
+                                          @RequestBody
+                                          EmailManagedModeRequest body) {
+    if (body == null || body.connectorId() == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, CONNECTOR_REQUIRED);
+    }
+    try {
+      emailManagedModeService.saveManagedConnector(body.connectorId(),
+                                                   body.excludedGroups() == null ? List.of() : body.excludedGroups(),
+                                                   request.getRemoteUser());
+      return emailManagedModeService.getManagedMode(request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Switches managed mode off: users choose their own connector again.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the mode now in force, which names no connector
+   */
+  @DeleteMapping("/managed")
+  @Secured("administrators")
+  @Operation(summary = "Switches the mail managed mode off", method = "DELETE",
+      description = "Gives every user back the choice of their own mail connector.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public EmailManagedMode clearManagedMode(HttpServletRequest request) {
+    try {
+      emailManagedModeService.clearManagedConnector(request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    }
+    return emailManagedModeService.getManagedMode(request.getRemoteUser());
+  }
+
+  /**
    * Whether each declared provider asks its user for anything, keyed by provider
    * name — what a browser needs to decide whether its connect button shows a form
    * or connects outright.
@@ -550,5 +642,29 @@ public class EmailConnectorRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+  }
+
+  /**
+   * Puts a refusal's message code in the body the browser reads.
+   * <p>
+   * The controller methods refuse with {@code ResponseStatusException(status,
+   * code)}, and Spring Boot's default error body does not carry the reason on
+   * this platform - the browser received {@code {"status":400,"error":"Bad
+   * Request"}} and nothing else, so the drawers fell back to "could not be
+   * saved" for every rule (EXO-89652). The same shape the CalDAV add-on's {@code CaldavShareRest}
+   * answers its own failures with: the status, and the code under
+   * {@code message}, which is what the JS services read.
+   *
+   * @param refusal the refusal a controller method threw
+   * @return the same status, with the code in the body
+   */
+  @ExceptionHandler(ResponseStatusException.class)
+  public ResponseEntity<Map<String, Object>> onRefusal(ResponseStatusException refusal) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("status", refusal.getStatusCode().value());
+    if (refusal.getReason() != null) {
+      body.put("message", refusal.getReason());
+    }
+    return ResponseEntity.status(refusal.getStatusCode()).body(body);
   }
 }
